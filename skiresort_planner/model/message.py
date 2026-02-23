@@ -353,7 +353,7 @@ class SlopeStartingContextMessage(Message):
             start_loc = f"({self.start_lat:.4f}, {self.start_lon:.4f})"
         else:
             raise ValueError("SlopeStartingContextMessage requires start_node_id or start_lat/lon")
-        return f"🎿 **{self.slope_name}** — Starting\n\n- 📍 Start: {start_loc}\n- ↔️ No segments committed yet"
+        return f"🎿 **{self.slope_name}** — New Slope\n\n- 📍 Start: {start_loc}\n- ↔️ No segments committed yet"
 
 
 @dataclass(frozen=True)
@@ -380,7 +380,7 @@ class SlopeBuildingContextMessage(Message):
     @property
     def message(self) -> str:
         return (
-            f"🎿**{self.slope_name}** — Committed Progress — {self.num_segments} ↔️\n\n"
+            f"🎿 **{self.slope_name}** — Committed Progress — {self.num_segments} ↔️\n\n"
             f"- {self.difficulty_emoji} • ↓{self.total_drop_m:.0f}m drop • {self.total_length_m:.0f}m\n"
             f"- 📐 {self.avg_gradient_pct:.0f}% avg / {self.max_gradient_pct:.0f}% max\n"
             f"- 📍 {self.start_elevation_m:.0f}m → {self.current_elevation_m:.0f}m"
@@ -471,12 +471,12 @@ class SlopeActionMessage(Message):
 
         if self.is_selecting_path:
             is_conn = self.is_connector and self.target_node_id
-            path_label = "Custom Path" if self.is_custom_path else "Path"
+            path_label = "Custom Proposal" if self.is_custom_path else "Proposed Segment"
             if is_conn:
                 header = f"🏁 **{path_label} {self.selected_path_idx + 1}/{self.num_paths}** → {self.target_node_id}"
                 action = "- ✅ **Commit to finish slope** or use ◀▶ to browse"
             else:
-                header = f"🎯 **{path_label} {self.selected_path_idx + 1}/{self.num_paths}** — Next Segment"
+                header = f"🎯 **{path_label} {self.selected_path_idx + 1}/{self.num_paths}**"
                 action = "- ✅ **Commit** to add segment or use ◀▶ to browse"
             return (
                 f"{header}\n\n"

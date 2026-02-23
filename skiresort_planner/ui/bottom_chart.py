@@ -55,13 +55,13 @@ class ProfileChart:
     def render_proposal(
         self,
         proposal: ProposedSlopeSegment,
-        title: Optional[str] = None,
+        proposed_segment_title: str,
     ) -> go.Figure:
-        """Render elevation profile for a proposed path.
+        """Render elevation profile for a proposed slope segment.
 
         Args:
             proposal: Proposed path to visualize
-            title: Optional chart title
+            proposed_segment_title: Chart title for the proposed segment
 
         Returns:
             Plotly Figure object.
@@ -118,9 +118,8 @@ class ProfileChart:
         )
 
         # Configure layout - use FINAL difficulty in title
-        title = title or f"{proposal.difficulty.capitalize()} ({proposal.avg_slope_pct:.0f}%)"
         fig.update_layout(
-            title=dict(text=title, x=0.5),
+            title=dict(text=proposed_segment_title, x=0.5),
             xaxis=dict(
                 title="Distance (m)",
                 showgrid=True,
@@ -161,12 +160,14 @@ class ProfileChart:
     def render_segment(
         self,
         segment: SlopeSegment,
+        difficulty: str,
         title: Optional[str] = None,
     ) -> go.Figure:
         """Render elevation profile for a committed segment.
 
         Args:
             segment: Slope segment to visualize
+            difficulty: Difficulty level for coloring (caller determines the correct value)
             title: Optional chart title
 
         Returns:
@@ -196,7 +197,7 @@ class ProfileChart:
             ChartConfig.ELEVATION_PADDING_MIN_M,
         )
 
-        color = StyleConfig.SLOPE_COLORS[segment.difficulty]
+        color = StyleConfig.SLOPE_COLORS[difficulty]
 
         fig = go.Figure()
 
@@ -707,6 +708,9 @@ def render_building_profiles(
 ) -> go.Figure:
     """Render elevation profile for slope being built.
 
+    Uses max difficulty from average of individual segments (steepest segment determines
+    overall difficulty, matching the sidebar display).
+
     Args:
         building_segments: List of segment IDs in current slope (must not be empty)
         building_name: Name of slope being built
@@ -722,17 +726,22 @@ def render_building_profiles(
         raise ValueError("building_segments must not be empty - check before calling")
 
     all_points = []
+    max_avg_slope = 0.0
     for seg_id in building_segments:
         seg = graph.segments.get(seg_id)
         if seg and seg.points:
             all_points.extend(seg.points)
+            max_avg_slope = max(max_avg_slope, seg.avg_slope_pct)
 
     if not all_points:
         raise ValueError(f"Segments {building_segments} have no points - data integrity issue")
 
+    # Use max difficulty from individual segments (steepest segment determines color)
+    max_difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=max_avg_slope)
+
     chart = ProfileChart(width=ChartConfig.DEFAULT_WIDTH, height=ChartConfig.PROFILE_HEIGHT_SMALL)
     combined = SlopeSegment(id="combined", name=building_name or "Current Slope", points=all_points)
-    return chart.render_segment(segment=combined, title="Current Slope Progress")
+    return chart.render_segment(segment=combined, difficulty=max_difficulty, title="Current committed Slope Progress")
 
 
 def render_proposal_preview(
@@ -756,5 +765,7 @@ def render_proposal_preview(
     if not (0 <= selected_idx < len(proposals)):
         raise ValueError(f"selected_idx {selected_idx} out of bounds for {len(proposals)} proposals")
 
+    proposal = proposals[selected_idx]
+    title = f"Proposed Segment — {proposal.difficulty.capitalize()} ({proposal.avg_slope_pct:.0f}%)"
     chart = ProfileChart(width=ChartConfig.DEFAULT_WIDTH, height=ChartConfig.PROFILE_HEIGHT_MINI)
-    return chart.render_proposal(proposal=proposals[selected_idx])
+    return chart.render_proposal(proposal=proposal, proposed_segment_title=title)
