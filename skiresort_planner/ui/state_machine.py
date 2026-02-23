@@ -646,9 +646,11 @@ class PlannerStateMachine(StateMachine):
         """Hide info panel (no state change, no st.rerun).
 
         Note: bump_map_version() is called by the button handlers in
-        right_panel.py to clear stale click state.
+        right_panel.py to clear stale map state. We also clear marker dedup
+        so clicking the same marker again works (e.g., reopen same slope panel).
         """
         self.context.viewing.hide()
+        self.context.click_dedup.clear_marker()
         logger.info("Info panel: hidden")
 
     @property

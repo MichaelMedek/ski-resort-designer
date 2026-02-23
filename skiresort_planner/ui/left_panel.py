@@ -391,6 +391,15 @@ class SidebarRenderer:
                 lift_type=new_type,
                 total_distance_m=length_m,
             )
+            # Recalculate cable points (they depend on pylons and lift type)
+            lift.cable_points = Lift.calculate_cable_points(
+                terrain_points=lift.terrain_points,
+                pylons=lift.pylons,
+                start_elevation=start_node.elevation,
+                end_elevation=end_node.elevation,
+                lift_type=new_type,
+                total_distance_m=length_m,
+            )
 
         # Persist as default for next lift
         self.ctx.lift.type = new_type
