@@ -156,7 +156,7 @@ class MapRenderer:
 
         highlight_ids = highlight_ids or []
 
-        for seg_id, segment in self.graph.segments.items():
+        for seg_id, segment in list(self.graph.segments.items()):
             polygon_coords = segment.get_belt_polygon()
             if not polygon_coords:
                 continue
@@ -225,7 +225,7 @@ class MapRenderer:
         if not self.graph:
             return
 
-        for lift_id, lift in self.graph.lifts.items():
+        for lift_id, lift in list(self.graph.lifts.items()):
             start_node = self.graph.nodes.get(lift.start_node_id)
             end_node = self.graph.nodes.get(lift.end_node_id)
 
@@ -289,7 +289,7 @@ class MapRenderer:
         if not self.graph:
             return
 
-        for node_id, node in self.graph.nodes.items():
+        for node_id, node in list(self.graph.nodes.items()):
             # User-friendly tooltip: "Node N1"
             tooltip = f"{ClickConfig.TOOLTIP_PREFIX_NODE} {node_id}"
 
@@ -392,10 +392,10 @@ class MapRenderer:
 
         all_points = []
 
-        for node in self.graph.nodes.values():
+        for node in list(self.graph.nodes.values()):
             all_points.append((node.lat, node.lon))
 
-        for segment in self.graph.segments.values():
+        for segment in list(self.graph.segments.values()):
             for pt in segment.points:
                 all_points.append((pt.lat, pt.lon))
 
