@@ -138,7 +138,7 @@ class MapRenderer:
                 "circle": False,
                 "circlemarker": False,
                 "rectangle": False,
-                "marker": True,
+                "marker": False,
             },
             edit_options={"edit": False, "remove": False},
         ).add_to(m)
