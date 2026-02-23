@@ -774,30 +774,6 @@ class ResortGraph:
 
         return len(isolated_node_ids)
 
-    def create_auto_backup(self) -> None:
-        """Create automatic backup of the resort graph.
-
-        Saves a JSON file without timestamp to overwrite an existing backup if it exists.
-
-        Args:
-            backup_dir: Directory for backups. Defaults to
-                output/skiresort_planner/backups/
-        """
-        BACKUP_DIR = Path(OUTPUT_DIR) / "skiresort_planner" / "backups"
-
-        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-
-        # Create timestamped backup
-        backup_path = BACKUP_DIR / "resort_backup.json"
-
-        try:
-            with open(backup_path, "w") as f:
-                json.dump(self.to_dict(), f, indent=2, default=str)
-            logger.info(f"Auto-backup created: {backup_path.name}")
-        except Exception as e:
-            logger.error(f"Failed to create auto-backup: {e}")
-            return
-
     def perform_cleanup(self) -> None:
         """Perform maintenance tasks on the graph.
 
@@ -813,6 +789,4 @@ class ResortGraph:
         if removed_count > 0:
             logger.info(f"Cleanup: removed {removed_count} isolated node(s)")
 
-        # Create auto-backup if there's any content
-        if self.nodes or self.segments or self.slopes or self.lifts:
-            self.create_auto_backup()
+        # Other possible cleanup tasks in the future...
