@@ -49,7 +49,11 @@ class ClickDetector:
         )
 
         if result.is_marker:
-            return ClickInfo.from_tooltip(tooltip=result.tooltip or "")
+            # All our markers have tooltips - empty tooltip means ghost click
+            if not result.tooltip:
+                logger.warning(f"Marker click with empty tooltip, ignoring as likely ghost click: {result}")
+                return None
+            return ClickInfo.from_tooltip(tooltip=result.tooltip)
         elif result.is_terrain:
             return self._create_terrain_click_info(terrain_data=result.data)
         return None

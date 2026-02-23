@@ -21,7 +21,6 @@ from skiresort_planner.constants import (
     PathConfig,
     StyleConfig,
 )
-from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.message import (
     FileLoadErrorMessage,
@@ -345,7 +344,7 @@ class SidebarRenderer:
     def _change_viewed_lift_type(self, new_type: str) -> None:
         """Change the type of the currently viewed lift.
 
-        Regenerates name and recalculates pylons for the new type.
+        Uses Lift.update_type() to recalculate all type-dependent fields.
         Also updates global build_mode so new lifts use this type.
         """
         lift_id = self.ctx.viewing.lift_id
@@ -363,46 +362,16 @@ class SidebarRenderer:
         if lift.lift_type == new_type:
             return  # No actual type change needed
 
-        lift.lift_type = new_type
-
-        # Regenerate name and recalculate pylons
+        # Get nodes for the update
         start_node = self.graph.nodes.get(lift.start_node_id)
         end_node = self.graph.nodes.get(lift.end_node_id)
-        if start_node and end_node:
-            length_m = GeoCalculator.haversine_distance_m(
-                lat1=start_node.lat, lon1=start_node.lon, lat2=end_node.lat, lon2=end_node.lon
-            )
-            vertical_rise_m = end_node.elevation - start_node.elevation
-            # Bearing from TOP to BOTTOM (slope-facing direction)
-            avg_bearing = GeoCalculator.initial_bearing_deg(
-                lon1=end_node.lon, lat1=end_node.lat, lon2=start_node.lon, lat2=start_node.lat
-            )
-            lift_number = int(lift.id[1:]) if lift.id.startswith("L") else 1
-            lift.name = Lift.generate_name(
-                lift_type=new_type,
-                lift_number=lift_number,
-                length_m=length_m,
-                vertical_rise_m=vertical_rise_m,
-                avg_bearing=avg_bearing,
-            )
-            # Recalculate pylons for new lift type
-            lift.pylons = Lift.calculate_pylons(
-                terrain_points=lift.terrain_points,
-                lift_type=new_type,
-                total_distance_m=length_m,
-            )
-            # Recalculate cable points (they depend on pylons and lift type)
-            lift.cable_points = Lift.calculate_cable_points(
-                terrain_points=lift.terrain_points,
-                pylons=lift.pylons,
-                start_elevation=start_node.elevation,
-                end_elevation=end_node.elevation,
-                lift_type=new_type,
-                total_distance_m=length_m,
-            )
+        if not start_node or not end_node:
+            logger.warning(f"Cannot update lift {lift_id}: nodes not found")
+            return
 
-        # Persist as default for next lift
-        self.ctx.lift.type = new_type
+        # Use centralized method to update all type-dependent fields
+        lift.update_type(new_type=new_type, start_node=start_node, end_node=end_node)
+
         logger.info(f"UI: Changed lift {lift_id} type to {new_type}")
 
     def _render_building_controls(self) -> dict[str, Any]:

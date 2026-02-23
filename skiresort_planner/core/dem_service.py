@@ -180,7 +180,7 @@ class DEMService:
             )
             return None
         if np.isnan(elev):
-            logger.warning(f"NaN elevation at coordinates: lon={lon}, lat={lat}")
+            logger.warning(f"Invalid {elev} elevation at coordinates: lon={lon}, lat={lat}")
             return None
 
         return float(elev)

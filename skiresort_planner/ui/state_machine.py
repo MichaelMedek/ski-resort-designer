@@ -65,13 +65,13 @@ from statemachine.exceptions import TransitionNotAllowed
 
 from skiresort_planner.constants import LiftConfig, MapConfig
 from skiresort_planner.model.path_point import PathPoint
+from skiresort_planner.model.resort_graph import ResortGraph
 
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from skiresort_planner.core import TerrainOrientation
     from skiresort_planner.model import ProposedSlopeSegment
-    from skiresort_planner.model.resort_graph import ResortGraph
 
 
 # Coordinate tuple type aliases for clarity
@@ -723,13 +723,13 @@ class PlannerStateMachine(StateMachine):
         lat: float,
         elevation: float,
         node_id: str | None,
-        slope_number: int,
     ) -> None:
         """Action before starting to build a slope."""
         self.context.set_selection(lon=lon, lat=lat, elevation=elevation)
         self.context.building.start_node = node_id
         self.context.selection.node_id = node_id
-        # Set slope name (working name using slope number)
+        # Set slope name (working name using next slope number from graph)
+        slope_number = self._graph._slope_counter + 1
         self.context.building.name = f"Slope {slope_number}"
 
     def before_commit_path(self, segment_id: str, endpoint_node_id: str) -> None:
@@ -769,13 +769,20 @@ class PlannerStateMachine(StateMachine):
     # Initialization
     # ==========================================================================
 
-    def __init__(self, context: PlannerContext | None = None, start_value: str | None = None) -> None:
+    def __init__(
+        self,
+        graph: ResortGraph,
+        context: PlannerContext | None = None,
+        start_value: str | None = None,
+    ) -> None:
         """Initialize state machine with model pattern.
 
         Args:
+            graph: ResortGraph instance for accessing slope counter
             context: Shared context/model (creates new if None)
             start_value: Optional initial state value (for restoring state)
         """
+        self._graph = graph
         model = context or PlannerContext()
         super().__init__(model=model, start_value=start_value)
 
@@ -826,10 +833,14 @@ class PlannerStateMachine(StateMachine):
             return False
 
     @staticmethod
-    def create(add_ui_listener: bool = True) -> tuple["PlannerStateMachine", PlannerContext]:
+    def create(
+        graph: ResortGraph,
+        add_ui_listener: bool = True,
+    ) -> tuple["PlannerStateMachine", PlannerContext]:
         """Factory method to create state machine with context and optional UI listener.
 
         Args:
+            graph: ResortGraph instance for accessing slope counter
             add_ui_listener: If True, adds StreamlitUIListener for auto st.rerun().
                              Set to False for testing or non-Streamlit usage.
 
@@ -837,7 +848,7 @@ class PlannerStateMachine(StateMachine):
             Tuple of (PlannerStateMachine, PlannerContext)
         """
         context = PlannerContext()
-        sm = PlannerStateMachine(context=context)
+        sm = PlannerStateMachine(graph=graph, context=context)
         if add_ui_listener:
             sm.add_listener(StreamlitUIListener())
             logger.info("Created PlannerStateMachine with StreamlitUIListener")

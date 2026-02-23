@@ -13,10 +13,10 @@ Reference: DETAILS.md
 
 import logging
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from skiresort_planner.constants import LiftConfig, NameConfig
+from skiresort_planner.constants import EntityPrefixes, LiftConfig, NameConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.pylon import Pylon
@@ -60,9 +60,26 @@ class Lift:
     start_node_id: str
     end_node_id: str
     lift_type: str
-    terrain_points: list[PathPoint] = field(default_factory=list)
-    pylons: list[Pylon] = field(default_factory=list)
-    cable_points: list[PathPoint] = field(default_factory=list)
+    terrain_points: list[PathPoint]
+    pylons: list[Pylon]
+    cable_points: list[PathPoint]
+
+    @property
+    def number(self) -> int:
+        """Lift number derived from ID."""
+        return Lift.number_from_id(lift_id=self.id)
+
+    @staticmethod
+    def number_from_id(lift_id: str) -> int:
+        """Extract lift number from lift ID.
+
+        Args:
+            lift_id: Lift ID (e.g., "L1", "L5")
+
+        Returns:
+            Numeric part of the ID.
+        """
+        return int(lift_id[len(EntityPrefixes.LIFT):])
 
     @staticmethod
     def sample_terrain(
@@ -162,16 +179,16 @@ class Lift:
     @staticmethod
     def generate_name(
         lift_type: str,
-        lift_number: int,
-        length_m: float = None,
-        vertical_rise_m: float = None,
-        avg_bearing: float = None,
+        lift_id: str,
+        length_m: float,
+        vertical_rise_m: float,
+        avg_bearing: float,
     ) -> str:
         """Generate a creative lift name.
 
         Args:
             lift_type: Type of lift (surface_lift, chairlift, gondola, aerial_tram)
-            lift_number: Lift number for ID
+            lift_id: Lift ID (e.g., "L1")
             length_m: Horizontal length in meters
             vertical_rise_m: Vertical rise in meters
             avg_bearing: Average bearing in degrees
@@ -179,26 +196,24 @@ class Lift:
         Returns:
             Creative lift name like "1 (Alpine Ridge Express)"
         """
+        lift_number = Lift.number_from_id(lift_id=lift_id)
         prefixes = NameConfig.LIFT_PREFIXES[lift_type]
         prefix = random.choice(prefixes)
 
-        direction = ""
-        if avg_bearing is not None:
-            direction = NameConfig.get_compass_direction(bearing_deg=avg_bearing) + " "
+        direction = NameConfig.get_compass_direction(bearing_deg=avg_bearing) + " "
 
         suffixes = NameConfig.LIFT_SUFFIXES[lift_type]
         suffix = random.choice(suffixes)
 
         length_desc = ""
-        if length_m is not None:
-            if length_m < 500:
-                length_desc = random.choice(NameConfig.LENGTH_DESCRIPTORS["short"]) + " "
-            elif length_m > 1500:
-                length_desc = random.choice(NameConfig.LENGTH_DESCRIPTORS["long"]) + " "
+        if length_m < 500:
+            length_desc = random.choice(NameConfig.LENGTH_DESCRIPTORS["short"]) + " "
+        elif length_m > 1500:
+            length_desc = random.choice(NameConfig.LENGTH_DESCRIPTORS["long"]) + " "
 
         name = f"{length_desc}{prefix} {direction}{suffix}"
 
-        if vertical_rise_m is not None and vertical_rise_m > 500:
+        if vertical_rise_m > 500:
             name = f"{prefix} {direction}Summit {suffix}"
 
         return f"{lift_number} ({name.strip()})"
@@ -212,41 +227,29 @@ class Lift:
         if len(self.cable_points) < 2:
             raise ValueError(f"Lift {self.id} must have at least 2 cable_points, got {len(self.cable_points)}")
 
-    @classmethod
-    def create(
-        cls,
+    @staticmethod
+    def _compute_type_dependent_data(
+        terrain_points: list[PathPoint],
         start_node: "Node",
         end_node: "Node",
-        dem: "DEMService",
         lift_type: str,
         lift_id: str,
-        lift_number: int,
-        name: str | None = None,
-    ) -> "Lift":
-        """Factory method to create a complete Lift with all computed data.
+    ) -> tuple[str, list["Pylon"], list[PathPoint], float]:
+        """Compute all type-dependent lift data.
 
-        Samples terrain, calculates pylons via catenary simulation, and
-        pre-computes cable points for rendering/export.
+        Single source of truth for name, pylons, cable_points calculation.
+        Used by both create() and update_type() to ensure consistency.
 
         Args:
+            terrain_points: Pre-sampled terrain along lift path
             start_node: Bottom station node
             end_node: Top station node
-            dem: DEM service for terrain sampling
-            lift_type: Type of lift (surface_lift, chairlift, gondola, aerial_tram)
-            lift_id: Unique identifier (e.g., "L1")
-            lift_number: Lift number for naming
-            name: Optional custom name (auto-generated if None)
+            lift_type: Type of lift
+            lift_id: Lift ID for naming (e.g., "L1")
 
         Returns:
-            Fully initialized Lift object.
+            Tuple of (name, pylons, cable_points, length_m)
         """
-        # Sample terrain along lift path
-        terrain_points = cls.sample_terrain(
-            start_node=start_node,
-            end_node=end_node,
-            dem=dem,
-        )
-
         # Calculate metrics
         length_m = GeoCalculator.haversine_distance_m(
             lat1=start_node.lat,
@@ -264,27 +267,24 @@ class Lift:
             lat2=start_node.lat,
         )
 
-        # Generate name if not provided
-        if name is None:
-            name = cls.generate_name(
-                lift_type=lift_type,
-                lift_number=lift_number,
-                length_m=length_m,
-                vertical_rise_m=vertical_rise_m,
-                avg_bearing=avg_bearing,
-            )
-
-        logger.info(f"Creating lift: {name}, type={lift_type}, length={length_m:.0f}m, rise={vertical_rise_m:.0f}m")
+        # Generate name
+        name = Lift.generate_name(
+            lift_type=lift_type,
+            lift_id=lift_id,
+            length_m=length_m,
+            vertical_rise_m=vertical_rise_m,
+            avg_bearing=avg_bearing,
+        )
 
         # Calculate pylons via catenary simulation
-        pylons = cls.calculate_pylons(
+        pylons = Lift.calculate_pylons(
             terrain_points=terrain_points,
             lift_type=lift_type,
             total_distance_m=length_m,
         )
 
-        # Pre-compute cable points for rendering/GPX export
-        cable_points = cls.calculate_cable_points(
+        # Calculate cable points (depend on pylons)
+        cable_points = Lift.calculate_cable_points(
             terrain_points=terrain_points,
             pylons=pylons,
             start_elevation=start_node.elevation,
@@ -292,6 +292,51 @@ class Lift:
             lift_type=lift_type,
             total_distance_m=length_m,
         )
+
+        return name, pylons, cable_points, length_m
+
+    @classmethod
+    def create(
+        cls,
+        start_node: "Node",
+        end_node: "Node",
+        dem: "DEMService",
+        lift_type: str,
+        lift_id: str,
+    ) -> "Lift":
+        """Factory method to create a complete Lift with all computed data.
+
+        Samples terrain, calculates pylons via catenary simulation, and
+        pre-computes cable points for rendering/export.
+
+        Args:
+            start_node: Bottom station node
+            end_node: Top station node
+            dem: DEM service for terrain sampling
+            lift_type: Type of lift (surface_lift, chairlift, gondola, aerial_tram)
+            lift_id: Unique identifier (e.g., "L1")
+
+        Returns:
+            Fully initialized Lift object.
+        """
+        # Sample terrain along lift path
+        terrain_points = cls.sample_terrain(
+            start_node=start_node,
+            end_node=end_node,
+            dem=dem,
+        )
+
+        # Compute all type-dependent data via shared helper
+        name, pylons, cable_points, length_m = cls._compute_type_dependent_data(
+            terrain_points=terrain_points,
+            start_node=start_node,
+            end_node=end_node,
+            lift_type=lift_type,
+            lift_id=lift_id,
+        )
+
+        vertical_rise_m = end_node.elevation - start_node.elevation
+        logger.info(f"Creating lift: {name}, type={lift_type}, length={length_m:.0f}m, rise={vertical_rise_m:.0f}m")
 
         return cls(
             id=lift_id,
@@ -338,6 +383,37 @@ class Lift:
             lat2=end.lat,
             lon2=end.lon,
         )
+
+    def update_type(self, new_type: str, start_node: "Node", end_node: "Node") -> None:
+        """Change lift type and update all dependent fields.
+
+        Uses _compute_type_dependent_data() to ensure consistency with create().
+        Updates: lift_type, name, pylons, cable_points.
+
+        Args:
+            new_type: New lift type (must be valid from LiftConfig.TYPES)
+            start_node: Bottom station node
+            end_node: Top station node
+        """
+        if new_type == self.lift_type:
+            logger.info(f"Lift {self.id} already has type {new_type}, no update needed")
+            return  # No change needed
+
+        if new_type not in LiftConfig.TYPES:
+            raise ValueError(f"Invalid lift_type '{new_type}'. Must be one of: {LiftConfig.TYPES}")
+
+        self.lift_type = new_type
+
+        # Recompute all type-dependent data via shared helper
+        self.name, self.pylons, self.cable_points, _ = self._compute_type_dependent_data(
+            terrain_points=self.terrain_points,
+            start_node=start_node,
+            end_node=end_node,
+            lift_type=new_type,
+            lift_id=self.id,
+        )
+
+        logger.info(f"Updated lift {self.id} type to {new_type}")
 
     @staticmethod
     def calculate_pylons(

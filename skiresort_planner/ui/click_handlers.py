@@ -160,7 +160,6 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
                 lat=lat,
                 elevation=elevation,
                 node_id=None,
-                slope_number=graph._slope_counter + 1,
             )
         elif ctx.build_mode.is_lift():
             # Start placing lift
@@ -206,7 +205,6 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
                     lat=node.lat,
                     elevation=node.elevation,
                     node_id=node.id,
-                    slope_number=graph._slope_counter + 1,
                 )
             elif ctx.build_mode.is_lift():
                 # Start placing lift from node

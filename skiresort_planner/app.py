@@ -63,7 +63,7 @@ def init_session_state() -> None:
         st.session_state.graph = ResortGraph()
 
     if "state_machine" not in st.session_state:
-        sm, ctx = PlannerStateMachine.create()
+        sm, ctx = PlannerStateMachine.create(graph=st.session_state.graph)
         st.session_state.state_machine = sm
         st.session_state.context = ctx
 
@@ -97,7 +97,7 @@ def reset_ui_state() -> None:
     logger.info("Resetting UI state due to error recovery")
 
     # Create fresh state machine and context
-    sm, ctx = PlannerStateMachine.create()
+    sm, ctx = PlannerStateMachine.create(graph=st.session_state.graph)
     st.session_state.state_machine = sm
     st.session_state.context = ctx
 

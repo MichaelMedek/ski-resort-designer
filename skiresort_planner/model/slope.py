@@ -14,7 +14,7 @@ import random
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from skiresort_planner.constants import NameConfig
+from skiresort_planner.constants import EntityPrefixes, NameConfig
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 
 if TYPE_CHECKING:
@@ -43,7 +43,6 @@ class Slope:
         slope = Slope(
             id="SL1",
             name="1 (Thunder Ridge)",
-            number=1,
             segment_ids=["S1", "S2", "S3"],
             start_node_id="N1",
             end_node_id="N4",
@@ -52,48 +51,62 @@ class Slope:
 
     id: str
     name: str
-    number: int
     segment_ids: list[str]
     start_node_id: str
     end_node_id: str
 
+    @property
+    def number(self) -> int:
+        """Slope number derived from ID."""
+        return Slope.number_from_id(slope_id=self.id)
+
+    @staticmethod
+    def number_from_id(slope_id: str) -> int:
+        """Extract slope number from slope ID.
+
+        Args:
+            slope_id: Slope ID (e.g., "SL1", "SL5")
+
+        Returns:
+            Numeric part of the ID.
+        """
+        return int(slope_id[len(EntityPrefixes.SLOPE):])
+
     @staticmethod
     def generate_name(
         difficulty: str,
-        slope_number: int,
-        start_elevation: float = None,
-        end_elevation: float = None,
-        avg_bearing: float = None,
+        slope_id: str,
+        start_elevation: float,
+        end_elevation: float,
+        avg_bearing: float,
     ) -> str:
         """Generate a creative, descriptive slope name.
 
         Args:
             difficulty: Slope difficulty (green, blue, red, black)
-            slope_number: Slope number (1, 2, 3...)
-            start_elevation: Starting elevation in meters (optional)
-            end_elevation: Ending elevation in meters (optional)
-            avg_bearing: Average bearing in degrees (optional)
+            slope_id: Slope ID (e.g., "SL1")
+            start_elevation: Starting elevation in meters
+            end_elevation: Ending elevation in meters
+            avg_bearing: Average bearing in degrees
 
         Returns:
             Creative slope name like "1 (Thunder Ridge)"
         """
+        slope_number = Slope.number_from_id(slope_id=slope_id)
         prefixes = NameConfig.SLOPE_PREFIXES[difficulty]
         prefix = random.choice(prefixes)
 
-        direction = ""
-        if avg_bearing is not None:
-            direction = NameConfig.get_compass_direction(bearing_deg=avg_bearing) + " "
+        direction = NameConfig.get_compass_direction(bearing_deg=avg_bearing) + " "
 
         suffix = random.choice(NameConfig.SLOPE_SUFFIXES)
 
         name = f"{prefix} {direction}{suffix}"
 
-        if start_elevation and end_elevation:
-            drop = start_elevation - end_elevation
-            if drop > 500:
-                name = f"{prefix} {direction}Summit {suffix}"
-            elif drop > 300:
-                name = f"{prefix} {direction}Big {suffix}"
+        drop = start_elevation - end_elevation
+        if drop > 500:
+            name = f"{prefix} {direction}Summit {suffix}"
+        elif drop > 300:
+            name = f"{prefix} {direction}Big {suffix}"
 
         return f"{slope_number} ({name})"
 
@@ -186,7 +199,13 @@ class Slope:
     @classmethod
     def from_dict(cls, data: dict) -> "Slope":
         """Create Slope from dictionary."""
-        return cls(**data)
+        return cls(
+            id=data["id"],
+            name=data["name"],
+            segment_ids=data["segment_ids"],
+            start_node_id=data["start_node_id"],
+            end_node_id=data["end_node_id"],
+        )
 
     def __repr__(self) -> str:
         return f"Slope({self.id}, {len(self.segment_ids)} segments)"

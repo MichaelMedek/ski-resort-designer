@@ -25,7 +25,7 @@ These functions read from the DEM (Digital Elevation Model) and are used through
 
 ### 1.1 `get_elevation(lon, lat)` → float
 
-Returns the elevation in meters at the given coordinates, or `NaN` if:
+Returns the elevation in meters at the given coordinates, or `None` if:
 - Position is outside DEM bounds
 - Position falls in a no-data area
 

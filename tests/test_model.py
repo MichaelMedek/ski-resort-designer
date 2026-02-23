@@ -8,10 +8,12 @@ Note: Fixtures are defined in conftest.py (MockDEMService, path points, nodes, g
 
 import pytest
 
+from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.proposed_path import ProposedSlopeSegment
-from skiresort_planner.model.resort_graph import ResortGraph
+from skiresort_planner.model.resort_graph import FinishSlopeAction, ResortGraph
+from skiresort_planner.model.slope import Slope
 from skiresort_planner.model.slope_segment import SlopeSegment
 
 
@@ -86,7 +88,7 @@ class TestResortGraph:
 
         # Undo removes slope
         undone = empty_resort_graph.undo_last()
-        assert undone and undone.action_type == "finish_slope"
+        assert undone and isinstance(undone, FinishSlopeAction)
 
     def test_add_lift(
         self, resort_graph_with_3_nodes_vertical: ResortGraph, mock_dem_blue_slope_south: "MockDEMService"
@@ -97,6 +99,86 @@ class TestResortGraph:
         )
         assert lift and lift.lift_type == "chairlift"
         assert lift.start_node_id == "N3" and lift.end_node_id == "N1"
+
+
+class TestSlope:
+    """Slope - number extraction and name generation."""
+
+    def test_number_from_id_single_digit(self) -> None:
+        """number_from_id extracts single digit from slope ID."""
+        assert Slope.number_from_id(slope_id="SL1") == 1
+        assert Slope.number_from_id(slope_id="SL5") == 5
+
+    def test_number_from_id_multi_digit(self) -> None:
+        """number_from_id extracts multi-digit numbers."""
+        assert Slope.number_from_id(slope_id="SL12") == 12
+        assert Slope.number_from_id(slope_id="SL999") == 999
+
+    def test_number_property_matches_id(self) -> None:
+        """Slope.number property derives from ID correctly."""
+        slope = Slope(
+            id="SL7",
+            name="7 (Test Slope)",
+            segment_ids=["S1"],
+            start_node_id="N1",
+            end_node_id="N2",
+        )
+        assert slope.number == 7
+
+    def test_generate_name_format(self) -> None:
+        """generate_name produces '{number} (creative name)' format."""
+        name = Slope.generate_name(
+            difficulty="blue",
+            slope_id="SL3",
+            start_elevation=2500.0,
+            end_elevation=2200.0,
+            avg_bearing=180.0,
+        )
+        assert name.startswith("3 (")
+        assert name.endswith(")")
+
+
+class TestLift:
+    """Lift - number extraction and name generation."""
+
+    def test_number_from_id_single_digit(self) -> None:
+        """number_from_id extracts single digit from lift ID."""
+        assert Lift.number_from_id(lift_id="L1") == 1
+        assert Lift.number_from_id(lift_id="L5") == 5
+
+    def test_number_from_id_multi_digit(self) -> None:
+        """number_from_id extracts multi-digit numbers."""
+        assert Lift.number_from_id(lift_id="L12") == 12
+        assert Lift.number_from_id(lift_id="L999") == 999
+
+    def test_number_property_matches_id(self) -> None:
+        """Lift.number property derives from ID correctly."""
+        start_point = PathPoint(lon=10.0, lat=46.0, elevation=1500)
+        end_point = PathPoint(lon=10.0, lat=46.01, elevation=2000)
+        lift = Lift(
+            id="L7",
+            name="7 (Test Lift)",
+            lift_type="chairlift",
+            terrain_points=[start_point, end_point],
+            start_node_id="N1",
+            end_node_id="N2",
+            pylons=[],
+            cable_points=[start_point, end_point],
+        )
+        assert lift.number == 7
+
+    def test_generate_name_different_types(self) -> None:
+        """generate_name works for all lift types."""
+        for lift_type in ["surface_lift", "chairlift", "gondola", "aerial_tram"]:
+            name = Lift.generate_name(
+                lift_type=lift_type,
+                lift_id="L1",
+                length_m=500.0,
+                vertical_rise_m=200.0,
+                avg_bearing=90.0,
+            )
+            assert name.startswith("1 (")
+            assert name.endswith(")")
 
 
 class TestResortGraphSerialization:

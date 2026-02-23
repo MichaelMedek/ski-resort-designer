@@ -259,9 +259,11 @@ def proposed_segment_blue_800m(path_points_800m_south_20pct_drop: list[PathPoint
 
 
 @pytest.fixture
-def state_machine_and_context() -> tuple[PlannerStateMachine, PlannerContext]:
+def state_machine_and_context(
+    empty_resort_graph: ResortGraph,
+) -> tuple[PlannerStateMachine, PlannerContext]:
     """Fresh state machine and context pair, starting in IDLE state."""
-    return PlannerStateMachine.create()
+    return PlannerStateMachine.create(graph=empty_resort_graph)
 
 
 # =============================================================================
@@ -299,7 +301,7 @@ def workflow_complete_setup(
 
     Use this fixture when testing full planning workflows.
     """
-    sm, ctx = PlannerStateMachine.create()
+    sm, ctx = PlannerStateMachine.create(graph=empty_resort_graph)
     return sm, ctx, empty_resort_graph, workflow_path_factory, mock_dem_red_slope_southeast
 
 

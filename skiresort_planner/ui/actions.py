@@ -19,7 +19,14 @@ import streamlit as st
 from skiresort_planner.constants import MapConfig, PathConfig
 from skiresort_planner.generators.path_factory import PathFactory
 from skiresort_planner.model.lift import Lift
-from skiresort_planner.model.resort_graph import ResortGraph
+from skiresort_planner.model.resort_graph import (
+    AddLiftAction,
+    AddSegmentsAction,
+    DeleteLiftAction,
+    DeleteSlopeAction,
+    FinishSlopeAction,
+    ResortGraph,
+)
 from skiresort_planner.model.slope import Slope
 from skiresort_planner.ui.state_machine import PlannerContext, PlannerStateMachine
 
@@ -107,7 +114,6 @@ def handle_deferred_actions() -> None:
                 lat=node.lat,
                 elevation=node.elevation,
                 node_id=node.id,
-                slope_number=graph._slope_counter + 1,
             )
         return
 
@@ -414,9 +420,9 @@ def undo_last_action() -> None:
     if not undone:
         raise RuntimeError("undo_last_action called with empty undo_stack")
 
-    logger.info(f"Undone action: {undone.action_type}, segments={undone.segment_ids}")
+    logger.info(f"Undone action: {type(undone).__name__}")
 
-    if undone.action_type == "add_segments":
+    if isinstance(undone, AddSegmentsAction):
         for seg_id in undone.segment_ids:
             if seg_id in ctx.building.segments:
                 ctx.building.segments.remove(seg_id)
@@ -443,7 +449,7 @@ def undo_last_action() -> None:
             logger.info("No segments left after undo, returning to idle")
             sm.undo_segment(removed_segment_id=undone.segment_ids[-1] if undone.segment_ids else "")
 
-    elif undone.action_type == "finish_slope":
+    elif isinstance(undone, FinishSlopeAction):
         logger.info(f"Undone slope finish, restoring {len(undone.segment_ids)} segments")
         ctx.building.segments = list(undone.segment_ids)
         ctx.building.name = undone.slope_name
@@ -467,7 +473,7 @@ def undo_last_action() -> None:
                 return
         st.rerun()
 
-    elif undone.action_type == "add_lift":
+    elif isinstance(undone, AddLiftAction):
         logger.info("Undone lift addition")
         # Hide panel if we were showing the deleted lift
         if ctx.viewing.panel_visible and ctx.viewing.lift_id:
@@ -475,18 +481,18 @@ def undo_last_action() -> None:
         bump_map_version()
         st.rerun()
 
-    elif undone.action_type == "delete_slope":
+    elif isinstance(undone, DeleteSlopeAction):
         logger.info(f"Restored deleted slope {undone.slope_id}")
         bump_map_version()
         st.rerun()
 
-    elif undone.action_type == "delete_lift":
+    elif isinstance(undone, DeleteLiftAction):
         logger.info(f"Restored deleted lift {undone.lift_id}")
         bump_map_version()
         st.rerun()
 
     else:
-        raise ValueError(f"Unknown undo action type: {undone.action_type}")
+        raise ValueError(f"Unknown undo action type: {type(undone).__name__}")
 
 
 # =============================================================================

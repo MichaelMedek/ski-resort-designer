@@ -223,7 +223,7 @@ class LeastCostPathPlanner:
 
                 elev = self.dem.get_elevation(lon=lon, lat=lat)
                 if elev is None:
-                    elev = float("nan")
+                    raise RuntimeError(f"DEM returned None for grid point at row={row}, col={col} (lon={lon}, lat={lat}), cannot build grid with missing elevation data")
 
                 elev_row.append(elev)
                 lon_row.append(lon)

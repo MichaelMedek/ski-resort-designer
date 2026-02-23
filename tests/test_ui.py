@@ -68,9 +68,9 @@ class TestPlannerContext:
 class TestStateMachineInitialization:
     """State machine creation and initial state."""
 
-    def test_create_returns_tuple(self) -> None:
+    def test_create_returns_tuple(self, empty_resort_graph: "ResortGraph") -> None:
         """create() returns (machine, context) tuple."""
-        result = PlannerStateMachine.create()
+        result = PlannerStateMachine.create(graph=empty_resort_graph)
         assert isinstance(result, tuple)
         assert len(result) == 2
         sm, ctx = result
@@ -97,7 +97,7 @@ class TestSlopeModeTransitions:
     def test_idle_to_building(self, state_machine_and_context: tuple) -> None:
         """IDLE -> SLOPE_BUILDING via start_building, is_slope_building=True."""
         sm, ctx = state_machine_and_context
-        sm.start_building(lon=10.27, lat=46.97, elevation=2500.0, node_id=None, slope_number=1)
+        sm.start_building(lon=10.27, lat=46.97, elevation=2500.0, node_id=None)
         assert sm.current_state == sm.slope_building
         assert ctx.building.name == "Slope 1"
         assert sm.is_idle is False
@@ -107,7 +107,7 @@ class TestSlopeModeTransitions:
     def test_building_commit_stays_in_building(self, state_machine_and_context: tuple) -> None:
         """SLOPE_BUILDING -> SLOPE_BUILDING via commit_path."""
         sm, ctx = state_machine_and_context
-        sm.start_building(lon=10.27, lat=46.97, elevation=2500.0, node_id=None, slope_number=1)
+        sm.start_building(lon=10.27, lat=46.97, elevation=2500.0, node_id=None)
         sm.commit_path(segment_id="S1", endpoint_node_id="N2")
 
         assert sm.current_state == sm.slope_building
@@ -116,7 +116,7 @@ class TestSlopeModeTransitions:
     def test_building_to_idle_via_finish(self, state_machine_and_context: tuple) -> None:
         """SLOPE_BUILDING -> IDLE via finish_slope (panel shows automatically)."""
         sm, ctx = state_machine_and_context
-        sm.start_building(lon=10.27, lat=46.97, elevation=2500.0, node_id=None, slope_number=1)
+        sm.start_building(lon=10.27, lat=46.97, elevation=2500.0, node_id=None)
         sm.commit_path(segment_id="S1", endpoint_node_id="N2")
         sm.finish_slope(slope_id="Slope1")
 
@@ -129,7 +129,7 @@ class TestSlopeModeTransitions:
     def test_building_to_idle_via_cancel(self, state_machine_and_context: tuple) -> None:
         """SLOPE_BUILDING -> IDLE via cancel_slope."""
         sm, ctx = state_machine_and_context
-        sm.start_building(lon=10.27, lat=46.97, elevation=2500.0, node_id=None, slope_number=1)
+        sm.start_building(lon=10.27, lat=46.97, elevation=2500.0, node_id=None)
         sm.commit_path(segment_id="S1", endpoint_node_id="N2")
         sm.cancel_slope()
 
@@ -229,7 +229,7 @@ class TestUndoTransitions:
     def test_undo_with_multiple_segments_stays_building(self, state_machine_and_context: tuple) -> None:
         """Undo with >1 segment stays in SLOPE_BUILDING."""
         sm, ctx = state_machine_and_context
-        sm.start_building(lon=10.27, lat=46.97, elevation=2500.0, node_id=None, slope_number=1)
+        sm.start_building(lon=10.27, lat=46.97, elevation=2500.0, node_id=None)
         sm.commit_path(segment_id="S1", endpoint_node_id="N2")
         sm.commit_path(segment_id="S2", endpoint_node_id="N3")
 
@@ -244,7 +244,7 @@ class TestUndoTransitions:
     def test_undo_with_one_segment_goes_idle(self, state_machine_and_context: tuple) -> None:
         """Undo with 1 segment goes to IDLE."""
         sm, ctx = state_machine_and_context
-        sm.start_building(lon=10.27, lat=46.97, elevation=2500.0, node_id=None, slope_number=1)
+        sm.start_building(lon=10.27, lat=46.97, elevation=2500.0, node_id=None)
         sm.commit_path(segment_id="S1", endpoint_node_id="N2")
 
         # Only 1 segment
@@ -305,7 +305,7 @@ class TestTryTransition:
         sm, ctx = state_machine_and_context
         # Use a valid transition: start_building from idle
         result = sm.try_transition(
-            "start_building", lon=10.27, lat=46.97, elevation=2500.0, node_id=None, slope_number=1
+            "start_building", lon=10.27, lat=46.97, elevation=2500.0, node_id=None
         )
         assert result is True
         assert sm.get_state_name() == "SlopeBuilding"  # State changed
@@ -313,7 +313,7 @@ class TestTryTransition:
     def test_try_transition_failure(self, state_machine_and_context: tuple) -> None:
         """try_transition returns False on invalid transition (no exception)."""
         sm, ctx = state_machine_and_context
-        sm.start_building(lon=10.27, lat=46.97, elevation=2500.0, node_id=None, slope_number=1)
+        sm.start_building(lon=10.27, lat=46.97, elevation=2500.0, node_id=None)
 
         # Cannot select_lift_start from slope building state
         result = sm.try_transition("select_lift_start", node_id="N1")
@@ -329,7 +329,7 @@ class TestStateMachineHelpers:
         sm, ctx = state_machine_and_context
         assert sm.get_state_name() == "Idle"
 
-        sm.start_building(lon=10.27, lat=46.97, elevation=2500.0, node_id=None, slope_number=1)
+        sm.start_building(lon=10.27, lat=46.97, elevation=2500.0, node_id=None)
         assert sm.get_state_name() == "SlopeBuilding"
 
         # Return to Idle via cancel
@@ -415,7 +415,7 @@ class TestFullWorkflow:
         start_lon, start_lat = 0.0, 0.0
         start_elev = dem.get_elevation(lon=start_lon, lat=start_lat)
 
-        sm.start_building(lon=start_lon, lat=start_lat, elevation=start_elev, node_id=None, slope_number=1)
+        sm.start_building(lon=start_lon, lat=start_lat, elevation=start_elev, node_id=None)
         assert sm.get_state_name() == "SlopeBuilding"
         assert ctx.building.name == "Slope 1"
 
@@ -489,7 +489,7 @@ class TestFullWorkflow:
 
         # === Build first slope (2 segments) ===
         proposals = list(factory.generate_fan(lon=0.0, lat=0.0, elevation=2500.0, target_length_m=400.0))
-        sm.start_building(lon=0.0, lat=0.0, elevation=2500.0, node_id=None, slope_number=1)
+        sm.start_building(lon=0.0, lat=0.0, elevation=2500.0, node_id=None)
 
         # Commit segment 1
         end1 = graph.commit_paths(paths=[proposals[0]])
@@ -519,7 +519,7 @@ class TestFullWorkflow:
 
         # === Branch: Start new slope from mid-node ===
         sm.start_building(
-            lon=mid_node.lon, lat=mid_node.lat, elevation=mid_node.elevation, node_id=mid_node_id, slope_number=2
+            lon=mid_node.lon, lat=mid_node.lat, elevation=mid_node.elevation, node_id=mid_node_id
         )
         assert sm.get_state_name() == "SlopeBuilding"
         assert ctx.building.name == "Slope 2"
@@ -557,7 +557,7 @@ class TestFullWorkflow:
 
         # === Build a slope first to create nodes ===
         proposals = list(factory.generate_fan(lon=0.0, lat=0.0, elevation=2500.0, target_length_m=600.0))
-        sm.start_building(lon=0.0, lat=0.0, elevation=2500.0, node_id=None, slope_number=1)
+        sm.start_building(lon=0.0, lat=0.0, elevation=2500.0, node_id=None)
 
         path = proposals[0]
         end_nodes = graph.commit_paths(paths=[path])
@@ -614,7 +614,7 @@ class TestFullWorkflow:
 
         # Start building
         proposals = list(factory.generate_fan(lon=0.0, lat=0.0, elevation=2500.0, target_length_m=400.0))
-        sm.start_building(lon=0.0, lat=0.0, elevation=2500.0, node_id=None, slope_number=1)
+        sm.start_building(lon=0.0, lat=0.0, elevation=2500.0, node_id=None)
 
         # Commit THREE segments (so undo leaves 2, staying in Building)
         end1 = graph.commit_paths(paths=[proposals[0]])
@@ -662,7 +662,7 @@ class TestFullWorkflow:
 
         # === Slope 1: Summit to Valley ===
         proposals = list(factory.generate_fan(lon=0.0, lat=0.0, elevation=2500.0, target_length_m=500.0))
-        sm.start_building(lon=0.0, lat=0.0, elevation=2500.0, node_id=None, slope_number=1)
+        sm.start_building(lon=0.0, lat=0.0, elevation=2500.0, node_id=None)
 
         end1 = graph.commit_paths(paths=[proposals[0]])
         sm.commit_path(segment_id="S1", endpoint_node_id=end1[0])
@@ -677,7 +677,7 @@ class TestFullWorkflow:
         # === Slope 2: Different direction from summit ===
         # Use a different proposal that goes a different direction
         proposals2 = list(factory.generate_fan(lon=0.0, lat=0.0, elevation=2500.0, target_length_m=500.0))
-        sm.start_building(lon=0.0, lat=0.0, elevation=2500.0, node_id=summit_id, slope_number=2)
+        sm.start_building(lon=0.0, lat=0.0, elevation=2500.0, node_id=summit_id)
 
         # Pick last proposal (usually different direction)
         path2 = proposals2[-1] if len(proposals2) > 1 else proposals2[0]
@@ -741,7 +741,7 @@ class TestFullWorkflow:
 
         # Build and finish a slope
         proposals = list(factory.generate_fan(lon=0.0, lat=0.0, elevation=2500.0, target_length_m=400.0))
-        sm.start_building(lon=0.0, lat=0.0, elevation=2500.0, node_id=None, slope_number=1)
+        sm.start_building(lon=0.0, lat=0.0, elevation=2500.0, node_id=None)
         end = graph.commit_paths(paths=[proposals[0]])
         sm.commit_path(segment_id="S1", endpoint_node_id=end[0])
         slope = graph.finish_slope(segment_ids=["S1"])

@@ -35,38 +35,54 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class UndoAction:
-    """An action that can be undone.
+# =============================================================================
+# Undo Action Types
+# =============================================================================
 
-    Attributes:
-        action_type: Type of action:
-            - add_segments: Committed path segments
-            - add_lift: Created a lift
-            - finish_slope: Finished a slope
-            - delete_slope: Deleted a slope (stores slope + segments for restore)
-            - delete_lift: Deleted a lift (stores lift for restore)
-        segment_ids: IDs of segments affected
-        node_ids: IDs of nodes affected
-        lift_id: ID of lift (for add_lift, delete_lift)
-        slope_id: ID of slope (for finish_slope, delete_slope)
-        deleted_slope: Full Slope object (for delete_slope restore)
-        deleted_lift: Full Lift object (for delete_lift restore)
-        deleted_segments: Full SlopeSegment objects (for delete_slope restore)
-    """
 
-    action_type: str
-    segment_ids: list[str] = field(default_factory=list)
-    node_ids: list[str] = field(default_factory=list)
-    lift_id: Optional[str] = None
-    slope_id: Optional[str] = None
-    # For finish_slope undo - restore building context
-    slope_name: Optional[str] = None
-    start_node_id: Optional[str] = None
-    # For delete undo - store actual objects to restore
-    deleted_slope: Optional["Slope"] = None
-    deleted_lift: Optional["Lift"] = None
-    deleted_segments: list["SlopeSegment"] = field(default_factory=list)
+@dataclass(frozen=True)
+class AddSegmentsAction:
+    """Undo action for committed path segments."""
+
+    segment_ids: tuple[str, ...]
+    node_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class FinishSlopeAction:
+    """Undo action for finishing a slope."""
+
+    slope_id: str
+    segment_ids: tuple[str, ...]
+    slope_name: str
+    start_node_id: str | None
+
+
+@dataclass(frozen=True)
+class AddLiftAction:
+    """Undo action for creating a lift."""
+
+    lift_id: str
+
+
+@dataclass(frozen=True)
+class DeleteSlopeAction:
+    """Undo action for deleting a slope (stores data for restore)."""
+
+    slope_id: str
+    deleted_slope: "Slope"
+    deleted_segments: tuple["SlopeSegment", ...]
+
+
+@dataclass(frozen=True)
+class DeleteLiftAction:
+    """Undo action for deleting a lift (stores data for restore)."""
+
+    lift_id: str
+    deleted_lift: "Lift"
+
+
+UndoAction = AddSegmentsAction | FinishSlopeAction | AddLiftAction | DeleteSlopeAction | DeleteLiftAction
 
 
 class ResortGraph:
@@ -275,10 +291,9 @@ class ResortGraph:
         # Record for undo
         if new_segment_ids:
             self._push_undo(
-                UndoAction(
-                    action_type="add_segments",
-                    segment_ids=new_segment_ids,
-                    node_ids=new_node_ids,
+                AddSegmentsAction(
+                    segment_ids=tuple(new_segment_ids),
+                    node_ids=tuple(new_node_ids),
                 )
             )
 
@@ -324,7 +339,6 @@ class ResortGraph:
         )
 
         slope_id = self._next_slope_id()
-        slope_number = self._slope_counter
 
         # Determine difficulty
         max_slope = max(self.segments[sid].avg_slope_pct for sid in segment_ids if sid in self.segments)
@@ -334,7 +348,7 @@ class ResortGraph:
         if name is None:
             name = Slope.generate_name(
                 difficulty=difficulty,
-                slope_number=slope_number,
+                slope_id=slope_id,
                 start_elevation=start_node.elevation,
                 end_elevation=end_node.elevation,
                 avg_bearing=avg_bearing,
@@ -345,7 +359,6 @@ class ResortGraph:
         slope = Slope(
             id=slope_id,
             name=name,
-            number=slope_number,
             segment_ids=segment_ids,
             start_node_id=first_seg.start_node_id,
             end_node_id=last_seg.end_node_id,
@@ -360,10 +373,9 @@ class ResortGraph:
 
         # Record for undo (store slope name and start node for context restoration)
         self._push_undo(
-            UndoAction(
-                action_type="finish_slope",
+            FinishSlopeAction(
                 slope_id=slope_id,
-                segment_ids=segment_ids,
+                segment_ids=tuple(segment_ids),
                 slope_name=name,
                 start_node_id=first_seg.start_node_id,
             )
@@ -381,7 +393,6 @@ class ResortGraph:
         end_node_id: str,
         lift_type: str,
         dem: "DEMService",
-        name: str | None = None,
     ) -> Lift:
         """Add a lift between two nodes.
 
@@ -390,7 +401,6 @@ class ResortGraph:
             end_node_id: ID of top station
             lift_type: Type of lift
             dem: DEM service for terrain sampling
-            name: Optional custom name
 
         Returns:
             Created Lift.
@@ -402,7 +412,6 @@ class ResortGraph:
         end = self.nodes[end_node_id]
 
         lift_id = self._next_lift_id()
-        lift_number = self._lift_counter
 
         lift = Lift.create(
             start_node=start,
@@ -410,12 +419,10 @@ class ResortGraph:
             dem=dem,
             lift_type=lift_type,
             lift_id=lift_id,
-            lift_number=lift_number,
-            name=name,
         )
 
         self.lifts[lift_id] = lift
-        self._push_undo(UndoAction(action_type="add_lift", lift_id=lift_id))
+        self._push_undo(AddLiftAction(lift_id=lift_id))
 
         return lift
 
@@ -423,27 +430,30 @@ class ResortGraph:
     # Undo Operations
     # =========================================================================
 
-    def undo_last(self) -> Optional[UndoAction]:
+    def undo_last(self) -> UndoAction:
         """Undo the last action.
 
         Returns:
-            The undone action or None if nothing to undo.
+            The undone action.
+
+        Raises:
+            RuntimeError: If undo stack is empty (caller should check first).
         """
         if not self.undo_stack:
-            return None
+            raise RuntimeError("undo_last called with empty undo_stack")
 
         action = self.undo_stack.pop()
 
-        if action.action_type == "add_segments":
+        if isinstance(action, AddSegmentsAction):
             for seg_id in action.segment_ids:
                 self.segments.pop(seg_id, None)
             self.cleanup_isolated_nodes()  # Remove orphaned nodes
 
-        elif action.action_type == "add_lift":
+        elif isinstance(action, AddLiftAction):
             self.lifts.pop(action.lift_id, None)
             self.cleanup_isolated_nodes()  # Remove orphaned nodes created for lift
 
-        elif action.action_type == "finish_slope":
+        elif isinstance(action, FinishSlopeAction):
             self.slopes.pop(action.slope_id, None)
             for seg_id in action.segment_ids:
                 seg = self.segments.get(seg_id)
@@ -451,18 +461,16 @@ class ResortGraph:
                     seg.name = f"Segment {seg_id[1:]}"
             # No nodes are added in finish_slope only in last segment, so no cleanup needed
 
-        elif action.action_type == "delete_slope":
+        elif isinstance(action, DeleteSlopeAction):
             # Restore deleted slope and its segments
-            if action.deleted_slope:
-                self.slopes[action.slope_id] = action.deleted_slope
+            self.slopes[action.slope_id] = action.deleted_slope
             for seg in action.deleted_segments:
                 self.segments[seg.id] = seg
             logger.info(f"Restored slope {action.slope_id} with {len(action.deleted_segments)} segments")
 
-        elif action.action_type == "delete_lift":
+        elif isinstance(action, DeleteLiftAction):
             # Restore deleted lift
-            if action.deleted_lift:
-                self.lifts[action.lift_id] = action.deleted_lift
+            self.lifts[action.lift_id] = action.deleted_lift
             logger.info(f"Restored lift {action.lift_id}")
 
         return action
@@ -492,12 +500,10 @@ class ResortGraph:
 
         # Push to undo stack with full data for restore
         self._push_undo(
-            UndoAction(
-                action_type="delete_slope",
+            DeleteSlopeAction(
                 slope_id=slope_id,
-                segment_ids=list(slope.segment_ids),
                 deleted_slope=slope,
-                deleted_segments=deleted_segments,
+                deleted_segments=tuple(deleted_segments),
             )
         )
 
@@ -525,8 +531,7 @@ class ResortGraph:
 
         # Push to undo stack with full data for restore
         self._push_undo(
-            UndoAction(
-                action_type="delete_lift",
+            DeleteLiftAction(
                 lift_id=lift_id,
                 deleted_lift=lift,
             )
