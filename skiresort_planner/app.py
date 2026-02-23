@@ -7,6 +7,7 @@ Run: streamlit run skiresort_planner/app.py
 """
 
 import logging
+import traceback
 from typing import TYPE_CHECKING
 
 import streamlit as st
@@ -22,7 +23,6 @@ from skiresort_planner.core.dem_service import DEMService, download_dem_from_hug
 from skiresort_planner.generators.path_factory import PathFactory
 from skiresort_planner.model.message import DEMLoadingMessage
 from skiresort_planner.model.resort_graph import ResortGraph
-from skiresort_planner.model.slope_segment import SlopeSegment
 from skiresort_planner.ui import (
     ClickDetector,
     MapRenderer,
@@ -39,7 +39,9 @@ from skiresort_planner.ui import (
     finish_current_slope,
     handle_deferred_actions,
     recompute_paths,
+    render_building_profiles,
     render_control_panel,
+    render_proposal_preview,
     undo_last_action,
 )
 
@@ -77,6 +79,32 @@ def init_session_state() -> None:
 
     if "map_version" not in st.session_state:
         st.session_state.map_version = 0
+
+
+def reset_ui_state() -> None:
+    """Reset UI state to initial while preserving the resort graph.
+
+    Called when an error occurs to recover gracefully. Resets:
+    - State machine to Idle state
+    - Context to fresh instance
+    - Map version (to clear any stale map state)
+
+    Preserves:
+    - Resort graph (all slopes, lifts, nodes, segments)
+    - DEM service and path factory
+    - Map renderer (re-linked to graph)
+    """
+    logger.info("Resetting UI state due to error recovery")
+
+    # Create fresh state machine and context
+    sm, ctx = PlannerStateMachine.create()
+    st.session_state.state_machine = sm
+    st.session_state.context = ctx
+
+    # Increment map version to force fresh map component
+    st.session_state.map_version = st.session_state.get("map_version", 0) + 1
+
+    logger.info("UI state reset complete - graph preserved")
 
 
 def load_dem_data() -> bool:
@@ -130,6 +158,22 @@ def _render_map_fragment() -> None:
     With returned_objects limited to click fields only, pan/zoom don't trigger
     reruns at all. The fragment isolates map interactions from the rest of the UI.
     """
+    try:
+        _render_map_fragment_inner()
+    except Exception as e:
+        # Log full traceback for debugging
+        error_msg = f"{type(e).__name__}: {e}"
+        logger.error(f"Map fragment error caught: {error_msg}\n{traceback.format_exc()}")
+
+        # Reset UI state while preserving the graph
+        reset_ui_state()
+
+        # Rerun to show clean UI
+        st.rerun()
+
+
+def _render_map_fragment_inner() -> None:
+    """Inner implementation of map fragment rendering."""
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
@@ -195,8 +239,18 @@ def _render_map_fragment() -> None:
         key=f"main_map_{st.session_state.map_version}",
     )
 
-    # Elevation profiles
-    _render_elevation_profiles()
+    # Elevation profiles below map
+    if sm.is_slope_building and ctx.building.segments:
+        fig = render_building_profiles(
+            building_segments=ctx.building.segments,
+            building_name=ctx.building.name,
+            graph=graph,
+        )
+        st.plotly_chart(fig, width="stretch", key="combined_profile")
+
+    if ctx.proposals.paths and ctx.proposals.selected_idx is not None:
+        fig = render_proposal_preview(proposals=ctx.proposals.paths, selected_idx=ctx.proposals.selected_idx)
+        st.plotly_chart(fig, width="stretch", key="preview_profile")
 
     # Detect clicks - only fires on actual clicks (not pan/zoom)
     detector = ClickDetector(dedup=ctx.click_dedup)
@@ -221,6 +275,22 @@ def main() -> None:
     if not load_dem_data():
         return
 
+    try:
+        _run_app_ui()
+    except Exception as e:
+        # Log full traceback for debugging
+        error_msg = f"{type(e).__name__}: {e}"
+        logger.error(f"UI error caught: {error_msg}\n{traceback.format_exc()}")
+
+        # Reset UI state while preserving the graph
+        reset_ui_state()
+
+        # Rerun to show clean UI
+        st.rerun()
+
+
+def _run_app_ui() -> None:
+    """Run the main application UI. Separated for error handling wrapper."""
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
@@ -278,35 +348,6 @@ def main() -> None:
         chart = ProfileChart(height=ChartConfig.LIFT_PROFILE_HEIGHT, width=ChartConfig.WIDE_WIDTH)
         fig = chart.render_lift(lift=lift, graph=graph)
         st.plotly_chart(fig, key="lift_full_profile")
-
-
-def _render_elevation_profiles() -> None:
-    """Render elevation profiles below the map."""
-    sm = st.session_state.state_machine
-    ctx = st.session_state.context
-    graph = st.session_state.graph
-
-    if sm.is_slope_building and ctx.building.segments:
-        all_points = []
-        for seg_id in ctx.building.segments:
-            seg = graph.segments.get(seg_id)
-            if seg and seg.points:
-                all_points.extend(seg.points)
-
-        if all_points:
-            chart = ProfileChart(width=ChartConfig.DEFAULT_WIDTH, height=ChartConfig.PROFILE_HEIGHT_SMALL)
-            combined = SlopeSegment(id="combined", name=ctx.building.name or "Current Slope", points=all_points)
-            fig = chart.render_segment(segment=combined, title="Current Slope Progress")
-            st.plotly_chart(fig, width="stretch", key="combined_profile")
-
-    if (
-        ctx.proposals.paths
-        and ctx.proposals.selected_idx is not None
-        and 0 <= ctx.proposals.selected_idx < len(ctx.proposals.paths)
-    ):
-        chart = ProfileChart(width=ChartConfig.DEFAULT_WIDTH, height=ChartConfig.PROFILE_HEIGHT_MINI)
-        fig = chart.render_proposal(proposal=ctx.proposals.paths[ctx.proposals.selected_idx])
-        st.plotly_chart(fig, width="stretch", key="preview_profile")
 
 
 if __name__ == "__main__":

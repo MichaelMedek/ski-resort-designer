@@ -693,3 +693,68 @@ class ProfileChart:
         )
 
         return fig
+
+
+# =============================================================================
+# CONVENIENCE FUNCTIONS FOR APP
+# =============================================================================
+
+
+def render_building_profiles(
+    building_segments: list[str],
+    building_name: str | None,
+    graph: ResortGraph,
+) -> go.Figure:
+    """Render elevation profile for slope being built.
+
+    Args:
+        building_segments: List of segment IDs in current slope (must not be empty)
+        building_name: Name of slope being built
+        graph: Resort graph containing segments
+
+    Returns:
+        Plotly figure.
+
+    Raises:
+        ValueError: If building_segments is empty or segments have no points.
+    """
+    if not building_segments:
+        raise ValueError("building_segments must not be empty - check before calling")
+
+    all_points = []
+    for seg_id in building_segments:
+        seg = graph.segments.get(seg_id)
+        if seg and seg.points:
+            all_points.extend(seg.points)
+
+    if not all_points:
+        raise ValueError(f"Segments {building_segments} have no points - data integrity issue")
+
+    chart = ProfileChart(width=ChartConfig.DEFAULT_WIDTH, height=ChartConfig.PROFILE_HEIGHT_SMALL)
+    combined = SlopeSegment(id="combined", name=building_name or "Current Slope", points=all_points)
+    return chart.render_segment(segment=combined, title="Current Slope Progress")
+
+
+def render_proposal_preview(
+    proposals: list[ProposedSlopeSegment],
+    selected_idx: int,
+) -> go.Figure:
+    """Render elevation profile preview for selected proposal.
+
+    Args:
+        proposals: List of proposed path segments (must not be empty)
+        selected_idx: Index of currently selected proposal (must be valid)
+
+    Returns:
+        Plotly figure.
+
+    Raises:
+        ValueError: If proposals is empty or selected_idx is out of bounds.
+    """
+    if not proposals:
+        raise ValueError("proposals must not be empty - check before calling")
+    if not (0 <= selected_idx < len(proposals)):
+        raise ValueError(f"selected_idx {selected_idx} out of bounds for {len(proposals)} proposals")
+
+    chart = ProfileChart(width=ChartConfig.DEFAULT_WIDTH, height=ChartConfig.PROFILE_HEIGHT_MINI)
+    return chart.render_proposal(proposal=proposals[selected_idx])

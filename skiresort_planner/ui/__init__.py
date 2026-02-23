@@ -29,7 +29,11 @@ from skiresort_planner.ui.actions import (
     recompute_paths,
     undo_last_action,
 )
-from skiresort_planner.ui.bottom_chart import ProfileChart
+from skiresort_planner.ui.bottom_chart import (
+    ProfileChart,
+    render_building_profiles,
+    render_proposal_preview,
+)
 from skiresort_planner.ui.center_map import MapRenderer
 from skiresort_planner.ui.click_detector import ClickDetector
 from skiresort_planner.ui.click_handlers import dispatch_click
@@ -52,6 +56,8 @@ __all__ = [
     "StreamlitUIListener",
     "MapRenderer",
     "ProfileChart",
+    "render_building_profiles",
+    "render_proposal_preview",
     "SidebarRenderer",
     "PathSelectionPanel",
     "SlopeStatsPanel",
