@@ -13,9 +13,7 @@ with open(HERE / "README.md", "r", encoding="utf-8") as fh:
 
 with open(HERE / "requirements.txt", "r", encoding="utf-8") as fh:
     requirements = [
-        line.strip()
-        for line in fh
-        if line.strip() and not line.startswith("#") and not line.startswith("-e")
+        line.strip() for line in fh if line.strip() and not line.startswith("#") and not line.startswith("-e")
     ]
 
 setup(
