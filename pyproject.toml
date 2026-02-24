@@ -48,3 +48,47 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=skiresort_planner --cov-report=term-missing --cov-fail-under=50"
+
+[tool.coverage.run]
+source = ["skiresort_planner"]
+branch = true
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]
+show_missing = true
+precision = 1
+
+[tool.mypy]
+python_version = "3.11"
+strict = true 
+warn_unreachable = true
+pretty = true
+show_error_codes = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+
+
+# Per-module configuration for third-party libraries without stubs
+[[tool.mypy.overrides]]
+module = [
+    "streamlit.*",
+    "pydeck.*",
+    "plotly.*",
+    "geopy.*",
+    "rasterio.*",
+    "statemachine.*",
+    "gpxpy.*",
+]
+ignore_missing_imports = true
