@@ -51,7 +51,7 @@ convention = "google"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=skiresort_planner --cov-report=term-missing --cov-fail-under=50"
+addopts = "--mypy --cov=skiresort_planner --cov-report=term-missing --cov-fail-under=50"
 
 [tool.coverage.run]
 source = ["skiresort_planner"]
@@ -73,7 +73,7 @@ precision = 1
 
 [tool.mypy]
 python_version = "3.11"
-strict = true 
+strict = true
 warn_unreachable = true
 pretty = true
 show_error_codes = true
