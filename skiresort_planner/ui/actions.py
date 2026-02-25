@@ -665,9 +665,9 @@ def undo_last_action() -> None:
         # Queue toast BEFORE state transition
         _queue_toast_from_message(UndoLiftMessage(lift_name=add_lift.lift_id))
         bump_map_version()
-        # Hide panel if we were showing the deleted lift
+        # Close panel if we were showing the deleted lift (use explicit transition)
         if sm.is_idle_viewing_lift:
-            sm.hide_info_panel()  # Triggers st.rerun()
+            sm.close_lift_panel()  # Triggers st.rerun()
         else:
             st.rerun()
 

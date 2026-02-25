@@ -24,13 +24,69 @@ from skiresort_planner.constants import (
 from skiresort_planner.model.message import (
     FileLoadErrorMessage,
 )
-from skiresort_planner.model.resort_graph import ResortGraph
-from skiresort_planner.ui.actions import bump_map_version
+from skiresort_planner.model.resort_graph import (
+    ActionType,
+    ResortGraph,
+    UndoAction,
+)
+from skiresort_planner.ui.actions import bump_map_version, undo_last_action
 from skiresort_planner.ui.state_machine import (
     BuildMode,
     PlannerContext,
     PlannerStateMachine,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _describe_undo_action(action: UndoAction, graph: ResortGraph) -> str:
+    """Generate human-readable description of what undo will do."""
+    action_type = action.action_type
+
+    if action_type == ActionType.ADD_SEGMENTS:
+        act = action
+        n_segments = len(act.segment_ids)
+        return f"Remove {n_segments} segment(s) from current slope"
+
+    elif action_type == ActionType.FINISH_SLOPE:
+        act = action
+        return f"Restore slope **{act.slope_name}** to building mode"
+
+    elif action_type == ActionType.ADD_LIFT:
+        act = action
+        lift = graph.lifts.get(act.lift_id)
+        name = lift.name if lift else act.lift_id
+        return f"Delete lift **{name}**"
+
+    elif action_type == ActionType.DELETE_SLOPE:
+        act = action
+        return f"Restore deleted slope **{act.deleted_slope.name}**"
+
+    elif action_type == ActionType.DELETE_LIFT:
+        act = action
+        return f"Restore deleted lift **{act.deleted_lift.name}**"
+
+    else:
+        return "Undo last action"
+
+
+@st.dialog("Confirm Undo")
+def _confirm_undo_dialog(action: UndoAction, graph: ResortGraph) -> None:
+    """Show confirmation dialog before undoing an action."""
+    description = _describe_undo_action(action=action, graph=graph)
+    st.write("**Action to undo:**")
+    st.write(description)
+
+    col_yes, col_no = st.columns(2)
+    with col_yes:
+        if st.button("↩️ Yes, Undo", type="primary", use_container_width=True):
+            # Set flag for main render loop to execute undo after dialog closes
+            st.session_state._pending_undo = True
+            st.rerun()
+    with col_no:
+        if st.button("✖️ Cancel", use_container_width=True):
+            st.rerun()
+
 
 logger = logging.getLogger(__name__)
 
@@ -113,10 +169,13 @@ class SidebarRenderer:
         Returns:
             Dict with keys: undo, cancel_slope, finish_slope, recompute, lift_type
         """
-        with st.sidebar:
-            self._render_mode_selector()
-            st.divider()
+        # Handle pending undo from confirmation dialog (must be before UI rendering)
+        if st.session_state.get("_pending_undo"):
+            st.session_state._pending_undo = False
+            undo_last_action()
+            # undo_last_action() calls st.rerun() internally
 
+        with st.sidebar:
             actions = {
                 "undo": False,
                 "cancel_slope": False,
@@ -125,53 +184,72 @@ class SidebarRenderer:
                 "lift_type": self.ctx.lift.type,
             }
 
-            # Mode-specific instructions (above buttons for consistency)
-            self._render_mode_instructions()
+            self._render_mode_selector()
+            st.divider()
 
-            # Building state controls
-            if self.sm.is_any_slope_state:
+            # Mode-specific controls: close button OR building/placing controls
+            if self.sm.is_idle_viewing_slope or self.sm.is_idle_viewing_lift:
+                self._render_close_panel_button()
+            elif self.sm.is_any_slope_state:
                 actions.update(self._render_building_controls())
+            elif self.sm.is_lift_placing:
+                self._render_lift_cancel_button()
 
-            # Lift placing controls - cancel button
-            if self.sm.is_lift_placing:
-                if st.button(
-                    "❌ Cancel Lift Placement",
-                    width="stretch",
-                    help="Discard start point and return to idle",
-                ):
-                    bump_map_version()  # Clear stale click state
-                    self.sm.cancel_lift()
-                    st.rerun()
-
-            # Divider before always-present undo control
             st.divider()
-
-            # Undo button - always visible, same position for all states
-            can_undo = bool(self.graph.undo_stack)
-            actions["undo"] = st.button(
-                "↩️ Undo Last Action",
-                width="stretch",
-                disabled=not can_undo,
-                help="Nothing to undo" if not can_undo else "Undo the last action",
-            )
-
-            # Reset view button - recenters map and sets top-down view
-            if st.button(
-                "🎯 Reset View",
-                width="stretch",
-                help="Reset camera to standard position and orientation",
-            ):
-                self.ctx.map.reset_view()
-                bump_map_version()
-                st.rerun()
-
-            # Divider before stats section
+            self._render_undo_reset_buttons()
             st.divider()
-
             self._render_resort_stats()
+            st.divider()
             self._render_save_load()
 
             return actions
+
+    def _render_close_panel_button(self) -> None:
+        """Render close panel button for viewing states."""
+        if st.button(
+            "✖️ Close Panel",
+            width="stretch",
+            help="Close info panel and return to build mode",
+        ):
+            bump_map_version()
+            # Use explicit transitions based on current viewing state
+            if self.sm.is_idle_viewing_slope:
+                self.sm.close_slope_panel()
+            elif self.sm.is_idle_viewing_lift:
+                self.sm.close_lift_panel()
+            st.rerun()
+
+    def _render_lift_cancel_button(self) -> None:
+        """Render cancel button during lift placement."""
+        if st.button(
+            "✖️ Cancel Lift Placement",
+            width="stretch",
+            help="Discard start point and return to idle",
+        ):
+            bump_map_version()  # Clear stale click state
+            self.sm.cancel_lift()
+            st.rerun()
+
+    def _render_undo_reset_buttons(self) -> None:
+        """Render undo and reset view buttons."""
+        can_undo = bool(self.graph.undo_stack)
+        if st.button(
+            "↩️ Undo Last Action",
+            width="stretch",
+            disabled=not can_undo,
+            help="Nothing to undo" if not can_undo else "Undo the last action",
+        ):
+            last_action = self.graph.undo_stack[-1]
+            _confirm_undo_dialog(action=last_action, graph=self.graph)
+
+        if st.button(
+            "🎯 Reset View",
+            width="stretch",
+            help="Reset camera to standard position and orientation",
+        ):
+            self.ctx.map.reset_view()
+            bump_map_version()
+            st.rerun()
 
     def _render_mode_selector(self) -> None:
         """Render unified build type selector with 5 buttons.
@@ -392,7 +470,7 @@ class SidebarRenderer:
 
         # Cancel slope - immediate action (no confirmation)
         cancel_slope = st.button(
-            "❌ Cancel Full Slope",
+            "✖️ Cancel Full Slope",
             width="stretch",
             help="Discard current slope and return to IDLE",
         )
@@ -427,10 +505,6 @@ class SidebarRenderer:
             "cancel_slope": cancel_slope,
             "recompute": recompute,
         }
-
-    def _render_mode_instructions(self) -> None:
-        """Placeholder - context messages now render in right panel."""
-        pass  # All context messages moved to right panel
 
     def _render_resort_stats(self) -> None:
         """Render resort summary statistics panel with detailed breakdowns."""

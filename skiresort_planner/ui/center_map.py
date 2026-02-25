@@ -634,10 +634,13 @@ class MapRenderer:
     # =========================================================================
 
     def _create_node_layer(self, use_3d: bool = False) -> pdk.Layer:
-        """Create ScatterplotLayer for junction nodes.
+        """Create layer for junction nodes.
 
         Args:
-            use_3d: If True, use real elevations. If False, use flat z offsets.
+            use_3d: If True, use terrain elevation. If False, use z-offset.
+
+        Returns:
+            ScatterplotLayer with nodes.
         """
         if not self.graph:
             return pdk.Layer("ScatterplotLayer", [], id="nodes")

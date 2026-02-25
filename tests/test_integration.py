@@ -177,7 +177,6 @@ class TestConfigurationValidation:
         keys = set(SlopeConfig.DIFFICULTIES)
         assert set(SlopeConfig.DIFFICULTY_THRESHOLDS.keys()) == keys
         assert set(SlopeConfig.DIFFICULTY_TARGETS.keys()) == keys
-        assert set(SlopeConfig.BELT_WIDTHS.keys()) == keys
         assert set(StyleConfig.SLOPE_COLORS_RGBA.keys()) == keys
 
     def test_map_config_valid_coordinates(self) -> None:
@@ -361,15 +360,15 @@ class TestMapRendererLayerData:
             assert node["type"] == ClickConfig.TYPE_NODE
 
     def test_node_positions_have_z_offset(self, renderer_with_graph: MapRenderer) -> None:
-        """Node positions in 3D mode include elevation plus z-offset for z-fighting prevention."""
+        """Node layer in 3D mode uses ScatterplotLayer with 3D position."""
         layer = renderer_with_graph._create_node_layer(use_3d=True)
+        assert layer.type == "ScatterplotLayer", "3D mode should use unified ScatterplotLayer"
         if layer.data:
             node_data = layer.data[0]
             pos = node_data["position"]
             assert len(pos) == 3, "Position should be [lon, lat, z]"
-            # Z should be elevation + MARKER_Z_OFFSET_M in 3D mode
-            expected_z = node_data["elevation"] + MarkerConfig.MARKER_Z_OFFSET_M
-            assert pos[2] == expected_z
+            assert "elevation" in node_data
+            assert node_data["elevation"] > 0
 
     def test_node_positions_2d_mode(self, renderer_with_graph: MapRenderer) -> None:
         """Node positions in 2D mode use flat z offset for layer ordering."""

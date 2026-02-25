@@ -17,10 +17,7 @@ import pyproj
 from shapely.geometry import LineString
 from shapely.ops import transform as shapely_transform
 
-from skiresort_planner.constants import (
-    EarthworkConfig,
-    SlopeConfig,
-)
+from skiresort_planner.constants import EarthworkConfig, SlopeConfig
 from skiresort_planner.model.base_slope_path import BaseSlopePath
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.warning import (
@@ -70,20 +67,20 @@ class SlopeSegment(BaseSlopePath):
     def warnings(self) -> list[Warning]:
         """Compute all warnings based on segment metrics.
 
-        Side slope limit formula: (EXCAVATOR_THRESHOLD_M * 200) / belt_width
-        This gives the maximum cross-slope % before excavator cut exceeds threshold.
+        Excavator warning triggers when side slope is so steep that even at
+        MIN_BELT_WIDTH_M, excavation would exceed threshold.
         """
         result: list[Warning] = []
 
-        # Excavator warning (side cut)
-        # Compute inline: side_slope_limit = (threshold * 200) / belt_width
-        belt_width = SlopeConfig.BELT_WIDTHS[self.difficulty]
-        side_slope_limit = (EarthworkConfig.EXCAVATOR_THRESHOLD_M * 200) / belt_width
+        # Excavator warning: side slope exceeds what MIN width can handle
+        # Formula: H_edge = (side_slope_pct * width) / 200
+        # Warning when: (side_slope_pct * MIN_WIDTH) / 200 > threshold
+        side_slope_limit = (EarthworkConfig.EXCAVATOR_THRESHOLD_M * 200) / EarthworkConfig.MIN_BELT_WIDTH_M
         if abs(self.side_slope_pct) > side_slope_limit:
             result.append(
                 ExcavatorWarning(
                     side_slope_pct=abs(self.side_slope_pct),
-                    belt_width_m=belt_width,
+                    belt_width_m=self.width_m,
                     side_slope_dir=self.side_slope_dir,
                 )
             )
@@ -121,10 +118,32 @@ class SlopeSegment(BaseSlopePath):
         """
         return LineString([(p.lon, p.lat) for p in self.points])
 
+    @property
+    def width_m(self) -> float:
+        """Belt width in meters based on side slope steepness.
+
+        Width is determined by side slope to keep excavation within threshold:
+        width = (EXCAVATOR_THRESHOLD_M * 200) / abs(side_slope_pct)
+
+        Returns:
+            Width in meters, clamped to [MIN_BELT_WIDTH_M, MAX_BELT_WIDTH_M].
+            Returns MAX_BELT_WIDTH_M for flat terrain (side slope < 1%).
+        """
+        # Flat terrain: use maximum width to avoid zero division
+        if abs(self.side_slope_pct) < 1.0:
+            return float(EarthworkConfig.MAX_BELT_WIDTH_M)
+
+        # Calculate width from side slope to stay within excavation threshold
+        adaptive_width = (EarthworkConfig.EXCAVATOR_THRESHOLD_M * 200) / abs(self.side_slope_pct)
+
+        # Clamp to allowed range
+        return max(EarthworkConfig.MIN_BELT_WIDTH_M, min(EarthworkConfig.MAX_BELT_WIDTH_M, adaptive_width))
+
     def get_belt_polygon(self) -> list[tuple[float, float]]:
         """Get belt polygon coordinates (buffered ribbon in meters).
 
-        Uses UTM projection for accurate meter-based widths.
+        Uses adaptive width based on side slope to stay within excavation
+        threshold. UTM projection used for accurate meter-based widths.
         Buffer uses round cap/join for smooth turns.
 
         Returns:
@@ -134,7 +153,7 @@ class SlopeSegment(BaseSlopePath):
         if line.is_empty or len(line.coords) < 2:
             return []
 
-        width_m = SlopeConfig.BELT_WIDTHS[self.difficulty]
+        belt_width = self.width_m
 
         # Get center point for UTM zone
         center_lon = (line.bounds[0] + line.bounds[2]) / 2
@@ -150,7 +169,7 @@ class SlopeSegment(BaseSlopePath):
         # Buffer in UTM (meters)
         line_utm = shapely_transform(to_utm, line)
         buffered_utm = line_utm.buffer(
-            width_m / 2,
+            belt_width / 2,
             cap_style="round",
             join_style="round",
         )

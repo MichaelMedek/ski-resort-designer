@@ -43,7 +43,6 @@ from skiresort_planner.ui import (
     render_building_profiles,
     render_control_panel,
     render_proposal_preview,
-    undo_last_action,
 )
 from skiresort_planner.ui.pydeck_click_handler import render_pydeck_map
 from skiresort_planner.ui.terrain_layer import create_aws_terrain_layer
@@ -384,8 +383,6 @@ def _run_app_ui() -> None:
     # Handle actions
     if actions.get("finish_slope"):
         finish_current_slope()
-    if actions.get("undo"):
-        undo_last_action()
     if actions.get("cancel_slope"):
         cancel_current_slope()
     if actions.get("recompute") or ctx.click_dedup.pending_recompute:

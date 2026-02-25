@@ -383,7 +383,7 @@ class SlopeBuildingContextMessage(Message):
         return (
             f"🎿 **{self.slope_name}** — Committed Progress — {self.num_segments} ↔️\n\n"
             f"- {self.difficulty_emoji} • ↓{self.total_drop_m:.0f}m drop • {self.total_length_m:.0f}m\n"
-            f"- 📐 {self.avg_gradient_pct:.0f}% avg / {self.max_gradient_pct:.0f}% max\n"
+            f"- 📐 {self.avg_gradient_pct:.0f}% overall / {self.max_gradient_pct:.0f}% steepest\n"
             f"- 📍 {self.start_elevation_m:.0f}m → {self.current_elevation_m:.0f}m"
         )
 
@@ -483,7 +483,7 @@ class SlopeActionMessage(Message):
                 f"{header}\n\n"
                 f"- {self.path_difficulty_emoji} {self.path_difficulty.capitalize()} • "
                 f"↓{self.path_drop_m:.0f}m drop • {self.path_length_m:.0f}m\n"
-                f"- 📐 {self.actual_gradient_pct:.0f}% avg ({self.target_gradient_pct:.0f}% target)\n"
+                f"- 📐 {self.actual_gradient_pct:.0f}% overall ({self.target_gradient_pct:.0f}% target)\n"
                 f"- 📍 {self.start_elevation_m:.0f}m → {self.end_elevation_m:.0f}m\n"
                 f"{action}"
             )

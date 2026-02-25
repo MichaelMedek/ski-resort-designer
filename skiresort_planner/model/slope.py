@@ -147,21 +147,22 @@ class Slope:
         return sum(segments[sid].total_drop_m for sid in self.segment_ids if sid in segments)
 
     def get_steepest_segment_slope(self, segments: dict[str, "SlopeSegment"]) -> float:
-        """Get the avg_slope of the steepest segment.
+        """Get the max slope (steepest section) among all segments.
 
-        Used for difficulty classification.
+        Uses max_slope_pct which considers rolling window steepest sections,
+        not just segment averages.
 
         Args:
             segments: Dict of segment_id -> SlopeSegment
 
         Returns:
-            Maximum avg_slope_pct among segments.
+            Maximum max_slope_pct among segments.
         """
         max_slope = 0.0
         for seg_id in self.segment_ids:
             seg = segments.get(seg_id)
-            if seg and seg.avg_slope_pct > max_slope:
-                max_slope = seg.avg_slope_pct
+            if seg and seg.max_slope_pct > max_slope:
+                max_slope = seg.max_slope_pct
         return max_slope
 
     def get_all_points(self, segments: dict[str, "SlopeSegment"]) -> list["PathPoint"]:

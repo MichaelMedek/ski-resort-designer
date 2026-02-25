@@ -120,20 +120,20 @@ def enter_idle_viewing_slope(ctx: PlannerContext) -> None:
 
 
 def exit_idle_viewing_slope(ctx: PlannerContext) -> None:
-    """Exit IDLE_VIEWING_SLOPE: Minimal cleanup.
+    """Exit IDLE_VIEWING_SLOPE: No cleanup needed.
 
     SINGLE POINT OF TRUTH PRINCIPLE:
-    We do NOT touch panel_visible here. The destination state's enter
-    function determines visibility:
-    - enter_idle_ready: clears viewing state entirely
-    - enter_idle_viewing_lift: shows lift panel (after before_* sets lift_id)
+    We do NOT touch any viewing state here. The destination state's enter
+    function handles all necessary changes:
+    - enter_idle_ready: calls ctx.viewing.clear() to reset everything
+    - enter_idle_viewing_lift: before_* calls set_lift_id() which clears slope_id
     - enter_slope_starting: hides panel for building mode
 
-    This exit function only clears the slope_id to prevent stale references.
+    For self-loop transitions (switch_slope), clearing here would erase the
+    slope_id set by before_switch_slope, causing errors.
     """
-    logger.debug("EXIT: idle_viewing_slope - clearing slope_id")
-    ctx.viewing.slope_id = None
-    ctx.viewing.view_3d = False
+    logger.debug("EXIT: idle_viewing_slope - no cleanup needed")
+    pass
 
 
 # =============================================================================
@@ -171,20 +171,20 @@ def enter_idle_viewing_lift(ctx: PlannerContext) -> None:
 
 
 def exit_idle_viewing_lift(ctx: PlannerContext) -> None:
-    """Exit IDLE_VIEWING_LIFT: Minimal cleanup.
+    """Exit IDLE_VIEWING_LIFT: No cleanup needed.
 
     SINGLE POINT OF TRUTH PRINCIPLE:
-    We do NOT touch panel_visible here. The destination state's enter
-    function determines visibility:
-    - enter_idle_ready: clears viewing state entirely
-    - enter_idle_viewing_slope: shows slope panel (after before_* sets slope_id)
+    We do NOT touch any viewing state here. The destination state's enter
+    function handles all necessary changes:
+    - enter_idle_ready: calls ctx.viewing.clear() to reset everything
+    - enter_idle_viewing_slope: before_* calls set_slope_id() which clears lift_id
     - enter_lift_placing: hides panel for placement mode
 
-    This exit function only clears the lift_id to prevent stale references.
+    For self-loop transitions (switch_lift), clearing here would erase the
+    lift_id set by before_switch_lift, causing errors.
     """
-    logger.debug("EXIT: idle_viewing_lift - clearing lift_id")
-    ctx.viewing.lift_id = None
-    ctx.viewing.view_3d = False
+    logger.debug("EXIT: idle_viewing_lift - no cleanup needed")
+    pass
 
 
 # =============================================================================
@@ -218,20 +218,17 @@ def enter_slope_starting(ctx: PlannerContext) -> None:
 
 
 def exit_slope_starting(ctx: PlannerContext) -> None:
-    """Exit SLOPE_STARTING: Clean up before next state.
+    """Exit SLOPE_STARTING: Minimal cleanup.
 
     Possible destinations:
-    - SLOPE_BUILDING: First path committed (before_commit_first_path handles it)
-    - SLOPE_CUSTOM_PICKING: Custom connect enabled
-    - IDLE_READY: Cancel pressed
+    - SLOPE_BUILDING: before_commit_first_path clears proposals
+    - SLOPE_CUSTOM_PICKING: enter_slope_custom_picking clears proposals
+    - IDLE_READY: enter_idle_ready clears proposals
 
-    This function clears proposals since the next state will either:
-    - Generate new proposals from new position (BUILDING)
-    - Clear proposals for custom picking
-    - Not need proposals (IDLE_READY on cancel)
+    All destinations handle their own cleanup, so no action needed here.
     """
-    logger.debug("EXIT: slope_starting - clearing proposals")
-    ctx.clear_proposals()
+    logger.debug("EXIT: slope_starting - no cleanup needed")
+    pass
 
 
 # =============================================================================
@@ -266,24 +263,24 @@ def enter_slope_building(ctx: PlannerContext) -> None:
 
 
 def exit_slope_building(ctx: PlannerContext) -> None:
-    """Exit SLOPE_BUILDING: Prepare for next state.
+    """Exit SLOPE_BUILDING: Minimal cleanup for non-self-loop destinations.
 
     Possible destinations:
-    - SLOPE_BUILDING: Self-loop (commit_path, undo_continue) - preserve state
-    - SLOPE_CUSTOM_PICKING: Custom connect enabled - clear proposals
-    - IDLE_VIEWING_SLOPE: Finish slope - building context cleared by enter_idle
-    - IDLE_READY: Cancel or undo_to_idle - building context cleared by enter_idle
+    - SLOPE_BUILDING (self-loop): commit_path/undo_continue
+      - before_commit_path: clears proposals (new segment)
+      - before_undo_continue: PRESERVES proposals (set by undo_last_action)
+    - SLOPE_CUSTOM_PICKING: enter_slope_custom_picking clears proposals
+    - IDLE_VIEWING_SLOPE: enter_idle_viewing_slope clears proposals
+    - IDLE_READY: enter_idle_ready clears proposals
 
-    For self-loops, state is preserved. For other transitions, the destination's
-    enter function handles cleanup. We clear proposals here to avoid stale state.
-
-    Note: Self-loops won't call exit then enter (same state), so this is safe.
-    Actually, python-statemachine DOES call on_exit and on_enter for self-loops!
-    So we must NOT clear building context here, only proposals.
+    IMPORTANT: Do NOT clear proposals here!
+    For undo_continue self-loops, proposals are set by undo_last_action() BEFORE
+    the state transition. Clearing here would destroy them.
+    All other destinations clear proposals in their own hooks.
     """
-    logger.debug("EXIT: slope_building - clearing proposals only")
-    # Don't clear building context - self-loops and resume need it!
-    ctx.clear_proposals()
+    logger.debug("EXIT: slope_building - no cleanup (destinations handle it)")
+    # Do NOT clear proposals - undo_continue needs them preserved!
+    pass
 
 
 # =============================================================================

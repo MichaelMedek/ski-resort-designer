@@ -7,9 +7,9 @@ Classes:
     AppConfig: UI application settings
     MapConfig: Default map view parameters
     DEMConfig: Elevation data file paths
-    SlopeConfig: Difficulty thresholds, targets, belt widths
+    SlopeConfig: Difficulty thresholds and targets
     PathConfig: Path generation algorithm parameters
-    EarthworkConfig: Excavation warning thresholds
+    EarthworkConfig: Excavation warning thresholds and belt width limits
     ConnectionConfig: Connection path parameters
     PlannerConfig: Grid-based Dijkstra path planner parameters
     MarkerConfig: Map marker styling
@@ -108,7 +108,7 @@ class DEMConfig:
 
 
 class SlopeConfig:
-    """Slope classification thresholds, targets, and belt widths."""
+    """Slope classification thresholds and difficulty targets."""
 
     # Core slope limits - single source of truth
     MIN_SKIABLE_PCT = 5  # Below this: need to push poles
@@ -134,14 +134,9 @@ class SlopeConfig:
     }
     assert set(DIFFICULTY_TARGETS.keys()) == set(DIFFICULTIES)
 
-    # Belt widths for polygon visualization (meters)
-    BELT_WIDTHS = {
-        "green": 8,  # Cat track - narrow
-        "blue": 25,  # Cruiser - medium
-        "red": 40,  # Expert - wide
-        "black": 30,  # Variable terrain
-    }
-    assert set(BELT_WIDTHS.keys()) == set(DIFFICULTIES)
+    # Rolling window for steepness calculation
+    # Used to find the steepest section within a segment
+    ROLLING_WINDOW_M = 300  # Window length in meters (few ski turns)
 
 
 # Validate targets are within thresholds (module-level assertion)
@@ -184,11 +179,15 @@ class PathConfig:
 
 
 class EarthworkConfig:
-    """Earthwork warning thresholds (DETAILS.md Section 4)."""
+    """Earthwork warning thresholds and belt width limits (DETAILS.md Section 4)."""
 
     # Side cut excavation threshold (meters of vertical cut)
     # H_edge = (S_side × W_belt) / 200 > threshold triggers warning
     EXCAVATOR_THRESHOLD_M = 2.5
+
+    # Belt width limits (meters)
+    MIN_BELT_WIDTH_M = 20  # Minimum width - very steep side slope
+    MAX_BELT_WIDTH_M = 40  # Maximum width - flat/gentle side slope
 
 
 class ConnectionConfig:

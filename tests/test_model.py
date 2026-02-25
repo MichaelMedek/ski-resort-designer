@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from skiresort_planner.constants import SlopeConfig
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint
@@ -81,6 +82,68 @@ class TestProposedSlopeSegment:
         assert 780 < seg.length_m < 820  # 4 × 200m
         assert 18 < seg.avg_slope_pct < 22  # 160/800 = 20%
         assert seg.difficulty == "blue"
+
+    def test_max_slope_pct_finds_steep_section_in_variable_terrain(self) -> None:
+        """max_slope_pct detects steep section within gradual terrain.
+
+        Test scenario (total length adapts to ROLLING_WINDOW_M):
+        - Section 1: Gradual at 10% slope
+        - Section 2: Steep at 45% slope (longer than rolling window)
+        - Section 3: Gradual at 10% slope
+
+        The steep section should be detected by the rolling window algorithm.
+
+        TODO: Migrate this test to tests_v2/ per TEST_REFACTORING_DESIGN.md
+        """
+        window_m = SlopeConfig.ROLLING_WINDOW_M
+        step_m = 100  # Distance per point
+        steps_per_section = max(3, (window_m // step_m) + 1)  # Ensure section > window
+
+        # Build points going south (lat decreases, 0.0009° ≈ 100m at 46°N)
+        base_lon = 10.27
+        lat_per_step = 0.0009  # ~100m per step
+
+        # Define sections: (num_steps, drop_per_step)
+        sections = [
+            (steps_per_section, 10.0),  # Gradual: 10% slope
+            (steps_per_section, 45.0),  # Steep: 45% slope (> window size)
+            (steps_per_section, 10.0),  # Gradual: 10% slope
+        ]
+
+        points = []
+        lat = 46.97
+        elev = 2500.0
+
+        # First point
+        points.append(PathPoint(lon=base_lon, lat=lat, elevation=elev))
+
+        # Add segments
+        for num_steps, drop in sections:
+            for _ in range(num_steps):
+                lat -= lat_per_step
+                elev -= drop
+                points.append(PathPoint(lon=base_lon, lat=lat, elevation=elev))
+
+        seg = ProposedSlopeSegment(points=points)
+
+        # Verify geometry
+        total_steps = steps_per_section * 3
+        expected_length = total_steps * step_m
+        expected_drop = steps_per_section * (10 + 45 + 10)  # 65m per section set
+
+        assert seg.length_m > window_m, f"Path must be longer than window ({window_m}m)"
+        assert expected_length * 0.9 < seg.length_m < expected_length * 1.1
+
+        # Average slope: total_drop / total_length
+        avg = seg.avg_slope_pct
+        assert 15 < avg < 30, f"Expected avg between gradual and steep, got {avg}%"
+
+        # KEY TEST: max_slope_pct should find the steep 45% section
+        assert seg.max_slope_pct > 40, f"Should find steep section >=40%, got {seg.max_slope_pct}"
+        assert seg.max_slope_pct < 50, f"Should not exceed 45% steep section, got {seg.max_slope_pct}"
+
+        # Verify difficulty is determined by max_slope (black >= 40%)
+        assert seg.difficulty == "black", f"Should be black (max slope ~45%), got {seg.difficulty}"
 
 
 class TestResortGraph:

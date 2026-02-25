@@ -106,39 +106,34 @@ class TestValidateCustomTargetDistance:
     """Tests for validate_custom_target_distance."""
 
     def test_within_distance_is_valid(self) -> None:
-        """Target within max distance is valid."""
-        # Two points about 100m apart
+        """Target within max distance (SEGMENT_LENGTH_MAX_M=1000m) is valid."""
+        # Two points about 100m apart - well within 1000m limit
         result = validate_custom_target_distance(
             start_lat=46.97,
             start_lon=10.27,
             target_lat=46.9709,  # ~100m north
             target_lon=10.27,
-            max_distance_m=200.0,
         )
         assert result is None
 
     def test_exactly_at_limit_is_valid(self) -> None:
-        """Target exactly at max distance is valid."""
-        # Same point = 0m distance
+        """Target at same point (0m distance) is valid."""
         result = validate_custom_target_distance(
             start_lat=46.97,
             start_lon=10.27,
             target_lat=46.97,
             target_lon=10.27,
-            max_distance_m=1.0,  # Very small limit, but same point works
         )
         assert result is None
 
     def test_beyond_distance_returns_message(self) -> None:
-        """Target beyond max distance returns TargetTooFarMessage."""
-        # Two points about 500m apart
+        """Target beyond SEGMENT_LENGTH_MAX_M (1000m) returns TargetTooFarMessage."""
+        # Two points about 1.7km apart (0.015° lat ≈ 1.7km at 46°N)
         result = validate_custom_target_distance(
             start_lat=46.97,
             start_lon=10.27,
-            target_lat=46.975,  # ~500m north
+            target_lat=46.985,  # ~1.7km north
             target_lon=10.27,
-            max_distance_m=200.0,
         )
         assert isinstance(result, TargetTooFarMessage)
-        assert result.max_distance_m == 200.0
-        assert result.distance_m > 200.0
+        assert result.distance_m > 1000.0

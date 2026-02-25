@@ -72,7 +72,8 @@ Alpin Architect lets you design ski slopes on real terrain by clicking on a map:
 
 | Stat | What to Look For |
 |------|------------------|
-| **Avg Gradient** | Determines difficulty classification |
+| **Overall Gradient** | Average over full segment |
+| **Steepest Section** | Determines difficulty classification |
 | **Drop** | Vertical meters |
 | **Warnings** | Construction issues |
 
@@ -165,9 +166,9 @@ When the automatically proposed paths don't include the direction you want, use 
 
 ## Difficulty Classification
 
-After finishing a slope, its difficulty is determined by the maximum average gradient of any segment. The classification follows the European standard:
-| Color | Avg Gradient |
-|-------|-------------|
+After finishing a slope, its difficulty is determined by the **steepest 300m section** within any segment. The classification follows the European standard:
+| Color | Steepest Section |
+|-------|------------------|
 | 🟢 Green | < 15% |
 | 🔵 Blue | 15% – 25% |
 | 🔴 Red | 25% – 40% |

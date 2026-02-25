@@ -10,7 +10,7 @@ Design Principles:
 - Caller controls when/how to display the message
 """
 
-from skiresort_planner.constants import ConnectionConfig
+from skiresort_planner.constants import ConnectionConfig, PathConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.model.message import (
     LiftMustGoUphillMessage,
@@ -77,7 +77,6 @@ def validate_custom_target_distance(
     start_lon: float,
     target_lat: float,
     target_lon: float,
-    max_distance_m: float,
 ) -> ToastMessage | None:
     """Validate that custom target is within allowed distance.
 
@@ -90,9 +89,9 @@ def validate_custom_target_distance(
         lat2=target_lat,
         lon2=target_lon,
     )
-    if distance_m > max_distance_m:
+    if distance_m > PathConfig.SEGMENT_LENGTH_MAX_M:
         return TargetTooFarMessage(
             distance_m=distance_m,
-            max_distance_m=max_distance_m,
+            max_distance_m=PathConfig.SEGMENT_LENGTH_MAX_M,
         )
     return None

@@ -418,11 +418,7 @@ def _handle_custom_connect_click(click_info: ClickInfo, elevation: float | None)
         return
 
     if error := validate_custom_target_distance(
-        start_lat=start_node.lat,
-        start_lon=start_node.lon,
-        target_lat=target_lat,
-        target_lon=target_lon,
-        max_distance_m=ctx.segment_length_m,
+        start_lat=start_node.lat, start_lon=start_node.lon, target_lat=target_lat, target_lon=target_lon
     ):
         error.display()
         return

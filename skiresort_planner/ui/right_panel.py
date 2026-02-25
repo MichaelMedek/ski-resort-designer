@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Callable
 
 import streamlit as st
 
-from skiresort_planner.constants import MapConfig, StyleConfig
+from skiresort_planner.constants import MapConfig, SlopeConfig, StyleConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.model.message import (
     LiftActionMessage,
@@ -38,19 +38,64 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
+# CONFIRMATION DIALOGS
+# =============================================================================
+
+
+@st.dialog("Confirm Delete")
+def _confirm_delete_dialog(
+    entity_type: str,
+    entity_name: str,
+    entity_id: str,
+    delete_fn: Callable[[str], bool],
+    sm: PlannerStateMachine,
+) -> None:
+    """Show confirmation dialog before deleting a slope or lift."""
+    st.write(f"Are you sure you want to delete **{entity_name}**?")
+    st.caption("This action can be undone using the Undo button.")
+
+    col_yes, col_no = st.columns(2)
+    with col_yes:
+        if st.button("🗑️ Yes, Delete", type="primary", use_container_width=True):
+            if delete_fn(entity_id):
+                logger.info(f"Deleted {entity_type} {entity_name} (id={entity_id})")
+                bump_map_version()
+                # Use explicit transitions instead of hide_info_panel()
+                if entity_type == "slope":
+                    sm.close_slope_panel()
+                else:  # "lift"
+                    sm.close_lift_panel()
+            st.rerun()
+    with col_no:
+        if st.button("✖️ Cancel", use_container_width=True):
+            st.rerun()
+
+
+# =============================================================================
 # SHARED HELPERS FOR INFO PANELS
 # =============================================================================
 
 
-def _render_3d_toggle_button(ctx: PlannerContext, entity_type: str, entity_id: str) -> bool:
+def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, entity_type: str, entity_id: str) -> bool:
     """Render 3D/2D view toggle button. Returns True if button was clicked."""
     if ctx.viewing.view_3d:
         if st.button("🗺️ Return to 2D View", key=f"{entity_type}_2d_view", use_container_width=True):
             logger.info(f"Switching to 2D view from {entity_type} {entity_id}")
             ctx.viewing.disable_3d()
-            # Reset pitch and bearing to top-down view (preserve zoom level)
+            # Reset pitch, bearing, and zoom to top-down 2D view
             ctx.map.pitch = MapConfig.DEFAULT_PITCH
             ctx.map.bearing = MapConfig.DEFAULT_BEARING
+            ctx.map.zoom = MapConfig.DEFAULT_ZOOM
+            # Update map center to entity center so we don't jump to stale position
+            if entity_type == "slope" and entity_id in graph.slopes:
+                slope = graph.slopes[entity_id]
+                center_lat, center_lon = GeoCalculator.compute_center(latlons=[(n.lat, n.lon) for n in slope.nodes])
+                ctx.map.lat = center_lat
+                ctx.map.lon = center_lon
+            elif entity_type == "lift" and entity_id in graph.lifts:
+                lift = graph.lifts[entity_id]
+                ctx.map.lat = (lift.bottom.lat + lift.top.lat) / 2
+                ctx.map.lon = (lift.bottom.lon + lift.top.lon) / 2
             bump_map_version()
             return True
     else:
@@ -90,7 +135,11 @@ def _render_close_delete_buttons(
             ctx.map.pitch = MapConfig.DEFAULT_PITCH
             ctx.map.bearing = MapConfig.DEFAULT_BEARING
             bump_map_version()
-            sm.hide_info_panel()
+            # Use explicit transitions instead of hide_info_panel()
+            if entity_type == "slope":
+                sm.close_slope_panel()
+            else:  # "lift"
+                sm.close_lift_panel()
             return True
     with col_delete:
         if st.button(
@@ -99,11 +148,13 @@ def _render_close_delete_buttons(
             key=f"delete_{entity_type}",
             help=f"Permanently remove this {entity_type}",
         ):
-            if delete_fn(entity_id):
-                logger.info(f"Deleted {entity_type} {entity.name} (id={entity_id})")
-                bump_map_version()
-                sm.hide_info_panel()
-                return True
+            _confirm_delete_dialog(
+                entity_type=entity_type,
+                entity_name=entity.name,
+                entity_id=entity_id,
+                delete_fn=delete_fn,
+                sm=sm,
+            )
     return False
 
 
@@ -285,7 +336,7 @@ def _render_slope_info_panel(
 
     SlopeStatsPanel(graph=graph).render(slope_id=slope_id)
 
-    if _render_3d_toggle_button(ctx=ctx, entity_type="slope", entity_id=slope_id):
+    if _render_3d_toggle_button(ctx=ctx, graph=graph, entity_type="slope", entity_id=slope_id):
         st.rerun()
 
     if _render_close_delete_buttons(
@@ -316,7 +367,7 @@ def _render_lift_info_panel(
 
     LiftStatsPanel(graph=graph).render(lift_id=lift_id)
 
-    if _render_3d_toggle_button(ctx=ctx, entity_type="lift", entity_id=lift_id):
+    if _render_3d_toggle_button(ctx=ctx, graph=graph, entity_type="lift", entity_id=lift_id):
         st.rerun()
 
     if _render_close_delete_buttons(
@@ -360,7 +411,7 @@ class PathSelectionPanel:
         if self.ctx.custom_connect.enabled:
             SlopeActionMessage(is_custom_direction=True).display()
             if st.button(
-                "❌ Cancel Custom Direction",
+                "✖️ Cancel Custom Direction",
                 width="stretch",
                 help="Return to regular path proposals",
             ):
@@ -444,7 +495,7 @@ class PathSelectionPanel:
         # Cancel Connection button
         if self.ctx.custom_connect.force_mode:
             if st.button(
-                "❌ Cancel Connection",
+                "✖️ Cancel Connection",
                 width="stretch",
                 help="Return to regular path proposals",
             ):
@@ -494,14 +545,14 @@ class SlopeStatsPanel:
         with col1:
             st.metric("Top Elevation", f"{top_elev:.0f}m")
             st.metric("Length", f"{total_length:.0f}m")
-            st.metric("Avg Gradient", f"{avg_gradient:.0f}%")
+            st.metric("Overall Gradient", f"{avg_gradient:.0f}%")
         with col2:
             st.metric("Bottom Elevation", f"{bottom_elev:.0f}m")
             st.metric("Drop", f"{total_drop:.0f}m")
             st.metric(
-                "Max Segment Gradient",
+                "Steepest Section",
                 f"{max_segment_gradient:.0f}%",
-                help="Steepest segment average gradient - determines the slope difficulty rating",
+                help=f"Steepest {SlopeConfig.ROLLING_WINDOW_M}m section within any segment - determines difficulty rating",
             )
 
         with st.expander("📋 Segment Details", expanded=False):
@@ -511,7 +562,7 @@ class SlopeStatsPanel:
                     continue
 
                 seg_emoji = StyleConfig.DIFFICULTY_EMOJIS[seg.difficulty]
-                seg_line = f"{i}. {seg_emoji} **{seg.difficulty.capitalize()}** — {seg.length_m:.0f}m, {seg.avg_slope_pct:.0f}%"
+                seg_line = f"{i}. {seg_emoji} **{seg.difficulty.capitalize()}** — {seg.length_m:.0f}m, {seg.max_slope_pct:.0f}% steepest, {seg.width_m:.0f}m wide"
 
                 if seg.warnings:
                     st.markdown(f"{seg_line}")
@@ -573,13 +624,13 @@ class LiftStatsPanel:
                 st.metric("Bottom Elevation", f"{start_node.elevation:.0f}m")
                 st.metric("Horizontal Length", f"{horizontal_length:.0f}m")
                 st.metric("Vertical Rise", f"{vertical_rise:.0f}m")
-                st.metric("Avg Gradient", f"{avg_gradient:.0f}%")
+                st.metric("Overall Gradient", f"{avg_gradient:.0f}%")
             with col2:
                 st.metric("Top Elevation", f"{end_node.elevation:.0f}m")
                 st.metric("Inclined Length", f"{inclined_length:.0f}m")
                 st.metric("Pylons", f"{num_pylons}")
                 st.metric(
-                    "Max Cable Gradient",
+                    "Steepest Section",
                     f"{max_cable_gradient:.0f}%",
                     help="Steepest gradient between any two adjacent pylons",
                 )

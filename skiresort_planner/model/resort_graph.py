@@ -376,8 +376,8 @@ class ResortGraph:
 
         slope_id = self._next_slope_id()
 
-        # Determine difficulty
-        max_slope = max(self.segments[sid].avg_slope_pct for sid in segment_ids if sid in self.segments)
+        # Determine difficulty from steepest section (max_slope_pct considers rolling windows)
+        max_slope = max(self.segments[sid].max_slope_pct for sid in segment_ids if sid in self.segments)
         difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=max_slope)
 
         # Generate name
@@ -645,8 +645,8 @@ class ResortGraph:
         total_drop = start_elev - current_elev
         avg_gradient = (total_drop / total_length * 100) if total_length > 0 else 0.0
 
-        # Difficulty is based on steepest segment (not average)
-        max_slope = max(self.segments[sid].avg_slope_pct for sid in segment_ids if sid in self.segments)
+        # Difficulty based on steepest section in any segment (max_slope_pct uses rolling window)
+        max_slope = max(self.segments[sid].max_slope_pct for sid in segment_ids if sid in self.segments)
         difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=max_slope)
 
         return {
