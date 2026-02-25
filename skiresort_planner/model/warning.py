@@ -26,17 +26,6 @@ class Warning(ABC):
     def message(self) -> str:
         """Human-readable warning message with emoji prefix."""
 
-    @classmethod
-    def from_dict(cls, data: dict) -> "Warning":
-        """Create Warning subclass from dictionary."""
-        type_map = {
-            "ExcavatorWarning": ExcavatorWarning,
-            "TooSteepWarning": TooSteepWarning,
-            "TooFlatWarning": TooFlatWarning,
-        }
-        warning_cls = type_map[data["warning_type"]]
-        return warning_cls(**data)
-
     def __str__(self) -> str:
         return self.message
 

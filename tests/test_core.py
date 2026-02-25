@@ -19,7 +19,7 @@ from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.model.path_point import PathPoint
 
 if TYPE_CHECKING:
-    from .conftest import MockDEMService
+    from conftest import MockDEMService
 
 
 # =============================================================================

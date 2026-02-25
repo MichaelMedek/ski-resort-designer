@@ -31,7 +31,7 @@ from skiresort_planner.ui.state_machine import (
 # =============================================================================
 
 
-class MockDEMService:
+class MockDEMService(DEMService):
     """Mock DEM returning synthetic elevation based on simple linear formula.
 
     Uses coordinates near the equator where 1° ≈ 111,320m, allowing simple math
@@ -49,6 +49,12 @@ class MockDEMService:
         - lat=0.000: 2500m (summit)
         - lat=-0.009 (1000m south): 2500 - 200 = 2300m (20% drop)
     """
+
+    _instance = None  # Override singleton
+
+    def __new__(cls, *args: object, **kwargs: object) -> "MockDEMService":
+        """Create new instance (bypass singleton for tests)."""
+        return object.__new__(cls)
 
     def __init__(
         self,
@@ -79,13 +85,19 @@ class MockDEMService:
     def bounds(self) -> tuple[float, float, float, float]:
         return self._bounds
 
-    def get_elevation(self, lon: float, lat: float) -> float:
+    def get_elevation(self, lon: float, lat: float) -> float | None:
         """Return elevation using simple linear formula.
 
         Drops going south (negative lat) and east (positive lon).
         """
         M = MapConfig.METERS_PER_DEGREE_EQUATOR
         return self.base_elevation + lat * M * (self.slope_ns_pct / 100) - lon * M * (self.slope_ew_pct / 100)
+
+    def get_elevation_or_raise(self, lon: float, lat: float) -> float:
+        """Return elevation, raising if None (never happens for mock)."""
+        elev = self.get_elevation(lon=lon, lat=lat)
+        assert elev is not None, "MockDEMService always returns elevation"
+        return elev
 
 
 # =============================================================================
@@ -155,11 +167,11 @@ def path_points_800m_south_20pct_drop(mock_dem_blue_slope_south: MockDEMService)
     dem = mock_dem_blue_slope_south
     M = MapConfig.METERS_PER_DEGREE_EQUATOR
     return [
-        PathPoint(lon=0.0, lat=-0 / M, elevation=dem.get_elevation(lon=0.0, lat=-0 / M)),
-        PathPoint(lon=0.0, lat=-200 / M, elevation=dem.get_elevation(lon=0.0, lat=-200 / M)),
-        PathPoint(lon=0.0, lat=-400 / M, elevation=dem.get_elevation(lon=0.0, lat=-400 / M)),
-        PathPoint(lon=0.0, lat=-600 / M, elevation=dem.get_elevation(lon=0.0, lat=-600 / M)),
-        PathPoint(lon=0.0, lat=-800 / M, elevation=dem.get_elevation(lon=0.0, lat=-800 / M)),
+        PathPoint(lon=0.0, lat=-0 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-0 / M)),
+        PathPoint(lon=0.0, lat=-200 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-200 / M)),
+        PathPoint(lon=0.0, lat=-400 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-400 / M)),
+        PathPoint(lon=0.0, lat=-600 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-600 / M)),
+        PathPoint(lon=0.0, lat=-800 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-800 / M)),
     ]
 
 
@@ -173,9 +185,9 @@ def path_points_600m_south_3pts(mock_dem_blue_slope_south: MockDEMService) -> li
     dem = mock_dem_blue_slope_south
     M = MapConfig.METERS_PER_DEGREE_EQUATOR
     return [
-        PathPoint(lon=0.0, lat=-0 / M, elevation=dem.get_elevation(lon=0.0, lat=-0 / M)),
-        PathPoint(lon=0.0, lat=-300 / M, elevation=dem.get_elevation(lon=0.0, lat=-300 / M)),
-        PathPoint(lon=0.0, lat=-600 / M, elevation=dem.get_elevation(lon=0.0, lat=-600 / M)),
+        PathPoint(lon=0.0, lat=-0 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-0 / M)),
+        PathPoint(lon=0.0, lat=-300 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-300 / M)),
+        PathPoint(lon=0.0, lat=-600 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-600 / M)),
     ]
 
 
@@ -190,7 +202,7 @@ def node_at_origin_summit(mock_dem_blue_slope_south: MockDEMService) -> Node:
     dem = mock_dem_blue_slope_south
     return Node(
         id="N1",
-        location=PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation(lon=0.0, lat=0.0)),
+        location=PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
     )
 
 
@@ -221,15 +233,15 @@ def resort_graph_with_3_nodes_vertical(
     M = MapConfig.METERS_PER_DEGREE_EQUATOR
     empty_resort_graph.nodes["N1"] = Node(
         id="N1",
-        location=PathPoint(lon=0.0, lat=-0 / M, elevation=dem.get_elevation(lon=0.0, lat=-0 / M)),
+        location=PathPoint(lon=0.0, lat=-0 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-0 / M)),
     )
     empty_resort_graph.nodes["N2"] = Node(
         id="N2",
-        location=PathPoint(lon=0.0, lat=-1000 / M, elevation=dem.get_elevation(lon=0.0, lat=-1000 / M)),
+        location=PathPoint(lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M)),
     )
     empty_resort_graph.nodes["N3"] = Node(
         id="N3",
-        location=PathPoint(lon=0.0, lat=-2000 / M, elevation=dem.get_elevation(lon=0.0, lat=-2000 / M)),
+        location=PathPoint(lon=0.0, lat=-2000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-2000 / M)),
     )
     return empty_resort_graph
 

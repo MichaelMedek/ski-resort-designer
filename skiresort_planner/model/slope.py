@@ -12,7 +12,7 @@ Reference: DETAILS.md
 import logging
 import random
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from skiresort_planner.constants import EntityPrefixes, NameConfig
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
@@ -70,7 +70,7 @@ class Slope:
         Returns:
             Numeric part of the ID.
         """
-        return int(slope_id[len(EntityPrefixes.SLOPE):])
+        return int(slope_id[len(EntityPrefixes.SLOPE) :])
 
     @staticmethod
     def generate_name(
@@ -194,10 +194,10 @@ class Slope:
         Returns:
             True if any segment has warnings.
         """
-        return any(segments.get(sid, {}).has_warnings for sid in self.segment_ids if sid in segments)
+        return any(segments[sid].has_warnings for sid in self.segment_ids if sid in segments)
 
     @classmethod
-    def from_dict(cls, data: dict) -> "Slope":
+    def from_dict(cls, data: dict[str, Any]) -> "Slope":
         """Create Slope from dictionary."""
         return cls(
             id=data["id"],

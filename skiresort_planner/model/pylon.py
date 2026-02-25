@@ -35,10 +35,15 @@ class Pylon:
         """Elevation of pylon top (cable attachment point)."""
         return self.ground_elevation_m + self.height_m
 
-    @classmethod
-    def from_dict(cls, data: dict) -> "Pylon":
-        """Create Pylon from dictionary."""
-        return cls(**data)
+    @property
+    def lat_lon(self) -> tuple[float, float]:
+        """Return (lat, lon) tuple - standard geographic order."""
+        return (self.lat, self.lon)
+
+    @property
+    def lon_lat(self) -> tuple[float, float]:
+        """Return (lon, lat) tuple - GeoJSON/Pydeck order."""
+        return (self.lon, self.lat)
 
     def __repr__(self) -> str:
         return f"Pylon(idx={self.index}, {self.distance_m:.0f}m, {self.height_m:.0f}m tall)"

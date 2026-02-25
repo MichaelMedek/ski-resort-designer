@@ -14,7 +14,7 @@ Reference: DETAILS.md
 import logging
 import random
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from skiresort_planner.constants import EntityPrefixes, LiftConfig, NameConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
@@ -79,7 +79,7 @@ class Lift:
         Returns:
             Numeric part of the ID.
         """
-        return int(lift_id[len(EntityPrefixes.LIFT):])
+        return int(lift_id[len(EntityPrefixes.LIFT) :])
 
     @staticmethod
     def sample_terrain(
@@ -138,10 +138,12 @@ class Lift:
                     distance_m=dist,
                 )
                 # Get elevation from DEM (may be None if outside bounds)
-                elev = dem.get_elevation(lon=lon, lat=lat)
-                if elev is None:
+                maybe_elev = dem.get_elevation(lon=lon, lat=lat)
+                if maybe_elev is None:
                     # Interpolate if point is outside DEM coverage
                     elev = start_node.elevation + frac * (end_node.elevation - start_node.elevation)
+                else:
+                    elev = maybe_elev
 
             points.append(PathPoint(lon=lon, lat=lat, elevation=elev))
 
@@ -449,17 +451,17 @@ class Lift:
             )
             return []
 
-        config = LiftConfig.PYLON_CONFIG[lift_type]
+        config = cast(dict[str, int | float], LiftConfig.PYLON_CONFIG[lift_type])
         n = len(terrain_points)
         dist_per_step = total_distance_m / (n - 1) if n > 1 else 0
 
         terrain_elevs = [p.elevation for p in terrain_points]
-        pylon_height = config["pylon_height_m"]
-        station_height = config["station_height_m"]
-        min_spacing_m = config["min_spacing_m"]
-        min_clearance = config["min_clearance_m"]
-        sag_factor = config["sag_factor"]
-        max_spacing_m = config["max_spacing_m"]
+        pylon_height = cast(int, config["pylon_height_m"])
+        station_height = cast(int, config["station_height_m"])
+        min_spacing_m = cast(int, config["min_spacing_m"])
+        min_clearance = cast(int, config["min_clearance_m"])
+        sag_factor = cast(float, config["sag_factor"])
+        max_spacing_m = cast(int, config["max_spacing_m"])
 
         # Minimum spacing in indices
         min_spacing_idx = max(2, int(min_spacing_m / dist_per_step)) if dist_per_step > 0 else 2
@@ -480,7 +482,7 @@ class Lift:
             if end_idx - start_idx < min_spacing_idx * 2:
                 return []
 
-            worst_violation = 0
+            worst_violation: float = 0.0
             worst_idx = -1
 
             for i in range(start_idx + min_spacing_idx, end_idx - min_spacing_idx + 1):
@@ -532,7 +534,7 @@ class Lift:
         pylon_indices = sorted(set(pylon_indices))
 
         # Phase 2: Enforce maximum spacing
-        if max_spacing_m is not None and dist_per_step > 0:
+        if dist_per_step > 0:
             max_spacing_idx = int(max_spacing_m / dist_per_step)
 
             for _ in range(20):  # Safety limit
@@ -627,9 +629,12 @@ class Lift:
         if total_distance_m <= 0:
             raise ValueError(f"total_distance_m must be positive, got {total_distance_m}")
 
-        config = LiftConfig.PYLON_CONFIG.get(lift_type, LiftConfig.PYLON_CONFIG["chairlift"])
-        station_height = config["station_height_m"]
-        sag_factor = config["sag_factor"]
+        config = cast(
+            dict[str, int | float | None],
+            LiftConfig.PYLON_CONFIG.get(lift_type, LiftConfig.PYLON_CONFIG["chairlift"]),
+        )
+        station_height = cast(int, config["station_height_m"])
+        sag_factor = cast(float, config["sag_factor"])
 
         # Build anchor points: [stations + all pylons]
         anchor_x = [0.0]  # Bottom station
@@ -695,7 +700,7 @@ class Lift:
         return cable_points
 
     @classmethod
-    def from_dict(cls, data: dict) -> "Lift":
+    def from_dict(cls, data: dict[str, Any]) -> "Lift":
         """Create Lift from dictionary.
 
         All fields are required - raises KeyError if missing.

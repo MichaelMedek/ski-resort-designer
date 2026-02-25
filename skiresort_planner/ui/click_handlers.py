@@ -11,7 +11,7 @@ Design Principles:
 """
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import streamlit as st
 
@@ -48,11 +48,11 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 
-def get_click_handler(state_name: str):
+def get_click_handler(sm: "PlannerStateMachine") -> Callable[..., None]:
     """Get the appropriate click handler for the given state.
 
     Args:
-        state_name: Current state machine state name
+        sm: State machine to check state properties
 
     Returns:
         Handler function (click_info, elevation) -> None
@@ -60,20 +60,18 @@ def get_click_handler(state_name: str):
     Raises:
         RuntimeError: If state has no registered handler
     """
-    handlers = {
-        "Idle": handle_idle_click,
-        "SlopeBuilding": handle_slope_building_click,
-        "LiftPlacing": handle_lift_placing_click,
-    }
-
-    handler = handlers.get(state_name)
-    if handler is None:
+    # Use state machine properties instead of string comparison
+    if sm.is_idle:
+        return handle_idle_click
+    elif sm.is_any_slope_state:
+        return handle_slope_building_click
+    elif sm.is_lift_placing:
+        return handle_lift_placing_click
+    else:
         raise RuntimeError(
-            f"No click handler registered for state '{state_name}'. "
-            f"Available states: {list(handlers.keys())}. "
-            f"Add handler for new state."
+            f"No click handler registered for state '{sm.get_state_name()}'. "
+            f"Expected idle, slope building, or lift placing state."
         )
-    return handler
 
 
 def dispatch_click(click_info: ClickInfo) -> None:
@@ -93,6 +91,7 @@ def dispatch_click(click_info: ClickInfo) -> None:
     # Get elevation ONLY for terrain clicks (markers don't have lat/lon)
     elevation: float | None = None
     if click_info.click_type == MapClickType.TERRAIN:
+        assert click_info.lon is not None and click_info.lat is not None  # Validated in ClickInfo
         elevation = dem.get_elevation(lon=click_info.lon, lat=click_info.lat)
         if elevation is None:
             OutsideTerrainMessage(lat=click_info.lat, lon=click_info.lon).display()
@@ -101,7 +100,7 @@ def dispatch_click(click_info: ClickInfo) -> None:
     state_name = sm.get_state_name()
     logger.info(f"Dispatching {click_info.display_name} in state {state_name}")
 
-    handler = get_click_handler(state_name)
+    handler = get_click_handler(sm=sm)
     handler(click_info=click_info, elevation=elevation)
 
 
@@ -137,23 +136,16 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
 
     # TERRAIN click → start building based on mode
     if click_info.click_type == MapClickType.TERRAIN:
+        # ClickInfo validates lat/lon are set for terrain clicks
+        assert click_info.lat is not None and click_info.lon is not None
         lat, lon = click_info.lat, click_info.lon
-
-        if build_mode is None:
-            # No build mode selected - ignore terrain clicks
-            logger.info("[IDLE] Terrain click ignored: no build mode selected")
-            InvalidClickMessage(
-                action="click terrain",
-                reason="Select a build mode first (slope or lift type) to start building.",
-            ).display()
-            return
+        assert elevation is not None  # We got terrain elevation above
 
         if ctx.build_mode.is_slope():
             # Start building slope
             logger.info(f"[IDLE] Terrain click: starting new slope at ({lat:.6f}, {lon:.6f})")
             ctx.set_selection(lon=lon, lat=lat, elevation=elevation)
-            ctx.map.center = (lat, lon)
-            ctx.map.zoom = MapConfig.BUILDING_ZOOM
+            ctx.map.set_building_view(lon=lon, lat=lat)
             ctx.deferred.path_generation = True
             sm.start_building(
                 lon=lon,
@@ -164,8 +156,7 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
         elif ctx.build_mode.is_lift():
             # Start placing lift
             logger.info(f"[IDLE] Terrain click: starting {build_mode} at ({lat:.6f}, {lon:.6f})")
-            ctx.map.center = (lat, lon)
-            ctx.map.zoom = MapConfig.BUILDING_ZOOM
+            ctx.map.set_building_view(lon=lon, lat=lat)
             sm.select_lift_start(
                 node_id=None,
                 location=PathPoint(lon=lon, lat=lat, elevation=elevation),
@@ -180,25 +171,16 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
 
         # NODE → Start building from junction (uses build_mode)
         if marker_type == MarkerType.NODE:
+            assert click_info.node_id is not None  # Validated in ClickInfo
             node = graph.nodes.get(click_info.node_id)
             if not node:
                 raise RuntimeError(f"Node {click_info.node_id} not found in graph")
-
-            if build_mode is None:
-                # No build mode - ignore node clicks
-                logger.info("[IDLE] Node click ignored: no build mode selected")
-                InvalidClickMessage(
-                    action="click junction",
-                    reason="Select a build mode first (slope or lift type) to start building.",
-                ).display()
-                return
 
             if ctx.build_mode.is_slope():
                 # Start building slope from node
                 logger.info(f"[IDLE] Node click: starting slope from {node.id}")
                 ctx.set_selection(lon=node.lon, lat=node.lat, elevation=node.elevation)
-                ctx.map.center = (node.lat, node.lon)
-                ctx.map.zoom = MapConfig.BUILDING_ZOOM
+                ctx.map.set_building_view(lon=node.lon, lat=node.lat)
                 ctx.deferred.path_generation = True
                 sm.start_building(
                     lon=node.lon,
@@ -209,8 +191,7 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
             elif ctx.build_mode.is_lift():
                 # Start placing lift from node
                 logger.info(f"[IDLE] Node click: starting {build_mode} from {node.id}")
-                ctx.map.center = (node.lat, node.lon)
-                ctx.map.zoom = MapConfig.BUILDING_ZOOM
+                ctx.map.set_building_view(lon=node.lon, lat=node.lat)
                 sm.select_lift_start(node_id=node.id)
             else:
                 raise RuntimeError(f"[IDLE] Unknown build_mode '{build_mode}'. Expected SLOPE or a lift type.")
@@ -218,30 +199,30 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
 
         # SLOPE → Show slope panel (always works regardless of build_mode)
         if marker_type == MarkerType.SLOPE:
+            assert click_info.slope_id is not None  # Validated in ClickInfo
             slope = graph.slopes.get(click_info.slope_id)
             if not slope:
                 raise RuntimeError(f"Slope {click_info.slope_id} not found in graph")
             logger.info(f"[IDLE] Slope click: showing panel for {slope.name}")
             center_on_slope(ctx=ctx, graph=graph, slope=slope, zoom=MapConfig.VIEWING_ZOOM)
             sm.show_slope_info_panel(slope_id=slope.id)
-            st.rerun()  # Refresh sidebar with viewing state
-            return
+            st.rerun()  # Refresh sidebar with viewing state - raises StopExecution
 
         # SEGMENT → Show parent slope panel
         if marker_type == MarkerType.SEGMENT:
-            seg_id = click_info.segment_id
-            parent_slope = graph.get_slope_by_segment_id(segment_id=seg_id)
+            assert click_info.segment_id is not None  # Validated in ClickInfo
+            parent_slope = graph.get_slope_by_segment_id(segment_id=click_info.segment_id)
             if not parent_slope:
-                logger.info(f"[IDLE] Segment {seg_id} click: orphan segment, ignoring")
+                logger.info(f"[IDLE] Segment {click_info.segment_id} click: orphan segment, ignoring")
                 return
             logger.info(f"[IDLE] Segment click: showing panel for {parent_slope.name}")
             center_on_slope(ctx=ctx, graph=graph, slope=parent_slope, zoom=MapConfig.VIEWING_ZOOM)
             sm.show_slope_info_panel(slope_id=parent_slope.id)
-            st.rerun()  # Refresh sidebar with viewing state
-            return
+            st.rerun()  # Refresh sidebar with viewing state - raises StopExecution
 
         # LIFT → Show lift panel and sync build mode
         if marker_type == MarkerType.LIFT:
+            assert click_info.lift_id is not None  # Validated in ClickInfo
             lift = graph.lifts.get(click_info.lift_id)
             if not lift:
                 raise RuntimeError(f"Lift {click_info.lift_id} not found in graph")
@@ -251,11 +232,11 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
             ctx.lift.type = lift.lift_type
             center_on_lift(ctx=ctx, graph=graph, lift=lift, zoom=MapConfig.VIEWING_ZOOM)
             sm.show_lift_info_panel(lift_id=lift.id)
-            st.rerun()  # Refresh sidebar with viewing state
-            return
+            st.rerun()  # Refresh sidebar with viewing state - raises StopExecution
 
         # PYLON → Show parent lift panel and sync build mode
         if marker_type == MarkerType.PYLON:
+            assert click_info.lift_id is not None  # Validated in ClickInfo
             lift = graph.lifts.get(click_info.lift_id)
             if not lift:
                 raise RuntimeError(f"Lift {click_info.lift_id} not found in graph")
@@ -265,8 +246,7 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
             ctx.lift.type = lift.lift_type
             center_on_lift(ctx=ctx, graph=graph, lift=lift, zoom=MapConfig.VIEWING_ZOOM)
             sm.show_lift_info_panel(lift_id=lift.id)
-            st.rerun()  # Refresh sidebar with viewing state
-            return
+            st.rerun()  # Refresh sidebar with viewing state - raises StopExecution
 
         # PROPOSAL clicks in idle = programming error
         if marker_type in {MarkerType.PROPOSAL_ENDPOINT, MarkerType.PROPOSAL_BODY}:
@@ -275,6 +255,8 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
                 "This indicates a bug - proposal markers should not be on the map."
             )
 
+        # marker_type must be set for MARKER clicks (validated in ClickInfo)
+        assert marker_type is not None
         raise RuntimeError(f"[IDLE] Unhandled marker type {marker_type.value}. Add explicit handling.")
 
     raise RuntimeError(f"[IDLE] Unknown click_type {click_info.click_type}. Expected MARKER or TERRAIN.")
@@ -315,6 +297,7 @@ def handle_slope_building_click(click_info: ClickInfo, elevation: float | None) 
 
         # PROPOSAL_ENDPOINT → Commit path
         if marker_type == MarkerType.PROPOSAL_ENDPOINT:
+            assert click_info.proposal_number is not None  # Validated in ClickInfo
             idx = click_info.proposal_number - 1  # Convert 1-indexed to 0-indexed
             if 0 <= idx < len(ctx.proposals.paths):
                 path = ctx.proposals.paths[idx]
@@ -327,6 +310,7 @@ def handle_slope_building_click(click_info: ClickInfo, elevation: float | None) 
 
         # PROPOSAL_BODY → Select path variant
         if marker_type == MarkerType.PROPOSAL_BODY:
+            assert click_info.proposal_number is not None  # Validated in ClickInfo
             idx = click_info.proposal_number - 1  # Convert 1-indexed to 0-indexed
             if 0 <= idx < len(ctx.proposals.paths):
                 logger.info(f"[BUILDING] Proposal body click: selecting path {click_info.proposal_number}")
@@ -366,7 +350,8 @@ def handle_slope_building_click(click_info: ClickInfo, elevation: float | None) 
             ).display()
             return
 
-        # STRICT: Unknown marker type
+        # STRICT: Unknown marker type (marker_type must be set for MARKER clicks)
+        assert marker_type is not None
         raise RuntimeError(f"[BUILDING] Unhandled marker type {marker_type.value}. Add explicit handling.")
 
     # STRICT: Unknown click type
@@ -379,11 +364,18 @@ def _handle_custom_connect_click(click_info: ClickInfo, elevation: float | None)
     graph: "ResortGraph" = st.session_state.graph
 
     # Get target coordinates - from terrain click or from node lookup
+    target_lon: float
+    target_lat: float
+    target_elevation: float | None
+
     if click_info.click_type == MapClickType.TERRAIN:
+        assert click_info.lon is not None and click_info.lat is not None  # Validated in ClickInfo
         target_lon, target_lat = click_info.lon, click_info.lat
         target_elevation = elevation
         logger.info(f"Custom connect terrain click at ({target_lat:.6f}, {target_lon:.6f})")
-    elif click_info.click_type == MapClickType.MARKER and click_info.marker_type == MarkerType.NODE:
+    elif click_info.marker_type == MarkerType.NODE:
+        # click_type must be MARKER if not TERRAIN
+        assert click_info.node_id is not None  # Validated in ClickInfo
         node = graph.nodes.get(click_info.node_id)
         if not node:
             raise RuntimeError(f"Node {click_info.node_id} not found in graph")
@@ -512,6 +504,7 @@ def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) ->
 
     # NODE click → use existing node
     if click_info.click_type == MapClickType.MARKER and click_info.marker_type == MarkerType.NODE:
+        assert click_info.node_id is not None  # Validated in ClickInfo
         end_node = graph.nodes.get(click_info.node_id)
         if end_node:
             logger.info(f"[LIFT_PLACING] Node click: completing lift to {end_node.id}")
@@ -520,6 +513,7 @@ def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) ->
     if end_node is None:
         if click_info.click_type != MapClickType.TERRAIN:
             raise RuntimeError(f"Expected TERRAIN click but got {click_info.click_type}")
+        assert click_info.lat is not None and click_info.lon is not None  # Validated in ClickInfo
         lat, lon = click_info.lat, click_info.lon
         if elevation is None:
             OutsideTerrainMessage(lat=lat, lon=lon).display()
@@ -527,9 +521,11 @@ def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) ->
         end_node, _ = graph.get_or_create_node(lon=lon, lat=lat, elevation=elevation)
         logger.info(f"Created end node {end_node.id} for lift at ({lat:.6f}, {lon:.6f})")
 
-    start_node = graph.nodes.get(ctx.lift.start_node_id)
-    if start_node is None:
+    assert ctx.lift.start_node_id is not None  # Should be set by now
+    start_node_lookup = graph.nodes.get(ctx.lift.start_node_id)
+    if start_node_lookup is None:
         raise RuntimeError(f"Start node {ctx.lift.start_node_id} must exist but was not found")
+    start_node = start_node_lookup
 
     # Validate lift placement
     if error := validate_lift_different_nodes(

@@ -20,6 +20,7 @@ Classes:
 """
 
 from pathlib import Path
+from typing import Literal
 
 # Package root directory (where skiresort_planner/ lives)
 PACKAGE_DIR = Path(__file__).parent
@@ -39,7 +40,7 @@ class AppConfig:
 
     TITLE = "Ski Resort Planner - Design Your Dream Resort"
     ICON = "⛷️"
-    LAYOUT = "wide"
+    LAYOUT: Literal["centered", "wide"] = "wide"
 
 
 class EntityPrefixes:
@@ -52,7 +53,7 @@ class EntityPrefixes:
 
 
 class MapConfig:
-    """Default map view parameters."""
+    """Default map view parameters for Pydeck."""
 
     # Initial center for program start: Idalp, Ischgl, Austria
     START_CENTER_LAT = 46.982  # Latitude
@@ -60,15 +61,37 @@ class MapConfig:
 
     # Zoom levels for different modes
     # Higher number = more zoomed in, lower = more zoomed out
-    BUILDING_ZOOM = 15  # Working zoom for building slopes/lifts (close for selection)
-    VIEWING_ZOOM = 14  # Overview after finishing slope/lift (slightly zoomed out)
-    DEFAULT_ZOOM = BUILDING_ZOOM  # Default to building zoom to avoid animation during commits
+    # Reduced zoom levels to prevent camera going underground with 3D terrain
+    BUILDING_ZOOM = 14  # Working zoom for building slopes/lifts
+    VIEWING_ZOOM = 13  # Overview after finishing slope/lift (zoomed out)
+    VIEW_3D_ZOOM = 14  # 3D side view - balanced zoom
+    VIEW_3D_MIN_ZOOM = 12  # Minimum zoom for high elevation (prevents camera under terrain)
+    DEFAULT_ZOOM = VIEWING_ZOOM  # Start zoomed out to prevent camera clipping terrain
+
+    # Pitch angles for different modes
+    # Use 0 (top-down) for all modes to ensure accurate terrain clicks
+    BUILDING_PITCH = 0  # Top-down view for precise placement during building
+    VIEWING_PITCH = 0  # Top-down view for viewing (tilted views cause terrain click issues)
+    VIEW_3D_PITCH = 25  # 25° angle for 3D - more from above to avoid mountains blocking view
+    DEFAULT_PITCH = 0  # Always start top-down
+    DEFAULT_BEARING = 0  # Map rotation in degrees (0 = north up)
 
     # Node snapping threshold for lift placement (used when creating end nodes)
     LIFT_END_NODE_THRESHOLD_M = 80  # Extra generous for lift top station placement
+
     # At equator, 1 degree of latitude or longitude ≈ 111,320 meters
-    # (Earth circumference 40,075 km / 360 degrees)
+    # Used by MockDEMService in tests for coordinate calculations
     METERS_PER_DEGREE_EQUATOR = 111320.0
+
+    # 2D mode z-offsets (relative layer ordering, no terrain)
+    # Small offsets prevent z-fighting while keeping flat appearance
+    # Z-offsets for 2D mode - small values for proper layer ordering
+    Z_OFFSET_2D_SLOPES = 1  # Slope polygons at base
+    Z_OFFSET_2D_LIFTS = 2  # Lift cables above slopes
+    Z_OFFSET_2D_PYLONS = 3  # Pylons slightly above lift cables
+    Z_OFFSET_2D_ICONS = 4  # Slope/lift icons above pylons
+    Z_OFFSET_2D_NODES = 10  # Nodes above icons
+    Z_OFFSET_2D_MARKERS = 20  # Interactive markers (commit/select) on top
 
 
 class DEMConfig:
@@ -211,61 +234,77 @@ class PlannerConfig:
 
 
 class MarkerConfig:
-    """Static marker parameters for map UI feedback.
+    """Static marker parameters for Pydeck map UI feedback.
 
     Controls directional arrows, target markers, and station indicators.
-    All markers are static (no CSS animations) for simplicity and performance.
+    Colors are RGBA lists for Pydeck GPU rendering.
     """
 
     # Direction arrow for custom connect (downhill) and lift placement (uphill)
-    DIRECTION_ARROW_COLOR_DOWNHILL = "#22C55E"  # Green - going down (slopes)
-    DIRECTION_ARROW_COLOR_UPHILL = "#A855F7"  # Purple - going up (lifts)
+    DIRECTION_ARROW_COLOR_DOWNHILL = [34, 197, 94, 230]  # Green - going down (slopes)
+    DIRECTION_ARROW_COLOR_UPHILL = [168, 85, 247, 230]  # Purple - going up (lifts)
     DIRECTION_ARROW_LENGTH_M = 300  # Arrow length in meters
-    DIRECTION_ARROW_WIDTH = 4  # Line weight
+    DIRECTION_ARROW_WIDTH = 8  # Line width for PathLayer
 
     # Lift station marker
-    LIFT_STATION_COLOR = "#A855F7"  # Purple
-    LIFT_STATION_RADIUS = 14
+    LIFT_STATION_COLOR = [168, 85, 247, 230]  # Purple
+    LIFT_STATION_RADIUS = 25  # Meters for ScatterplotLayer
 
     # Orientation arrows (fall line compass at selection point)
     ORIENTATION_ARROW_LENGTH_M = 80
-    ORIENTATION_CONTOUR_COLOR = "#9CA3AF"  # Light gray
+    ORIENTATION_CONTOUR_COLOR = [156, 163, 175, 200]  # Light gray
 
     # Node marker styling
-    NODE_MARKER_COLOR = "#E5E7EB"  # Near-white for nodes (most visible)
+    NODE_MARKER_COLOR = [229, 231, 235, 220]  # Near-white for nodes (most visible)
+    NODE_MARKER_BORDER = [100, 100, 100, 255]  # Gray border
 
     # Pylon marker styling
-    PYLON_MARKER_COLOR = "#6B7280"  # Gray-500 fill
-    PYLON_BORDER_COLOR = "#1F2937"  # Gray-800 border
+    PYLON_MARKER_COLOR = [107, 114, 128, 230]  # Gray-500 fill
+    PYLON_BORDER_COLOR = [31, 41, 55, 255]  # Gray-800 border
+
+    # Cable line styling
+    CABLE_WIDTH = 4
+
+    # Z-offset for marker elevation to prevent z-fighting with terrain
+    # Markers/paths rendered this height above DEM elevation (meters)
+    # Smaller offsets (10m) work with top-down view; nodes slightly higher for clickability
+    MARKER_Z_OFFSET_M = 20
+
+    # Z-offset for paths/lines above terrain to prevent z-fighting
+    PATH_Z_OFFSET_M = 10
 
 
 class ClickConfig:
-    """Click detection and marker tooltip configuration.
+    """Click detection configuration for Pydeck picking.
 
-    Direct marker click detection uses machine-readable tooltips embedded
-    in user-friendly display text.
+    Pydeck uses object picking instead of tooltips for click detection.
+    Objects contain type and ID fields for identification.
     """
 
-    # Tooltip prefixes for marker identification (user-friendly display)
-    # Format: "{prefix} {id}" for single ID or "{prefix} {id} on {parent}" for nested
-    # IDs use consistent short format: N1 (node), SL1 (slope), L1 (lift), S1 (segment)
-    TOOLTIP_PREFIX_NODE = "Build From Node"  # "Build From Node N1"
-    TOOLTIP_PREFIX_SLOPE_ICON = "View Slope"  # "View Slope SL1"
-    TOOLTIP_PREFIX_LIFT_ICON = "View Lift"  # "View Lift L1"
-    TOOLTIP_PREFIX_PYLON = "View Pylon"  # "View Pylon 1 on L1" (1-indexed for user display)
-    TOOLTIP_PREFIX_PROPOSAL_END = "Commit Proposal"  # "Commit Proposal 1" (1-indexed)
-    TOOLTIP_PREFIX_PROPOSAL_BODY = "Select Proposal"  # "Select Proposal 1" (1-indexed)
+    # Pydeck picking configuration
+    PICKING_RADIUS_PX = 8  # Pixels radius for click detection (5-10 ideal for nodes on lines)
 
-    # Separator for nested IDs (e.g., "Pylon 3 on Lift 1")
-    TOOLTIP_SEPARATOR_ON = " on "
+    # Object type identifiers (used in layer data for picking)
+    TYPE_TERRAIN = "terrain"  # Invisible layer for terrain clicks
+    TYPE_NODE = "node"
+    TYPE_SEGMENT = "segment"
+    TYPE_SLOPE = "slope"
+    TYPE_LIFT = "lift"
+    TYPE_PYLON = "pylon"
+    TYPE_PROPOSAL_ENDPOINT = "proposal_endpoint"
+    TYPE_PROPOSAL_BODY = "proposal_body"
 
-    # Clickable marker radii (pixels) - Colors are slope colors if applicable
-    NODE_MARKER_RADIUS = 7
-    SLOPE_ICON_MARKER_RADIUS = 8
-    PYLON_MARKER_RADIUS = 5
-    PROPOSAL_BODY_RADIUS = 6
-    PROPOSAL_ENDPOINT_RADIUS = 8
-    PROPOSAL_ENDPOINT_COLOR = "#F97316"  # Orange-500
+    # Clickable marker radii (meters for Pydeck ScatterplotLayer)
+    NODE_MARKER_RADIUS = 25
+    SLOPE_ICON_MARKER_RADIUS = 20
+    PYLON_MARKER_RADIUS = 15
+    PROPOSAL_BODY_RADIUS = 20
+    PROPOSAL_ENDPOINT_RADIUS = 28
+
+    # Colors for interactive elements (RGBA for Pydeck)
+    PROPOSAL_ENDPOINT_COLOR = [249, 115, 22, 230]  # Orange-500
+
+    DEBOUNCE_TIME_DELAY = 0.15  # Minimum time between clicks (150ms debounce)
 
 
 class LiftConfig:
@@ -303,7 +342,7 @@ class LiftConfig:
             "pylon_height_m": 60,
             "station_height_m": 10,
             "min_spacing_m": 10,
-            "max_spacing_m": None,  # Can span very long distances
+            "max_spacing_m": 1e6,  # Can span very long distances
             "min_clearance_m": 30,
             "sag_factor": 0.06,
         },
@@ -314,7 +353,7 @@ class LiftConfig:
 class StyleConfig:
     """Visual colors and styling."""
 
-    # Slope colors (Tailwind CSS palette)
+    # Slope colors - Hex for Plotly charts
     SLOPE_COLORS = {
         "green": "#22C55E",  # green-500
         "blue": "#3B82F6",  # blue-500
@@ -322,6 +361,15 @@ class StyleConfig:
         "black": "#1F2937",  # gray-800
     }
     assert set(SLOPE_COLORS.keys()) == set(SlopeConfig.DIFFICULTIES)
+
+    # Slope colors - RGBA lists for Pydeck (GPU-compatible format)
+    SLOPE_COLORS_RGBA = {
+        "green": [34, 197, 94, 200],  # #22C55E with alpha
+        "blue": [59, 130, 246, 200],  # #3B82F6
+        "red": [239, 68, 68, 200],  # #EF4444
+        "black": [31, 41, 55, 255],  # #1F2937 (full opacity for contrast)
+    }
+    assert set(SLOPE_COLORS_RGBA.keys()) == set(SlopeConfig.DIFFICULTIES)
 
     # Difficulty emoji mapping
     DIFFICULTY_EMOJIS = {
@@ -332,7 +380,7 @@ class StyleConfig:
     }
     assert set(DIFFICULTY_EMOJIS.keys()) == set(SlopeConfig.DIFFICULTIES)
 
-    # Lift colors
+    # Lift colors - Hex for Plotly
     LIFT_COLORS = {
         "surface_lift": "#D8B4FE",  # Light purple
         "chairlift": "#A855F7",  # Bright purple
@@ -340,6 +388,15 @@ class StyleConfig:
         "aerial_tram": "#7C3AED",  # Vibrant purple
     }
     assert set(LIFT_COLORS.keys()) == set(LiftConfig.TYPES)
+
+    # Lift colors - RGBA lists for Pydeck
+    LIFT_COLORS_RGBA = {
+        "surface_lift": [216, 180, 254, 200],
+        "chairlift": [168, 85, 247, 200],
+        "gondola": [107, 33, 168, 200],
+        "aerial_tram": [124, 58, 237, 200],
+    }
+    assert set(LIFT_COLORS_RGBA.keys()) == set(LiftConfig.TYPES)
 
     # Lift icons for map display
     LIFT_ICONS = {

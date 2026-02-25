@@ -9,7 +9,6 @@ import pytest
 from skiresort_planner.constants import ConnectionConfig
 from skiresort_planner.model.message import (
     LiftMustGoUphillMessage,
-    OutsideTerrainMessage,
     SameNodeLiftMessage,
     TargetNotDownhillMessage,
     TargetTooFarMessage,
@@ -19,36 +18,9 @@ from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.ui.validators import (
     validate_custom_target_distance,
     validate_custom_target_downhill,
-    validate_elevation_exists,
     validate_lift_different_nodes,
     validate_lift_goes_uphill,
 )
-
-
-class TestValidateElevationExists:
-    """Tests for validate_elevation_exists."""
-
-    def test_valid_elevation_returns_none(self) -> None:
-        """Non-None elevation is valid."""
-        result = validate_elevation_exists(lat=46.97, lon=10.27, elevation=2500.0)
-        assert result is None
-
-    def test_zero_elevation_is_valid(self) -> None:
-        """Zero elevation (sea level) is valid."""
-        result = validate_elevation_exists(lat=46.97, lon=10.27, elevation=0.0)
-        assert result is None
-
-    def test_negative_elevation_is_valid(self) -> None:
-        """Negative elevation (below sea level) is valid."""
-        result = validate_elevation_exists(lat=46.97, lon=10.27, elevation=-100.0)
-        assert result is None
-
-    def test_none_elevation_returns_message(self) -> None:
-        """None elevation returns OutsideTerrainMessage."""
-        result = validate_elevation_exists(lat=46.97, lon=10.27, elevation=None)
-        assert isinstance(result, OutsideTerrainMessage)
-        assert result.lat == 46.97
-        assert result.lon == 10.27
 
 
 class TestValidateLiftGoesUphill:

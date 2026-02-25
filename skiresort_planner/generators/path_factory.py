@@ -199,7 +199,6 @@ class PathFactory:
                     all_diffs_seen = all(count_by_diff[d] > 0 for d in ["green", "blue", "red"])
                     if center_count > PathConfig.MAX_CENTER_PATHS and all_diffs_seen:
                         stop_generation = True
-                        break
                     side_variants = [Side.CENTER]
                 else:
                     side_variants = [Side.LEFT, Side.RIGHT]

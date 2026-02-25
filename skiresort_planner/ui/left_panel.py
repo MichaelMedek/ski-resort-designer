@@ -13,7 +13,7 @@ All rendering logic is encapsulated to keep the main app.py concise.
 import json
 import logging
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 import streamlit as st
 
@@ -21,7 +21,6 @@ from skiresort_planner.constants import (
     PathConfig,
     StyleConfig,
 )
-from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.message import (
     FileLoadErrorMessage,
 )
@@ -130,7 +129,7 @@ class SidebarRenderer:
             self._render_mode_instructions()
 
             # Building state controls
-            if self.sm.is_slope_building:
+            if self.sm.is_any_slope_state:
                 actions.update(self._render_building_controls())
 
             # Lift placing controls - cancel button
@@ -156,6 +155,16 @@ class SidebarRenderer:
                 help="Nothing to undo" if not can_undo else "Undo the last action",
             )
 
+            # Reset view button - recenters map and sets top-down view
+            if st.button(
+                "🎯 Reset View",
+                width="stretch",
+                help="Reset camera to standard position and orientation",
+            ):
+                self.ctx.map.reset_view()
+                bump_map_version()
+                st.rerun()
+
             # Divider before stats section
             st.divider()
 
@@ -174,30 +183,24 @@ class SidebarRenderer:
         When viewing a lift, the lift type buttons change that lift's type.
         Slope is pre-selected by default.
         """
-        state_name = self.sm.get_state_name()
-
-        # Viewing states take priority over underlying state
-        viewing_slope = self.ctx.viewing.panel_visible and self.ctx.viewing.slope_id is not None
-        viewing_lift = self.ctx.viewing.panel_visible and self.ctx.viewing.lift_id is not None
+        # Use state machine properties for viewing checks
+        viewing_slope = self.sm.is_idle_viewing_slope
+        viewing_lift = self.sm.is_idle_viewing_lift
 
         if viewing_slope:
             st.markdown("### 👁️ Viewing Slope")
         elif viewing_lift:
             st.markdown("### 👁️ Viewing Lift")
-        elif state_name == "SlopeBuilding":
+        elif self.sm.is_any_slope_state:
             st.markdown("### 🏗️ Building Slope...")
-        elif state_name == "LiftPlacing":
+        elif self.sm.is_lift_placing:
             st.markdown("### 🏗️ Placing Lift...")
-        elif state_name == "Idle":
-            st.markdown("### ⛷️🚡 Ready to Build")
         else:
-            raise ValueError(
-                f"Unknown state for header: state_name={state_name}, "
-                f"viewing_slope={viewing_slope}, viewing_lift={viewing_lift}"
-            )
+            # All Idle* states (IdleReady, IdleViewingSlope, IdleViewingLift)
+            st.markdown("### ⛷️🚡 Ready to Build")
 
         # Buttons disabled during building/placing
-        buttons_disabled = self.sm.is_slope_building or self.sm.is_lift_placing
+        buttons_disabled = self.sm.is_any_slope_state or self.sm.is_lift_placing
         current_mode = self.ctx.build_mode.mode
 
         # Note: viewing_slope and viewing_lift already computed above for header
@@ -211,16 +214,12 @@ class SidebarRenderer:
                 "- ✖️ **Close** in the right panel to return\n"
                 "- 🗺️ Click terrain/node → new lift"
             )
-        elif state_name == "Idle":
+        else:
+            # All Idle* states without viewing panel
             st.markdown(
                 "- 🔘 Select **Slope** or **Lift** type below\n"
                 "- 🗺️ Click terrain/node → start building\n"
                 "- 👁️ Click existing slope/lift → view stats"
-            )
-        else:
-            raise ValueError(
-                f"Unknown state for caption: state_name={state_name}, "
-                f"buttons_disabled={buttons_disabled}, viewing_slope={viewing_slope}, viewing_lift={viewing_lift}"
             )
 
         # Build type options for lifts (2x2 grid)
@@ -242,7 +241,7 @@ class SidebarRenderer:
         # === SLOPE button (full width) ===
         slope_disabled = buttons_disabled or viewing_lift
         slope_selected = current_mode == BuildMode.SLOPE
-        slope_type = "primary" if slope_selected else "secondary"
+        slope_type: Literal["primary", "secondary"] = "primary" if slope_selected else "secondary"
         slope_label = "⛷️ **Slope**" if slope_selected else "⛷️ Slope"
         slope_help = self._get_button_help(
             mode=BuildMode.SLOPE,
@@ -309,11 +308,11 @@ class SidebarRenderer:
         is_selected = current_mode == mode
 
         # When viewing lift, highlight the viewed lift's type
-        if viewing_lift:
+        if viewing_lift and self.ctx.viewing.lift_id:
             viewed_lift = self.graph.lifts.get(self.ctx.viewing.lift_id)
-            is_selected = viewed_lift and viewed_lift.lift_type == mode
+            is_selected = viewed_lift is not None and viewed_lift.lift_type == mode
 
-        button_type = "primary" if is_selected else "secondary"
+        button_type: Literal["primary", "secondary"] = "primary" if is_selected else "secondary"
         button_label = f"{icon} **{label}**" if is_selected else f"{icon} {label}"
         button_help = self._get_button_help(
             mode=mode,
@@ -523,7 +522,7 @@ class SidebarRenderer:
                         lons = [n.lon for n in loaded_graph.nodes.values()]
                         mean_lat = sum(lats) / len(lats)
                         mean_lon = sum(lons) / len(lons)
-                        self.ctx.map.center = (mean_lat, mean_lon)
+                        self.ctx.map.set_center(lon=mean_lon, lat=mean_lat)
                         logger.info(f"Centered map on mean: ({mean_lat:.5f}, {mean_lon:.5f})")
 
                     logger.info(f"Loaded resort from file: {uploaded_file.name}")

@@ -11,6 +11,7 @@ Reference: DETAILS.md
 
 from dataclasses import dataclass
 from math import floor
+from typing import Any
 
 import pyproj
 from shapely.geometry import LineString
@@ -160,11 +161,11 @@ class SlopeSegment(BaseSlopePath):
         buffered_wgs84 = shapely_transform(to_wgs84, buffered_utm)
 
         if hasattr(buffered_wgs84, "exterior"):
-            return list(buffered_wgs84.exterior.coords)
+            return [(float(c[0]), float(c[1])) for c in buffered_wgs84.exterior.coords]
         return []
 
     @classmethod
-    def from_dict(cls, data: dict) -> "SlopeSegment":
+    def from_dict(cls, data: dict[str, Any]) -> "SlopeSegment":
         """Create SlopeSegment from dictionary."""
         return cls(
             id=data["id"],

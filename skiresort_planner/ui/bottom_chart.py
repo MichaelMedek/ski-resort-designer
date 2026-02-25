@@ -19,10 +19,8 @@ from skiresort_planner.constants import ChartConfig, LiftConfig, StyleConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.model.lift import Lift
-from skiresort_planner.model.resort_graph import (
-    ProposedSlopeSegment,
-    ResortGraph,
-)
+from skiresort_planner.model.proposed_path import ProposedSlopeSegment
+from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.model.slope import Slope
 from skiresort_planner.model.slope_segment import SlopeSegment
 
@@ -487,7 +485,7 @@ class ProfileChart:
         )
         return fig
 
-    def _hex_to_rgba(self, hex_color: str, alpha: float) -> tuple:
+    def _hex_to_rgba(self, hex_color: str, alpha: float) -> tuple[int, int, int, float]:
         """Convert hex color to RGBA tuple."""
         hex_color = hex_color.lstrip("#")
         r = int(hex_color[0:2], 16)
@@ -519,7 +517,7 @@ class ProfileChart:
 
         # Get station height from config
         config = LiftConfig.PYLON_CONFIG[lift.lift_type]
-        station_height = config["station_height_m"]
+        station_height: float = config["station_height_m"]
 
         # Calculate lift metrics
         length_m = GeoCalculator.haversine_distance_m(

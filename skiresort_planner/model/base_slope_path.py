@@ -49,6 +49,7 @@ class BaseSlopePath:
         """Total vertical drop in meters (computed from endpoints)."""
         if len(self.points) < 2:
             return 0.0
+        assert self.start is not None and self.end is not None
         return self.start.elevation - self.end.elevation
 
     @property

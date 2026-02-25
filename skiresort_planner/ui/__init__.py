@@ -2,9 +2,10 @@
 
 File Structure (layout-based naming):
 - left_panel.py: Sidebar with mode selection, building controls, stats
-- center_map.py: Folium map with slopes, lifts, proposals
+- center_map.py: Pydeck map with slopes, lifts, proposals
 - right_panel.py: Control panels, path selection, stats panels
 - bottom_chart.py: Plotly elevation profile charts
+- pydeck_click_handler.py: Custom click handling for Pydeck maps
 
 Core Components:
 - state_machine.py: PlannerStateMachine (4 states) + PlannerContext
@@ -23,10 +24,13 @@ from skiresort_planner.ui.actions import (
     center_on_lift,
     center_on_slope,
     commit_selected_path,
+    display_pending_toasts,
     enter_custom_direction_mode,
     finish_current_slope,
     handle_deferred_actions,
+    queue_toast,
     recompute_paths,
+    reload_map,
     undo_last_action,
 )
 from skiresort_planner.ui.bottom_chart import (
@@ -38,6 +42,7 @@ from skiresort_planner.ui.center_map import MapRenderer
 from skiresort_planner.ui.click_detector import ClickDetector
 from skiresort_planner.ui.click_handlers import dispatch_click
 from skiresort_planner.ui.left_panel import SidebarRenderer
+from skiresort_planner.ui.pydeck_click_handler import PydeckClickResult, render_pydeck_map
 from skiresort_planner.ui.right_panel import (
     LiftStatsPanel,
     PathSelectionPanel,
@@ -72,9 +77,14 @@ __all__ = [
     "center_on_lift",
     "center_on_slope",
     "commit_selected_path",
+    "display_pending_toasts",
     "enter_custom_direction_mode",
     "finish_current_slope",
     "handle_deferred_actions",
+    "queue_toast",
     "recompute_paths",
+    "reload_map",
     "undo_last_action",
+    "PydeckClickResult",
+    "render_pydeck_map",
 ]

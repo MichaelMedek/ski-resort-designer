@@ -32,12 +32,21 @@ class PathPoint:
 
     Example:
         point = PathPoint(lon=10.295, lat=46.985, elevation=2400.0)
-        print(point.coords)  # (10.295, 46.985)
     """
 
     lon: float
     lat: float
     elevation: float
+
+    @property
+    def lat_lon(self) -> tuple[float, float]:
+        """Return (lat, lon) tuple - standard geographic order."""
+        return (self.lat, self.lon)
+
+    @property
+    def lon_lat(self) -> tuple[float, float]:
+        """Return (lon, lat) tuple - GeoJSON/Pydeck order."""
+        return (self.lon, self.lat)
 
     def __post_init__(self) -> None:
         """Validate data after initialization."""
@@ -59,11 +68,6 @@ class PathPoint:
             lat2=other.lat,
             lon2=other.lon,
         )
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "PathPoint":
-        """Create PathPoint from dictionary."""
-        return cls(**data)
 
     def __repr__(self) -> str:
         return f"PathPoint(lon={self.lon:.5f}, lat={self.lat:.5f}, elev={self.elevation:.1f}m)"

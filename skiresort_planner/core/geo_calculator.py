@@ -101,31 +101,3 @@ class GeoCalculator:
             cos(d_R) - sin(lat1) * sin(lat2),
         )
         return degrees(lon2), degrees(lat2)
-
-    @staticmethod
-    def lerp_bearing(
-        bearing_a: float,
-        bearing_b: float,
-        alpha: float = 0.5,
-    ) -> float:
-        """Circular linear interpolation between two bearings.
-
-        Handles the wraparound at 0°/360° correctly, always taking the shorter arc.
-        Uses vector averaging weighted by alpha.
-
-        Special case: alpha=0.5 gives the circular mean of two bearings.
-
-        Args:
-            bearing_a: Starting bearing in degrees (0-360)
-            bearing_b: Target bearing in degrees (0-360)
-            alpha: Interpolation weight (0 = all bearing_a, 1 = all bearing_b, 0.5 = mean)
-
-        Returns:
-            Interpolated bearing in degrees (0-360).
-        """
-        alpha = max(0.0, min(1.0, alpha))
-        rad_a = radians(bearing_a)
-        rad_b = radians(bearing_b)
-        x = (1 - alpha) * sin(rad_a) + alpha * sin(rad_b)
-        y = (1 - alpha) * cos(rad_a) + alpha * cos(rad_b)
-        return (degrees(atan2(x, y)) + 360) % 360

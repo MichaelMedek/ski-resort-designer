@@ -10,8 +10,8 @@ import logging
 import traceback
 from typing import TYPE_CHECKING
 
+import pydeck as pdk
 import streamlit as st
-from streamlit_folium import st_folium
 
 from skiresort_planner.constants import (
     AppConfig,
@@ -35,6 +35,7 @@ from skiresort_planner.ui import (
     cancel_custom_direction_mode,
     commit_selected_path,
     dispatch_click,
+    display_pending_toasts,
     enter_custom_direction_mode,
     finish_current_slope,
     handle_deferred_actions,
@@ -44,6 +45,8 @@ from skiresort_planner.ui import (
     render_proposal_preview,
     undo_last_action,
 )
+from skiresort_planner.ui.pydeck_click_handler import render_pydeck_map
+from skiresort_planner.ui.terrain_layer import create_aws_terrain_layer
 
 if TYPE_CHECKING:
     from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
@@ -69,9 +72,11 @@ def init_session_state() -> None:
 
     if "map_renderer" not in st.session_state:
         st.session_state.map_renderer = MapRenderer(
-            center_lat=MapConfig.START_CENTER_LAT,
             center_lon=MapConfig.START_CENTER_LON,
+            center_lat=MapConfig.START_CENTER_LAT,
             zoom=MapConfig.DEFAULT_ZOOM,
+            pitch=MapConfig.DEFAULT_PITCH,
+            bearing=MapConfig.DEFAULT_BEARING,
         )
 
     if "_upload_counter" not in st.session_state:
@@ -142,8 +147,7 @@ def load_dem_data() -> bool:
         st.session_state.dem_service = dem_service
         st.session_state.path_factory = PathFactory(dem_service=dem_service)
 
-    st.rerun()
-    return False
+    st.rerun()  # Raises StopExecution, never returns
 
 
 # =============================================================================
@@ -151,7 +155,6 @@ def load_dem_data() -> bool:
 # =============================================================================
 
 
-@st.fragment
 def _render_map_fragment() -> None:
     """Render map and handle clicks in an isolated fragment.
 
@@ -178,69 +181,125 @@ def _render_map_fragment_inner() -> None:
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
     renderer: MapRenderer = st.session_state.map_renderer
+    terrain_analyzer: TerrainAnalyzer = st.session_state.path_factory.terrain_analyzer
 
-    m = renderer.render(
-        proposals=ctx.proposals.paths,
-        selected_proposal_idx=ctx.proposals.selected_idx,
-        highlight_segment_ids=ctx.building.segments,
-        is_custom_path=ctx.custom_connect.force_mode,
-    )
+    # Determine 2D/3D mode early so all layers use consistent z-handling
+    use_3d = ctx.viewing.view_3d
+
+    # Collect extra layers for overlays
+    extra_layers: list[pdk.Layer] = []
 
     # Add orientation arrows in Building state
-    if sm.is_slope_building and ctx.selection.lon is not None and ctx.selection.lat is not None:
-        terrain_analyzer: TerrainAnalyzer = st.session_state.path_factory.terrain_analyzer
+    if sm.is_any_slope_state and ctx.selection.lon is not None and ctx.selection.lat is not None:
         orientation = terrain_analyzer.get_orientation(lon=ctx.selection.lon, lat=ctx.selection.lat)
         if orientation:
-            renderer.add_orientation_arrows(
-                m=m,
+            arrow_layers = renderer.create_orientation_arrows_layers(
                 lat=ctx.selection.lat,
                 lon=ctx.selection.lon,
+                elevation=ctx.selection.elevation or 0.0,
                 orientation=orientation,
+                use_3d=use_3d,
             )
+            extra_layers.extend(arrow_layers)
 
     # Add direction arrow in custom connect mode
     if ctx.custom_connect.enabled and ctx.custom_connect.start_node:
         start_node = graph.nodes.get(ctx.custom_connect.start_node)
         if start_node:
-            terrain_analyzer: TerrainAnalyzer = st.session_state.path_factory.terrain_analyzer
             gradient = terrain_analyzer.compute_gradient(lon=start_node.lon, lat=start_node.lat)
-            renderer.add_direction_arrow(
-                m=m,
+            arrow_layer = renderer.create_direction_arrow_layer(
                 start_lat=start_node.lat,
                 start_lon=start_node.lon,
                 bearing_deg=gradient.bearing_deg,
                 direction="downhill",
-                tooltip="🎯 Click DOWNHILL to create path",
+                use_3d=use_3d,
             )
+            extra_layers.append(arrow_layer)
 
     # Add lift marker in LiftPlacing state
     if sm.is_lift_placing and (ctx.lift.start_node_id or ctx.lift.start_location):
-        terrain_analyzer: TerrainAnalyzer = st.session_state.path_factory.terrain_analyzer
         if ctx.lift.start_node_id:
-            start_node = graph.nodes.get(ctx.lift.start_node_id)
-            gradient = terrain_analyzer.compute_gradient(lon=start_node.lon, lat=start_node.lat)
-            renderer.add_pending_lift_marker(
-                m=m, fall_line_bearing=gradient.bearing_deg, node_id=ctx.lift.start_node_id
+            lift_start_node = graph.nodes.get(ctx.lift.start_node_id)
+            if lift_start_node is None:
+                raise ValueError(f"Lift start node {ctx.lift.start_node_id} not found in graph")
+            gradient = terrain_analyzer.compute_gradient(lon=lift_start_node.lon, lat=lift_start_node.lat)
+            lift_layers = renderer.create_pending_lift_marker_layers(
+                lat=lift_start_node.lat,
+                lon=lift_start_node.lon,
+                elevation=lift_start_node.elevation,
+                fall_line_bearing=gradient.bearing_deg,
+                use_3d=use_3d,
             )
+            extra_layers.extend(lift_layers)
         elif ctx.lift.start_location:
             loc = ctx.lift.start_location
             gradient = terrain_analyzer.compute_gradient(lon=loc.lon, lat=loc.lat)
-            renderer.add_pending_lift_marker(m=m, fall_line_bearing=gradient.bearing_deg, location=loc)
+            lift_layers = renderer.create_pending_lift_marker_layers(
+                lat=loc.lat,
+                lon=loc.lon,
+                elevation=loc.elevation,
+                fall_line_bearing=gradient.bearing_deg,
+                use_3d=use_3d,
+            )
+            extra_layers.extend(lift_layers)
+    # 3D mode: TerrainLayer with AWS tiles + OpenTopoMap texture
+    # 2D mode: No terrain_layer needed - render() uses OPENTOPOMAP_STYLE map_style dict
+    #          (TileLayer doesn't work because pydeck doesn't expose renderSubLayers)
+    basemap_layer = create_aws_terrain_layer() if use_3d else None
 
-    # Render map - dynamic key resets st_folium state when map_version changes
-    # This eliminates ghost clicks by creating a fresh component instance
-    map_data = st_folium(
-        m,
-        width=None,
+    # Render deck with all layers
+    deck = renderer.render(
+        proposals=ctx.proposals.paths,
+        selected_proposal_idx=ctx.proposals.selected_idx,
+        highlight_segment_ids=ctx.building.segments,
+        is_custom_path=ctx.custom_connect.force_mode,
+        extra_layers=extra_layers,
+        terrain_layer=basemap_layer,
+        use_3d=use_3d,
+    )
+
+    # Update view state from context - or calculate 3D camera position
+    if use_3d and sm.is_info_panel_visible:
+        # Calculate optimal 3D camera position for viewing slope/lift
+        if sm.is_idle_viewing_slope and ctx.viewing.slope_id:
+            lat, lon, bearing, zoom, pitch = MapRenderer.calculate_3d_view_for_slope(
+                graph=graph, slope_id=ctx.viewing.slope_id
+            )
+        elif sm.is_idle_viewing_lift and ctx.viewing.lift_id:
+            lat, lon, bearing, zoom, pitch = MapRenderer.calculate_3d_view_for_lift(
+                graph=graph, lift_id=ctx.viewing.lift_id
+            )
+        else:
+            # 3D enabled but not viewing - shouldn't happen, disable 3D
+            ctx.viewing.disable_3d()
+            lat, lon, bearing, zoom, pitch = ctx.map.lat, ctx.map.lon, ctx.map.bearing, ctx.map.zoom, ctx.map.pitch
+
+        deck.initial_view_state = pdk.ViewState(
+            longitude=lon,
+            latitude=lat,
+            zoom=zoom,
+            pitch=pitch,
+            bearing=bearing,
+        )
+    else:
+        # Normal 2D view - use stored view state
+        deck.initial_view_state = pdk.ViewState(
+            longitude=ctx.map.lon,
+            latitude=ctx.map.lat,
+            zoom=ctx.map.zoom,
+            pitch=ctx.map.pitch,
+            bearing=ctx.map.bearing,
+        )
+
+    # Render with click handling
+    click_result = render_pydeck_map(
+        deck=deck,
         height=ChartConfig.PROFILE_HEIGHT_LARGE,
-        center=ctx.map.center,
-        zoom=ctx.map.zoom,
-        returned_objects=["last_clicked", "last_object_clicked", "last_object_clicked_tooltip"],
         key=f"main_map_{st.session_state.map_version}",
     )
 
     # Elevation profiles below map
-    if sm.is_slope_building and ctx.building.segments:
+    if sm.is_any_slope_state and ctx.building.segments:
         fig = render_building_profiles(
             building_segments=ctx.building.segments,
             building_name=ctx.building.name,
@@ -252,11 +311,19 @@ def _render_map_fragment_inner() -> None:
         fig = render_proposal_preview(proposals=ctx.proposals.paths, selected_idx=ctx.proposals.selected_idx)
         st.plotly_chart(fig, width="stretch", key="preview_profile")
 
-    # Detect clicks - only fires on actual clicks (not pan/zoom)
-    detector = ClickDetector(dedup=ctx.click_dedup)
-    click_info = detector.detect(map_data=map_data)
-    if click_info:
-        dispatch_click(click_info=click_info)
+    # Detect clicks from Pydeck result - disabled in 3D mode
+    if use_3d:
+        # 3D mode: show warning if user clicks terrain
+        if click_result.clicked_coordinate:
+            st.toast("Clicking disabled in 3D view. Return to 2D to interact with the map.", icon="⚠️")
+    else:
+        detector = ClickDetector(dedup=ctx.click_dedup)
+        click_info = detector.detect(
+            clicked_object=click_result.clicked_object,
+            clicked_coordinate=click_result.clicked_coordinate,
+        )
+        if click_info:
+            dispatch_click(click_info=click_info)
 
 
 # =============================================================================
@@ -280,17 +347,27 @@ def main() -> None:
     except Exception as e:
         # Log full traceback for debugging
         error_msg = f"{type(e).__name__}: {e}"
-        logger.error(f"UI error caught: {error_msg}\n{traceback.format_exc()}")
+        full_traceback = traceback.format_exc()
+        logger.error(f"UI error caught: {error_msg}\n{full_traceback}")
+
+        # Show user-friendly error message
+        st.error(f"⚠️ Something went wrong: {error_msg}")
+        with st.expander("🔍 Technical Details", expanded=False):
+            st.code(full_traceback, language="python")
 
         # Reset UI state while preserving the graph
         reset_ui_state()
 
-        # Rerun to show clean UI
-        st.rerun()
+        # Add a button to manually recover
+        if st.button("🔄 Reset and Continue", type="primary"):
+            st.rerun()
 
 
 def _run_app_ui() -> None:
     """Run the main application UI. Separated for error handling wrapper."""
+    # Display any toast messages queued from previous run (before st.rerun was called)
+    display_pending_toasts()
+
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
@@ -331,8 +408,8 @@ def _run_app_ui() -> None:
             on_cancel_connection=cancel_connection_mode,
         )
 
-    # Full-width profile for viewing slope (panel visible with slope_id set)
-    if ctx.viewing.panel_visible and ctx.viewing.slope_id:
+    # Full-width profile for viewing slope
+    if sm.is_idle_viewing_slope and ctx.viewing.slope_id:
         chart = ProfileChart(height=ChartConfig.PROFILE_HEIGHT_MEDIUM, width=ChartConfig.WIDE_WIDTH)
         slope = graph.slopes.get(ctx.viewing.slope_id)
         if slope is None:
@@ -340,8 +417,8 @@ def _run_app_ui() -> None:
         fig = chart.render_slope(slope=slope, graph=graph)
         st.plotly_chart(fig, key="slope_full_profile")
 
-    # Full-width profile for viewing lift (panel visible with lift_id set)
-    if ctx.viewing.panel_visible and ctx.viewing.lift_id:
+    # Full-width profile for viewing lift
+    if sm.is_idle_viewing_lift and ctx.viewing.lift_id:
         lift = graph.lifts.get(ctx.viewing.lift_id)
         if lift is None:
             raise ValueError(f"Lift {ctx.viewing.lift_id} must exist when panel shows lift")

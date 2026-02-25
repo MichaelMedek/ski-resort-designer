@@ -211,6 +211,103 @@ class FileLoadErrorMessage(ToastMessage):
 
 
 # =============================================================================
+# TOAST MESSAGES - Undo feedback
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class UndoSegmentMessage(ToastMessage):
+    """Feedback for undoing a segment addition."""
+
+    segment_id: str
+    was_last_segment: bool = False
+
+    @property
+    def icon(self) -> str:
+        return "↩️"
+
+    @property
+    def message(self) -> str:
+        if self.was_last_segment:
+            return f"Removed {self.segment_id} — slope canceled (no segments left)"
+        return f"Removed segment {self.segment_id}"
+
+
+@dataclass(frozen=True)
+class UndoFinishSlopeMessage(ToastMessage):
+    """Feedback for undoing a slope finish."""
+
+    slope_name: str
+    num_segments: int
+
+    @property
+    def icon(self) -> str:
+        return "↩️"
+
+    @property
+    def message(self) -> str:
+        return f"Reopened {self.slope_name} — {self.num_segments} segments to continue editing"
+
+
+@dataclass(frozen=True)
+class UndoLiftMessage(ToastMessage):
+    """Feedback for undoing a lift addition."""
+
+    lift_name: str
+
+    @property
+    def icon(self) -> str:
+        return "↩️"
+
+    @property
+    def message(self) -> str:
+        return f"Removed lift {self.lift_name}"
+
+
+@dataclass(frozen=True)
+class UndoDeleteSlopeMessage(ToastMessage):
+    """Feedback for undoing a slope deletion."""
+
+    slope_name: str
+
+    @property
+    def icon(self) -> str:
+        return "↩️"
+
+    @property
+    def message(self) -> str:
+        return f"Restored slope {self.slope_name}"
+
+
+@dataclass(frozen=True)
+class UndoDeleteLiftMessage(ToastMessage):
+    """Feedback for undoing a lift deletion."""
+
+    lift_name: str
+
+    @property
+    def icon(self) -> str:
+        return "↩️"
+
+    @property
+    def message(self) -> str:
+        return f"Restored lift {self.lift_name}"
+
+
+@dataclass(frozen=True)
+class UndoCancelSlopeMessage(ToastMessage):
+    """Feedback when user presses undo but there's nothing to undo (exits slope mode)."""
+
+    @property
+    def icon(self) -> str:
+        return "↩️"
+
+    @property
+    def message(self) -> str:
+        return "Exited slope mode — nothing to undo"
+
+
+# =============================================================================
 # CENTER (UNDER MAP) - Loading states (BLUE)
 # =============================================================================
 
@@ -229,104 +326,8 @@ class DEMLoadingMessage(Message):
 
 
 # =============================================================================
-# LEFT PANEL (SIDEBAR) - Context/Status Messages (BLUE)
-# One consolidated message per state showing mode + stats + capabilities
+# RIGHT PANEL - Building Context Messages
 # =============================================================================
-
-
-@dataclass(frozen=True)
-class IdleModeContextMessage(Message):
-    """LEFT panel: Combined idle mode message for unified IDLE state.
-
-    Shows when user is in IDLE state (not building/placing anything).
-    Build mode determines what clicking terrain/nodes will create.
-    """
-
-    # Current build mode ("slope", "chairlift", "gondola", etc.)
-    build_mode: str
-    # Display name and icon for the current lift type (when build_mode is a lift)
-    lift_display_name: str = ""  # Default when not building a lift
-    lift_icon: str = ""  # Default when not building a lift
-
-    @property
-    def level(self) -> MessageLevel:
-        return MessageLevel.INFO
-
-    @property
-    def message(self) -> str:
-        from skiresort_planner.constants import LiftConfig
-
-        if self.build_mode == "slope":
-            return (
-                "⛷️ **Ready to Build Slopes**\n\n"
-                "🗺️ Click **terrain** → new slope\n"
-                "⚪ Click **node** → branch from existing\n"
-                "⛷️ Click **slope** → view details\n"
-                "🚡 Click **lift** → view details"
-            )
-        elif self.build_mode in LiftConfig.TYPES:
-            # Lift mode (chairlift, gondola, surface_lift, aerial_tram)
-            return (
-                f"🚡 **Ready to Build {self.lift_icon} {self.lift_display_name}**\n\n"
-                "🗺️ Click **terrain** → bottom station\n"
-                "⚪ Click **node** → bottom station\n"
-                "⛷️ Click **slope** → view details\n"
-                "🚡 Click **lift** → view details"
-            )
-        else:
-            raise ValueError(f"Unknown build_mode '{self.build_mode}'.")
-
-
-@dataclass(frozen=True)
-class ViewingSlopeMessage(Message):
-    """LEFT panel: Viewing slope stats.
-
-    Shown when user clicked a slope and is viewing its stats/profile.
-    """
-
-    slope_name: str
-
-    @property
-    def level(self) -> MessageLevel:
-        return MessageLevel.INFO
-
-    @property
-    def message(self) -> str:
-        return (
-            f"📊 **Viewing: {self.slope_name}**\n\n"
-            "Review slope stats in the panel on the right.\n\n"
-            "**Actions:**\n"
-            "- **Close** → closes stats panel\n"
-            "- Click **terrain/node** → start new slope\n"
-            "- To build **lift**: Close first, select lift type"
-        )
-
-
-@dataclass(frozen=True)
-class ViewingLiftMessage(Message):
-    """LEFT panel: Viewing lift stats.
-
-    Shown when user clicked a lift and is viewing its stats.
-    """
-
-    lift_name: str
-    lift_icon: str
-
-    @property
-    def level(self) -> MessageLevel:
-        return MessageLevel.INFO
-
-    @property
-    def message(self) -> str:
-        return (
-            f"📊 **Viewing: {self.lift_name}**\n\n"
-            "Review lift stats in the panel on the right.\n"
-            f"{self.lift_icon} Change lift type with buttons above.\n\n"
-            "**Actions:**\n"
-            "- **Close** → closes stats panel\n"
-            "- Click **terrain/node** → start new lift\n"
-            "- To build **slope**: Close first, select Slope"
-        )
 
 
 @dataclass(frozen=True)
@@ -487,7 +488,8 @@ class SlopeActionMessage(Message):
                 f"{action}"
             )
 
-        raise ValueError("No action message to display - all flags are False")
+        # No flags set - show fallback message for empty paths (terrain too steep, etc.)
+        return "⚠️ **No Paths Available**\n\n- Try 🎯 **Custom Direction** to pick a target\n- Or ↩️ **Undo** to go back"
 
 
 @dataclass(frozen=True)

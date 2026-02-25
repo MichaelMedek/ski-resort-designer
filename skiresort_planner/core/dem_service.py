@@ -84,6 +84,7 @@ class DEMService:
 
     _instance: Optional["DEMService"] = None
     _load_lock = threading.Lock()
+    _dem_path: Path
     _dem = None
     _dem_crs: Optional[str] = None
     _dem_array: Optional[np.ndarray] = None
@@ -119,7 +120,7 @@ class DEMService:
         with self._load_lock:
             # Double-check after acquiring lock
             if self.is_loaded:
-                return
+                return  # type: ignore[unreachable]  # Thread-safe double-check pattern
 
             dem_path = self._dem_path
 
@@ -152,6 +153,8 @@ class DEMService:
             Elevation in meters, or None if outside coverage or invalid.
         """
         self._ensure_loaded()
+        assert self._dem_transform is not None
+        assert self._dem_array is not None
 
         # Transform WGS84 to DEM CRS if needed
         if self._dem_crs != "EPSG:4326":
@@ -193,6 +196,7 @@ class DEMService:
             Tuple of (min_lon, min_lat, max_lon, max_lat) in decimal degrees.
         """
         self._ensure_loaded()
+        assert self._dem is not None
         b = self._dem.bounds
 
         if self._dem_crs != "EPSG:4326":
