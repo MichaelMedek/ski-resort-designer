@@ -68,14 +68,15 @@ class SlopeSegment(BaseSlopePath):
         """Compute all warnings based on segment metrics.
 
         Excavator warning triggers when side slope is so steep that even at
-        MIN_BELT_WIDTH_M, excavation would exceed threshold.
+        minimum belt width for this difficulty, excavation would exceed threshold.
         """
         result: list[Warning] = []
 
         # Excavator warning: side slope exceeds what MIN width can handle
         # Formula: H_edge = (side_slope_pct * width) / 200
         # Warning when: (side_slope_pct * MIN_WIDTH) / 200 > threshold
-        side_slope_limit = (EarthworkConfig.EXCAVATOR_THRESHOLD_M * 200) / EarthworkConfig.MIN_BELT_WIDTH_M
+        min_width, _ = EarthworkConfig.BELT_WIDTH_LIMITS[self.difficulty]
+        side_slope_limit = (EarthworkConfig.EXCAVATOR_THRESHOLD_M * 200) / min_width
         if abs(self.side_slope_pct) > side_slope_limit:
             result.append(
                 ExcavatorWarning(
@@ -120,24 +121,29 @@ class SlopeSegment(BaseSlopePath):
 
     @property
     def width_m(self) -> float:
-        """Belt width in meters based on side slope steepness.
+        """Belt width in meters based on side slope steepness and difficulty.
 
         Width is determined by side slope to keep excavation within threshold:
         width = (EXCAVATOR_THRESHOLD_M * 200) / abs(side_slope_pct)
 
+        Width limits vary by difficulty.
+
         Returns:
-            Width in meters, clamped to [MIN_BELT_WIDTH_M, MAX_BELT_WIDTH_M].
-            Returns MAX_BELT_WIDTH_M for flat terrain (side slope < 1%).
+            Width in meters, clamped to difficulty-specific limits.
+            Returns max width for flat terrain (side slope < 1%).
         """
+        # Get difficulty-specific limits
+        min_width, max_width = EarthworkConfig.BELT_WIDTH_LIMITS[self.difficulty]
+
         # Flat terrain: use maximum width to avoid zero division
         if abs(self.side_slope_pct) < 1.0:
-            return float(EarthworkConfig.MAX_BELT_WIDTH_M)
+            return float(max_width)
 
         # Calculate width from side slope to stay within excavation threshold
         adaptive_width = (EarthworkConfig.EXCAVATOR_THRESHOLD_M * 200) / abs(self.side_slope_pct)
 
-        # Clamp to allowed range
-        return max(EarthworkConfig.MIN_BELT_WIDTH_M, min(EarthworkConfig.MAX_BELT_WIDTH_M, adaptive_width))
+        # Clamp to allowed range for this difficulty
+        return max(min_width, min(max_width, adaptive_width))
 
     def get_belt_polygon(self) -> list[tuple[float, float]]:
         """Get belt polygon coordinates (buffered ribbon in meters).

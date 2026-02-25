@@ -8,6 +8,7 @@ This document analyzes the current 204 tests across 8 test files (1,800+ lines o
 - Consolidates related tests into workflow-based integration tests
 - Preserves granular unit tests only for core mathematical/logic functions
 - **Enforces strict state machine workflow testing based on python-statemachine best practices**
+- **Uses event-only API (direct transition calls are blocked at runtime - see Section 0.4)**
 
 ---
 
@@ -113,6 +114,7 @@ def test_undo_uses_guards_not_if_statements(sm, ctx, graph):
 | ✅ exit_* only cleans up | Verify stale references cleared, NOT visibility |
 | ✅ Self-loops run exit+enter | Self-transition refreshes state (e.g., new slope ID) |
 | ✅ Guards control flow | Use `cond=`/`unless=` transitions, not if-statements |
+| ✅ **Events only, no direct transitions** | **Use sm.undo() not sm.undo_to_idle() - see Section 0.4** |
 | ✅ StreamlitUIListener runs st.rerun() | After transition, rerun is triggered |
 | ✅ Context Object Pattern | State machine has NO business logic, only flow control |
 | ✅ Orthogonal flags (view_3d) | Flags are NOT separate states |
@@ -138,7 +140,106 @@ def test_wrong_before_view_slope():  # BAD
 
 # ANTI-PATTERN 3: Not testing self-loops refresh state (missing!)
 # MUST test that switch_slope actually updates the viewed slope
+
+# ANTI-PATTERN 4: Direct transition calls (RuntimeError at runtime!)
+def test_wrong_direct_transition():  # BAD - WILL FAIL
+    sm.undo_to_idle(removed_segment_id="S1")  # ❌ RuntimeError!
+    sm.commit_first_path(...)                  # ❌ RuntimeError!
+
+# CORRECT: Use events
+def test_correct_event_usage():  # GOOD
+    sm.undo(removed_segment_id="S1")           # ✅ Event resolves via guards
+    sm.commit_path(segment_id="S1", ...)       # ✅ Event resolves via state
 ```
+
+### 0.4 Event-Only API Enforcement (MANDATORY)
+
+**CRITICAL**: The state machine enforces event-only access via `__getattribute__` guard. Tests MUST use events or convenience methods, NEVER direct transition calls.
+
+#### 0.4.1 Blocked Transitions (RuntimeError at Runtime)
+
+These transition names are BLOCKED from direct calls:
+
+| Event | Blocked Transitions |
+|-------|---------------------|
+| `commit_path` | `commit_first_path`, `commit_continue_path` |
+| `undo` | `undo_to_idle`, `undo_continue` |
+| `cancel_slope` | `cancel_from_starting`, `cancel_from_building`, `cancel_slope_from_custom_picking`, `cancel_slope_from_custom_path` |
+| `cancel_custom` | `cancel_custom_to_starting`, `cancel_custom_to_building`, `cancel_path_to_starting`, `cancel_path_to_building` |
+| `enable_custom` | `enable_custom_from_starting`, `enable_custom_from_building` |
+
+Calling any blocked transition directly raises `RuntimeError`:
+
+```python
+# ❌ FORBIDDEN - raises RuntimeError
+sm.commit_first_path(segment_id="S1", endpoint_node_id="N1")
+sm.undo_to_idle(removed_segment_id="S1")
+sm.cancel_from_building()
+
+# ✅ CORRECT - use events or convenience methods
+sm.commit_path(segment_id="S1", endpoint_node_id="N1")  # event resolves to correct transition
+sm.send("undo", removed_segment_id="S1")                # send() also works
+sm.cancel_slope()                                        # convenience method uses event
+```
+
+#### 0.4.2 Allowed API for Tests
+
+| Method | Type | Description |
+|--------|------|-------------|
+| `sm.commit_path()` | Event | Resolves to commit_first_path or commit_continue_path |
+| `sm.undo()` | Event | Resolves to undo_to_idle or undo_continue via guards |
+| `sm.cancel_slope()` | Convenience | Sends cancel_slope event |
+| `sm.cancel_custom()` | Convenience | Sends cancel_custom event |
+| `sm.enable_custom()` | Convenience | Sends enable_custom event |
+| `sm.send("event_name", ...)` | Generic | Send any event by name |
+| `sm.commit_segment()` | Convenience | Alias for commit_path |
+| `sm.undo_segment()` | Convenience | Alias for undo |
+| `sm.cancel_custom_connect()` | Convenience | Alias for cancel_custom |
+| `sm.enable_custom_connect()` | Convenience | Alias for enable_custom |
+| `sm.start_slope()` | Direct | Allowed (not event-triggered) |
+| `sm.start_building()` | Convenience | Dispatches to start_slope/start_slope_from_* |
+| `sm.finish_slope()` | Direct | Allowed (not event-triggered) |
+| `sm.view_slope()` | Direct | Allowed (not event-triggered) |
+| `sm.close_slope_panel()` | Direct | Allowed (not event-triggered) |
+| `sm.show_slope_info_panel()` | Convenience | Dispatches to view_slope/switch_slope |
+
+#### 0.4.3 Test Pattern for Event-Triggered Transitions
+
+```python
+# CORRECT: Test commit using event
+def test_commit_first_segment(sm, ctx):
+    sm.start_slope(lon=10.0, lat=47.0, elevation=2500.0)
+
+    # Use event - SM resolves to commit_first_path internally
+    sm.commit_path(segment_id="S1", endpoint_node_id="N1")
+
+    assert sm.current_state_value == "SlopeBuilding"
+    assert "S1" in ctx.building.segments
+
+# CORRECT: Test undo with guard resolution
+def test_undo_resolves_via_guards(sm, ctx):
+    setup_building_with_two_segments(sm, ctx)
+
+    # First undo: guard says stay in building (2 > 1)
+    sm.undo(removed_segment_id="S2", new_endpoint_node_id="N1")
+    assert sm.current_state_value == "SlopeBuilding"
+
+    # Second undo: guard says go to idle (1 <= 1)
+    sm.undo(removed_segment_id="S1")
+    assert sm.current_state_value == "IdleReady"
+
+# WRONG: Direct transition call (will raise RuntimeError)
+def test_wrong_direct_call():  # BAD - DON'T DO THIS
+    sm.commit_first_path(...)  # RuntimeError!
+    sm.undo_to_idle(...)       # RuntimeError!
+```
+
+#### 0.4.4 Why This Matters
+
+1. **Single Source of Truth**: Events are the API. Internal transition names are implementation details.
+2. **Guard Resolution**: Events use guards to determine which transition fires. Direct calls bypass this.
+3. **Refactoring Safety**: Transition names can change; event names are stable API.
+4. **Test Validity**: Tests that bypass events don't test real application behavior.
 
 ---
 
@@ -603,8 +704,8 @@ class TestGuardedTransitions:
         setup_building_with_one_segment(sm, ctx, graph)
         assert len(ctx.building.segments) == 1
 
-        # undo_to_idle has cond="undo_leaves_no_segments" (1 <= 1 = True)
-        sm.send("undo_segment", removed_segment_id=ctx.building.segments[0])
+        # Use undo EVENT - guard resolves to undo_to_idle (1 <= 1 = True)
+        sm.undo(removed_segment_id=ctx.building.segments[0])  # ✅ Event, not direct transition
 
         assert sm.current_state_value == "IdleReady", "Guard sent to idle"
 
@@ -614,8 +715,8 @@ class TestGuardedTransitions:
         setup_building_with_two_segments(sm, ctx, graph)
         assert len(ctx.building.segments) == 2
 
-        # undo_continue has unless="undo_leaves_no_segments" (2 > 1, so True)
-        sm.undo_continue(removed_segment_id=ctx.building.segments[-1], new_endpoint_node_id="N1")
+        # Use undo EVENT - guard resolves to undo_continue (2 > 1, so stays)
+        sm.undo(removed_segment_id=ctx.building.segments[-1], new_endpoint_node_id="N1")  # ✅ Event
 
         assert sm.current_state_value == "SlopeBuilding", "Guard kept in building"
         assert len(ctx.building.segments) == 1
@@ -854,19 +955,41 @@ def test_switch_slope_is_external_self_loop():
 #### 5.5.4 Test Guards, Not If-Statements
 
 ```python
-# Guards determine transition destination
+# Guards determine transition destination via EVENTS
 def test_undo_guard_controls_destination():
-    # With 2 segments: undo_continue (stays in SlopeBuilding)
+    # With 2 segments: guard resolves to undo_continue (stays in SlopeBuilding)
     setup_two_segments(...)
-    sm.undo_continue(...)
+    sm.undo(removed_segment_id="S2", new_endpoint_node_id="N1")  # ✅ Use event
     assert sm.current_state_value == "SlopeBuilding"
 
-    # With 1 segment: undo_to_idle (goes to IdleReady)
-    sm.undo_to_idle(...)
+    # With 1 segment: guard resolves to undo_to_idle (goes to IdleReady)
+    sm.undo(removed_segment_id="S1")  # ✅ Use event
     assert sm.current_state_value == "IdleReady"
 ```
 
-#### 5.5.5 State Machine Test Smell Checklist
+#### 5.5.5 Use Events, Never Direct Transitions (MANDATORY)
+
+**CRITICAL**: The state machine blocks direct transition calls at runtime.
+
+```python
+# ❌ WRONG - These raise RuntimeError
+def test_wrong_direct_transitions():
+    sm.undo_to_idle(...)           # RuntimeError!
+    sm.undo_continue(...)          # RuntimeError!
+    sm.commit_first_path(...)      # RuntimeError!
+    sm.cancel_from_starting(...)   # RuntimeError!
+
+# ✅ CORRECT - Use events or convenience methods
+def test_correct_event_usage():
+    sm.undo(removed_segment_id="S1")              # Event - guard resolves target
+    sm.commit_path(segment_id="S1", ...)          # Event - state resolves target
+    sm.cancel_slope()                             # Convenience - sends event
+    sm.send("undo", removed_segment_id="S1")      # Generic send also works
+```
+
+See Section 0.4 for the complete list of blocked transitions and allowed API.
+
+#### 5.5.6 State Machine Test Smell Checklist
 
 | Smell | Fix |
 |-------|-----|
@@ -875,8 +998,7 @@ def test_undo_guard_controls_destination():
 | Missing self-loop test | Add switch_slope/switch_lift tests |
 | Manual if-statement for conditional transition | Use guards (cond=/unless=) |
 | Testing internal implementation details | Test externally observable state |
-3. **External library behavior**: Pydeck layer rendering, Plotly figure creation
-4. **Error messages**: Exact error text (test exception type only)
+| **Direct transition call (sm.undo_to_idle)** | **Use event (sm.undo) - see Section 0.4** |
 
 ---
 

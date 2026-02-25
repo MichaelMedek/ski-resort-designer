@@ -28,7 +28,7 @@ from skiresort_planner.model.message import (
     SlopeStartingContextMessage,
 )
 from skiresort_planner.model.resort_graph import ResortGraph
-from skiresort_planner.ui.actions import bump_map_version
+from skiresort_planner.ui.actions import bump_map_version, reload_map
 from skiresort_planner.ui.state_machine import PlannerContext, PlannerStateMachine
 
 if TYPE_CHECKING:
@@ -60,11 +60,8 @@ def _confirm_delete_dialog(
             if delete_fn(entity_id):
                 logger.info(f"Deleted {entity_type} {entity_name} (id={entity_id})")
                 bump_map_version()
-                # Use explicit transitions instead of hide_info_panel()
-                if entity_type == "slope":
-                    sm.close_slope_panel()
-                else:  # "lift"
-                    sm.close_lift_panel()
+                # Uses close_panel event - SM resolves to appropriate transition
+                sm.hide_info_panel()
             st.rerun()
     with col_no:
         if st.button("✖️ Cancel", use_container_width=True):
@@ -76,8 +73,8 @@ def _confirm_delete_dialog(
 # =============================================================================
 
 
-def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, entity_type: str, entity_id: str) -> bool:
-    """Render 3D/2D view toggle button. Returns True if button was clicked."""
+def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, entity_type: str, entity_id: str) -> None:
+    """Render 3D/2D view toggle button. Calls reload_map() if button is clicked."""
     if ctx.viewing.view_3d:
         if st.button("🗺️ Return to 2D View", key=f"{entity_type}_2d_view", use_container_width=True):
             logger.info(f"Switching to 2D view from {entity_type} {entity_id}")
@@ -94,10 +91,12 @@ def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, entity_typ
                 ctx.map.lon = center_lon
             elif entity_type == "lift" and entity_id in graph.lifts:
                 lift = graph.lifts[entity_id]
-                ctx.map.lat = (lift.bottom.lat + lift.top.lat) / 2
-                ctx.map.lon = (lift.bottom.lon + lift.top.lon) / 2
-            bump_map_version()
-            return True
+                start_node = graph.nodes.get(lift.start_node_id)
+                end_node = graph.nodes.get(lift.end_node_id)
+                if start_node and end_node:
+                    ctx.map.lat = (start_node.lat + end_node.lat) / 2
+                    ctx.map.lon = (start_node.lon + end_node.lon) / 2
+            reload_map()  # Never returns - raises StopExecution
     else:
         if st.button(
             "🏔️ View in 3D",
@@ -107,9 +106,7 @@ def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, entity_typ
         ):
             logger.info(f"Switching to 3D view for {entity_type} {entity_id}")
             ctx.viewing.enable_3d()
-            bump_map_version()
-            return True
-    return False
+            reload_map()  # Never returns - raises StopExecution
 
 
 def _render_close_delete_buttons(
@@ -120,8 +117,8 @@ def _render_close_delete_buttons(
     entity_id: str,
     entity: "Slope | Lift",
     delete_fn: Callable[[str], bool],
-) -> bool:
-    """Render close and delete buttons. Returns True if any button was clicked."""
+) -> None:
+    """Render close and delete buttons. Triggers state transition or opens dialog."""
     col_close, col_delete = st.columns(2)
     with col_close:
         if st.button(
@@ -135,12 +132,9 @@ def _render_close_delete_buttons(
             ctx.map.pitch = MapConfig.DEFAULT_PITCH
             ctx.map.bearing = MapConfig.DEFAULT_BEARING
             bump_map_version()
-            # Use explicit transitions instead of hide_info_panel()
-            if entity_type == "slope":
-                sm.close_slope_panel()
-            else:  # "lift"
-                sm.close_lift_panel()
-            return True
+            # Uses close_panel event - SM resolves to appropriate transition
+            # State transition triggers st.rerun() via listener - never returns
+            sm.hide_info_panel()
     with col_delete:
         if st.button(
             "🗑️ Delete",
@@ -155,7 +149,6 @@ def _render_close_delete_buttons(
                 delete_fn=delete_fn,
                 sm=sm,
             )
-    return False
 
 
 # =============================================================================
@@ -336,10 +329,9 @@ def _render_slope_info_panel(
 
     SlopeStatsPanel(graph=graph).render(slope_id=slope_id)
 
-    if _render_3d_toggle_button(ctx=ctx, graph=graph, entity_type="slope", entity_id=slope_id):
-        st.rerun()
+    _render_3d_toggle_button(ctx=ctx, graph=graph, entity_type="slope", entity_id=slope_id)
 
-    if _render_close_delete_buttons(
+    _render_close_delete_buttons(
         sm=sm,
         ctx=ctx,
         graph=graph,
@@ -347,8 +339,7 @@ def _render_slope_info_panel(
         entity_id=slope_id,
         entity=slope,
         delete_fn=graph.delete_slope,
-    ):
-        st.rerun()
+    )
 
 
 def _render_lift_info_panel(
@@ -367,10 +358,9 @@ def _render_lift_info_panel(
 
     LiftStatsPanel(graph=graph).render(lift_id=lift_id)
 
-    if _render_3d_toggle_button(ctx=ctx, graph=graph, entity_type="lift", entity_id=lift_id):
-        st.rerun()
+    _render_3d_toggle_button(ctx=ctx, graph=graph, entity_type="lift", entity_id=lift_id)
 
-    if _render_close_delete_buttons(
+    _render_close_delete_buttons(
         sm=sm,
         ctx=ctx,
         graph=graph,
@@ -378,8 +368,7 @@ def _render_lift_info_panel(
         entity_id=lift_id,
         entity=lift,
         delete_fn=graph.delete_lift,
-    ):
-        st.rerun()
+    )
 
 
 # =============================================================================
@@ -462,13 +451,13 @@ class PathSelectionPanel:
         with col_prev:
             if st.button("◀", key="prev_path", width="stretch", help="Previous path variant"):
                 self.ctx.proposals.selected_idx = (selected_idx - 1) % num_paths
-                st.rerun()
+                reload_map()  # Refresh map with new selection
         with col_nav_label:
             st.markdown(f"**◀ ▶ Browse {num_paths} paths**")
         with col_next:
             if st.button("▶", key="next_path", width="stretch", help="Next path variant"):
                 self.ctx.proposals.selected_idx = (selected_idx + 1) % num_paths
-                st.rerun()
+                reload_map()  # Refresh map with new selection
 
         # Commit button
         if is_connector:

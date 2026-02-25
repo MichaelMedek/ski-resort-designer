@@ -45,96 +45,150 @@ Orthogonal State (flags, not formal states)
     - The 3D view doesn't change WHAT actions are available, only HOW the map is rendered
     - Current approach: UI checks view_3d flag and ignores map clicks when True
 
+Events Reference (API for UI/Actions layer)
+============================================
+Events are the external API for triggering state transitions. The state machine
+resolves which specific transition fires based on current state and guards.
+
+IMPORTANT: Direct transition calls are BLOCKED at runtime via __getattribute__.
+           Only event calls are allowed:
+
+           sm.commit_path(...)          # allowed
+           sm.send("commit_path", ...)  # allowed
+           sm.commit_first_path(...)    # raises RuntimeError
+
+    commit_path - Commit a path segment
+        Args: segment_id, endpoint_node_id
+        Hook: before_commit_path (event-level only)
+        Resolves to:
+        - commit_first_path: SLOPE_STARTING → SLOPE_BUILDING
+        - commit_continue_path: SLOPE_BUILDING → SLOPE_BUILDING (self-loop)
+
+    undo - Undo last segment
+        Args: removed_segment_id, new_endpoint_node_id (optional)
+        Hook: before_undo (event-level only)
+        Guards: undo_leaves_no_segments
+        Resolves to:
+        - undo_to_idle: SLOPE_BUILDING → IDLE_READY (when ≤1 segment)
+        - undo_continue: SLOPE_BUILDING → SLOPE_BUILDING (when >1 segments)
+
+    cancel_slope - Cancel entire slope building
+        Args: none
+        Hook: before_cancel_slope (event-level only)
+        Resolves to:
+        - cancel_from_starting: SLOPE_STARTING → IDLE_READY
+        - cancel_from_building: SLOPE_BUILDING → IDLE_READY
+        - cancel_slope_from_custom_picking: SLOPE_CUSTOM_PICKING → IDLE_READY
+        - cancel_slope_from_custom_path: SLOPE_CUSTOM_PATH → IDLE_READY
+
+    cancel_custom - Cancel custom connect mode (return to normal building)
+        Args: none
+        Hook: before_cancel_custom (event-level only)
+        Guards: has_no_segments
+        Resolves to:
+        - cancel_custom_to_starting: SLOPE_CUSTOM_PICKING → SLOPE_STARTING
+        - cancel_custom_to_building: SLOPE_CUSTOM_PICKING → SLOPE_BUILDING
+        - cancel_path_to_starting: SLOPE_CUSTOM_PATH → SLOPE_STARTING
+        - cancel_path_to_building: SLOPE_CUSTOM_PATH → SLOPE_BUILDING
+
+    enable_custom - Enable custom connect mode
+        Args: none
+        Hook: before_enable_custom (event-level), plus transition-specific hooks
+        Resolves to:
+        - enable_custom_from_starting: SLOPE_STARTING → SLOPE_CUSTOM_PICKING
+        - enable_custom_from_building: SLOPE_BUILDING → SLOPE_CUSTOM_PICKING
+
 Complete Transition Matrix (8x8 = 64 combinations)
 ==================================================
 
 # 1. Transitions: From IDLE_READY
 # --------------------------------
 # 1.1. → IDLE_READY: NOT ALLOWED (no-op, nothing to transition)
-# 1.2. → IDLE_VIEWING_SLOPE: view_slope (click slope icon/centerline)
-# 1.3. → IDLE_VIEWING_LIFT: view_lift (click lift icon/cable)
-# 1.4. → SLOPE_STARTING: start_slope (click terrain/node in slope mode)
-# 1.5. → SLOPE_BUILDING: undo_restore_to_building (undo finish_slope after error recovery)
+# 1.2. → IDLE_VIEWING_SLOPE: view_slope [direct] (click slope icon/centerline)
+# 1.3. → IDLE_VIEWING_LIFT: view_lift [direct] (click lift icon/cable)
+# 1.4. → SLOPE_STARTING: start_slope [direct] (click terrain/node in slope mode),
+#                        undo_restore_to_starting [direct, guard: has_no_segments]
+# 1.5. → SLOPE_BUILDING: undo_restore_to_building [direct, guard: !has_no_segments]
 # 1.6. → SLOPE_CUSTOM_PICKING: NOT ALLOWED (must go through SLOPE_STARTING first)
 # 1.7. → SLOPE_CUSTOM_PATH: NOT ALLOWED (must go through SLOPE_CUSTOM_PICKING first)
-# 1.8. → LIFT_PLACING: start_lift (click terrain/node in lift mode)
+# 1.8. → LIFT_PLACING: start_lift [direct] (click terrain/node in lift mode)
 
 # 2. Transitions: From IDLE_VIEWING_SLOPE
 # ----------------------------------------
-# 2.1. → IDLE_READY: close_slope_panel (close button or click elsewhere)
-# 2.2. → IDLE_VIEWING_SLOPE: switch_slope (self-loop: click different slope)
-# 2.3. → IDLE_VIEWING_LIFT: switch_to_lift_view (click lift in panel or on map)
-# 2.4. → SLOPE_STARTING: start_slope_from_slope_view (click terrain/node),
-#                        resume_to_starting (undo finish when 0 segments)
-# 2.5. → SLOPE_BUILDING: resume_to_building (undo finish when 1+ segments)
+# 2.1. → IDLE_READY: close_slope_panel [direct] (close button or click elsewhere)
+# 2.2. → IDLE_VIEWING_SLOPE: switch_slope [direct, self-loop] (click different slope)
+# 2.3. → IDLE_VIEWING_LIFT: switch_to_lift_view [direct] (click lift in panel or on map)
+# 2.4. → SLOPE_STARTING: start_slope_from_slope_view [direct] (click terrain/node),
+#                        resume_to_starting [direct, guard: has_no_segments] (undo finish)
+# 2.5. → SLOPE_BUILDING: resume_to_building [direct, guard: !has_no_segments] (undo finish)
 # 2.6. → SLOPE_CUSTOM_PICKING: NOT ALLOWED (must start slope first)
 # 2.7. → SLOPE_CUSTOM_PATH: NOT ALLOWED (must go through picking first)
-# 2.8. → LIFT_PLACING: start_lift_from_slope_view (click terrain/node in lift mode)
+# 2.8. → LIFT_PLACING: start_lift_from_slope_view [direct] (click terrain/node in lift mode)
 
 # 3. Transitions: From IDLE_VIEWING_LIFT
 # ---------------------------------------
-# 3.1. → IDLE_READY: close_lift_panel (close button or click elsewhere)
-# 3.2. → IDLE_VIEWING_SLOPE: switch_to_slope_view (click connected slope in panel)
-# 3.3. → IDLE_VIEWING_LIFT: switch_lift (self-loop: click different lift)
-# 3.4. → SLOPE_STARTING: start_slope_from_lift_view (click terrain/node),
-#                        undo_restore_from_lift_to_starting (undo finish_slope)
-# 3.5. → SLOPE_BUILDING: undo_restore_from_lift_to_building (undo finish_slope)
+# 3.1. → IDLE_READY: close_lift_panel [direct] (close button or click elsewhere)
+# 3.2. → IDLE_VIEWING_SLOPE: switch_to_slope_view [direct] (click connected slope in panel)
+# 3.3. → IDLE_VIEWING_LIFT: switch_lift [direct, self-loop] (click different lift)
+# 3.4. → SLOPE_STARTING: start_slope_from_lift_view [direct] (click terrain/node),
+#                        undo_restore_from_lift_to_starting [direct, guard: has_no_segments]
+# 3.5. → SLOPE_BUILDING: undo_restore_from_lift_to_building [direct, guard: !has_no_segments]
 # 3.6. → SLOPE_CUSTOM_PICKING: NOT ALLOWED (must start slope first)
 # 3.7. → SLOPE_CUSTOM_PATH: NOT ALLOWED (must go through picking first)
-# 3.8. → LIFT_PLACING: start_lift_from_lift_view (click terrain/node in lift mode)
+# 3.8. → LIFT_PLACING: start_lift_from_lift_view [direct] (click terrain/node in lift mode)
 
 # 4. Transitions: From SLOPE_STARTING
 # ------------------------------------
-# 4.1. → IDLE_READY: cancel_from_starting (cancel button)
+# 4.1. → IDLE_READY: cancel_from_starting [event: cancel_slope] (cancel button)
 # 4.2. → IDLE_VIEWING_SLOPE: NOT ALLOWED (must commit or cancel first)
 # 4.3. → IDLE_VIEWING_LIFT: NOT ALLOWED (must commit or cancel first)
 # 4.4. → SLOPE_STARTING: NOT ALLOWED (no self-loop, proposal selection is internal)
-# 4.5. → SLOPE_BUILDING: commit_first_path (click proposal endpoint)
-# 4.6. → SLOPE_CUSTOM_PICKING: enable_custom_from_starting (custom connect button)
+# 4.5. → SLOPE_BUILDING: commit_first_path [event: commit_path] (click proposal endpoint)
+# 4.6. → SLOPE_CUSTOM_PICKING: enable_custom_from_starting [event: enable_custom]
 # 4.7. → SLOPE_CUSTOM_PATH: NOT ALLOWED (must go through picking first)
 # 4.8. → LIFT_PLACING: NOT ALLOWED (must cancel slope first)
 
 # 5. Transitions: From SLOPE_BUILDING
 # ------------------------------------
-# 5.1. → IDLE_READY: cancel_from_building (cancel button),
-#                    undo_to_idle (undo when only 1 segment left)
-# 5.2. → IDLE_VIEWING_SLOPE: finish_slope (finish button)
+# 5.1. → IDLE_READY: cancel_from_building [event: cancel_slope] (cancel button),
+#                    undo_to_idle [event: undo, guard: undo_leaves_no_segments]
+# 5.2. → IDLE_VIEWING_SLOPE: finish_slope [direct] (finish button)
 # 5.3. → IDLE_VIEWING_LIFT: NOT ALLOWED (must finish/cancel slope first)
 # 5.4. → SLOPE_STARTING: NOT ALLOWED (would lose committed segments)
-# 5.5. → SLOPE_BUILDING: commit_continue_path (self-loop: commit more segments),
-#                        undo_continue (self-loop: undo keeps 2+ segments)
-# 5.6. → SLOPE_CUSTOM_PICKING: enable_custom_from_building (custom connect button)
+# 5.5. → SLOPE_BUILDING: commit_continue_path [event: commit_path, self-loop],
+#                        undo_continue [event: undo, guard: !undo_leaves_no_segments, self-loop]
+# 5.6. → SLOPE_CUSTOM_PICKING: enable_custom_from_building [event: enable_custom]
 # 5.7. → SLOPE_CUSTOM_PATH: NOT ALLOWED (must go through picking first)
 # 5.8. → LIFT_PLACING: NOT ALLOWED (must finish/cancel slope first)
 
 # 6. Transitions: From SLOPE_CUSTOM_PICKING
 # ------------------------------------------
-# 6.1. → IDLE_READY: NOT ALLOWED (must cancel to starting/building first)
+# 6.1. → IDLE_READY: cancel_slope_from_custom_picking [event: cancel_slope]
 # 6.2. → IDLE_VIEWING_SLOPE: NOT ALLOWED (must cancel or select first)
 # 6.3. → IDLE_VIEWING_LIFT: NOT ALLOWED (must cancel or select first)
-# 6.4. → SLOPE_STARTING: cancel_custom_to_starting (cancel when has_no_segments)
-# 6.5. → SLOPE_BUILDING: cancel_custom_to_building (cancel when has segments)
+# 6.4. → SLOPE_STARTING: cancel_custom_to_starting [event: cancel_custom, guard: has_no_segments]
+# 6.5. → SLOPE_BUILDING: cancel_custom_to_building [event: cancel_custom, guard: !has_no_segments]
 # 6.6. → SLOPE_CUSTOM_PICKING: NOT ALLOWED (waiting for click, no self-loop)
-# 6.7. → SLOPE_CUSTOM_PATH: select_custom_target (click target location)
+# 6.7. → SLOPE_CUSTOM_PATH: select_custom_target [direct] (click target location)
 # 6.8. → LIFT_PLACING: NOT ALLOWED (must cancel first)
 
 # 7. Transitions: From SLOPE_CUSTOM_PATH
 # ---------------------------------------
-# 7.1. → IDLE_READY: NOT ALLOWED (must go through cancel to starting/building)
-# 7.2. → IDLE_VIEWING_SLOPE: commit_custom_finish (auto-finish when connecting to node)
+# 7.1. → IDLE_READY: cancel_slope_from_custom_path [event: cancel_slope]
+# 7.2. → IDLE_VIEWING_SLOPE: commit_custom_finish [direct] (auto-finish when connecting to node)
 # 7.3. → IDLE_VIEWING_LIFT: NOT ALLOWED (must finish/cancel slope first)
-# 7.4. → SLOPE_STARTING: cancel_path_to_starting (cancel when has_no_segments)
-# 7.5. → SLOPE_BUILDING: commit_custom_continue (commit and keep building),
-#                        cancel_path_to_building (cancel when has segments)
+# 7.4. → SLOPE_STARTING: cancel_path_to_starting [event: cancel_custom, guard: has_no_segments]
+# 7.5. → SLOPE_BUILDING: commit_custom_continue [direct] (commit and keep building),
+#                        cancel_path_to_building [event: cancel_custom, guard: !has_no_segments]
 # 7.6. → SLOPE_CUSTOM_PICKING: NOT ALLOWED (can't go back to picking, must cancel)
 # 7.7. → SLOPE_CUSTOM_PATH: NOT ALLOWED (no self-loop, different target → cancel+repick)
 # 7.8. → LIFT_PLACING: NOT ALLOWED (must finish/cancel slope first)
 
 # 8. Transitions: From LIFT_PLACING
 # ----------------------------------
-# 8.1. → IDLE_READY: cancel_lift (cancel button)
+# 8.1. → IDLE_READY: cancel_lift [direct] (cancel button)
 # 8.2. → IDLE_VIEWING_SLOPE: NOT ALLOWED (must cancel or complete first)
-# 8.3. → IDLE_VIEWING_LIFT: complete_lift (click end station location)
+# 8.3. → IDLE_VIEWING_LIFT: complete_lift [direct] (click end station location)
 # 8.4. → SLOPE_STARTING: NOT ALLOWED (must cancel lift first)
 # 8.5. → SLOPE_BUILDING: NOT ALLOWED (must cancel lift first)
 # 8.6. → SLOPE_CUSTOM_PICKING: NOT ALLOWED (must cancel lift first)
@@ -144,14 +198,17 @@ Complete Transition Matrix (8x8 = 64 combinations)
 Transition Summary Table
 ------------------------
     ALLOWED (28 transitions + 4 self-loops = 32 total):
-    - From IDLE_READY (5): view_slope, view_lift, start_slope, start_lift, undo_restore_to_building
-    - From IDLE_VIEWING_SLOPE (6+1): close, switch_to_lift, start_slope, start_lift, resume_to_starting, resume_to_building, switch_slope (loop)
-    - From IDLE_VIEWING_LIFT (6+1): close, switch_to_slope, start_slope, start_lift, undo_restore_to_starting, undo_restore_to_building, switch_lift (loop)
-    - From SLOPE_STARTING (3): cancel, commit_first_path, enable_custom
-    - From SLOPE_BUILDING (5+2): cancel, undo_to_idle, finish, enable_custom, commit_path (loop), undo_continue (loop)
-    - From SLOPE_CUSTOM_PICKING (3): cancel_to_starting, cancel_to_building, select_target
-    - From SLOPE_CUSTOM_PATH (4): commit_continue, commit_finish, cancel_to_starting, cancel_to_building
-    - From LIFT_PLACING (2): cancel, complete
+    - From IDLE_READY (5): view_slope, view_lift, start_slope, start_lift, undo_restore_to_* [all direct]
+    - From IDLE_VIEWING_SLOPE (6+1): close, switch_to_lift, start_slope, start_lift, resume_to_* [all direct], switch_slope (loop)
+    - From IDLE_VIEWING_LIFT (6+1): close, switch_to_slope, start_slope, start_lift, undo_restore_from_lift_to_* [all direct], switch_lift (loop)
+    - From SLOPE_STARTING (3): cancel [cancel_slope], commit_first_path [commit_path], enable_custom [enable_custom]
+    - From SLOPE_BUILDING (5+2): cancel [cancel_slope], undo_to_idle [undo], finish [direct], enable_custom [enable_custom], commit_path (loop), undo_continue [undo] (loop)
+    - From SLOPE_CUSTOM_PICKING (4): cancel_slope [cancel_slope], cancel_custom_to_* [cancel_custom], select_target [direct]
+    - From SLOPE_CUSTOM_PATH (5): commit_continue [direct], commit_finish [direct], cancel_slope [cancel_slope], cancel_path_to_* [cancel_custom]
+    - From LIFT_PLACING (2): cancel [direct], complete [direct]
+
+    Event-triggered transitions use [event_name] notation.
+    Direct transitions are called by their transition name directly.
 
     NOT ALLOWED (32 combinations): All other transitions that would bypass required workflow steps
 
@@ -175,7 +232,7 @@ This ensures the resort graph is always in a clean state by:
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import streamlit as st
 from statemachine import State, StateMachine
@@ -184,21 +241,9 @@ from statemachine.exceptions import TransitionNotAllowed
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.context import (
-    BuildingContext,
     BuildMode,
-    BuildModeContext,
-    ClickDeduplicationContext,
-    CustomConnectContext,
-    DeferredContext,
-    LiftContext,
-    LonLat,
     LonLatElev,
-    MapContext,
     PlannerContext,
-    ProposalContext,
-    SelectionContext,
-    UIMessagesContext,
-    ViewingContext,
 )
 from skiresort_planner.ui.state_lifecycle import (
     enter_idle_ready,
@@ -220,31 +265,6 @@ from skiresort_planner.ui.state_lifecycle import (
 )
 
 logger = logging.getLogger(__name__)
-
-if TYPE_CHECKING:
-    pass
-
-
-# Re-export context classes for backward compatibility
-__all__ = [
-    "BuildMode",
-    "BuildModeContext",
-    "BuildingContext",
-    "ClickDeduplicationContext",
-    "CustomConnectContext",
-    "DeferredContext",
-    "LiftContext",
-    "LonLat",
-    "LonLatElev",
-    "MapContext",
-    "PlannerContext",
-    "PlannerStateMachine",
-    "ProposalContext",
-    "SelectionContext",
-    "StreamlitUIListener",
-    "UIMessagesContext",
-    "ViewingContext",
-]
 
 
 class StreamlitUIListener:
@@ -278,7 +298,22 @@ class StreamlitUIListener:
         if graph is not None:
             graph.perform_cleanup()
 
+        logger.info(f'[STATE] Calling st.rerun() after {event} transition"')
         st.rerun()
+
+
+def _forbidden_call(name: str):
+    """Create a function that raises RuntimeError when called.
+
+    Used to block direct calls to event-triggered transitions.
+    """
+
+    def wrapper(*args, **kwargs):
+        raise RuntimeError(
+            f"Direct transition '{name}' call forbidden. Use the corresponding event instead (e.g., sm.event_name())."
+        )
+
+    return wrapper
 
 
 class PlannerStateMachine(StateMachine):
@@ -323,129 +358,173 @@ class PlannerStateMachine(StateMachine):
     # ==========================================================================
     # 1. Transitions: From IDLE_READY
     # ==========================================================================
-    # 1.2. view_slope: Click slope icon/centerline to view details
-    # 1.3. view_lift: Click lift icon/cable to view details
-    # 1.4. start_slope: Click terrain/node in slope mode
-    # 1.8. start_lift: Click terrain/node in lift mode
+    # Events: start_slope, start_lift, view_slope, view_lift
+    # 1.2. view_slope [event: view_slope]: Click slope icon/centerline to view details
+    # 1.3. view_lift [event: view_lift]: Click lift icon/cable to view details
+    # 1.4. start_slope [event: start_slope]: Click terrain/node in slope mode
+    # 1.8. start_lift [event: start_lift]: Click terrain/node in lift mode
 
-    start_slope = idle_ready.to(slope_starting)  # 1.4
-    start_lift = idle_ready.to(lift_placing)  # 1.8
-    view_slope = idle_ready.to(idle_viewing_slope)  # 1.2
-    view_lift = idle_ready.to(idle_viewing_lift)  # 1.3
+    start_slope = idle_ready.to(slope_starting, event="start_slope")  # 1.4 [event: start_slope]
+    start_lift = idle_ready.to(lift_placing, event="start_lift")  # 1.8 [event: start_lift]
+    view_slope = idle_ready.to(idle_viewing_slope, event="view_slope")  # 1.2 [event: view_slope]
+    view_lift = idle_ready.to(idle_viewing_lift, event="view_lift")  # 1.3 [event: view_lift]
 
     # ==========================================================================
     # 2. Transitions: From IDLE_VIEWING_SLOPE
     # ==========================================================================
-    # 2.1. close_slope_panel: Close button or click elsewhere
-    # 2.3. NOT ALLOWED: click connected lift → close+view (no direct switch)
-    # 2.4. start_slope_from_slope_view: Click terrain/node to start new slope
-    # 2.8. start_lift_from_slope_view: Click terrain/node in lift mode
+    # Events: close_panel, view_slope (self-loop), view_lift, start_slope, start_lift
+    # 2.1. close_slope_panel [event: close_panel]: Close button or click elsewhere
+    # 2.2. switch_slope [event: view_slope, self-loop]: Click different slope
+    # 2.3. switch_to_lift_view [event: view_lift]: Click lift in panel or on map
+    # 2.4. start_slope_from_slope_view [event: start_slope]: Click terrain/node to start new slope
+    # 2.8. start_lift_from_slope_view [event: start_lift]: Click terrain/node in lift mode
 
-    close_slope_panel = idle_viewing_slope.to(idle_ready)  # 2.1
-    switch_slope = idle_viewing_slope.to(idle_viewing_slope)  # 2.2 self-loop
-    switch_to_lift_view = idle_viewing_slope.to(idle_viewing_lift)  # 2.3
-    start_slope_from_slope_view = idle_viewing_slope.to(slope_starting)  # 2.4
-    start_lift_from_slope_view = idle_viewing_slope.to(lift_placing)  # 2.8
-    resume_building = idle_viewing_slope.to(slope_building)  # legacy alias for resume_to_building
+    close_slope_panel = idle_viewing_slope.to(idle_ready, event="close_panel")  # 2.1 [event: close_panel]
+    switch_slope = idle_viewing_slope.to(idle_viewing_slope, event="view_slope")  # 2.2 [event: view_slope] self-loop
+    switch_to_lift_view = idle_viewing_slope.to(idle_viewing_lift, event="view_lift")  # 2.3 [event: view_lift]
+    start_slope_from_slope_view = idle_viewing_slope.to(slope_starting, event="start_slope")  # 2.4 [event: start_slope]
+    start_lift_from_slope_view = idle_viewing_slope.to(lift_placing, event="start_lift")  # 2.8 [event: start_lift]
 
     # ==========================================================================
     # 3. Transitions: From IDLE_VIEWING_LIFT
     # ==========================================================================
-    # 3.1. close_lift_panel: Close button or click elsewhere
-    # 3.2. switch_to_slope_view: Click connected slope in panel
-    # 3.4. start_slope_from_lift_view: Click terrain/node in slope mode
-    # 3.8. start_lift_from_lift_view: Click terrain/node in lift mode
+    # Events: close_panel, view_slope, view_lift (self-loop), start_slope, start_lift
+    # 3.1. close_lift_panel [event: close_panel]: Close button or click elsewhere
+    # 3.2. switch_to_slope_view [event: view_slope]: Click connected slope in panel
+    # 3.3. switch_lift [event: view_lift, self-loop]: Click different lift
+    # 3.4. start_slope_from_lift_view [event: start_slope]: Click terrain/node in slope mode
+    # 3.8. start_lift_from_lift_view [event: start_lift]: Click terrain/node in lift mode
 
-    close_lift_panel = idle_viewing_lift.to(idle_ready)  # 3.1
-    switch_to_slope_view = idle_viewing_lift.to(idle_viewing_slope)  # 3.2
-    switch_lift = idle_viewing_lift.to(idle_viewing_lift)  # 3.3 self-loop
-    start_slope_from_lift_view = idle_viewing_lift.to(slope_starting)  # 3.4
-    start_lift_from_lift_view = idle_viewing_lift.to(lift_placing)  # 3.8
+    close_lift_panel = idle_viewing_lift.to(idle_ready, event="close_panel")  # 3.1 [event: close_panel]
+    switch_to_slope_view = idle_viewing_lift.to(idle_viewing_slope, event="view_slope")  # 3.2 [event: view_slope]
+    switch_lift = idle_viewing_lift.to(idle_viewing_lift, event="view_lift")  # 3.3 [event: view_lift] self-loop
+    start_slope_from_lift_view = idle_viewing_lift.to(slope_starting, event="start_slope")  # 3.4 [event: start_slope]
+    start_lift_from_lift_view = idle_viewing_lift.to(lift_placing, event="start_lift")  # 3.8 [event: start_lift]
 
     # ==========================================================================
     # 4. Transitions: From SLOPE_STARTING (0 segments)
     # ==========================================================================
-    # 4.1. cancel_from_starting: Cancel button
-    # 4.5. commit_first_path: Click proposal endpoint to commit first segment
-    # 4.6. enable_custom_from_starting: Custom connect button
+    # Events available: commit_path, cancel_slope, enable_custom
+    # 4.1. cancel_from_starting [event: cancel_slope]: Cancel button
+    # 4.5. commit_first_path [event: commit_path]: Click proposal endpoint
+    # 4.6. enable_custom_from_starting [event: enable_custom]: Custom connect button
 
-    commit_first_path = slope_starting.to(slope_building, event="commit_path")  # 4.5
-    cancel_from_starting = slope_starting.to(idle_ready)  # 4.1
-    enable_custom_from_starting = slope_starting.to(slope_custom_picking)  # 4.6
+    commit_first_path = slope_starting.to(slope_building, event="commit_path")  # 4.5 [event: commit_path]
+    cancel_from_starting = slope_starting.to(idle_ready, event="cancel_slope")  # 4.1 [event: cancel_slope]
+    enable_custom_from_starting = slope_starting.to(
+        slope_custom_picking, event="enable_custom"
+    )  # 4.6 [event: enable_custom]
 
     # ==========================================================================
     # 5. Transitions: From SLOPE_BUILDING (1+ segments)
     # ==========================================================================
-    # 5.1. cancel_from_building: Cancel button (discard all)
-    # 5.1. undo_to_idle: Undo when only 1 segment (discards slope)
-    # 5.2. finish_slope: Finish button
-    # 5.5. commit_continue_path: Self-loop, commit more segments
-    # 5.5. undo_continue: Self-loop, undo keeps 2+ segments
-    # 5.6. enable_custom_from_building: Custom connect button
+    # Events available: commit_path, cancel_slope, enable_custom, undo
+    # 5.1. cancel_from_building [event: cancel_slope]: Cancel button (discard all)
+    # 5.1. undo_to_idle [event: undo, guard]: Undo when only 1 segment (discards slope)
+    # 5.2. finish_slope [direct]: Finish button
+    # 5.5. commit_continue_path [event: commit_path, self-loop]: Commit more segments
+    # 5.5. undo_continue [event: undo, guard, self-loop]: Undo keeps 2+ segments
+    # 5.6. enable_custom_from_building [event: enable_custom]: Custom connect button
 
-    commit_continue_path = slope_building.to(slope_building, event="commit_path")  # 5.5 self-loop
-    finish_slope = slope_building.to(idle_viewing_slope)  # 5.2
-    cancel_from_building = slope_building.to(idle_ready)  # 5.1
-    enable_custom_from_building = slope_building.to(slope_custom_picking)  # 5.6
-    undo_to_idle = slope_building.to(idle_ready, cond="undo_leaves_no_segments")  # 5.1 conditional
-    undo_continue = slope_building.to(slope_building, unless="undo_leaves_no_segments")  # 5.5 self-loop
+    commit_continue_path = slope_building.to(slope_building, event="commit_path")  # 5.5 [event: commit_path] self-loop
+    finish_slope = slope_building.to(idle_viewing_slope)  # 5.2 [direct]
+    cancel_from_building = slope_building.to(idle_ready, event="cancel_slope")  # 5.1 [event: cancel_slope]
+    enable_custom_from_building = slope_building.to(
+        slope_custom_picking, event="enable_custom"
+    )  # 5.6 [event: enable_custom]
+    undo_to_idle = slope_building.to(
+        idle_ready, cond="undo_leaves_no_segments", event="undo"
+    )  # 5.1 [event: undo, guard]
+    undo_continue = slope_building.to(
+        slope_building, unless="undo_leaves_no_segments", event="undo"
+    )  # 5.5 [event: undo, guard] self-loop
 
     # ==========================================================================
     # 6. Transitions: From SLOPE_CUSTOM_PICKING
     # ==========================================================================
-    # 6.4. cancel_custom_to_starting: Cancel when has_no_segments
-    # 6.5. cancel_custom_to_building: Cancel when has segments
-    # 6.7. select_custom_target: Click target location
+    # Events available: cancel_custom, cancel_slope
+    # 6.1. cancel_slope_from_custom_picking [event: cancel_slope]: Cancel entire slope
+    # 6.4. cancel_custom_to_starting [event: cancel_custom, guard]: Cancel when has_no_segments
+    # 6.5. cancel_custom_to_building [event: cancel_custom, guard]: Cancel when has segments
+    # 6.7. select_custom_target [direct]: Click target location
 
-    select_custom_target = slope_custom_picking.to(slope_custom_path)  # 6.7
-    cancel_custom_to_starting = slope_custom_picking.to(slope_starting, cond="has_no_segments")  # 6.4
-    cancel_custom_to_building = slope_custom_picking.to(slope_building, unless="has_no_segments")  # 6.5
+    select_custom_target = slope_custom_picking.to(slope_custom_path)  # 6.7 [direct]
+    cancel_custom_to_starting = slope_custom_picking.to(
+        slope_starting, cond="has_no_segments", event="cancel_custom"
+    )  # 6.4 [event: cancel_custom, guard]
+    cancel_custom_to_building = slope_custom_picking.to(
+        slope_building, unless="has_no_segments", event="cancel_custom"
+    )  # 6.5 [event: cancel_custom, guard]
+    cancel_slope_from_custom_picking = slope_custom_picking.to(
+        idle_ready, event="cancel_slope"
+    )  # 6.1 [event: cancel_slope]
 
     # ==========================================================================
     # 7. Transitions: From SLOPE_CUSTOM_PATH
     # ==========================================================================
-    # 7.2. commit_custom_finish: Auto-finish when connecting to existing node
-    # 7.4. cancel_path_to_starting: Cancel when has_no_segments
-    # 7.5. commit_custom_continue: Commit and keep building
-    # 7.5. cancel_path_to_building: Cancel when has segments
+    # Events available: cancel_custom, cancel_slope
+    # 7.1. cancel_slope_from_custom_path [event: cancel_slope]: Cancel entire slope
+    # 7.2. commit_custom_finish [direct]: Auto-finish when connecting to existing node
+    # 7.4. cancel_path_to_starting [event: cancel_custom, guard]: Cancel when has_no_segments
+    # 7.5. commit_custom_continue [direct]: Commit and keep building
+    # 7.5. cancel_path_to_building [event: cancel_custom, guard]: Cancel when has segments
 
-    commit_custom_continue = slope_custom_path.to(slope_building)  # 7.5
-    commit_custom_finish = slope_custom_path.to(idle_viewing_slope)  # 7.2 auto-finish connector
-    cancel_path_to_starting = slope_custom_path.to(slope_starting, cond="has_no_segments")  # 7.4
-    cancel_path_to_building = slope_custom_path.to(slope_building, unless="has_no_segments")  # 7.5
+    commit_custom_continue = slope_custom_path.to(slope_building)  # 7.5 [direct]
+    commit_custom_finish = slope_custom_path.to(idle_viewing_slope)  # 7.2 [direct] auto-finish connector
+    cancel_path_to_starting = slope_custom_path.to(
+        slope_starting, cond="has_no_segments", event="cancel_custom"
+    )  # 7.4 [event: cancel_custom, guard]
+    cancel_path_to_building = slope_custom_path.to(
+        slope_building, unless="has_no_segments", event="cancel_custom"
+    )  # 7.5 [event: cancel_custom, guard]
+    cancel_slope_from_custom_path = slope_custom_path.to(idle_ready, event="cancel_slope")  # 7.1 [event: cancel_slope]
 
     # ==========================================================================
     # 8. Transitions: From LIFT_PLACING
     # ==========================================================================
-    # 8.1. cancel_lift: Cancel button
-    # 8.3. complete_lift: Click end station location
+    # All transitions from LIFT_PLACING are direct (no shared events)
+    # 8.1. cancel_lift [direct]: Cancel button
+    # 8.3. complete_lift [direct]: Click end station location
 
-    complete_lift = lift_placing.to(idle_viewing_lift)  # 8.3
-    cancel_lift = lift_placing.to(idle_ready)  # 8.1
+    complete_lift = lift_placing.to(idle_viewing_lift)  # 8.3 [direct]
+    cancel_lift = lift_placing.to(idle_ready)  # 8.1 [direct]
 
     # ==========================================================================
     # UNDO Transitions: Resume building after finish_slope undo
     # ==========================================================================
-    # These transitions restore slope building state after undo of finish_slope.
+    # Event: restore_building - All transitions share this event. Guards determine which fires.
     # The source state depends on what the user did after finishing the slope.
     #
-    # 2.4. resume_to_starting: From IDLE_VIEWING_SLOPE when has_no_segments
-    # 2.5. resume_to_building: From IDLE_VIEWING_SLOPE when has segments
-    # 1.5. undo_restore_to_building: From IDLE_READY (after error recovery)
-    # 3.4. undo_restore_from_lift_to_starting: From IDLE_VIEWING_LIFT
-    # 3.5. undo_restore_from_lift_to_building: From IDLE_VIEWING_LIFT
+    # 2.4. resume_to_starting [event: restore_building, guard: has_no_segments]: From IDLE_VIEWING_SLOPE
+    # 2.5. resume_to_building [event: restore_building, guard: !has_no_segments]: From IDLE_VIEWING_SLOPE
+    # 1.4. undo_restore_to_starting [event: restore_building, guard: has_no_segments]: From IDLE_READY
+    # 1.5. undo_restore_to_building [event: restore_building, guard: !has_no_segments]: From IDLE_READY
+    # 3.4. undo_restore_from_lift_to_starting [event: restore_building, guard]: From IDLE_VIEWING_LIFT
+    # 3.5. undo_restore_from_lift_to_building [event: restore_building, guard]: From IDLE_VIEWING_LIFT
 
     # From idle_viewing_slope (normal case: user is still viewing the slope they finished)
-    resume_to_starting = idle_viewing_slope.to(slope_starting, cond="has_no_segments")  # 2.4
-    resume_to_building = idle_viewing_slope.to(slope_building, unless="has_no_segments")  # 2.5
+    resume_to_starting = idle_viewing_slope.to(
+        slope_starting, cond="has_no_segments", event="restore_building"
+    )  # 2.4 [event: restore_building, guard]
+    resume_to_building = idle_viewing_slope.to(
+        slope_building, unless="has_no_segments", event="restore_building"
+    )  # 2.5 [event: restore_building, guard]
 
     # From idle_ready (rare: undo after closing panel or error recovery)
-    undo_restore_to_starting = idle_ready.to(slope_starting, cond="has_no_segments")  # 1.4 (undo variant)
-    undo_restore_to_building = idle_ready.to(slope_building, unless="has_no_segments")  # 1.5
+    undo_restore_to_starting = idle_ready.to(
+        slope_starting, cond="has_no_segments", event="restore_building"
+    )  # 1.4 [event: restore_building, guard]
+    undo_restore_to_building = idle_ready.to(
+        slope_building, unless="has_no_segments", event="restore_building"
+    )  # 1.5 [event: restore_building, guard]
 
     # From idle_viewing_lift (undo finish_slope after user built a lift from the slope endpoint)
-    undo_restore_from_lift_to_starting = idle_viewing_lift.to(slope_starting, cond="has_no_segments")  # 3.4 (undo)
-    undo_restore_from_lift_to_building = idle_viewing_lift.to(slope_building, unless="has_no_segments")  # 3.5
+    undo_restore_from_lift_to_starting = idle_viewing_lift.to(
+        slope_starting, cond="has_no_segments", event="restore_building"
+    )  # 3.4 [event: restore_building, guard]
+    undo_restore_from_lift_to_building = idle_viewing_lift.to(
+        slope_building, unless="has_no_segments", event="restore_building"
+    )  # 3.5 [event: restore_building, guard]
 
     # ==========================================================================
     # Guards (Conditions)
@@ -458,6 +537,62 @@ class PlannerStateMachine(StateMachine):
     def undo_leaves_no_segments(self) -> bool:
         """Guard: Check if undo would leave zero segments."""
         return len(self.context.building.segments) <= 1
+
+    # ==========================================================================
+    # Event-Only Access Control
+    # ==========================================================================
+    # Block direct calls to event-triggered transitions. Only allow event calls.
+    # This prevents bypassing the event dispatch mechanism.
+    #
+    # Example:
+    #   sm.commit_path(...)     # allowed (event)
+    #   sm.commit_first_path()  # raises RuntimeError
+
+    _EVENT_ONLY_TRANSITIONS: frozenset[str] = frozenset(
+        {
+            # commit_path event
+            "commit_first_path",
+            "commit_continue_path",
+            # undo event
+            "undo_to_idle",
+            "undo_continue",
+            # cancel_slope event
+            "cancel_from_starting",
+            "cancel_from_building",
+            "cancel_slope_from_custom_picking",
+            "cancel_slope_from_custom_path",
+            # cancel_custom event
+            "cancel_custom_to_starting",
+            "cancel_custom_to_building",
+            "cancel_path_to_starting",
+            "cancel_path_to_building",
+            # enable_custom event
+            "enable_custom_from_starting",
+            "enable_custom_from_building",
+            # start_slope event (NOT start_slope - that IS the event entry point)
+            "start_slope_from_slope_view",
+            "start_slope_from_lift_view",
+            # start_lift event (NOT start_lift - that IS the event entry point)
+            "start_lift_from_slope_view",
+            "start_lift_from_lift_view",
+            # view_slope event (NOT view_slope - that IS the event entry point)
+            "switch_to_slope_view",
+            "switch_slope",
+            # view_lift event (NOT view_lift - that IS the event entry point)
+            "switch_to_lift_view",
+            "switch_lift",
+            # close_panel event (both are variants, event is "close_panel")
+            "close_slope_panel",
+            "close_lift_panel",
+            # restore_building event (all are variants, event is "restore_building")
+            "resume_to_starting",
+            "resume_to_building",
+            "undo_restore_to_starting",
+            "undo_restore_to_building",
+            "undo_restore_from_lift_to_starting",
+            "undo_restore_from_lift_to_building",
+        }
+    )
 
     # ==========================================================================
     # State Check Properties
@@ -629,17 +764,15 @@ class PlannerStateMachine(StateMachine):
     before_start_slope_from_slope_view = before_start_slope
     before_start_slope_from_lift_view = before_start_slope
 
-    def before_commit_first_path(self, segment_id: str, endpoint_node_id: str) -> None:
-        """Action before committing the first path segment."""
+    def _add_segment_to_building(self, segment_id: str, endpoint_node_id: str) -> None:
+        """Common logic for adding segment to building context."""
         self.context.building.segments.append(segment_id)
         self.context.building.endpoints = [endpoint_node_id]
         self.context.clear_proposals()
 
     def before_commit_path(self, segment_id: str, endpoint_node_id: str) -> None:
-        """Action before committing a path segment."""
-        self.context.building.segments.append(segment_id)
-        self.context.building.endpoints = [endpoint_node_id]
-        self.context.clear_proposals()
+        """Action before committing a path segment (event hook only)."""
+        self._add_segment_to_building(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
 
     def before_commit_custom_continue(self, segment_id: str, endpoint_node_id: str) -> None:
         """Action before committing custom path and continuing."""
@@ -649,8 +782,13 @@ class PlannerStateMachine(StateMachine):
         self.context.custom_connect.clear()
 
     def before_commit_custom_finish(self, segment_id: str, slope_id: str) -> None:
-        """Action before committing custom connector and finishing."""
-        self.context.building.segments.append(segment_id)
+        """Action before committing custom connector and finishing.
+
+        Note: segment_id may already be in building.segments if added before
+        calling graph.finish_slope(). This hook is idempotent.
+        """
+        if segment_id not in self.context.building.segments:
+            self.context.building.segments.append(segment_id)
         self.context.viewing.set_slope_id(slope_id=slope_id)
         self.context.custom_connect.clear()
 
@@ -658,20 +796,18 @@ class PlannerStateMachine(StateMachine):
         """Action before finishing a slope."""
         self.context.viewing.set_slope_id(slope_id=slope_id)
 
-    def before_undo_to_idle(self, removed_segment_id: str) -> None:
-        """Action before undoing to idle (last segment removed, cancels slope)."""
+    def _undo_segment_common(self, removed_segment_id: str, new_endpoint_node_id: str | None) -> None:
+        """Common logic for undo operations."""
         if removed_segment_id in self.context.building.segments:
             self.context.building.segments.remove(removed_segment_id)
-        self.context.building.clear()
+        if new_endpoint_node_id is not None:
+            self.context.building.endpoints = [new_endpoint_node_id]
+        else:
+            self.context.building.clear()
 
-    def before_undo_continue(self, removed_segment_id: str, new_endpoint_node_id: str) -> None:
-        """Action before undoing but continuing in building state.
-
-        Note: Does NOT clear proposals - undo_last_action() sets them BEFORE calling this.
-        """
-        if removed_segment_id in self.context.building.segments:
-            self.context.building.segments.remove(removed_segment_id)
-        self.context.building.endpoints = [new_endpoint_node_id]
+    def before_undo(self, removed_segment_id: str, new_endpoint_node_id: str | None = None) -> None:
+        """Action before undo (event hook only). SM resolves to undo_to_idle or undo_continue."""
+        self._undo_segment_common(removed_segment_id=removed_segment_id, new_endpoint_node_id=new_endpoint_node_id)
 
     def before_view_slope(self, slope_id: str) -> None:
         """Set slope_id before entering viewing state. Panel visibility set by enter function."""
@@ -719,19 +855,64 @@ class PlannerStateMachine(StateMachine):
         self.context.viewing.set_lift_id(lift_id=lift_id)
         self.context.lift.clear()
 
+    # ──────────────────────────────────────────────────────────────────────────────
+    # Custom Connect Transitions (Single Source of Truth for ctx.custom_connect.*)
+    # ──────────────────────────────────────────────────────────────────────────────
+    # All custom_connect state mutations happen ONLY in these hooks:
+    # - enable_custom: Sets enabled=True, start_node
+    # - select_custom_target: Sets target_location, enabled=False, force_mode=True
+    # - cancel_custom/cancel_path: Clears state via clear_custom_connect() or field resets
+    # ──────────────────────────────────────────────────────────────────────────────
+
+    def before_enable_custom(self) -> None:
+        """Event-level hook for enable_custom. Transition-specific hooks do the work."""
+        pass
+
     def before_enable_custom_from_starting(self) -> None:
-        """Action before enabling custom connect from starting."""
+        """Action before enabling custom connect from starting.
+
+        Sets up custom_connect state using building.start_node as the start point.
+        If starting from terrain (no start_node), creates a new node at selection location.
+        """
+        start_node_id = self.context.building.start_node
+
+        # If started from terrain (not a node), create a node at the selection location
+        if start_node_id is None:
+            sel = self.context.selection
+            node, _ = self._resort_graph.get_or_create_node(lon=sel.lon, lat=sel.lat, elevation=sel.elevation)
+            start_node_id = node.id
+            # Also update building.start_node so the state is consistent
+            self.context.building.start_node = start_node_id
+
         self.context.custom_connect.enabled = True
+        self.context.custom_connect.start_node = start_node_id
 
     def before_enable_custom_from_building(self) -> None:
-        """Action before enabling custom connect from building."""
+        """Action before enabling custom connect from building.
+
+        Sets up custom_connect state using the current endpoint as start point.
+        """
         self.context.custom_connect.enabled = True
+        if self.context.building.endpoints:
+            self.context.custom_connect.start_node = self.context.building.endpoints[0]
 
     def before_select_custom_target(self, target_location: LonLatElev) -> None:
         """Action before selecting custom target."""
         self.context.custom_connect.target_location = target_location
         self.context.custom_connect.enabled = False
         self.context.custom_connect.force_mode = True
+
+    def before_cancel_custom(self) -> None:
+        """Event hook for cancel_custom. Clears custom state and triggers path regeneration."""
+        self.context.clear_custom_connect()
+        self.context.clear_proposals()
+        self.context.deferred.path_generation = True
+
+    def before_cancel_slope(self) -> None:
+        """Event hook for cancel_slope. Clears all building and custom state."""
+        self.context.clear_custom_connect()
+        self.context.clear_proposals()
+        self.context.building.clear()
 
     def before_resume_to_starting(self) -> None:
         """Action before resuming to starting state (undo finish)."""
@@ -781,6 +962,11 @@ class PlannerStateMachine(StateMachine):
         self._resort_graph = graph
         model = context or PlannerContext()
         super().__init__(model=model, start_value=start_value)
+
+        # Block direct calls to variant transitions (setattr is more performant
+        # than __getattribute__ and doesn't interfere with library internals)
+        for trans_name in PlannerStateMachine._EVENT_ONLY_TRANSITIONS:
+            setattr(self, trans_name, _forbidden_call(trans_name))
 
     # ==========================================================================
     # Utility Methods
@@ -841,149 +1027,60 @@ class PlannerStateMachine(StateMachine):
     ) -> None:
         """Start building a slope from any idle state.
 
-        Dispatches to the appropriate transition based on current state.
+        Uses start_slope event - SM resolves to appropriate transition.
         """
-        if self.is_idle_ready:
-            self.start_slope(lon=lon, lat=lat, elevation=elevation, node_id=node_id)
-        elif self.is_idle_viewing_slope:
-            self.start_slope_from_slope_view(lon=lon, lat=lat, elevation=elevation, node_id=node_id)
-        elif self.is_idle_viewing_lift:
-            self.start_slope_from_lift_view(lon=lon, lat=lat, elevation=elevation, node_id=node_id)
-        else:
-            raise ValueError(f"Cannot start building from state {self.get_state_name()}")
+        self.start_slope(lon=lon, lat=lat, elevation=elevation, node_id=node_id)
 
     def select_lift_start(self, node_id: str | None = None, location: PathPoint | None = None) -> None:
         """Start placing a lift from any idle state.
 
-        Dispatches to the appropriate transition based on current state.
+        Uses start_lift event - SM resolves to appropriate transition.
         """
-        if self.is_idle_ready:
-            self.start_lift(node_id=node_id, location=location)
-        elif self.is_idle_viewing_slope:
-            self.start_lift_from_slope_view(node_id=node_id, location=location)
-        elif self.is_idle_viewing_lift:
-            self.start_lift_from_lift_view(node_id=node_id, location=location)
-        else:
-            raise ValueError(f"Cannot start lift from state {self.get_state_name()}")
+        self.start_lift(node_id=node_id, location=location)
 
     def commit_segment(self, segment_id: str, endpoint_node_id: str) -> None:
-        """Commit a path segment (dispatches to appropriate transition)."""
-        if self.is_slope_starting:
-            self.commit_first_path(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
-        elif self.is_slope_building_only:
-            self.commit_path(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
-        else:
-            raise ValueError(f"Cannot commit segment from state {self.get_state_name()}")
+        """Commit a path segment. SM resolves to commit_first_path or commit_continue_path."""
+        self.commit_path(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
 
     def show_slope_info_panel(self, slope_id: str) -> None:
-        """Show slope info panel using explicit transitions.
+        """Show slope info panel from any idle state.
 
-        Uses direct transitions:
-        - From IDLE_READY: view_slope
-        - From IDLE_VIEWING_LIFT: switch_to_slope_view
-        - From IDLE_VIEWING_SLOPE: switch_slope (self-loop to switch which slope)
+        Uses view_slope event - SM resolves to appropriate transition.
         """
-        if self.is_idle_ready:
-            self.view_slope(slope_id=slope_id)
-        elif self.is_idle_viewing_lift:
-            self.switch_to_slope_view(slope_id=slope_id)
-        elif self.is_idle_viewing_slope:
-            self.switch_slope(slope_id=slope_id)
-        else:
-            logger.warning(f"Cannot show slope panel from state {self.get_state_name()}")
+        self.view_slope(slope_id=slope_id)
 
     def show_lift_info_panel(self, lift_id: str) -> None:
-        """Show lift info panel using explicit transitions.
+        """Show lift info panel from any idle state.
 
-        Uses direct transitions:
-        - From IDLE_READY: view_lift
-        - From IDLE_VIEWING_SLOPE: switch_to_lift_view
-        - From IDLE_VIEWING_LIFT: switch_lift (self-loop to switch which lift)
+        Uses view_lift event - SM resolves to appropriate transition.
         """
-        if self.is_idle_ready:
-            self.view_lift(lift_id=lift_id)
-        elif self.is_idle_viewing_slope:
-            self.switch_to_lift_view(lift_id=lift_id)
-        elif self.is_idle_viewing_lift:
-            self.switch_lift(lift_id=lift_id)
-        else:
-            logger.warning(f"Cannot show lift panel from state {self.get_state_name()}")
+        self.view_lift(lift_id=lift_id)
 
     def hide_info_panel(self) -> None:
-        """Hide info panel (transitions to idle_ready if viewing)."""
-        if self.is_idle_viewing_slope:
-            self.close_slope_panel()
-        elif self.is_idle_viewing_lift:
-            self.close_lift_panel()
-        else:
-            logger.warning(f"No panel to hide from state {self.get_state_name()}")
+        """Hide info panel (transitions to idle_ready if viewing).
+
+        Uses close_panel event - SM resolves to appropriate transition.
+        """
+        self.close_panel()
+
+    # NOTE: No restore_building() wrapper - call sm.restore_building() event directly.
+    # The event is defined by transitions with event="restore_building" parameter.
 
     def cancel_slope(self) -> None:
-        """Cancel slope building from any slope state.
-
-        Dispatches to the appropriate transition based on current state.
-        """
-        if self.is_slope_starting:
-            self.cancel_from_starting()
-        elif self.is_slope_building_only:
-            self.cancel_from_building()
-        elif self.is_slope_custom_picking:
-            if self.has_no_segments():
-                self.cancel_custom_to_starting()
-                self.cancel_from_starting()
-            else:
-                self.cancel_custom_to_building()
-                self.cancel_from_building()
-        elif self.is_slope_custom_path:
-            if self.has_no_segments():
-                self.cancel_path_to_starting()
-                self.cancel_from_starting()
-            else:
-                self.cancel_path_to_building()
-                self.cancel_from_building()
-        else:
-            raise ValueError(f"Cannot cancel slope from state {self.get_state_name()}")
+        """Cancel slope building from any slope state. SM resolves transition atomically."""
+        self.send("cancel_slope")
 
     def undo_segment(self, removed_segment_id: str, new_endpoint_node_id: str | None = None) -> None:
-        """Undo last segment, transitioning appropriately.
-
-        Args:
-            removed_segment_id: The segment being removed
-            new_endpoint_node_id: The new endpoint after undo (None if undoing to start)
-        """
-        if self.is_slope_building_only:
-            if self.undo_leaves_no_segments():
-                self.undo_to_idle(removed_segment_id=removed_segment_id)
-            else:
-                if new_endpoint_node_id is None:
-                    raise ValueError("new_endpoint_node_id required when not undoing to starting")
-                self.undo_continue(removed_segment_id=removed_segment_id, new_endpoint_node_id=new_endpoint_node_id)
-        else:
-            raise ValueError(f"Cannot undo from state {self.get_state_name()}")
+        """Undo last segment. SM resolves to undo_to_idle or undo_continue based on guards."""
+        self.undo(removed_segment_id=removed_segment_id, new_endpoint_node_id=new_endpoint_node_id)
 
     def enable_custom_connect(self) -> None:
-        """Enable custom connect mode from current slope state."""
-        if self.is_slope_starting:
-            self.enable_custom_from_starting()
-        elif self.is_slope_building_only:
-            self.enable_custom_from_building()
-        else:
-            raise ValueError(f"Cannot enable custom connect from state {self.get_state_name()}")
+        """Enable custom connect mode. SM resolves based on current state."""
+        self.enable_custom()
 
     def cancel_custom_connect(self) -> None:
-        """Cancel custom connect mode, returning to previous slope state."""
-        if self.is_slope_custom_picking:
-            if self.has_no_segments():
-                self.cancel_custom_to_starting()
-            else:
-                self.cancel_custom_to_building()
-        elif self.is_slope_custom_path:
-            if self.has_no_segments():
-                self.cancel_path_to_starting()
-            else:
-                self.cancel_path_to_building()
-        else:
-            raise ValueError(f"Cannot cancel custom from state {self.get_state_name()}")
+        """Cancel custom connect mode. SM resolves based on current state and guards."""
+        self.cancel_custom()
 
     @staticmethod
     def create(

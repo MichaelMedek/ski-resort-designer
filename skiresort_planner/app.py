@@ -30,12 +30,11 @@ from skiresort_planner.ui import (
     PlannerStateMachine,
     ProfileChart,
     SidebarRenderer,
-    cancel_connection_mode,
     cancel_current_slope,
     cancel_custom_direction_mode,
+    cancel_custom_path,
     commit_selected_path,
     dispatch_click,
-    display_pending_toasts,
     enter_custom_direction_mode,
     finish_current_slope,
     handle_deferred_actions,
@@ -162,16 +161,22 @@ def _render_map_fragment() -> None:
     """
     try:
         _render_map_fragment_inner()
+        logger.debug("[RENDER] _render_map_fragment_inner() completed successfully")
     except Exception as e:
         # Log full traceback for debugging
         error_msg = f"{type(e).__name__}: {e}"
-        logger.error(f"Map fragment error caught: {error_msg}\n{traceback.format_exc()}")
+        full_traceback = traceback.format_exc()
+        logger.error(f"[RENDER] Map fragment error caught: {error_msg}\n{full_traceback}")
+
+        # Show user-friendly error message
+        st.error(f"⚠️ [RENDER] Something went wrong: {error_msg}")
 
         # Reset UI state while preserving the graph
         reset_ui_state()
 
-        # Rerun to show clean UI
-        st.rerun()
+        # Add a button to manually recover
+        if st.button("🔄 Reset and Continue", type="primary"):
+            st.rerun()
 
 
 def _render_map_fragment_inner() -> None:
@@ -181,6 +186,9 @@ def _render_map_fragment_inner() -> None:
     graph: ResortGraph = st.session_state.graph
     renderer: MapRenderer = st.session_state.map_renderer
     terrain_analyzer: TerrainAnalyzer = st.session_state.path_factory.terrain_analyzer
+
+    map_version = st.session_state.get("map_version", 0)
+    logger.info(f"[RENDER] Map fragment: state={sm.get_state_name()}, map_version={map_version}")
 
     # Determine 2D/3D mode early so all layers use consistent z-handling
     use_3d = ctx.viewing.view_3d
@@ -347,12 +355,10 @@ def main() -> None:
         # Log full traceback for debugging
         error_msg = f"{type(e).__name__}: {e}"
         full_traceback = traceback.format_exc()
-        logger.error(f"UI error caught: {error_msg}\n{full_traceback}")
+        logger.error(f"[UI] UI error caught: {error_msg}\n{full_traceback}")
 
         # Show user-friendly error message
-        st.error(f"⚠️ Something went wrong: {error_msg}")
-        with st.expander("🔍 Technical Details", expanded=False):
-            st.code(full_traceback, language="python")
+        st.error(f"⚠️ [UI] Something went wrong: {error_msg}")
 
         # Reset UI state while preserving the graph
         reset_ui_state()
@@ -364,14 +370,14 @@ def main() -> None:
 
 def _run_app_ui() -> None:
     """Run the main application UI. Separated for error handling wrapper."""
-    # Display any toast messages queued from previous run (before st.rerun was called)
-    display_pending_toasts()
-
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
     renderer: MapRenderer = st.session_state.map_renderer
     renderer.graph = graph
+
+    map_version = st.session_state.get("map_version", 0)
+    logger.info(f"[MAIN] Render cycle starting: state={sm.get_state_name()}, map_version={map_version}")
 
     # Handle deferred actions from previous transitions
     handle_deferred_actions()
@@ -402,7 +408,7 @@ def _run_app_ui() -> None:
             on_commit=commit_selected_path,
             on_custom_direction=enter_custom_direction_mode,
             on_cancel_custom=cancel_custom_direction_mode,
-            on_cancel_connection=cancel_connection_mode,
+            on_cancel_connection=cancel_custom_path,
         )
 
     # Full-width profile for viewing slope

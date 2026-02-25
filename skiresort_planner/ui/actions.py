@@ -10,7 +10,6 @@ This module handles:
 - Undo operations (undo_last_action)
 - Custom direction mode (enter/cancel)
 - Deferred action handling (handle_deferred_actions)
-- Deferred toast messages (survive st.rerun)
 """
 
 import logging
@@ -22,15 +21,6 @@ import streamlit as st
 from skiresort_planner.constants import MapConfig, PathConfig
 from skiresort_planner.generators.path_factory import PathFactory
 from skiresort_planner.model.lift import Lift
-from skiresort_planner.model.message import (
-    ToastMessage,
-    UndoCancelSlopeMessage,
-    UndoDeleteLiftMessage,
-    UndoDeleteSlopeMessage,
-    UndoFinishSlopeMessage,
-    UndoLiftMessage,
-    UndoSegmentMessage,
-)
 from skiresort_planner.model.resort_graph import (
     ActionType,
     AddLiftAction,
@@ -100,47 +90,10 @@ def bump_map_version() -> None:
     with no memory of previous click events. Call this when completing
     actions that should clear stale click state.
     """
-    st.session_state.map_version = st.session_state.get("map_version", 0) + 1
-
-
-# =============================================================================
-# DEFERRED TOAST MESSAGES
-# =============================================================================
-
-
-def queue_toast(message: str, icon: str = "ℹ️") -> None:
-    """Queue a toast message to display after the next st.rerun().
-
-    Toast messages are transient notifications that appear briefly. However,
-    st.rerun() raises StopExecution and prevents st.toast() from being shown
-    if called before rerun. This function stores toasts in session state
-    to be displayed on the next run.
-
-    Args:
-        message: Toast message text
-        icon: Icon to show (emoji)
-    """
-    if "pending_toasts" not in st.session_state:
-        st.session_state.pending_toasts = []
-    st.session_state.pending_toasts.append({"message": message, "icon": icon})
-    logger.info(f"[TOAST QUEUED] {icon} {message}")
-
-
-def display_pending_toasts() -> None:
-    """Display and clear any pending toast messages.
-
-    Call this at the start of each app run to show toasts queued
-    from the previous run (before st.rerun was called).
-    """
-    pending = st.session_state.get("pending_toasts", [])
-    for toast in pending:
-        st.toast(f"{toast['icon']} {toast['message']}")
-    st.session_state.pending_toasts = []
-
-
-def _queue_toast_from_message(msg: ToastMessage) -> None:
-    """Queue a ToastMessage for display after st.rerun()."""
-    queue_toast(message=msg.message, icon=msg.icon)
+    old_version = st.session_state.get("map_version", 0)
+    new_version = old_version + 1
+    st.session_state.map_version = new_version
+    logger.info(f"[MAP] Bumped map_version: {old_version} -> {new_version}")
 
 
 # =============================================================================
@@ -342,9 +295,8 @@ def _generate_custom_connect_paths() -> None:
 
     ctx.proposals.paths = paths
     ctx.proposals.selected_idx = 0
-    ctx.custom_connect.enabled = False
-    ctx.custom_connect.force_mode = True
-    ctx.custom_connect.target_location = None
+    # Note: enabled, force_mode, target_location already set by before_select_custom_target hook
+    # No cleanup here - before_cancel_* and before_commit_* hooks handle it on exit
     logger.info(f"Generated {len(paths)} custom paths from {start_node.id} to ({target_lat:.6f}, {target_lon:.6f})")
 
 
@@ -367,8 +319,49 @@ def _find_closest_gradient_path(paths: "list[ProposedSlopeSegment]", target_grad
 # =============================================================================
 
 
+def _commit_path_transition(
+    sm: PlannerStateMachine,
+    segment_id: str,
+    endpoint_node_id: str,
+    is_connector: bool,
+    slope: "Slope | None" = None,
+) -> None:
+    """Dispatch to appropriate state machine event for path commit.
+
+    Uses events instead of direct transition calls - the state machine
+    resolves which transition to use based on current state:
+    - SlopeStarting + commit_path event → commit_first_path transition
+    - SlopeBuilding + commit_path event → commit_continue_path transition
+    - SlopeCustomPath: separate events for different intents (finish vs continue)
+
+    Args:
+        sm: State machine instance
+        segment_id: ID of committed segment
+        endpoint_node_id: ID of endpoint node
+        is_connector: Whether this path connects to an existing node
+        slope: Finalized slope object (required for connector from SlopeCustomPath)
+    """
+    if sm.is_slope_custom_path:
+        # Custom path has different intents: finish (connector) vs continue
+        if is_connector:
+            if slope is None:
+                raise RuntimeError("slope required for connector commit_custom_finish transition")
+            sm.commit_custom_finish(segment_id=segment_id, slope_id=slope.id)
+        else:
+            sm.commit_custom_continue(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
+    else:
+        # Use event - state machine resolves to commit_first_path or commit_continue_path
+        sm.commit_path(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
+
+
 def commit_selected_path(path_idx: int) -> None:
-    """Commit selected path to graph and trigger next path generation."""
+    """Commit selected path to graph and trigger next path generation.
+
+    Handles state-specific transitions:
+    - From SlopeStarting/SlopeBuilding: uses commit_path
+    - From SlopeCustomPath + connector: uses commit_custom_finish (direct finish)
+    - From SlopeCustomPath + continue: uses commit_custom_continue
+    """
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
@@ -395,9 +388,13 @@ def commit_selected_path(path_idx: int) -> None:
     )
 
     if is_connector:
-        logger.info(f"Connector to {path.target_node_id}, auto-finish enabled")
-        ctx.deferred.auto_finish = True
-        sm.commit_path(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
+        logger.info(f"Connector to {path.target_node_id}")
+        # For connectors from SlopeCustomPath, use direct commit_custom_finish transition
+        # For other states, use commit_path + auto_finish deferred action
+        if sm.is_slope_custom_path:
+            sm.commit_custom_continue(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
+        else:
+            sm.commit_path(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
         return
 
     end_node = graph.nodes.get(endpoint_node_id)
@@ -407,7 +404,9 @@ def commit_selected_path(path_idx: int) -> None:
         ctx.deferred.path_generation = True
         ctx.deferred.gradient_target = committed_gradient
 
-    sm.commit_path(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
+    _commit_path_transition(
+        sm=sm, segment_id=segment_id, endpoint_node_id=endpoint_node_id, is_connector=False, slope=None
+    )
 
 
 def recompute_paths() -> None:
@@ -441,8 +440,7 @@ def recompute_paths() -> None:
                 logger.info(
                     f"Recomputed {len(paths)} custom paths from {start_node.id} (segment_length={segment_length}m)"
                 )
-                bump_map_version()  # Clear stale click state so proposal 1 can be clicked
-                st.rerun()
+                reload_map()  # Clear stale click state so proposal 1 can be clicked
             return
 
     # Clear custom connect when generating fan paths
@@ -461,8 +459,7 @@ def recompute_paths() -> None:
             logger.info(
                 f"Recomputed {len(ctx.proposals.paths)} fan paths from node {node.id} (segment_length={segment_length}m)"
             )
-            bump_map_version()  # Clear stale click state so proposal 1 can be clicked
-            st.rerun()
+            reload_map()  # Clear stale click state so proposal 1 can be clicked
     elif ctx.selection.has_selection():
         lon, lat = ctx.selection.get_lon_lat()
         elev = dem.get_elevation(lon=lon, lat=lat)
@@ -474,8 +471,7 @@ def recompute_paths() -> None:
             logger.info(
                 f"Recomputed {len(ctx.proposals.paths)} fan paths from click (segment_length={segment_length}m)"
             )
-            bump_map_version()  # Clear stale click state so proposal 1 can be clicked
-            st.rerun()
+            reload_map()  # Clear stale click state so proposal 1 can be clicked
 
 
 # =============================================================================
@@ -536,96 +532,43 @@ def cancel_current_slope() -> None:
     sm.cancel_slope()
 
 
-def undo_last_action() -> None:
-    """Undo the most recent action."""
+def _undo_add_segments(undone: AddSegmentsAction) -> None:
+    """Handle undo of ADD_SEGMENTS action.
+
+    Handles state-specific transitions:
+    - From slope building states: uses undo_segment transition
+    - From idle states (e.g., after error recovery): just reload map
+    """
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
     factory: PathFactory = st.session_state.path_factory
 
-    logger.info(f"Undo requested, state={sm.get_state_name()}, undo_stack_size={len(graph.undo_stack)}")
+    removed_segment_id = undone.segment_ids[-1] if undone.segment_ids else ""
 
-    if sm.is_any_slope_state and not ctx.building.segments:
-        logger.info("No segments in building state, canceling slope via undo")
-        # Queue toast BEFORE state transition (sm.cancel_slope triggers st.rerun)
-        _queue_toast_from_message(UndoCancelSlopeMessage())
-        sm.cancel_slope()
-        # NOTE: Code here won't execute - st.rerun() is called by state machine listener
+    # Handle case where we're in idle state (e.g., after error recovery reset)
+    # The graph undo already happened, just need to reload the map
+    if sm.is_idle:
+        logger.info(f"[ACTION] Undo from idle state (segment={removed_segment_id}), reloading map")
+        reload_map()
         return
 
-    undone = graph.undo_last()
-    # undo_last() raises RuntimeError if stack is empty, so no None check needed
+    # Check remaining segments BEFORE state machine modifies ctx.building.segments
+    # The state machine hooks will remove the segment from ctx.building.segments
+    remaining_segments = [s for s in ctx.building.segments if s not in undone.segment_ids]
 
-    # Use action_type property (enum) for reliable dispatch across module reloads
-    action_type = undone.action_type
-    logger.info(f"Undone action: {action_type.name}")
+    if remaining_segments:
+        # Get the new endpoint from the last remaining segment
+        last_seg = graph.segments.get(remaining_segments[-1])
+        if last_seg:
+            new_endpoint_node_id = last_seg.end_node_id
 
-    if action_type == ActionType.ADD_SEGMENTS:
-        add_seg = cast(AddSegmentsAction, undone)
-        removed_segment_id = add_seg.segment_ids[-1] if add_seg.segment_ids else ""
-
-        # Check remaining segments BEFORE state machine modifies ctx.building.segments
-        # The state machine hooks will remove the segment from ctx.building.segments
-        remaining_segments = [s for s in ctx.building.segments if s not in add_seg.segment_ids]
-
-        if remaining_segments:
-            # Get the new endpoint from the last remaining segment
-            last_seg = graph.segments.get(remaining_segments[-1])
-            if last_seg:
-                new_endpoint_node_id = last_seg.end_node_id
-
-                # IMPORTANT: Regenerate paths BEFORE state transition!
-                # The state machine triggers st.rerun() via listener, which raises StopExecution.
-                # Any code after sm.undo_segment() will NOT execute.
-                if last_seg.points:
-                    last_pt = last_seg.points[-1]
-                    ctx.set_selection(lon=last_pt.lon, lat=last_pt.lat, elevation=last_pt.elevation)
-                    ctx.proposals.paths = list(
-                        factory.generate_fan(
-                            lon=last_pt.lon,
-                            lat=last_pt.lat,
-                            elevation=last_pt.elevation,
-                            target_length_m=ctx.segment_length_m,
-                        )
-                    )
-                    ctx.proposals.selected_idx = 0 if ctx.proposals.paths else None
-                    logger.info(f"Regenerated {len(ctx.proposals.paths)} paths from previous endpoint")
-
-                # Queue toast BEFORE state transition (st.rerun prevents direct display)
-                _queue_toast_from_message(UndoSegmentMessage(segment_id=removed_segment_id, was_last_segment=False))
-
-                bump_map_version()
-                # State machine triggers st.rerun() - code after this won't execute
-                sm.undo_segment(removed_segment_id=removed_segment_id, new_endpoint_node_id=new_endpoint_node_id)
-            else:
-                # Segment not in graph - force state machine to handle cleanup
-                logger.warning(f"Segment {remaining_segments[-1]} not found in graph during undo")
-                _queue_toast_from_message(UndoSegmentMessage(segment_id=removed_segment_id, was_last_segment=False))
-                bump_map_version()
-                sm.undo_segment(removed_segment_id=removed_segment_id)
-        else:
-            logger.info("No segments left after undo, returning to idle")
-            _queue_toast_from_message(UndoSegmentMessage(segment_id=removed_segment_id, was_last_segment=True))
-            bump_map_version()
-            sm.undo_segment(removed_segment_id=removed_segment_id)
-        # NOTE: Code here won't execute - st.rerun() is called by state machine listener
-
-    elif action_type == ActionType.FINISH_SLOPE:
-        finish_slope = cast(FinishSlopeAction, undone)
-        logger.info(f"Undone slope finish, restoring {len(finish_slope.segment_ids)} segments")
-
-        # Restore building context BEFORE state transition
-        ctx.building.segments = list(finish_slope.segment_ids)
-        ctx.building.name = finish_slope.slope_name
-        ctx.building.start_node = finish_slope.start_node_id
-
-        if ctx.building.segments:
-            last_seg = graph.segments.get(ctx.building.segments[-1])
-            if last_seg and last_seg.points:
+            # IMPORTANT: Regenerate paths BEFORE state transition!
+            # The state machine triggers st.rerun() via listener, which raises StopExecution.
+            # Any code after sm.undo_segment() will NOT execute.
+            if last_seg.points:
                 last_pt = last_seg.points[-1]
-                # Set selection and regenerate paths BEFORE state transition
                 ctx.set_selection(lon=last_pt.lon, lat=last_pt.lat, elevation=last_pt.elevation)
-                ctx.building.endpoints = [last_seg.end_node_id]
                 ctx.proposals.paths = list(
                     factory.generate_fan(
                         lon=last_pt.lon,
@@ -635,61 +578,140 @@ def undo_last_action() -> None:
                     )
                 )
                 ctx.proposals.selected_idx = 0 if ctx.proposals.paths else None
-                logger.info(f"Regenerated {len(ctx.proposals.paths)} paths for restored slope")
+                logger.info(f"Regenerated {len(ctx.proposals.paths)} paths from previous endpoint")
 
-                # Queue toast BEFORE state transition
-                _queue_toast_from_message(
-                    UndoFinishSlopeMessage(
-                        slope_name=finish_slope.slope_name or "Unnamed",
-                        num_segments=len(finish_slope.segment_ids),
-                    )
-                )
-
-                bump_map_version()
-                # State machine triggers st.rerun() - code after this won't execute
-                if sm.is_idle_viewing_slope:
-                    sm.resume_building()
-                elif sm.is_idle_ready:
-                    sm.undo_restore_to_building()
-                elif sm.is_idle_viewing_lift:
-                    sm.undo_restore_from_lift_to_building()
-                else:
-                    raise RuntimeError(f"Cannot undo FINISH_SLOPE from state {sm.get_state_name()}")
-        # NOTE: Code here won't execute - st.rerun() is called by state machine listener
-
-    elif action_type == ActionType.ADD_LIFT:
-        add_lift = cast(AddLiftAction, undone)
-        # The lift was already removed by graph.undo_last(), so we can't get its name
-        # Use the lift_id for the toast message
-        logger.info(f"Undone lift addition: {add_lift.lift_id}")
-        # Queue toast BEFORE state transition
-        _queue_toast_from_message(UndoLiftMessage(lift_name=add_lift.lift_id))
-        bump_map_version()
-        # Close panel if we were showing the deleted lift (use explicit transition)
-        if sm.is_idle_viewing_lift:
-            sm.close_lift_panel()  # Triggers st.rerun()
+            bump_map_version()
+            # State machine triggers st.rerun() - code after this won't execute
+            sm.undo_segment(removed_segment_id=removed_segment_id, new_endpoint_node_id=new_endpoint_node_id)
         else:
-            st.rerun()
-
-    elif action_type == ActionType.DELETE_SLOPE:
-        del_slope = cast(DeleteSlopeAction, undone)
-        logger.info(f"Restored deleted slope {del_slope.slope_id}")
-        # Get restored slope name from graph
-        restored_slope = graph.slopes.get(del_slope.slope_id)
-        slope_name = restored_slope.name if restored_slope else del_slope.slope_id
-        _queue_toast_from_message(UndoDeleteSlopeMessage(slope_name=slope_name))
+            # Segment not in graph - force state machine to handle cleanup
+            logger.warning(f"Segment {remaining_segments[-1]} not found in graph during undo")
+            bump_map_version()
+            sm.undo_segment(removed_segment_id=removed_segment_id)
+    else:
+        logger.info(f"[ACTION] No segments left after undo, returning to idle (segment={removed_segment_id})")
         bump_map_version()
-        st.rerun()
+        logger.info("[ACTION] Calling sm.undo_segment() -> will trigger st.rerun() via listener")
+        sm.undo_segment(removed_segment_id=removed_segment_id)
 
-    elif action_type == ActionType.DELETE_LIFT:
-        del_lift = cast(DeleteLiftAction, undone)
-        logger.info(f"Restored deleted lift {del_lift.lift_id}")
-        # Get restored lift name from graph
-        restored_lift = graph.lifts.get(del_lift.lift_id)
-        lift_name = restored_lift.name if restored_lift else del_lift.lift_id
-        _queue_toast_from_message(UndoDeleteLiftMessage(lift_name=lift_name))
+
+def _undo_finish_slope(undone: FinishSlopeAction) -> None:
+    """Handle undo of FINISH_SLOPE action."""
+    sm: PlannerStateMachine = st.session_state.state_machine
+    ctx: PlannerContext = st.session_state.context
+    graph: ResortGraph = st.session_state.graph
+    factory: PathFactory = st.session_state.path_factory
+
+    logger.info(f"Undone slope finish, restoring {len(undone.segment_ids)} segments")
+
+    # Restore building context BEFORE state transition
+    ctx.building.segments = list(undone.segment_ids)
+    ctx.building.name = undone.slope_name
+    ctx.building.start_node = undone.start_node_id
+
+    if not ctx.building.segments:
+        return
+
+    last_seg = graph.segments.get(ctx.building.segments[-1])
+    if not last_seg or not last_seg.points:
+        return
+
+    last_pt = last_seg.points[-1]
+    # Set selection and regenerate paths BEFORE state transition
+    ctx.set_selection(lon=last_pt.lon, lat=last_pt.lat, elevation=last_pt.elevation)
+    ctx.building.endpoints = [last_seg.end_node_id]
+    ctx.proposals.paths = list(
+        factory.generate_fan(
+            lon=last_pt.lon,
+            lat=last_pt.lat,
+            elevation=last_pt.elevation,
+            target_length_m=ctx.segment_length_m,
+        )
+    )
+    ctx.proposals.selected_idx = 0 if ctx.proposals.paths else None
+    logger.info(f"Regenerated {len(ctx.proposals.paths)} paths for restored slope")
+
+    bump_map_version()
+    # State machine triggers st.rerun() - code after this won't execute
+    # Uses restore_building event - SM resolves based on state + guards
+    sm.restore_building()
+
+
+def _undo_add_lift(undone: AddLiftAction) -> None:
+    """Handle undo of ADD_LIFT action."""
+    sm: PlannerStateMachine = st.session_state.state_machine
+
+    logger.info(f"Undone lift addition: {undone.lift_id}")
+
+    # Close panel if we were showing the deleted lift (uses close_panel event)
+    if sm.is_idle_viewing_lift:
         bump_map_version()
-        st.rerun()
+        sm.hide_info_panel()  # Triggers st.rerun()
+    else:
+        reload_map()
+
+
+def _undo_delete_slope(undone: DeleteSlopeAction) -> None:
+    """Handle undo of DELETE_SLOPE action."""
+    logger.info(f"Restored deleted slope {undone.slope_id}")
+    reload_map()
+
+
+def _undo_delete_lift(undone: DeleteLiftAction) -> None:
+    """Handle undo of DELETE_LIFT action."""
+    logger.info(f"Restored deleted lift {undone.lift_id}")
+    reload_map()
+
+
+def undo_last_action() -> None:
+    """Undo the most recent action.
+
+    Dispatches to type-specific handlers based on the undone action type.
+    Each handler is responsible for:
+    - Restoring context state (if needed)
+    - Regenerating paths (if needed)
+    - Triggering state machine transition or reload
+
+    Note: Undo confirmation is handled by UI dialog before calling this function.
+    """
+    sm: PlannerStateMachine = st.session_state.state_machine
+    ctx: PlannerContext = st.session_state.context
+    graph: ResortGraph = st.session_state.graph
+
+    # Guard: nothing to undo (should not happen - UI disables button when empty)
+    if not graph.undo_stack:
+        return
+
+    logger.info(f"[ACTION] Undo requested, state={sm.get_state_name()}, undo_stack_size={len(graph.undo_stack)}")
+
+    # Special case: in slope state with no segments → cancel slope
+    if sm.is_any_slope_state and not ctx.building.segments:
+        logger.info("[ACTION] No segments in building state, canceling slope via undo")
+        sm.cancel_slope()
+        return
+
+    undone = graph.undo_last()
+    action_type = undone.action_type
+    logger.info(f"[ACTION] Undone: {action_type.name}")
+
+    # Dispatch to type-specific handlers.
+    # IMPORTANT: We compare by .name (string) instead of direct enum equality because
+    # Streamlit's module reloading creates NEW enum class instances on each rerun.
+    # Objects in st.session_state.graph.undo_stack hold references to the OLD enum
+    # values, which fail `==` comparison against the NEW enum class values.
+    # Using .name ensures stable comparison across module reloads.
+    if action_type.name == ActionType.ADD_SEGMENTS.name:
+        _undo_add_segments(undone=cast(AddSegmentsAction, undone))
+    elif action_type.name == ActionType.FINISH_SLOPE.name:
+        _undo_finish_slope(undone=cast(FinishSlopeAction, undone))
+    elif action_type.name == ActionType.ADD_LIFT.name:
+        _undo_add_lift(undone=cast(AddLiftAction, undone))
+    elif action_type.name == ActionType.DELETE_SLOPE.name:
+        _undo_delete_slope(undone=cast(DeleteSlopeAction, undone))
+    elif action_type.name == ActionType.DELETE_LIFT.name:
+        _undo_delete_lift(undone=cast(DeleteLiftAction, undone))
+    else:
+        raise RuntimeError(f"Unknown action type: {action_type}")
 
 
 # =============================================================================
@@ -698,56 +720,33 @@ def undo_last_action() -> None:
 
 
 def enter_custom_direction_mode() -> None:
-    """Enter custom direction mode - backup proposals and wait for click."""
-    ctx: PlannerContext = st.session_state.context
-    graph: ResortGraph = st.session_state.graph
+    """Enter custom direction mode via state machine transition.
 
-    start_node_id = None
-    if ctx.building.endpoints:
-        start_node_id = ctx.building.endpoints[0]
-    elif ctx.building.start_node:
-        start_node_id = ctx.building.start_node
-    elif ctx.proposals.paths:
-        first_path = ctx.proposals.paths[0]
-        if first_path.points:
-            start_pt = first_path.points[0]
-            existing = graph.find_nearest_node(
-                lon=start_pt.lon, lat=start_pt.lat, threshold_m=MapConfig.LIFT_END_NODE_THRESHOLD_M
-            )
-            if existing:
-                start_node_id = existing.id
-            else:
-                new_node, _ = graph.get_or_create_node(lon=start_pt.lon, lat=start_pt.lat, elevation=start_pt.elevation)
-                start_node_id = new_node.id
-
-    if not start_node_id:
-        logger.warning("Cannot enter custom direction - no start node")
-        return
-
-    logger.info(f"Entering custom direction mode from node {start_node_id}")
-    ctx.custom_connect.start_node = start_node_id
-    ctx.custom_connect.enabled = True
-    ctx.proposals.clear()
-    st.rerun()
+    Triggers enable_custom_from_starting or enable_custom_from_building
+    depending on current state. All context setup is handled by before_* hooks.
+    """
+    sm: PlannerStateMachine = st.session_state.state_machine
+    logger.info("[ACTION] Custom Direction button clicked - triggering state transition")
+    sm.enable_custom_connect()
 
 
 def cancel_custom_direction_mode() -> None:
-    """Cancel custom direction mode and recompute fan paths."""
-    ctx: PlannerContext = st.session_state.context
+    """Cancel custom direction mode via state machine transition.
 
-    logger.info("Cancelling custom direction mode, will recompute fan paths")
-    ctx.clear_custom_connect()
-    ctx.proposals.clear()
-    ctx.deferred.path_generation = True
-    st.rerun()
+    Triggers cancel_custom_to_starting or cancel_custom_to_building.
+    Path regeneration is triggered by before_* hooks.
+    """
+    sm: PlannerStateMachine = st.session_state.state_machine
+    logger.info("[ACTION] Cancel Custom Direction - triggering state transition")
+    sm.cancel_custom_connect()
 
 
-def cancel_connection_mode() -> None:
-    """Cancel force connection mode and recompute fan paths."""
-    ctx: PlannerContext = st.session_state.context
+def cancel_custom_path() -> None:
+    """Cancel custom path mode (from SLOPE_CUSTOM_PATH) via state machine transition.
 
-    logger.info("Cancelling connection mode, will recompute fan paths")
-    ctx.custom_connect.force_mode = False
-    ctx.proposals.clear()
-    ctx.deferred.path_generation = True
-    st.rerun()
+    Triggers cancel_path_to_starting or cancel_path_to_building.
+    Path regeneration is triggered by before_* hooks.
+    """
+    sm: PlannerStateMachine = st.session_state.state_machine
+    logger.info("[ACTION] Cancel Custom Path - triggering state transition")
+    sm.cancel_custom_connect()

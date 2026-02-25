@@ -723,7 +723,7 @@ class TestUndoStateMachineIntegration:
 
         assert sm.is_any_slope_state
 
-    def test_resume_building_after_undo_finish(self) -> None:
+    def test_resume_to_building_after_undo_finish(self) -> None:
         """Can resume building after undoing finish_slope."""
         graph = ResortGraph()
         sm, ctx = PlannerStateMachine.create(graph=graph)
@@ -734,8 +734,12 @@ class TestUndoStateMachineIntegration:
         sm.finish_slope(slope_id="SL1")
         assert sm.is_idle
 
-        # Resume building (simulating undo_finish_slope)
-        sm.resume_building()
+        # To resume building, restore building context first (as undo does)
+        # finish_slope clears building context, so we must restore segments
+        ctx.building.segments = ["S1"]
+        ctx.building.endpoints = ["N1"]
+        # Use restore_building event - SM resolves to resume_to_building based on guards
+        sm.restore_building()
 
         assert sm.is_any_slope_state
 

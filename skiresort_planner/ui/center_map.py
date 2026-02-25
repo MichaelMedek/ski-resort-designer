@@ -422,15 +422,16 @@ class MapRenderer:
                 }
             )
 
-            # Slope icon at segment midpoint - only for finished slopes (not orphan segments)
-            if parent_slope:
-                center_line = segment.points
-                if center_line:
-                    mid_idx = len(center_line) // 2
-                    mid_pt = center_line[mid_idx]
-                    icon_z = self._get_z(
-                        mid_pt.elevation, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, MapConfig.Z_OFFSET_2D_ICONS
-                    )
+            # Slope icon at segment midpoint
+            center_line = segment.points
+            if center_line:
+                mid_idx = len(center_line) // 2
+                mid_pt = center_line[mid_idx]
+                icon_z = self._get_z(
+                    mid_pt.elevation, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, MapConfig.Z_OFFSET_2D_ICONS
+                )
+                if parent_slope:
+                    # Finished slope - use slope ID for click handling
                     icon_data.append(
                         {
                             "type": ClickConfig.TYPE_SLOPE,
@@ -438,6 +439,18 @@ class MapRenderer:
                             "position": [mid_pt.lon, mid_pt.lat, icon_z],
                             "color": StyleConfig.SLOPE_COLORS_RGBA[difficulty],
                             "name": f"Slope {slope_id}",
+                            "difficulty": difficulty,
+                        }
+                    )
+                else:
+                    # Orphan segment (being built) - show marker but segment click type
+                    icon_data.append(
+                        {
+                            "type": ClickConfig.TYPE_SEGMENT,
+                            "id": seg_id,
+                            "position": [mid_pt.lon, mid_pt.lat, icon_z],
+                            "color": StyleConfig.SLOPE_COLORS_RGBA[difficulty],
+                            "name": f"Building: {seg_id}",
                             "difficulty": difficulty,
                         }
                     )
@@ -606,7 +619,7 @@ class MapRenderer:
                     get_path="path",
                     get_color="color",
                     get_width=MarkerConfig.CABLE_WIDTH,
-                    width_min_pixels=2,
+                    width_min_pixels=MarkerConfig.CABLE_MIN_PIXELS,  # Minimum visible width when zoomed out
                     pickable=True,
                     id="lift_cables",
                 )
@@ -619,7 +632,7 @@ class MapRenderer:
                     "ScatterplotLayer",
                     icon_data,
                     get_position="position",
-                    get_radius=25,
+                    get_radius=ClickConfig.LIFT_ICON_MARKER_RADIUS,
                     get_fill_color="color",
                     pickable=True,
                     auto_highlight=True,
@@ -925,7 +938,7 @@ class MapRenderer:
                     "ScatterplotLayer",
                     [{"position": [lon, lat, arrow_z], "name": "Selection point"}],
                     get_position="position",
-                    get_radius=12,
+                    get_radius=MarkerConfig.DIRECTION_CENTER_MARKER_RADIUS,
                     get_fill_color=arrow_data[0]["color"] if arrow_data else [255, 255, 255, 200],
                     get_line_color=[255, 255, 255, 255],
                     stroked=True,

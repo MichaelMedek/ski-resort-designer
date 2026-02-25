@@ -24,6 +24,7 @@ from skiresort_planner.ui.actions import (
     center_on_lift,
     center_on_slope,
     commit_selected_path,
+    reload_map,
 )
 from skiresort_planner.ui.validators import (
     validate_custom_target_distance,
@@ -205,8 +206,7 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
                 raise RuntimeError(f"Slope {click_info.slope_id} not found in graph")
             logger.info(f"[IDLE] Slope click: showing panel for {slope.name}")
             center_on_slope(ctx=ctx, graph=graph, slope=slope, zoom=MapConfig.VIEWING_ZOOM)
-            sm.show_slope_info_panel(slope_id=slope.id)
-            st.rerun()  # Refresh sidebar with viewing state - raises StopExecution
+            sm.show_slope_info_panel(slope_id=slope.id)  # Triggers st.rerun() via listener
 
         # SEGMENT → Show parent slope panel
         if marker_type == MarkerType.SEGMENT:
@@ -217,8 +217,7 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
                 return
             logger.info(f"[IDLE] Segment click: showing panel for {parent_slope.name}")
             center_on_slope(ctx=ctx, graph=graph, slope=parent_slope, zoom=MapConfig.VIEWING_ZOOM)
-            sm.show_slope_info_panel(slope_id=parent_slope.id)
-            st.rerun()  # Refresh sidebar with viewing state - raises StopExecution
+            sm.show_slope_info_panel(slope_id=parent_slope.id)  # Triggers st.rerun() via listener
 
         # LIFT → Show lift panel and sync build mode
         if marker_type == MarkerType.LIFT:
@@ -231,8 +230,7 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
             ctx.build_mode.mode = lift.lift_type
             ctx.lift.type = lift.lift_type
             center_on_lift(ctx=ctx, graph=graph, lift=lift, zoom=MapConfig.VIEWING_ZOOM)
-            sm.show_lift_info_panel(lift_id=lift.id)
-            st.rerun()  # Refresh sidebar with viewing state - raises StopExecution
+            sm.show_lift_info_panel(lift_id=lift.id)  # Triggers st.rerun() via listener
 
         # PYLON → Show parent lift panel and sync build mode
         if marker_type == MarkerType.PYLON:
@@ -245,8 +243,7 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
             ctx.build_mode.mode = lift.lift_type
             ctx.lift.type = lift.lift_type
             center_on_lift(ctx=ctx, graph=graph, lift=lift, zoom=MapConfig.VIEWING_ZOOM)
-            sm.show_lift_info_panel(lift_id=lift.id)
-            st.rerun()  # Refresh sidebar with viewing state - raises StopExecution
+            sm.show_lift_info_panel(lift_id=lift.id)  # Triggers st.rerun() via listener
 
         # PROPOSAL clicks in idle = programming error
         if marker_type in {MarkerType.PROPOSAL_ENDPOINT, MarkerType.PROPOSAL_BODY}:
@@ -315,7 +312,7 @@ def handle_slope_building_click(click_info: ClickInfo, elevation: float | None) 
             if 0 <= idx < len(ctx.proposals.paths):
                 logger.info(f"[BUILDING] Proposal body click: selecting path {click_info.proposal_number}")
                 ctx.proposals.selected_idx = idx
-                st.rerun()
+                reload_map()  # Refresh map with new selection
             return
 
         # NODE without custom connect = user error
@@ -359,7 +356,8 @@ def handle_slope_building_click(click_info: ClickInfo, elevation: float | None) 
 
 
 def _handle_custom_connect_click(click_info: ClickInfo, elevation: float | None) -> None:
-    """Handle click in custom connect mode - validate target and defer path generation."""
+    """Handle click in custom connect mode - validate target and trigger state transition."""
+    sm: "PlannerStateMachine" = st.session_state.state_machine
     ctx: "PlannerContext" = st.session_state.context
     graph: "ResortGraph" = st.session_state.graph
 
@@ -428,10 +426,8 @@ def _handle_custom_connect_click(click_info: ClickInfo, elevation: float | None)
         f"to ({target_lat:.6f}, {target_lon:.6f}, {target_elevation:.0f}m)"
     )
 
-    # Store target and trigger deferred path generation
-    ctx.custom_connect.target_location = (target_lon, target_lat, target_elevation)
-    ctx.deferred.custom_connect = True
-    st.rerun()
+    # Trigger state transition - hooks will set context and deferred flag
+    sm.select_custom_target(target_location=(target_lon, target_lat, target_elevation))
 
 
 def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) -> None:

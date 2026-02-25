@@ -185,9 +185,17 @@ class EarthworkConfig:
     # H_edge = (S_side × W_belt) / 200 > threshold triggers warning
     EXCAVATOR_THRESHOLD_M = 2.5
 
-    # Belt width limits (meters)
-    MIN_BELT_WIDTH_M = 20  # Minimum width - very steep side slope
-    MAX_BELT_WIDTH_M = 40  # Maximum width - flat/gentle side slope
+    # Belt width limits per difficulty (min_m, max_m)
+    # Varies by difficulty to match typical ski run widths
+    BELT_WIDTH_LIMITS = {
+        "green": (10, 25),  # Narrow beginner runs
+        "blue": (20, 35),  # Standard intermediate width
+        "red": (25, 40),  # Wide advanced runs for carving
+        "black": (20, 35),  # Narrower expert terrain
+    }
+
+
+assert set(EarthworkConfig.BELT_WIDTH_LIMITS.keys()) == set(SlopeConfig.DIFFICULTIES)
 
 
 class ConnectionConfig:
@@ -244,6 +252,7 @@ class MarkerConfig:
     DIRECTION_ARROW_COLOR_UPHILL = [168, 85, 247, 230]  # Purple - going up (lifts)
     DIRECTION_ARROW_LENGTH_M = 300  # Arrow length in meters
     DIRECTION_ARROW_WIDTH = 8  # Line width for PathLayer
+    DIRECTION_CENTER_MARKER_RADIUS = 12  # Radius for center marker at click point (meters for ScatterplotLayer)
 
     # Lift station marker
     LIFT_STATION_COLOR = [168, 85, 247, 230]  # Purple
@@ -262,7 +271,8 @@ class MarkerConfig:
     PYLON_BORDER_COLOR = [31, 41, 55, 255]  # Gray-800 border
 
     # Cable line styling
-    CABLE_WIDTH = 4
+    CABLE_WIDTH = 10  # Width in meters for better visibility
+    CABLE_MIN_PIXELS = 3  # Minimum visible width when zoomed out
 
     # Z-offset for marker elevation to prevent z-fighting with terrain
     # Markers/paths rendered this height above DEM elevation (meters)
@@ -294,11 +304,12 @@ class ClickConfig:
     TYPE_PROPOSAL_BODY = "proposal_body"
 
     # Clickable marker radii (meters for Pydeck ScatterplotLayer)
-    NODE_MARKER_RADIUS = 25
-    SLOPE_ICON_MARKER_RADIUS = 20
+    NODE_MARKER_RADIUS = 35
+    SLOPE_ICON_MARKER_RADIUS = 30
+    LIFT_ICON_MARKER_RADIUS = 30
     PYLON_MARKER_RADIUS = 15
     PROPOSAL_BODY_RADIUS = 20
-    PROPOSAL_ENDPOINT_RADIUS = 28
+    PROPOSAL_ENDPOINT_RADIUS = 25
 
     # Colors for interactive elements (RGBA for Pydeck)
     PROPOSAL_ENDPOINT_COLOR = [249, 115, 22, 230]  # Orange-500

@@ -13,7 +13,7 @@ All rendering logic is encapsulated to keep the main app.py concise.
 import json
 import logging
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import streamlit as st
 
@@ -26,10 +26,15 @@ from skiresort_planner.model.message import (
 )
 from skiresort_planner.model.resort_graph import (
     ActionType,
+    AddLiftAction,
+    AddSegmentsAction,
+    DeleteLiftAction,
+    DeleteSlopeAction,
+    FinishSlopeAction,
     ResortGraph,
     UndoAction,
 )
-from skiresort_planner.ui.actions import bump_map_version, undo_last_action
+from skiresort_planner.ui.actions import bump_map_version, reload_map, undo_last_action
 from skiresort_planner.ui.state_machine import (
     BuildMode,
     PlannerContext,
@@ -40,34 +45,39 @@ logger = logging.getLogger(__name__)
 
 
 def _describe_undo_action(action: UndoAction, graph: ResortGraph) -> str:
-    """Generate human-readable description of what undo will do."""
-    action_type = action.action_type
+    """Generate human-readable description of what undo will do.
 
-    if action_type == ActionType.ADD_SEGMENTS:
-        act = action
+    IMPORTANT: We compare by .name (string) instead of direct enum equality because
+    Streamlit's module reloading creates NEW enum class instances on each rerun.
+    Objects in st.session_state.graph.undo_stack hold references to the OLD enum
+    values, which fail `==` comparison against the NEW enum class values.
+    Using .name ensures stable comparison across module reloads.
+    """
+    if action.action_type.name == ActionType.ADD_SEGMENTS.name:
+        act = cast(AddSegmentsAction, action)
         n_segments = len(act.segment_ids)
         return f"Remove {n_segments} segment(s) from current slope"
 
-    elif action_type == ActionType.FINISH_SLOPE:
-        act = action
+    elif action.action_type.name == ActionType.FINISH_SLOPE.name:
+        act = cast(FinishSlopeAction, action)
         return f"Restore slope **{act.slope_name}** to building mode"
 
-    elif action_type == ActionType.ADD_LIFT:
-        act = action
+    elif action.action_type.name == ActionType.ADD_LIFT.name:
+        act = cast(AddLiftAction, action)
         lift = graph.lifts.get(act.lift_id)
         name = lift.name if lift else act.lift_id
         return f"Delete lift **{name}**"
 
-    elif action_type == ActionType.DELETE_SLOPE:
-        act = action
+    elif action.action_type.name == ActionType.DELETE_SLOPE.name:
+        act = cast(DeleteSlopeAction, action)
         return f"Restore deleted slope **{act.deleted_slope.name}**"
 
-    elif action_type == ActionType.DELETE_LIFT:
-        act = action
+    elif action.action_type.name == ActionType.DELETE_LIFT.name:
+        act = cast(DeleteLiftAction, action)
         return f"Restore deleted lift **{act.deleted_lift.name}**"
 
     else:
-        return "Undo last action"
+        raise RuntimeError(f"Unknown action type: {action.action_type}")
 
 
 @st.dialog("Confirm Undo")
@@ -207,17 +217,14 @@ class SidebarRenderer:
     def _render_close_panel_button(self) -> None:
         """Render close panel button for viewing states."""
         if st.button(
-            "✖️ Close Panel",
+            "✖️ Close Right Panel",
             width="stretch",
-            help="Close info panel and return to build mode",
+            help="Close the right panel to start building new slopes and lifts",
         ):
             bump_map_version()
-            # Use explicit transitions based on current viewing state
-            if self.sm.is_idle_viewing_slope:
-                self.sm.close_slope_panel()
-            elif self.sm.is_idle_viewing_lift:
-                self.sm.close_lift_panel()
-            st.rerun()
+            # Uses close_panel event - SM resolves to appropriate transition
+            # NOTE: State transition triggers st.rerun() via listener
+            self.sm.hide_info_panel()
 
     def _render_lift_cancel_button(self) -> None:
         """Render cancel button during lift placement."""
@@ -227,8 +234,7 @@ class SidebarRenderer:
             help="Discard start point and return to idle",
         ):
             bump_map_version()  # Clear stale click state
-            self.sm.cancel_lift()
-            st.rerun()
+            self.sm.cancel_lift()  # Triggers st.rerun() via listener
 
     def _render_undo_reset_buttons(self) -> None:
         """Render undo and reset view buttons."""
@@ -248,8 +254,7 @@ class SidebarRenderer:
             help="Reset camera to standard position and orientation",
         ):
             self.ctx.map.reset_view()
-            bump_map_version()
-            st.rerun()
+            reload_map()  # Bumps version and triggers rerun
 
     def _render_mode_selector(self) -> None:
         """Render unified build type selector with 5 buttons.
@@ -329,6 +334,7 @@ class SidebarRenderer:
             viewing_slope=viewing_slope,
             viewing_lift=viewing_lift,
         )
+        # Build mode changes are context-only → use canonical refresh helper
         if st.button(
             slope_label,
             width="stretch",
@@ -339,7 +345,7 @@ class SidebarRenderer:
         ):
             self.ctx.build_mode.mode = BuildMode.SLOPE
             logger.info("UI: Build mode set to Slope")
-            st.rerun()
+            reload_map()
 
         # === LIFT buttons (2x2 grid) ===
         # Row 1: Chairlift, Gondola
@@ -416,7 +422,7 @@ class SidebarRenderer:
                 self.ctx.build_mode.mode = mode
                 self.ctx.lift.type = mode
                 logger.info(f"UI: Build mode set to {BuildMode.display_name(mode)}")
-            st.rerun()
+            reload_map()  # Build mode changes are context-only
 
     def _change_viewed_lift_type(self, new_type: str) -> None:
         """Change the type of the currently viewed lift.
@@ -601,7 +607,7 @@ class SidebarRenderer:
 
                     logger.info(f"Loaded resort from file: {uploaded_file.name}")
                     st.session_state._upload_counter = st.session_state.get("_upload_counter", 0) + 1
-                    st.rerun()
+                    reload_map()  # Fresh graph needs map version bump for Pydeck
                 except Exception as e:
                     FileLoadErrorMessage(error=str(e)).display()
                     logger.error(f"Failed to load resort file: {e}")
