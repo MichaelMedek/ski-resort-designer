@@ -249,7 +249,7 @@ class SidebarRenderer:
             _confirm_undo_dialog(action=last_action, graph=self.graph)
 
         if st.button(
-            "🎯 Reset View",
+            "📷 Reset View",
             width="stretch",
             help="Reset camera to standard position and orientation",
         ):

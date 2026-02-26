@@ -149,15 +149,22 @@ def load_dem_data() -> bool:
 
 
 # =============================================================================
-# MAP FRAGMENT
+# MAP RENDERING
 # =============================================================================
 
 
+# NOTE: @st.fragment intentionally NOT used here.
+# Fragments create isolated render contexts that can cause race conditions with
+# session_state updates, preventing proper key-based remounts for deck.gl 2D/3D
+# view transitions. Full app reruns with st.cache_data for heavy computations
+# (DEM loading, path generation) provide equivalent performance without the
+# state synchronization issues. See: Streamlit docs on fragment limitations.
 def _render_map_fragment() -> None:
-    """Render map and handle clicks in an isolated fragment.
+    """Render map and handle clicks.
 
-    With returned_objects limited to click fields only, pan/zoom don't trigger
-    reruns at all. The fragment isolates map interactions from the rest of the UI.
+    Despite the name (kept for backwards compatibility), this is NOT a fragment.
+    Full app reruns ensure deterministic 2D/3D view transitions via UUID-based
+    key changes that force deck.gl component remounts.
     """
     try:
         _render_map_fragment_inner()
@@ -254,53 +261,94 @@ def _render_map_fragment_inner() -> None:
     #          (TileLayer doesn't work because pydeck doesn't expose renderSubLayers)
     basemap_layer = create_aws_terrain_layer() if use_3d else None
 
-    # Render deck with all layers
-    deck = renderer.render(
-        proposals=ctx.proposals.paths,
-        selected_proposal_idx=ctx.proposals.selected_idx,
-        highlight_segment_ids=ctx.building.segments,
-        is_custom_path=ctx.custom_connect.force_mode,
-        extra_layers=extra_layers,
-        terrain_layer=basemap_layer,
-        use_3d=use_3d,
-    )
-
-    # Update view state from context - or calculate 3D camera position
+    # Calculate view state BEFORE creating deck (fixes inconsistent 2D/3D toggle)
+    # Update renderer's internal state so deck is created with correct values
     if use_3d and sm.is_info_panel_visible:
         # Calculate optimal 3D camera position for viewing slope/lift
         if sm.is_idle_viewing_slope and ctx.viewing.slope_id:
-            lat, lon, bearing, zoom, pitch = MapRenderer.calculate_3d_view_for_slope(
+            view_lat, view_lon, view_bearing, view_zoom, view_pitch = MapRenderer.calculate_3d_view_for_slope(
                 graph=graph, slope_id=ctx.viewing.slope_id
             )
         elif sm.is_idle_viewing_lift and ctx.viewing.lift_id:
-            lat, lon, bearing, zoom, pitch = MapRenderer.calculate_3d_view_for_lift(
+            view_lat, view_lon, view_bearing, view_zoom, view_pitch = MapRenderer.calculate_3d_view_for_lift(
                 graph=graph, lift_id=ctx.viewing.lift_id
             )
         else:
             # 3D enabled but not viewing - shouldn't happen, disable 3D
             ctx.viewing.disable_3d()
-            lat, lon, bearing, zoom, pitch = ctx.map.lat, ctx.map.lon, ctx.map.bearing, ctx.map.zoom, ctx.map.pitch
-
-        deck.initial_view_state = pdk.ViewState(
-            longitude=lon,
-            latitude=lat,
-            zoom=zoom,
-            pitch=pitch,
-            bearing=bearing,
-        )
+            view_lat, view_lon, view_bearing, view_zoom, view_pitch = (
+                ctx.map.lat,
+                ctx.map.lon,
+                ctx.map.bearing,
+                ctx.map.zoom,
+                ctx.map.pitch,
+            )
     else:
         # Normal 2D view - use stored view state
-        deck.initial_view_state = pdk.ViewState(
-            longitude=ctx.map.lon,
-            latitude=ctx.map.lat,
-            zoom=ctx.map.zoom,
-            pitch=ctx.map.pitch,
-            bearing=ctx.map.bearing,
+        view_lat, view_lon, view_bearing, view_zoom, view_pitch = (
+            ctx.map.lat,
+            ctx.map.lon,
+            ctx.map.bearing,
+            ctx.map.zoom,
+            ctx.map.pitch,
+        )
+
+    # SIMPLE view change detection: compare current state to last rendered state
+    # This replaces complex callback injection with direct comparison
+    last_view_3d = st.session_state.get("last_rendered_view_3d", False)
+    last_pitch = st.session_state.get("last_rendered_pitch", 0.0)
+    last_bearing = st.session_state.get("last_rendered_bearing", 0.0)
+
+    is_view_change = (
+        use_3d != last_view_3d or abs(view_pitch - last_pitch) > 0.1 or abs(view_bearing - last_bearing) > 0.1
+    )
+
+    if is_view_change:
+        # UUID guarantees unique key - forces React to remount deck.gl component
+        import uuid
+
+        new_key = str(uuid.uuid4())
+        st.session_state.force_remount_key = new_key
+        logger.info(
+            f"[REMOUNT] View change detected: 3D={last_view_3d}->{use_3d}, pitch={last_pitch:.1f}->{view_pitch:.1f}, key={new_key[:8]}..."
+        )
+
+    # Store current state for next comparison
+    st.session_state.last_rendered_view_3d = use_3d
+    st.session_state.last_rendered_pitch = view_pitch
+    st.session_state.last_rendered_bearing = view_bearing
+
+    # Update renderer with calculated view state BEFORE creating deck
+    renderer.update_view(lat=view_lat, lon=view_lon, zoom=view_zoom, pitch=view_pitch, bearing=view_bearing)
+
+    # Render deck with all layers - deck is created with correct view state
+    # Use spinner during view changes (2D/3D toggle, Reset View) to show progress
+    if is_view_change:
+        with st.spinner("🔄 Switching view..."):
+            deck = renderer.render(
+                proposals=ctx.proposals.paths,
+                selected_proposal_idx=ctx.proposals.selected_idx,
+                highlight_segment_ids=ctx.building.segments,
+                is_custom_path=ctx.custom_connect.force_mode,
+                extra_layers=extra_layers,
+                terrain_layer=basemap_layer,
+                use_3d=use_3d,
+            )
+    else:
+        deck = renderer.render(
+            proposals=ctx.proposals.paths,
+            selected_proposal_idx=ctx.proposals.selected_idx,
+            highlight_segment_ids=ctx.building.segments,
+            is_custom_path=ctx.custom_connect.force_mode,
+            extra_layers=extra_layers,
+            terrain_layer=basemap_layer,
+            use_3d=use_3d,
         )
 
     # Render with click handling
-    # Include 3D state in key to force component remount on toggle
-    map_key = f"main_map_{st.session_state.map_version}_{'3d' if use_3d else '2d'}"
+    # Include force_remount_key in key to force component hard remount on view changes
+    force_key = st.session_state.get("force_remount_key", "init")
+    map_key = f"main_map_{st.session_state.map_version}_{force_key}_{'3d' if use_3d else '2d'}"
     click_result = render_pydeck_map(
         deck=deck,
         height=ChartConfig.PROFILE_HEIGHT_LARGE,

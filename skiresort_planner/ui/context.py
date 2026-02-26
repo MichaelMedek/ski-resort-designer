@@ -301,7 +301,7 @@ class ViewingContext(BaseContext):
     # =========================================================================
 
     def enable_3d(self) -> None:
-        """Enable 3D view with terrain. Only effective when panel is visible."""
+        """Enable 3D view with terrain."""
         self.view_3d = True
 
     def disable_3d(self) -> None:
