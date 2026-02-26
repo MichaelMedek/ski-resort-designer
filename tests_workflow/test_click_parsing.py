@@ -1,9 +1,11 @@
 """Unit tests for ClickDetector parsing logic.
 
-Tests all click type parsing in consolidated tests.
+Uses parametrize to test all click type parsing patterns.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+import pytest
 
 from skiresort_planner.model.click_info import MapClickType, MarkerType
 from skiresort_planner.ui.click_detector import ClickDetector
@@ -13,10 +15,7 @@ from skiresort_planner.ui.click_detector import ClickDetector
 class MockDeduplicationContext:
     """Mock click deduplication context for testing."""
 
-    _seen: set = None
-
-    def __post_init__(self) -> None:
-        self._seen = set()
+    _seen: set = field(default_factory=set)
 
     def is_new_click(self, coord: tuple | None, obj_id: str | None) -> bool:
         """Return True if this click hasn't been seen before."""
@@ -26,173 +25,93 @@ class MockDeduplicationContext:
         self._seen.add(key)
         return True
 
-    def clear(self) -> None:
-        """Clear seen clicks."""
-        self._seen.clear()
+
+@pytest.fixture
+def detector() -> ClickDetector:
+    """Fresh ClickDetector with mock dedup for each test."""
+    return ClickDetector(dedup=MockDeduplicationContext())
 
 
 class TestClickDetectorParsing:
-    """Tests for click parsing from Pydeck events."""
+    """Parametrized tests for click parsing from Pydeck events."""
 
-    def test_parse_terrain_click_from_coordinate(self) -> None:
-        """Terrain click detected from clicked_coordinate (no object).
-
-        Tests:
-        - Returns ClickInfo with TERRAIN type
-        - Coordinates extracted correctly
-        """
-        dedup = MockDeduplicationContext()
-        detector = ClickDetector(dedup=dedup)
-
-        result = detector.detect(clicked_object=None, clicked_coordinate=[10.27, 46.97])
-
-        assert result is not None, "Should return ClickInfo"
-        assert result.click_type == MapClickType.TERRAIN
-        assert abs(result.lon - 10.27) < 0.001
-        assert abs(result.lat - 46.97) < 0.001
-
-    def test_parse_terrain_click_from_invisible_layer(self) -> None:
-        """Terrain click from invisible ScatterplotLayer grid."""
-        dedup = MockDeduplicationContext()
-        detector = ClickDetector(dedup=dedup)
-
-        result = detector.detect(
-            clicked_object={"type": "terrain", "lon": 10.5, "lat": 46.5},
-            clicked_coordinate=None,
-        )
-
+    @pytest.mark.parametrize(
+        "clicked_object,clicked_coordinate,expected_lon,expected_lat",
+        [
+            pytest.param(None, [10.27, 46.97], 10.27, 46.97, id="from_coordinate"),
+            pytest.param({"type": "terrain", "lon": 10.5, "lat": 46.5}, None, 10.5, 46.5, id="from_invisible_layer"),
+        ],
+    )
+    def test_terrain_click_parsing(
+        self,
+        detector: ClickDetector,
+        clicked_object: dict | None,
+        clicked_coordinate: list | None,
+        expected_lon: float,
+        expected_lat: float,
+    ) -> None:
+        """Terrain clicks extract coordinates from coordinate or object."""
+        result = detector.detect(clicked_object=clicked_object, clicked_coordinate=clicked_coordinate)
         assert result is not None
         assert result.click_type == MapClickType.TERRAIN
-        assert abs(result.lon - 10.5) < 0.001
-        assert abs(result.lat - 46.5) < 0.001
+        assert abs(result.lon - expected_lon) < 0.001
+        assert abs(result.lat - expected_lat) < 0.001
 
-    def test_parse_node_click(self) -> None:
-        """Node click extracts node ID."""
-        dedup = MockDeduplicationContext()
-        detector = ClickDetector(dedup=dedup)
-
-        result = detector.detect(
-            clicked_object={"type": "node", "id": "N42"},
-            clicked_coordinate=None,
-        )
-
+    @pytest.mark.parametrize(
+        "clicked_object,expected_marker_type,expected_attrs",
+        [
+            pytest.param({"type": "node", "id": "N42"}, MarkerType.NODE, {"node_id": "N42"}, id="node"),
+            pytest.param({"type": "slope", "id": "SL1"}, MarkerType.SLOPE, {"slope_id": "SL1"}, id="slope"),
+            pytest.param({"type": "lift", "id": "L5"}, MarkerType.LIFT, {"lift_id": "L5"}, id="lift"),
+            pytest.param(
+                {"type": "pylon", "lift_id": "L1", "pylon_index": 3},
+                MarkerType.PYLON,
+                {"lift_id": "L1", "pylon_index": 3},
+                id="pylon",
+            ),
+            pytest.param(
+                {"type": "proposal_endpoint", "proposal_index": 2},
+                MarkerType.PROPOSAL_ENDPOINT,
+                {"proposal_index": 2},
+                id="proposal",
+            ),
+        ],
+    )
+    def test_marker_click_parsing(
+        self, detector: ClickDetector, clicked_object: dict, expected_marker_type: MarkerType, expected_attrs: dict
+    ) -> None:
+        """Marker clicks extract correct type and attributes."""
+        result = detector.detect(clicked_object=clicked_object, clicked_coordinate=None)
         assert result is not None
         assert result.click_type == MapClickType.MARKER
-        assert result.marker_type == MarkerType.NODE
-        assert result.node_id == "N42"
+        assert result.marker_type == expected_marker_type
+        for attr, value in expected_attrs.items():
+            assert getattr(result, attr) == value
 
-    def test_parse_slope_click(self) -> None:
-        """Slope click extracts slope ID."""
-        dedup = MockDeduplicationContext()
-        detector = ClickDetector(dedup=dedup)
-
-        result = detector.detect(
-            clicked_object={"type": "slope", "id": "SL1"},
-            clicked_coordinate=None,
-        )
-
-        assert result is not None
-        assert result.marker_type == MarkerType.SLOPE
-        assert result.slope_id == "SL1"
-
-    def test_parse_lift_click(self) -> None:
-        """Lift click extracts lift ID."""
-        dedup = MockDeduplicationContext()
-        detector = ClickDetector(dedup=dedup)
-
-        result = detector.detect(
-            clicked_object={"type": "lift", "id": "L5"},
-            clicked_coordinate=None,
-        )
-
-        assert result is not None
-        assert result.marker_type == MarkerType.LIFT
-        assert result.lift_id == "L5"
-
-    def test_parse_pylon_click(self) -> None:
-        """Pylon click extracts lift ID and pylon index."""
-        dedup = MockDeduplicationContext()
-        detector = ClickDetector(dedup=dedup)
-
-        result = detector.detect(
-            clicked_object={"type": "pylon", "lift_id": "L1", "pylon_index": 3},
-            clicked_coordinate=None,
-        )
-
-        assert result is not None
-        assert result.marker_type == MarkerType.PYLON
-        assert result.lift_id == "L1"
-        assert result.pylon_index == 3
-
-    def test_parse_proposal_endpoint_click(self) -> None:
-        """Proposal endpoint click extracts proposal index."""
-        dedup = MockDeduplicationContext()
-        detector = ClickDetector(dedup=dedup)
-
-        result = detector.detect(
-            clicked_object={"type": "proposal_endpoint", "proposal_index": 2},
-            clicked_coordinate=None,
-        )
-
-        assert result is not None
-        assert result.marker_type == MarkerType.PROPOSAL_ENDPOINT
-        assert result.proposal_index == 2
-
-    def test_unknown_type_returns_none(self) -> None:
-        """Unknown object type returns None."""
-        dedup = MockDeduplicationContext()
-        detector = ClickDetector(dedup=dedup)
-
-        result = detector.detect(
-            clicked_object={"type": "unknown_thing"},
-            clicked_coordinate=None,
-        )
-
-        assert result is None, "Unknown type should return None"
-
-    def test_missing_required_field_returns_none(self) -> None:
-        """Object with missing required field returns None."""
-        dedup = MockDeduplicationContext()
-        detector = ClickDetector(dedup=dedup)
-
-        # Node without ID
-        result = detector.detect(
-            clicked_object={"type": "node"},  # missing 'id'
-            clicked_coordinate=None,
-        )
-
-        assert result is None, "Missing required field should return None"
+    @pytest.mark.parametrize(
+        "clicked_object",
+        [
+            pytest.param({"type": "unknown_thing"}, id="unknown_type"),
+            pytest.param({"type": "node"}, id="node_missing_id"),
+        ],
+    )
+    def test_invalid_object_returns_none(self, detector: ClickDetector, clicked_object: dict) -> None:
+        """Unknown type or missing required field returns None."""
+        result = detector.detect(clicked_object=clicked_object, clicked_coordinate=None)
+        assert result is None
 
 
 class TestClickDeduplication:
     """Tests for click deduplication logic."""
 
-    def test_duplicate_click_rejected(self) -> None:
-        """Same click is rejected on second occurrence."""
-        dedup = MockDeduplicationContext()
-        detector = ClickDetector(dedup=dedup)
-
+    def test_duplicate_click_rejected_different_accepted(self, detector: ClickDetector) -> None:
+        """Same click rejected on second occurrence; different clicks accepted."""
         obj = {"type": "node", "id": "N1"}
 
         result1 = detector.detect(clicked_object=obj, clicked_coordinate=None)
-        result2 = detector.detect(clicked_object=obj, clicked_coordinate=None)
+        result_dup = detector.detect(clicked_object=obj, clicked_coordinate=None)
+        result_diff = detector.detect(clicked_object={"type": "node", "id": "N2"}, clicked_coordinate=None)
 
-        assert result1 is not None, "First click should be accepted"
-        assert result2 is None, "Duplicate click should be rejected"
-
-    def test_different_clicks_accepted(self) -> None:
-        """Different clicks are both accepted."""
-        dedup = MockDeduplicationContext()
-        detector = ClickDetector(dedup=dedup)
-
-        result1 = detector.detect(
-            clicked_object={"type": "node", "id": "N1"},
-            clicked_coordinate=None,
-        )
-        result2 = detector.detect(
-            clicked_object={"type": "node", "id": "N2"},
-            clicked_coordinate=None,
-        )
-
-        assert result1 is not None, "First click should be accepted"
-        assert result2 is not None, "Different object should also be accepted"
+        assert result1 is not None, "First click accepted"
+        assert result_dup is None, "Duplicate rejected"
+        assert result_diff is not None, "Different click accepted"

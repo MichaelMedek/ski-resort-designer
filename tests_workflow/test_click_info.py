@@ -1,7 +1,6 @@
 """Unit tests for ClickInfo dataclass - validation and formatting logic.
 
-Tests the "Pure Data" validation in ClickInfo without requiring UI components.
-These tests verify the strict contract enforcement in __post_init__.
+Uses parametrize to consolidate repetitive validation patterns.
 """
 
 import pytest
@@ -9,229 +8,275 @@ import pytest
 from skiresort_planner.model.click_info import ClickInfo, MapClickType, MarkerType
 
 
-class TestClickInfoTerrainValidation:
-    """Tests for TERRAIN click validation."""
+class TestClickInfoValidation:
+    """Parametrized tests for ClickInfo validation rules."""
 
-    def test_terrain_click_requires_coordinates(self) -> None:
-        """TERRAIN click must have lat/lon set."""
-        # Valid terrain click
-        click = ClickInfo(click_type=MapClickType.TERRAIN, lat=46.5, lon=10.5)
-        assert click.lat == 46.5
-        assert click.lon == 10.5
+    @pytest.mark.parametrize(
+        "kwargs,error_match",
+        [
+            pytest.param(
+                {"click_type": MapClickType.TERRAIN, "lon": 10.5},
+                "TERRAIN click must have lat/lon",
+                id="terrain_missing_lat",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.TERRAIN, "lat": 46.5},
+                "TERRAIN click must have lat/lon",
+                id="terrain_missing_lon",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.TERRAIN, "lat": 46.5, "lon": 10.5, "marker_type": MarkerType.NODE},
+                "TERRAIN click must NOT have marker_type",
+                id="terrain_with_marker",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER}, "MARKER click must have marker_type", id="marker_missing_type"
+            ),
+            pytest.param(
+                {
+                    "click_type": MapClickType.MARKER,
+                    "marker_type": MarkerType.NODE,
+                    "node_id": "N1",
+                    "lat": 46.5,
+                    "lon": 10.5,
+                },
+                "MARKER click must NOT have lat/lon",
+                id="marker_with_coords",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.NODE},
+                "NODE marker must have node_id",
+                id="node_missing_id",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.SLOPE},
+                "SLOPE marker must have slope_id",
+                id="slope_missing_id",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.SEGMENT},
+                "SEGMENT marker must have segment_id",
+                id="segment_missing_id",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.LIFT},
+                "LIFT marker must have lift_id",
+                id="lift_missing_id",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.PYLON},
+                "PYLON marker must have lift_id and pylon_index",
+                id="pylon_missing_both",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.PYLON, "lift_id": "L1"},
+                "PYLON marker must have lift_id and pylon_index",
+                id="pylon_missing_index",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.PYLON, "pylon_index": 2},
+                "PYLON marker must have lift_id and pylon_index",
+                id="pylon_missing_lift",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.PROPOSAL_ENDPOINT},
+                "PROPOSAL_ENDPOINT marker must have proposal_index",
+                id="proposal_end_missing",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.PROPOSAL_BODY},
+                "PROPOSAL_BODY marker must have proposal_index",
+                id="proposal_body_missing",
+            ),
+        ],
+    )
+    def test_invalid_construction_raises(self, kwargs: dict, error_match: str) -> None:
+        """Invalid ClickInfo construction raises ValueError with expected message."""
+        with pytest.raises(ValueError, match=error_match):
+            ClickInfo(**kwargs)
 
-    def test_terrain_click_rejects_missing_lat(self) -> None:
-        """TERRAIN click raises ValueError if lat is missing."""
-        with pytest.raises(ValueError, match="TERRAIN click must have lat/lon set"):
-            ClickInfo(click_type=MapClickType.TERRAIN, lon=10.5)
-
-    def test_terrain_click_rejects_missing_lon(self) -> None:
-        """TERRAIN click raises ValueError if lon is missing."""
-        with pytest.raises(ValueError, match="TERRAIN click must have lat/lon set"):
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=46.5)
-
-    def test_terrain_click_rejects_marker_type(self) -> None:
-        """TERRAIN click raises ValueError if marker_type is set."""
-        with pytest.raises(ValueError, match="TERRAIN click must NOT have marker_type set"):
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=46.5, lon=10.5, marker_type=MarkerType.NODE)
-
-
-class TestClickInfoMarkerValidation:
-    """Tests for MARKER click validation."""
-
-    def test_marker_click_requires_marker_type(self) -> None:
-        """MARKER click must have marker_type set."""
-        with pytest.raises(ValueError, match="MARKER click must have marker_type set"):
-            ClickInfo(click_type=MapClickType.MARKER)
-
-    def test_marker_click_rejects_coordinates(self) -> None:
-        """MARKER click raises ValueError if lat/lon are set."""
-        with pytest.raises(ValueError, match="MARKER click must NOT have lat/lon set"):
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id="N1", lat=46.5, lon=10.5)
-
-    def test_node_marker_requires_node_id(self) -> None:
-        """NODE marker must have node_id set."""
-        with pytest.raises(ValueError, match="NODE marker must have node_id set"):
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE)
-
-    def test_slope_marker_requires_slope_id(self) -> None:
-        """SLOPE marker must have slope_id set."""
-        with pytest.raises(ValueError, match="SLOPE marker must have slope_id set"):
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SLOPE)
-
-    def test_segment_marker_requires_segment_id(self) -> None:
-        """SEGMENT marker must have segment_id set."""
-        with pytest.raises(ValueError, match="SEGMENT marker must have segment_id set"):
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SEGMENT)
-
-    def test_lift_marker_requires_lift_id(self) -> None:
-        """LIFT marker must have lift_id set."""
-        with pytest.raises(ValueError, match="LIFT marker must have lift_id set"):
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.LIFT)
-
-    def test_pylon_marker_requires_both_ids(self) -> None:
-        """PYLON marker must have lift_id AND pylon_index set."""
-        # Missing both
-        with pytest.raises(ValueError, match="PYLON marker must have lift_id and pylon_index set"):
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PYLON)
-
-        # Missing pylon_index
-        with pytest.raises(ValueError, match="PYLON marker must have lift_id and pylon_index set"):
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PYLON, lift_id="L1")
-
-        # Missing lift_id
-        with pytest.raises(ValueError, match="PYLON marker must have lift_id and pylon_index set"):
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PYLON, pylon_index=2)
-
-    def test_proposal_endpoint_requires_proposal_index(self) -> None:
-        """PROPOSAL_ENDPOINT marker must have proposal_index set."""
-        with pytest.raises(ValueError, match="PROPOSAL_ENDPOINT marker must have proposal_index set"):
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_ENDPOINT)
-
-    def test_proposal_body_requires_proposal_index(self) -> None:
-        """PROPOSAL_BODY marker must have proposal_index set."""
-        with pytest.raises(ValueError, match="PROPOSAL_BODY marker must have proposal_index set"):
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_BODY)
-
-
-class TestClickInfoValidConstruction:
-    """Tests for valid ClickInfo construction."""
-
-    def test_valid_node_click(self) -> None:
-        """Valid NODE marker click."""
-        click = ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id="N42")
-        assert click.node_id == "N42"
-
-    def test_valid_slope_click(self) -> None:
-        """Valid SLOPE marker click."""
-        click = ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SLOPE, slope_id="SL5")
-        assert click.slope_id == "SL5"
-
-    def test_valid_segment_click(self) -> None:
-        """Valid SEGMENT marker click."""
-        click = ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SEGMENT, segment_id="S3")
-        assert click.segment_id == "S3"
-
-    def test_valid_lift_click(self) -> None:
-        """Valid LIFT marker click."""
-        click = ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.LIFT, lift_id="L2")
-        assert click.lift_id == "L2"
-
-    def test_valid_pylon_click(self) -> None:
-        """Valid PYLON marker click."""
-        click = ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PYLON, lift_id="L1", pylon_index=3)
-        assert click.lift_id == "L1"
-        assert click.pylon_index == 3
-
-    def test_valid_proposal_endpoint_click(self) -> None:
-        """Valid PROPOSAL_ENDPOINT marker click."""
-        click = ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_ENDPOINT, proposal_index=4)
-        assert click.proposal_index == 4
-
-    def test_valid_proposal_body_click(self) -> None:
-        """Valid PROPOSAL_BODY marker click."""
-        click = ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_BODY, proposal_index=2)
-        assert click.proposal_index == 2
+    @pytest.mark.parametrize(
+        "kwargs,check_field,expected_value",
+        [
+            pytest.param({"click_type": MapClickType.TERRAIN, "lat": 46.5, "lon": 10.5}, "lat", 46.5, id="terrain"),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.NODE, "node_id": "N42"},
+                "node_id",
+                "N42",
+                id="node",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.SLOPE, "slope_id": "SL5"},
+                "slope_id",
+                "SL5",
+                id="slope",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.SEGMENT, "segment_id": "S3"},
+                "segment_id",
+                "S3",
+                id="segment",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.LIFT, "lift_id": "L2"},
+                "lift_id",
+                "L2",
+                id="lift",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.PYLON, "lift_id": "L1", "pylon_index": 3},
+                "pylon_index",
+                3,
+                id="pylon",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.PROPOSAL_ENDPOINT, "proposal_index": 4},
+                "proposal_index",
+                4,
+                id="proposal_end",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.PROPOSAL_BODY, "proposal_index": 2},
+                "proposal_index",
+                2,
+                id="proposal_body",
+            ),
+        ],
+    )
+    def test_valid_construction(self, kwargs: dict, check_field: str, expected_value: object) -> None:
+        """Valid ClickInfo construction stores expected field values."""
+        click = ClickInfo(**kwargs)
+        assert getattr(click, check_field) == expected_value
 
 
 class TestClickInfoDisplayName:
-    """Tests for display_name property formatting."""
+    """Parametrized tests for display_name property."""
 
-    def test_terrain_display_name(self) -> None:
-        """Terrain click shows coordinates."""
-        click = ClickInfo(click_type=MapClickType.TERRAIN, lat=46.5123, lon=10.9876)
-        assert click.display_name == "Map terrain at (46.5123, 10.9876)"
-
-    def test_node_display_name(self) -> None:
-        """Node click shows ID."""
-        click = ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id="N1")
-        assert click.display_name == "Junction N1"
-
-    def test_slope_display_name(self) -> None:
-        """Slope click shows ID."""
-        click = ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SLOPE, slope_id="SL1")
-        assert click.display_name == "Slope SL1"
-
-    def test_segment_display_name(self) -> None:
-        """Segment click shows ID."""
-        click = ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SEGMENT, segment_id="S1")
-        assert click.display_name == "Segment S1"
-
-    def test_lift_display_name(self) -> None:
-        """Lift click shows ID."""
-        click = ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.LIFT, lift_id="L1")
-        assert click.display_name == "Lift L1"
-
-    def test_pylon_display_name_is_1_indexed(self) -> None:
-        """Pylon display name uses 1-indexed number."""
-        click = ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PYLON, lift_id="L1", pylon_index=2)
-        # Internal index=2 -> display "Pylon 3"
-        assert click.display_name == "Pylon 3 on Lift L1"
-
-    def test_proposal_endpoint_display_name_is_1_indexed(self) -> None:
-        """Proposal endpoint uses 1-indexed number."""
-        click = ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_ENDPOINT, proposal_index=0)
-        # Internal index=0 -> display "Path option 1"
-        assert click.display_name == "Path option 1 (endpoint)"
-
-    def test_proposal_body_display_name(self) -> None:
-        """Proposal body display name."""
-        click = ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_BODY, proposal_index=4)
-        assert click.display_name == "Path option 5"
+    @pytest.mark.parametrize(
+        "kwargs,expected_name",
+        [
+            pytest.param(
+                {"click_type": MapClickType.TERRAIN, "lat": 46.5123, "lon": 10.9876},
+                "Map terrain at (46.5123, 10.9876)",
+                id="terrain",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.NODE, "node_id": "N1"},
+                "Junction N1",
+                id="node",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.SLOPE, "slope_id": "SL1"},
+                "Slope SL1",
+                id="slope",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.SEGMENT, "segment_id": "S1"},
+                "Segment S1",
+                id="segment",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.LIFT, "lift_id": "L1"},
+                "Lift L1",
+                id="lift",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.PYLON, "lift_id": "L1", "pylon_index": 2},
+                "Pylon 3 on Lift L1",
+                id="pylon_1indexed",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.PROPOSAL_ENDPOINT, "proposal_index": 0},
+                "Path option 1 (endpoint)",
+                id="proposal_end_1indexed",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.PROPOSAL_BODY, "proposal_index": 4},
+                "Path option 5",
+                id="proposal_body",
+            ),
+        ],
+    )
+    def test_display_name_format(self, kwargs: dict, expected_name: str) -> None:
+        """display_name property formats correctly for all click types."""
+        click = ClickInfo(**kwargs)
+        assert click.display_name == expected_name
 
 
 class TestClickInfoDedupKey:
-    """Tests for make_dedup_key method."""
+    """Parametrized tests for make_dedup_key method."""
 
-    def test_terrain_dedup_key_format(self) -> None:
-        """Terrain dedup key includes rounded coordinates."""
+    @pytest.mark.parametrize(
+        "kwargs,expected_key",
+        [
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.NODE, "node_id": "N42"},
+                "marker_node_N42",
+                id="node",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.SLOPE, "slope_id": "SL5"},
+                "marker_slope_SL5",
+                id="slope",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.PYLON, "lift_id": "L1", "pylon_index": 2},
+                "marker_pylon_2_L1",
+                id="pylon",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.PROPOSAL_ENDPOINT, "proposal_index": 4},
+                "marker_proposal_end_4",
+                id="proposal_end",
+            ),
+        ],
+    )
+    def test_dedup_key_format(self, kwargs: dict, expected_key: str) -> None:
+        """make_dedup_key returns expected format for marker clicks."""
+        click = ClickInfo(**kwargs)
+        assert click.make_dedup_key() == expected_key
+
+    def test_terrain_dedup_key_contains_coordinates(self) -> None:
+        """Terrain dedup key includes coordinates."""
         click = ClickInfo(click_type=MapClickType.TERRAIN, lat=46.512345, lon=10.987654)
         key = click.make_dedup_key()
         assert key.startswith("terrain_")
-        # Should contain rounded coordinates (6 decimal places)
-        assert "46.512345" in key
-        assert "10.987654" in key
-
-    def test_node_dedup_key(self) -> None:
-        """Node dedup key includes ID."""
-        click = ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id="N42")
-        assert click.make_dedup_key() == "marker_node_N42"
-
-    def test_slope_dedup_key(self) -> None:
-        """Slope dedup key includes ID."""
-        click = ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SLOPE, slope_id="SL5")
-        assert click.make_dedup_key() == "marker_slope_SL5"
-
-    def test_pylon_dedup_key_includes_index_and_lift(self) -> None:
-        """Pylon dedup key includes 0-indexed pylon_index and lift_id."""
-        click = ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PYLON, lift_id="L1", pylon_index=2)
-        # Internal 0-indexed
-        assert click.make_dedup_key() == "marker_pylon_2_L1"
-
-    def test_proposal_endpoint_dedup_key(self) -> None:
-        """Proposal endpoint dedup key includes 0-indexed index."""
-        click = ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_ENDPOINT, proposal_index=4)
-        assert click.make_dedup_key() == "marker_proposal_end_4"
+        assert "46.512345" in key and "10.987654" in key
 
 
 class TestClickInfoConvenienceProperties:
-    """Tests for proposal_number and pylon_number properties."""
+    """Tests for 1-indexed number properties."""
 
-    def test_proposal_number_returns_1_indexed(self) -> None:
-        """proposal_number property returns 1-indexed value."""
-        click = ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_BODY, proposal_index=0)
-        assert click.proposal_number == 1
-
-    def test_proposal_number_returns_none_for_non_proposal(self) -> None:
-        """proposal_number returns None for non-proposal clicks."""
-        click = ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id="N1")
-        assert click.proposal_number is None
-
-    def test_pylon_number_returns_1_indexed(self) -> None:
-        """pylon_number property returns 1-indexed value."""
-        click = ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PYLON, lift_id="L1", pylon_index=0)
-        assert click.pylon_number == 1
-
-    def test_pylon_number_returns_none_for_non_pylon(self) -> None:
-        """pylon_number returns None for non-pylon clicks."""
-        click = ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.LIFT, lift_id="L1")
-        assert click.pylon_number is None
+    @pytest.mark.parametrize(
+        "kwargs,prop,expected",
+        [
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.PROPOSAL_BODY, "proposal_index": 0},
+                "proposal_number",
+                1,
+                id="proposal_1indexed",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.NODE, "node_id": "N1"},
+                "proposal_number",
+                None,
+                id="proposal_none",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.PYLON, "lift_id": "L1", "pylon_index": 0},
+                "pylon_number",
+                1,
+                id="pylon_1indexed",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.LIFT, "lift_id": "L1"},
+                "pylon_number",
+                None,
+                id="pylon_none",
+            ),
+        ],
+    )
+    def test_number_properties(self, kwargs: dict, prop: str, expected: int | None) -> None:
+        """1-indexed number properties return correct values or None."""
+        click = ClickInfo(**kwargs)
+        assert getattr(click, prop) == expected

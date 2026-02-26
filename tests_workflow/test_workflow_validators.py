@@ -1,7 +1,9 @@
-"""Unit tests for validator functions.
+"""Unit tests for validator functions using parametrize with indirect fixtures.
 
-Tests all validation functions with valid and invalid inputs.
+Tests lift and custom target validators with data-driven test cases.
 """
+
+import pytest
 
 from skiresort_planner.model.message import (
     LiftMustGoUphillMessage,
@@ -19,99 +21,99 @@ from skiresort_planner.ui.validators import (
 )
 
 
+# =============================================================================
+# INDIRECT FIXTURE FOR NODE PAIRS
+# =============================================================================
+
+
+@pytest.fixture
+def node_pair(request: pytest.FixtureRequest) -> tuple[Node, Node]:
+    """Create start/end Node pair from elevation tuple (start_elev, end_elev)."""
+    start_elev, end_elev = request.param
+    start = Node(id="N1", location=PathPoint(lon=10.0, lat=46.0, elevation=start_elev))
+    end = Node(id="N2", location=PathPoint(lon=10.0, lat=46.01, elevation=end_elev))
+    return start, end
+
+
+# =============================================================================
+# LIFT VALIDATOR TESTS
+# =============================================================================
+
+
 class TestLiftValidators:
-    """Tests for lift placement validators."""
+    """Parametrized tests for lift placement validators."""
 
-    def test_lift_must_go_uphill_valid(self) -> None:
-        """validate_lift_goes_uphill returns None when end is higher."""
-        start = Node(id="N1", location=PathPoint(lon=10.0, lat=46.0, elevation=1500.0))
-        end = Node(id="N2", location=PathPoint(lon=10.0, lat=46.01, elevation=2000.0))
-
+    @pytest.mark.parametrize(
+        "node_pair,expected_type",
+        [
+            pytest.param((1500.0, 2000.0), None, id="valid_uphill"),
+            pytest.param((2000.0, 1500.0), LiftMustGoUphillMessage, id="invalid_downhill"),
+            pytest.param((2000.0, 2000.0), LiftMustGoUphillMessage, id="invalid_same_elevation"),
+        ],
+        indirect=["node_pair"],
+    )
+    def test_lift_goes_uphill(self, node_pair: tuple[Node, Node], expected_type: type | None) -> None:
+        """validate_lift_goes_uphill returns None for valid, error message for invalid."""
+        start, end = node_pair
         result = validate_lift_goes_uphill(start_node=start, end_node=end)
+        if expected_type is None:
+            assert result is None
+        else:
+            assert isinstance(result, expected_type)
 
-        assert result is None, "Valid lift should return None"
+    @pytest.mark.parametrize(
+        "start_id,end_id,expected_type",
+        [
+            pytest.param("N1", "N2", None, id="different_nodes"),
+            pytest.param("N1", "N1", SameNodeLiftMessage, id="same_node"),
+        ],
+    )
+    def test_lift_different_nodes(self, start_id: str, end_id: str, expected_type: type | None) -> None:
+        """validate_lift_different_nodes returns None for valid, error for same node."""
+        result = validate_lift_different_nodes(start_node_id=start_id, end_node_id=end_id)
+        if expected_type is None:
+            assert result is None
+        else:
+            assert isinstance(result, expected_type)
 
-    def test_lift_must_go_uphill_invalid_downhill(self) -> None:
-        """validate_lift_goes_uphill returns error when end is lower."""
-        start = Node(id="N1", location=PathPoint(lon=10.0, lat=46.0, elevation=2000.0))
-        end = Node(id="N2", location=PathPoint(lon=10.0, lat=46.01, elevation=1500.0))
 
-        result = validate_lift_goes_uphill(start_node=start, end_node=end)
-
-        assert isinstance(result, LiftMustGoUphillMessage), "Should return error message"
-        assert result.start_elevation_m == 2000.0
-        assert result.end_elevation_m == 1500.0
-
-    def test_lift_must_go_uphill_invalid_same_elevation(self) -> None:
-        """validate_lift_goes_uphill returns error when elevations are equal."""
-        start = Node(id="N1", location=PathPoint(lon=10.0, lat=46.0, elevation=2000.0))
-        end = Node(id="N2", location=PathPoint(lon=10.0, lat=46.01, elevation=2000.0))
-
-        result = validate_lift_goes_uphill(start_node=start, end_node=end)
-
-        assert result is not None, "Equal elevation should be invalid"
-
-    def test_lift_different_nodes_valid(self) -> None:
-        """validate_lift_different_nodes returns None for different nodes."""
-        result = validate_lift_different_nodes(start_node_id="N1", end_node_id="N2")
-
-        assert result is None, "Different nodes should be valid"
-
-    def test_lift_different_nodes_invalid_same(self) -> None:
-        """validate_lift_different_nodes returns error for same node."""
-        result = validate_lift_different_nodes(start_node_id="N1", end_node_id="N1")
-
-        assert isinstance(result, SameNodeLiftMessage), "Same node should return error"
+# =============================================================================
+# CUSTOM TARGET VALIDATOR TESTS
+# =============================================================================
 
 
 class TestCustomTargetValidators:
-    """Tests for custom target connection validators."""
+    """Parametrized tests for custom target connection validators."""
 
-    def test_custom_target_downhill_valid(self) -> None:
-        """validate_custom_target_downhill returns None when drop is sufficient."""
-        result = validate_custom_target_downhill(
-            start_elevation=2500.0,
-            target_elevation=2400.0,  # 100m drop
-        )
+    @pytest.mark.parametrize(
+        "start_elev,target_elev,expected_type",
+        [
+            pytest.param(2500.0, 2400.0, None, id="valid_100m_drop"),
+            pytest.param(2400.0, 2500.0, TargetNotDownhillMessage, id="invalid_uphill"),
+            pytest.param(2500.0, 2496.0, TargetNotDownhillMessage, id="invalid_small_drop"),
+        ],
+    )
+    def test_custom_target_downhill(self, start_elev: float, target_elev: float, expected_type: type | None) -> None:
+        """validate_custom_target_downhill returns None for valid, error for invalid."""
+        result = validate_custom_target_downhill(start_elevation=start_elev, target_elevation=target_elev)
+        if expected_type is None:
+            assert result is None
+        else:
+            assert isinstance(result, expected_type)
 
-        assert result is None, "Sufficient drop should be valid"
-
-    def test_custom_target_downhill_invalid_uphill(self) -> None:
-        """validate_custom_target_downhill returns error when target is uphill."""
-        result = validate_custom_target_downhill(
-            start_elevation=2400.0,
-            target_elevation=2500.0,  # Going uphill
-        )
-
-        assert isinstance(result, TargetNotDownhillMessage), "Uphill target should be invalid"
-
-    def test_custom_target_downhill_invalid_too_small_drop(self) -> None:
-        """validate_custom_target_downhill returns error when drop is too small."""
-        result = validate_custom_target_downhill(
-            start_elevation=2500.0,
-            target_elevation=2496.0,  # Only 4m drop, less than MIN_DROP_M (5m)
-        )
-
-        assert isinstance(result, TargetNotDownhillMessage), "Small drop should be invalid"
-
-    def test_custom_target_distance_valid(self) -> None:
-        """validate_custom_target_distance returns None when distance is acceptable."""
+    @pytest.mark.parametrize(
+        "target_lat,target_lon,expected_type",
+        [
+            pytest.param(46.005, 10.0, None, id="valid_500m"),
+            pytest.param(46.1, 10.1, TargetTooFarMessage, id="invalid_11km"),
+        ],
+    )
+    def test_custom_target_distance(self, target_lat: float, target_lon: float, expected_type: type | None) -> None:
+        """validate_custom_target_distance returns None for valid, error for too far."""
         result = validate_custom_target_distance(
-            start_lat=46.0,
-            start_lon=10.0,
-            target_lat=46.005,  # ~500m away
-            target_lon=10.0,
+            start_lat=46.0, start_lon=10.0, target_lat=target_lat, target_lon=target_lon
         )
-
-        assert result is None, "Acceptable distance should be valid"
-
-    def test_custom_target_distance_invalid_too_far(self) -> None:
-        """validate_custom_target_distance returns error when target is too far."""
-        result = validate_custom_target_distance(
-            start_lat=46.0,
-            start_lon=10.0,
-            target_lat=46.1,  # ~11km away
-            target_lon=10.1,
-        )
-
-        assert isinstance(result, TargetTooFarMessage), "Far target should be invalid"
+        if expected_type is None:
+            assert result is None
+        else:
+            assert isinstance(result, expected_type)

@@ -1,7 +1,9 @@
-"""Unit tests for model computed properties.
+"""Unit tests for model computed properties using parametrize.
 
 Tests PathPoint distance calculation, segment properties, and slope/lift ID parsing.
 """
+
+import math
 
 import pytest
 
@@ -14,65 +16,80 @@ from skiresort_planner.model.proposed_path import ProposedSlopeSegment
 from skiresort_planner.model.slope import Slope
 
 
+# =============================================================================
+# PATHPOINT TESTS
+# =============================================================================
+
+
 class TestPathPoint:
-    """Tests for PathPoint data structure."""
+    """Tests for PathPoint data structure and distance calculations."""
 
     def test_distance_to_another_point(self) -> None:
-        """PathPoint.distance_to() calculates correct haversine distance.
-
-        Tests:
-        - Distance between two points matches GeoCalculator
-        - Distance to same point is 0
-        """
+        """PathPoint.distance_to() calculates correct haversine distance."""
         p1 = PathPoint(lon=10.0, lat=46.0, elevation=2000.0)
         p2 = PathPoint(lon=10.001, lat=46.001, elevation=2100.0)
 
-        # Distance between points should match GeoCalculator
         expected_dist = GeoCalculator.haversine_distance_m(lat1=p1.lat, lon1=p1.lon, lat2=p2.lat, lon2=p2.lon)
-        assert abs(p1.distance_to(other=p2) - expected_dist) < 0.1, "Distance should match"
-
-        # Distance to self should be 0
-        assert p1.distance_to(other=p1) == 0.0, "Distance to self should be 0"
+        assert abs(p1.distance_to(other=p2) - expected_dist) < 0.1
+        assert p1.distance_to(other=p1) == 0.0
 
     def test_nan_elevation_raises(self) -> None:
         """PathPoint with NaN elevation raises ValueError."""
-        import math
-
         with pytest.raises(ValueError, match="NaN"):
             PathPoint(lon=10.0, lat=46.0, elevation=math.nan)
 
 
 class TestNodeDistanceCalculation:
-    """Tests for Node distance calculation (delegates to PathPoint)."""
+    """Tests for Node distance calculation."""
 
     def test_node_distance_to_point(self) -> None:
         """Node.distance_to() calculates correct distance to coordinates."""
-        node = Node(
-            id="N1",
-            location=PathPoint(lon=10.0, lat=46.0, elevation=2000.0),
-        )
+        node = Node(id="N1", location=PathPoint(lon=10.0, lat=46.0, elevation=2000.0))
 
-        # Distance to same location should be 0
-        dist = node.distance_to(lon=10.0, lat=46.0)
-        assert dist == 0.0, "Distance to same coords should be 0"
-
-        # Distance to nearby point should be small
+        assert node.distance_to(lon=10.0, lat=46.0) == 0.0
         dist_nearby = node.distance_to(lon=10.0001, lat=46.0001)
-        assert 0 < dist_nearby < 100, "Nearby point should be < 100m away"
+        assert 0 < dist_nearby < 100
+
+
+# =============================================================================
+# ID PARSING TESTS (COMBINED)
+# =============================================================================
+
+
+class TestIdParsing:
+    """Parametrized tests for ID number extraction."""
+
+    @pytest.mark.parametrize(
+        "model_type,id_str,expected_number",
+        [
+            pytest.param("slope", "SL1", 1, id="slope_single_digit"),
+            pytest.param("slope", "SL5", 5, id="slope_mid_digit"),
+            pytest.param("slope", "SL10", 10, id="slope_double_digit"),
+            pytest.param("slope", "SL123", 123, id="slope_triple_digit"),
+            pytest.param("lift", "L1", 1, id="lift_single_digit"),
+            pytest.param("lift", "L7", 7, id="lift_mid_digit"),
+            pytest.param("lift", "L99", 99, id="lift_double_digit"),
+        ],
+    )
+    def test_number_from_id(self, model_type: str, id_str: str, expected_number: int) -> None:
+        """Slope/Lift.number_from_id() extracts numeric part from ID."""
+        if model_type == "slope":
+            result = Slope.number_from_id(slope_id=id_str)
+        else:
+            result = Lift.number_from_id(lift_id=id_str)
+        assert result == expected_number
+
+
+# =============================================================================
+# PROPOSED SEGMENT TESTS
+# =============================================================================
 
 
 class TestProposedSegmentComputedProperties:
     """Tests for ProposedSlopeSegment computed metrics."""
 
     def test_computed_metrics_from_path_points(self, path_points_blue) -> None:
-        """ProposedSlopeSegment computes drop, length, slope, difficulty.
-
-        Tests:
-        - drop_m = start elevation - end elevation
-        - length_m = sum of distances between consecutive points
-        - avg_slope_pct = drop / length * 100
-        - difficulty = classification from avg_slope
-        """
+        """ProposedSlopeSegment computes drop, length, slope, difficulty."""
         segment = ProposedSlopeSegment(
             points=path_points_blue,
             target_slope_pct=20.0,
@@ -80,92 +97,35 @@ class TestProposedSegmentComputedProperties:
             sector_name="Test",
         )
 
-        # Drop should be positive (going downhill)
-        assert segment.total_drop_m > 0, "Drop should be positive for downhill path"
-
-        # Length should be approximately 800m (4 segments of 200m each)
-        assert 750 < segment.length_m < 850, "Length should be ~800m"
-
-        # Slope percentage should be around 20% (mock DEM slope)
-        assert 15 < segment.avg_slope_pct < 25, "Slope should be ~20%"
-
-        # Difficulty should be blue
-        assert segment.difficulty == "blue", "20% slope should be blue difficulty"
-
-
-class TestSlopeIdParsing:
-    """Tests for Slope ID number extraction."""
-
-    def test_number_from_id_extracts_correctly(self) -> None:
-        """Slope.number_from_id() extracts numeric part from ID.
-
-        Tests:
-        - Single digit ID (SL1 → 1)
-        - Multi-digit ID (SL123 → 123)
-        """
-        assert Slope.number_from_id(slope_id="SL1") == 1
-        assert Slope.number_from_id(slope_id="SL5") == 5
-        assert Slope.number_from_id(slope_id="SL10") == 10
-        assert Slope.number_from_id(slope_id="SL123") == 123
-
-
-class TestLiftIdParsing:
-    """Tests for Lift ID number extraction."""
-
-    def test_number_from_id_extracts_correctly(self) -> None:
-        """Lift.number_from_id() extracts numeric part from ID.
-
-        Tests:
-        - Single digit ID (L1 → 1)
-        - Multi-digit ID (L99 → 99)
-        """
-        assert Lift.number_from_id(lift_id="L1") == 1
-        assert Lift.number_from_id(lift_id="L7") == 7
-        assert Lift.number_from_id(lift_id="L99") == 99
+        assert segment.total_drop_m > 0
+        assert 750 < segment.length_m < 850
+        assert 15 < segment.avg_slope_pct < 25
+        assert segment.difficulty == "blue"
 
 
 class TestMaxSlopeRollingWindow:
-    """Tests for max_slope_pct rolling window algorithm.
-
-    The max_slope_pct property uses a rolling window to detect steep sections
-    within a slope, which is critical for safety grading.
-    """
+    """Tests for max_slope_pct rolling window algorithm."""
 
     def test_detects_steep_section_in_variable_terrain(self) -> None:
-        """max_slope_pct rolling window detects steep section within gradual terrain.
-
-        Test scenario (total length adapts to ROLLING_WINDOW_M):
-        - Section 1: Gradual at 10% slope
-        - Section 2: Steep at 45% slope (longer than rolling window)
-        - Section 3: Gradual at 10% slope
-
-        The steep section should be detected by the rolling window algorithm,
-        even when avg_slope_pct is much lower. This is critical for safety
-        grading (black >= 40%).
-        """
+        """max_slope_pct rolling window detects steep section within gradual terrain."""
         window_m = SlopeConfig.ROLLING_WINDOW_M
-        step_m = 100  # Distance per point
-        steps_per_section = max(3, (window_m // step_m) + 1)  # Ensure section > window
+        step_m = 100
+        steps_per_section = max(3, (window_m // step_m) + 1)
 
-        # Build points going south (lat decreases, 0.0009° ≈ 100m at 46°N)
         base_lon = 10.27
-        lat_per_step = 0.0009  # ~100m per step
+        lat_per_step = 0.0009
 
-        # Define sections: (num_steps, drop_per_step)
         sections = [
-            (steps_per_section, 10.0),  # Gradual: 10% slope
-            (steps_per_section, 45.0),  # Steep: 45% slope (> window size)
-            (steps_per_section, 10.0),  # Gradual: 10% slope
+            (steps_per_section, 10.0),
+            (steps_per_section, 45.0),
+            (steps_per_section, 10.0),
         ]
 
         points = []
         lat = 46.97
         elev = 2500.0
-
-        # First point
         points.append(PathPoint(lon=base_lon, lat=lat, elevation=elev))
 
-        # Add segments
         for num_steps, drop in sections:
             for _ in range(num_steps):
                 lat -= lat_per_step
@@ -174,17 +134,14 @@ class TestMaxSlopeRollingWindow:
 
         seg = ProposedSlopeSegment(points=points)
 
-        # Verify geometry
         total_steps = steps_per_section * 3
         expected_length = total_steps * step_m
 
-        assert seg.length_m > window_m, f"Path must be longer than window ({window_m}m)"
+        assert seg.length_m > window_m
         assert expected_length * 0.9 < seg.length_m < expected_length * 1.1
 
-        # Average slope: weighted by length, should be between gradual and steep
         avg = seg.avg_slope_pct
-        assert 15 < avg < 30, f"Expected avg between gradual and steep, got {avg}%"
+        assert 15 < avg < 30
 
-        # KEY TEST: max_slope_pct should find the steep 45% section
-        assert seg.max_slope_pct > 40, f"Should find steep section >=40%, got {seg.max_slope_pct}"
-        assert seg.max_slope_pct < 50, f"Should not exceed 45% steep section, got {seg.max_slope_pct}"
+        assert seg.max_slope_pct > 40
+        assert seg.max_slope_pct < 50

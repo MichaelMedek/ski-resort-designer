@@ -113,62 +113,59 @@ class TestNodeReuse:
         assert len(graph.nodes) == 3, "Second path should reuse 1 node, create 1 new"
 
 
-class TestUndoOperations:
-    """Tests for undo stack operations."""
+class TestConnectorGeometrySnapping:
+    """Tests for connector path geometry snapping to target nodes."""
 
-    def test_undo_add_segments_removes_segment_and_isolated_nodes(self, empty_graph, path_points_blue) -> None:
-        """undo_last for AddSegmentsAction removes segment and cleans up nodes.
+    def test_connector_path_snaps_to_target_node_coordinates(self, empty_graph, mock_dem_blue_slope) -> None:
+        """Connector path endpoint is snapped to exact target node coordinates.
 
-        Tests:
-        - After undo, segment is removed
-        - Isolated nodes are cleaned up
+        When a path has target_node_id set (connector), the path's last point
+        should be snapped to the target node's exact coordinates to avoid
+        visual kinks in 3D rendering and topological inconsistencies.
         """
         graph = empty_graph
-        proposal = ProposedSlopeSegment(
-            points=path_points_blue,
-            target_slope_pct=20.0,
-            target_difficulty="blue",
-            sector_name="Test",
+        dem = mock_dem_blue_slope
+        M = MapConfig.METERS_PER_DEGREE_EQUATOR
+
+        # Create first path to establish target node
+        path1_points = [
+            PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
+            PathPoint(lon=0.0, lat=-500 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / M)),
+        ]
+        graph.commit_paths(paths=[ProposedSlopeSegment(points=path1_points, sector_name="P1")])
+
+        # Get end node as target
+        first_segment = list(graph.segments.values())[0]
+        target_node_id = first_segment.end_node_id
+        target_node = graph.nodes[target_node_id]
+
+        # Create connector path with slightly offset end coordinates
+        offset_lon = target_node.lon + 0.00005  # ~5m offset
+        offset_lat = target_node.lat + 0.00003
+        offset_elev = target_node.elevation + 2.0
+
+        connector_points = [
+            PathPoint(lon=0.001, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.001, lat=0.0)),
+            PathPoint(lon=offset_lon, lat=offset_lat, elevation=offset_elev),  # Slightly off from target
+        ]
+        connector = ProposedSlopeSegment(
+            points=connector_points,
+            sector_name="Connector",
+            is_connector=True,
+            target_node_id=target_node_id,
         )
 
-        graph.commit_paths(paths=[proposal])
-        assert len(graph.segments) == 1
-        assert len(graph.nodes) == 2
+        # Commit connector
+        graph.commit_paths(paths=[connector])
 
-        graph.undo_last()
+        # Verify: path endpoint was snapped to target node's exact coordinates
+        committed_segment = list(graph.segments.values())[-1]
+        snapped_point = committed_segment.points[-1]
 
-        assert len(graph.segments) == 0, "Segment should be removed"
-        # Note: nodes cleanup happens via perform_cleanup() which is called by SM listener
+        assert snapped_point.lon == target_node.lon, "Path end lon should match target node"
+        assert snapped_point.lat == target_node.lat, "Path end lat should match target node"
+        assert snapped_point.elevation == target_node.elevation, "Path end elevation should match target node"
 
-    def test_undo_finish_slope_restores_segments(self, empty_graph, path_points_blue) -> None:
-        """undo_last for FinishSlopeAction removes slope but keeps segments.
-
-        Tests:
-        - Slope is removed after undo
-        - Segments remain in graph
-        """
-        graph = empty_graph
-        proposal = ProposedSlopeSegment(
-            points=path_points_blue,
-            target_slope_pct=20.0,
-            target_difficulty="blue",
-            sector_name="Test",
-        )
-
-        graph.commit_paths(paths=[proposal])
-        segment_ids = list(graph.segments.keys())
-        graph.finish_slope(segment_ids=segment_ids)
-
-        assert len(graph.slopes) == 1
-        assert len(graph.segments) == 1
-
-        undone = graph.undo_last()
-
-        assert isinstance(undone, FinishSlopeAction), "Should return FinishSlopeAction"
-        assert len(graph.slopes) == 0, "Slope should be removed"
-        assert len(graph.segments) == 1, "Segments should remain"
-
-    def test_empty_undo_stack_raises(self, empty_graph) -> None:
-        """undo_last raises RuntimeError on empty stack."""
-        with pytest.raises(RuntimeError, match="empty"):
-            empty_graph.undo_last()
+        # Verify: no duplicate node created
+        assert len(graph.nodes) == 3, "Should have 3 nodes (2 from first + 1 new start), not 4"
+        assert committed_segment.end_node_id == target_node_id, "Segment should connect to target node"

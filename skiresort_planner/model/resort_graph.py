@@ -285,13 +285,26 @@ class ResortGraph:
                 new_node_ids.append(start_node.id)
 
             # Get or create end node
-            end_pt = path.end
-            assert end_pt is not None  # Guaranteed by `if not path.points: continue` check
-            end_node, end_created = self.get_or_create_node(
-                lon=end_pt.lon,
-                lat=end_pt.lat,
-                elevation=end_pt.elevation,
-            )
+            # If this is a connector path with target_node_id, use that node directly
+            # to avoid creating a duplicate node slightly off from the target
+            if path.target_node_id and path.target_node_id in self.nodes:
+                end_node = self.nodes[path.target_node_id]
+                end_created = False
+                # Snap path geometry to exact node coordinates (avoids visual kinks in 3D)
+                if path.points:
+                    path.points[-1] = PathPoint(
+                        lon=end_node.lon,
+                        lat=end_node.lat,
+                        elevation=end_node.elevation,
+                    )
+            else:
+                end_pt = path.end
+                assert end_pt is not None  # Guaranteed by `if not path.points: continue` check
+                end_node, end_created = self.get_or_create_node(
+                    lon=end_pt.lon,
+                    lat=end_pt.lat,
+                    elevation=end_pt.elevation,
+                )
             if end_created:
                 new_node_ids.append(end_node.id)
 
