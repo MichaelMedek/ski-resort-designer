@@ -655,6 +655,13 @@ def _undo_add_lift(undone: AddLiftAction) -> None:
 
     logger.info(f"Undone lift addition: {undone.lift_id}")
 
+    # If in LiftPlacing state, force to idle (lift placement context is now stale)
+    if sm.is_lift_placing:
+        sm.force_idle()
+        bump_map_version()
+        st.rerun()
+        return
+
     # If we were viewing the deleted lift, force to idle (exit hooks handle cleanup)
     if sm.is_idle_viewing_lift and st.session_state.context.viewing.lift_id == undone.lift_id:
         sm.force_idle()

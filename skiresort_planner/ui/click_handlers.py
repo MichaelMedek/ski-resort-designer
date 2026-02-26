@@ -520,7 +520,7 @@ def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) ->
             return
 
         # Validate uphill BEFORE creating node - use temporary Node-like object for validation
-        temp_end_node = Node(id="_temp", lon=lon, lat=lat, elevation=elevation)
+        temp_end_node = Node(id="_temp", location=PathPoint(lon=lon, lat=lat, elevation=elevation))
         if error := validate_lift_goes_uphill(start_node=start_node, end_node=temp_end_node):
             error.display()
             return  # Don't create the node if validation fails
