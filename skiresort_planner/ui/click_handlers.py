@@ -18,6 +18,7 @@ import streamlit as st
 from skiresort_planner.constants import MapConfig
 from skiresort_planner.model.click_info import ClickInfo, MapClickType, MarkerType
 from skiresort_planner.model.message import InvalidClickMessage, OutsideTerrainMessage
+from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.ui.actions import (
     bump_map_version,
@@ -501,7 +502,14 @@ def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) ->
         if end_node:
             logger.info(f"[LIFT_PLACING] Node click: completing lift to {end_node.id}")
 
-    # TERRAIN click → create new node
+    # Get start node for validation
+    assert ctx.lift.start_node_id is not None  # Should be set by now
+    start_node_lookup = graph.nodes.get(ctx.lift.start_node_id)
+    if start_node_lookup is None:
+        raise RuntimeError(f"Start node {ctx.lift.start_node_id} must exist but was not found")
+    start_node = start_node_lookup
+
+    # TERRAIN click → validate BEFORE creating node (prevents orphaned nodes)
     if end_node is None:
         if click_info.click_type != MapClickType.TERRAIN:
             raise RuntimeError(f"Expected TERRAIN click but got {click_info.click_type}")
@@ -510,16 +518,18 @@ def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) ->
         if elevation is None:
             OutsideTerrainMessage(lat=lat, lon=lon).display()
             return
+
+        # Validate uphill BEFORE creating node - use temporary Node-like object for validation
+        temp_end_node = Node(id="_temp", lon=lon, lat=lat, elevation=elevation)
+        if error := validate_lift_goes_uphill(start_node=start_node, end_node=temp_end_node):
+            error.display()
+            return  # Don't create the node if validation fails
+
+        # Validation passed - now create the node
         end_node, _ = graph.get_or_create_node(lon=lon, lat=lat, elevation=elevation)
         logger.info(f"Created end node {end_node.id} for lift at ({lat:.6f}, {lon:.6f})")
 
-    assert ctx.lift.start_node_id is not None  # Should be set by now
-    start_node_lookup = graph.nodes.get(ctx.lift.start_node_id)
-    if start_node_lookup is None:
-        raise RuntimeError(f"Start node {ctx.lift.start_node_id} must exist but was not found")
-    start_node = start_node_lookup
-
-    # Validate lift placement
+    # Validate lift placement (for node clicks, we still need to validate)
     if error := validate_lift_different_nodes(
         start_node_id=ctx.lift.start_node_id,
         end_node_id=end_node.id,
@@ -527,9 +537,11 @@ def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) ->
         error.display()
         return
 
-    if error := validate_lift_goes_uphill(start_node=start_node, end_node=end_node):
-        error.display()
-        return
+    # For node clicks, validate uphill (terrain clicks already validated above)
+    if click_info.click_type == MapClickType.MARKER:
+        if error := validate_lift_goes_uphill(start_node=start_node, end_node=end_node):
+            error.display()
+            return
 
     logger.info(
         f"Creating lift from {ctx.lift.start_node_id} ({start_node.elevation:.0f}m) "

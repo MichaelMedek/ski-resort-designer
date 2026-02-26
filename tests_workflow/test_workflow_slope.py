@@ -105,50 +105,102 @@ class TestSelfLoopBehavior:
         assert ctx.viewing.panel_visible is True, "Panel should remain visible after switch"
 
 
-class TestGuardedTransitions:
-    """Tests for guard-based flow control (Pillar 4)."""
+class TestForceStateMethods:
+    """Tests for force_idle() and force_building() methods used by action-layer undo.
 
-    def test_undo_uses_guards_for_destination(self, workflow_setup: WorkflowSetup) -> None:
-        """Guard undo_leaves_no_segments determines undo destination.
+    These methods bypass the normal state machine transitions to reset state
+    after graph undo operations. They follow the 'Safe Dynamic Exit' pattern
+    which calls the exit hook for the current state before forcing the new state.
+    """
 
-        Tests:
-        - With 2+ segments: undo stays in SlopeBuilding
-        - With 1 segment: undo goes to IdleReady
-        """
+    def test_force_idle_from_building_clears_context(self, workflow_setup: WorkflowSetup) -> None:
+        """force_idle() from SlopeBuilding clears building and goes to IdleReady."""
         sm, ctx, graph, factory, dem = workflow_setup
 
         start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
         sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
 
-        # Commit first segment
+        # Commit first segment to get into SlopeBuilding
         proposals = list(factory.generate_fan(lon=0.0, lat=0.0, elevation=start_elev))
         endpoint_ids = graph.commit_paths(paths=[proposals[0]])
         seg1_id = list(graph.segments.keys())[0]
         sm.commit_path(segment_id=seg1_id, endpoint_node_id=endpoint_ids[0])
 
-        # Get endpoint for second segment
-        end_node = graph.nodes[endpoint_ids[0]]
+        assert sm.current_state_value == "slope_building"
+        assert len(ctx.building.segments) == 1
 
-        # Commit second segment from endpoint
-        proposals2 = list(factory.generate_fan(lon=end_node.lon, lat=end_node.lat, elevation=end_node.elevation))
-        if len(proposals2) > 0:
-            endpoint_ids2 = graph.commit_paths(paths=[proposals2[0]])
-            seg2_id = [s for s in graph.segments.keys() if s != seg1_id][0]
-            sm.commit_path(segment_id=seg2_id, endpoint_node_id=endpoint_ids2[0])
+        # Force to idle (simulates undo removing all segments)
+        sm.force_idle()
 
-            assert len(ctx.building.segments) == 2, "Should have 2 segments"
+        assert sm.current_state_value == "idle_ready"
+        assert len(ctx.building.segments) == 0, "Building context should be cleared"
 
-            # Undo with 2 segments: guard keeps us in SlopeBuilding
-            # Note: Use undo EVENT, not direct transition
-            sm.undo(removed_segment_id=seg2_id, new_endpoint_node_id=endpoint_ids[0])
+    def test_force_building_from_custom_picking(self, workflow_setup: WorkflowSetup) -> None:
+        """force_building() from SlopeCustomPicking goes to SlopeBuilding."""
+        sm, ctx, graph, factory, dem = workflow_setup
 
-            assert sm.current_state_value == "slope_building", "Guard kept us in building"
-            assert len(ctx.building.segments) == 1, "Should have 1 segment after undo"
+        start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
+        sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
 
-        # Undo with 1 segment: guard sends to IdleReady
-        sm.undo(removed_segment_id=ctx.building.segments[0])
+        # Commit segment and enable custom mode
+        proposals = list(factory.generate_fan(lon=0.0, lat=0.0, elevation=start_elev))
+        endpoint_ids = graph.commit_paths(paths=[proposals[0]])
+        seg1_id = list(graph.segments.keys())[0]
+        sm.commit_path(segment_id=seg1_id, endpoint_node_id=endpoint_ids[0])
+        sm.enable_custom()
 
-        assert sm.current_state_value == "idle_ready", "Guard sent to idle when no segments"
+        assert sm.current_state_value == "slope_custom_picking"
+
+        # Force back to building (simulates undo while in custom picking)
+        sm.force_building()
+
+        assert sm.current_state_value == "slope_building"
+        assert ctx.custom_connect.enabled is False, "Custom connect should be cleared"
+
+    def test_force_idle_from_lift_placing_clears_lift_context(self, workflow_setup: WorkflowSetup) -> None:
+        """force_idle() from LiftPlacing calls exit_lift_placing which clears lift context."""
+        sm, ctx, _graph, _factory, _dem = workflow_setup
+
+        # Enter lift placing mode
+        sm.send("start_lift", node_id=None, location=None)
+        # Manually set some lift state to verify it gets cleared
+        ctx.lift.start_node_id = "test_node"
+
+        assert sm.current_state_value == "lift_placing"
+        assert ctx.lift.start_node_id == "test_node"
+
+        # Force to idle - exit_lift_placing should clear lift context
+        sm.force_idle()
+
+        assert sm.current_state_value == "idle_ready"
+        assert ctx.lift.start_node_id is None, "Lift context should be cleared by exit hook"
+
+    def test_force_idle_succeeds_even_if_exit_hook_fails(
+        self, workflow_setup: WorkflowSetup, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """force_idle() completes even when exit hook raises exception (try-finally guarantee)."""
+        from skiresort_planner.ui import state_machine
+
+        sm, ctx, _graph, _factory, _dem = workflow_setup
+
+        # Enter lift placing mode
+        sm.send("start_lift", node_id=None, location=None)
+        assert sm.current_state_value == "lift_placing"
+
+        # Patch exit_lift_placing to raise an exception
+        def failing_exit_hook(ctx: "PlannerContext") -> None:
+            raise RuntimeError("Simulated exit hook failure")
+
+        original_hooks = state_machine.PlannerStateMachine._EXIT_HOOKS
+        patched_hooks = dict(original_hooks)
+        patched_hooks["lift_placing"] = failing_exit_hook
+        monkeypatch.setattr(state_machine.PlannerStateMachine, "_EXIT_HOOKS", patched_hooks)
+
+        # Force to idle - should succeed despite exit hook failure
+        sm.force_idle()  # Should NOT raise
+
+        # State change MUST have happened (finally block guarantee)
+        assert sm.current_state_value == "idle_ready", "State change must happen even if exit hook fails"
 
 
 class TestCancelSlope:

@@ -172,41 +172,9 @@ def _force_state(sm: PlannerStateMachine, state_name: str) -> None:
     sm.current_state = target_state
 
 
-class TestUndoTransitionGuards:
-    """Tests for undo event guard resolution.
-
-    The undo event uses guards to determine destination:
-    - undo_to_idle: when ≤1 segments remain → IDLE_READY
-    - undo_continue: when >1 segments remain → SLOPE_BUILDING (self-loop)
-    """
-
-    def test_undo_from_building_with_one_segment_goes_to_idle(self, sm_and_ctx: tuple) -> None:
-        """Undo with exactly 1 segment returns to IDLE_READY."""
-        sm, ctx = sm_and_ctx
-
-        # Setup: Force to slope_building with 1 segment in building context
-        _force_state(sm=sm, state_name="slope_building")
-        ctx.building.segments = ["S1"]  # One segment
-
-        # Act: Call undo event with required argument
-        sm.undo(removed_segment_id="S1")
-
-        # Assert: Should transition to idle_ready
-        assert sm.current_state == sm.idle_ready
-
-    def test_undo_from_building_with_multiple_segments_stays_building(self, sm_and_ctx: tuple) -> None:
-        """Undo with multiple segments stays in SLOPE_BUILDING."""
-        sm, ctx = sm_and_ctx
-
-        # Setup: Force to slope_building with 2+ segments
-        _force_state(sm=sm, state_name="slope_building")
-        ctx.building.segments = ["S1", "S2"]  # Two segments
-
-        # Act: Call undo event with required argument
-        sm.undo(removed_segment_id="S2")
-
-        # Assert: Should stay in slope_building (self-loop)
-        assert sm.current_state == sm.slope_building
+# NOTE: Undo transitions removed from state machine.
+# Undo is now handled via force_idle()/force_building() methods in the action layer.
+# See state_machine.py "Undo Architecture" section for details.
 
 
 class TestCancelCustomGuards:

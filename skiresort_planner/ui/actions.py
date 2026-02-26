@@ -544,12 +544,9 @@ def cancel_current_slope() -> None:
 def _undo_add_segments(undone: AddSegmentsAction) -> None:
     """Handle undo of ADD_SEGMENTS action.
 
-    Handles state-specific transitions:
-    - From slope building states: uses undo_segment transition
-    - From idle states (e.g., after error recovery): reload map
-      Note: This case happens after error recovery resets state. The graph undo
-      already removed the segment. Transitioning to building mode requires more
-      context than we have at this point (which slope was being built, etc.).
+    Uses force_idle/force_building instead of state machine transitions.
+    This follows the expert recommendation to treat undo as history management,
+    not core workflow state transitions.
     """
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
@@ -558,29 +555,20 @@ def _undo_add_segments(undone: AddSegmentsAction) -> None:
 
     removed_segment_id = undone.segment_ids[-1] if undone.segment_ids else ""
 
-    # Handle case where we're in idle state (e.g., after error recovery reset)
-    # The graph undo already happened, just reload the map
-    if sm.is_idle:
-        logger.info(f"[ACTION] Undo from idle state (segment={removed_segment_id})")
-        logger.warning(
-            "[ACTION] Undo from idle doesn't restore building mode - click on a node or terrain to start a new slope"
-        )
-        reload_map()
-        return
-
-    # Check remaining segments BEFORE state machine modifies ctx.building.segments
-    # The state machine hooks will remove the segment from ctx.building.segments
+    # Calculate remaining segments after undo
     remaining_segments = [s for s in ctx.building.segments if s not in undone.segment_ids]
 
+    # Step 3: Update context and force appropriate state
     if remaining_segments:
+        # Update building context
+        ctx.building.segments = remaining_segments
+
         # Get the new endpoint from the last remaining segment
         last_seg = graph.segments.get(remaining_segments[-1])
         if last_seg:
-            new_endpoint_node_id = last_seg.end_node_id
+            ctx.building.endpoints = [last_seg.end_node_id]
 
-            # IMPORTANT: Regenerate paths BEFORE state transition!
-            # The state machine triggers st.rerun() via listener, which raises StopExecution.
-            # Any code after sm.undo_segment() will NOT execute.
+            # Regenerate paths from new endpoint
             if last_seg.points:
                 last_pt = last_seg.points[-1]
                 ctx.set_selection(lon=last_pt.lon, lat=last_pt.lat, elevation=last_pt.elevation)
@@ -595,23 +583,24 @@ def _undo_add_segments(undone: AddSegmentsAction) -> None:
                 ctx.proposals.selected_idx = 0 if ctx.proposals.paths else None
                 logger.info(f"Regenerated {len(ctx.proposals.paths)} paths from previous endpoint")
 
-            bump_map_version()
-            # State machine triggers st.rerun() - code after this won't execute
-            sm.undo_segment(removed_segment_id=removed_segment_id, new_endpoint_node_id=new_endpoint_node_id)
-        else:
-            # Segment not in graph - force state machine to handle cleanup
-            logger.warning(f"Segment {remaining_segments[-1]} not found in graph during undo")
-            bump_map_version()
-            sm.undo_segment(removed_segment_id=removed_segment_id)
+        # Force to building state (exit hooks handle cleanup automatically)
+        logger.info(f"[ACTION] Undo leaves {len(remaining_segments)} segments, forcing SlopeBuilding")
+        sm.force_building()
     else:
-        logger.info(f"[ACTION] No segments left after undo, returning to idle (segment={removed_segment_id})")
-        bump_map_version()
-        logger.info("[ACTION] Calling sm.undo_segment() -> will trigger st.rerun() via listener")
-        sm.undo_segment(removed_segment_id=removed_segment_id)
+        # No segments left - return to idle
+        logger.info(f"[ACTION] No segments left after undo (segment={removed_segment_id}), forcing IdleReady")
+        sm.force_idle()
+
+    bump_map_version()
+    st.rerun()
 
 
 def _undo_finish_slope(undone: FinishSlopeAction) -> None:
-    """Handle undo of FINISH_SLOPE action."""
+    """Handle undo of FINISH_SLOPE action.
+
+    Uses force_building instead of restore_building event.
+    This allows undo from any state (including LiftPlacing).
+    """
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
@@ -619,20 +608,28 @@ def _undo_finish_slope(undone: FinishSlopeAction) -> None:
 
     logger.info(f"Undone slope finish, restoring {len(undone.segment_ids)} segments")
 
-    # Restore building context BEFORE state transition
+    # Restore building context
     ctx.building.segments = list(undone.segment_ids)
     ctx.building.name = undone.slope_name
     ctx.building.start_node = undone.start_node_id
 
     if not ctx.building.segments:
+        # Edge case: finished slope had no segments (shouldn't happen)
+        sm.force_idle()
+        bump_map_version()
+        st.rerun()
         return
 
     last_seg = graph.segments.get(ctx.building.segments[-1])
     if not last_seg or not last_seg.points:
+        # Segment data missing - go to idle
+        sm.force_idle()
+        bump_map_version()
+        st.rerun()
         return
 
+    # Set selection and regenerate paths
     last_pt = last_seg.points[-1]
-    # Set selection and regenerate paths BEFORE state transition
     ctx.set_selection(lon=last_pt.lon, lat=last_pt.lat, elevation=last_pt.elevation)
     ctx.building.endpoints = [last_seg.end_node_id]
     ctx.proposals.paths = list(
@@ -646,10 +643,10 @@ def _undo_finish_slope(undone: FinishSlopeAction) -> None:
     ctx.proposals.selected_idx = 0 if ctx.proposals.paths else None
     logger.info(f"Regenerated {len(ctx.proposals.paths)} paths for restored slope")
 
+    # Force to building state (exit hooks handle cleanup automatically)
+    sm.force_building()
     bump_map_version()
-    # State machine triggers st.rerun() - code after this won't execute
-    # Uses restore_building event - SM resolves based on state + guards
-    sm.restore_building()
+    st.rerun()
 
 
 def _undo_add_lift(undone: AddLiftAction) -> None:
@@ -658,10 +655,11 @@ def _undo_add_lift(undone: AddLiftAction) -> None:
 
     logger.info(f"Undone lift addition: {undone.lift_id}")
 
-    # Close panel if we were showing the deleted lift (uses close_panel event)
-    if sm.is_idle_viewing_lift:
+    # If we were viewing the deleted lift, force to idle (exit hooks handle cleanup)
+    if sm.is_idle_viewing_lift and st.session_state.context.viewing.lift_id == undone.lift_id:
+        sm.force_idle()
         bump_map_version()
-        sm.hide_info_panel()  # Triggers st.rerun()
+        st.rerun()
     else:
         reload_map()
 
