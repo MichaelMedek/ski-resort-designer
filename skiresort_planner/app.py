@@ -299,10 +299,12 @@ def _render_map_fragment_inner() -> None:
         )
 
     # Render with click handling
+    # Include 3D state in key to force component remount on toggle
+    map_key = f"main_map_{st.session_state.map_version}_{'3d' if use_3d else '2d'}"
     click_result = render_pydeck_map(
         deck=deck,
         height=ChartConfig.PROFILE_HEIGHT_LARGE,
-        key=f"main_map_{st.session_state.map_version}",
+        key=map_key,
     )
 
     # Elevation profiles below map

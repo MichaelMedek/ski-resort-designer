@@ -86,9 +86,18 @@ def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, entity_typ
             # Update map center to entity center so we don't jump to stale position
             if entity_type == "slope" and entity_id in graph.slopes:
                 slope = graph.slopes[entity_id]
-                center_lat, center_lon = GeoCalculator.compute_center(latlons=[(n.lat, n.lon) for n in slope.nodes])
-                ctx.map.lat = center_lat
-                ctx.map.lon = center_lon
+                # Compute center from segment endpoints
+                lats, lons = [], []
+                for seg_id in slope.segment_ids:
+                    seg = graph.segments.get(seg_id)
+                    if seg and seg.points:
+                        lats.append(seg.points[0].lat)
+                        lons.append(seg.points[0].lon)
+                        lats.append(seg.points[-1].lat)
+                        lons.append(seg.points[-1].lon)
+                if lats and lons:
+                    ctx.map.lat = sum(lats) / len(lats)
+                    ctx.map.lon = sum(lons) / len(lons)
             elif entity_type == "lift" and entity_id in graph.lifts:
                 lift = graph.lifts[entity_id]
                 start_node = graph.nodes.get(lift.start_node_id)

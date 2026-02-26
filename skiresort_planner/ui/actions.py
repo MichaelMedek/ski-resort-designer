@@ -389,11 +389,20 @@ def commit_selected_path(path_idx: int) -> None:
 
     if is_connector:
         logger.info(f"Connector to {path.target_node_id}")
-        # For connectors from SlopeCustomPath, use direct commit_custom_finish transition
-        # For other states, use commit_path + auto_finish deferred action
+        # For connectors from SlopeCustomPath, finish the slope and transition to viewing
         if sm.is_slope_custom_path:
-            sm.commit_custom_continue(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
+            # Add segment to building context before finishing
+            ctx.building.segments.append(segment_id)
+            # Finish the slope
+            slope = graph.finish_slope(segment_ids=ctx.building.segments)
+            if not slope:
+                raise RuntimeError(f"graph.finish_slope() failed for connector: {ctx.building.segments}")
+            logger.info(f"Slope {slope.name} (id={slope.id}) auto-finished from connector")
+            center_on_slope(ctx=ctx, graph=graph, slope=slope, zoom=MapConfig.VIEWING_ZOOM)
+            bump_map_version()
+            sm.commit_custom_finish(segment_id=segment_id, slope_id=slope.id)
         else:
+            # For other states, use commit_path
             sm.commit_path(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
         return
 
@@ -527,7 +536,7 @@ def cancel_current_slope() -> None:
         if seg_id in graph.segments:
             del graph.segments[seg_id]
 
-    graph.cleanup_isolated_nodes()  # Remove orphaned nodes
+    graph.cleanup_isolated_nodes()  # Remove orphaned nodes from canceled building
     bump_map_version()  # Clear stale click state
     sm.cancel_slope()
 
@@ -537,7 +546,10 @@ def _undo_add_segments(undone: AddSegmentsAction) -> None:
 
     Handles state-specific transitions:
     - From slope building states: uses undo_segment transition
-    - From idle states (e.g., after error recovery): just reload map
+    - From idle states (e.g., after error recovery): reload map
+      Note: This case happens after error recovery resets state. The graph undo
+      already removed the segment. Transitioning to building mode requires more
+      context than we have at this point (which slope was being built, etc.).
     """
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
@@ -547,9 +559,12 @@ def _undo_add_segments(undone: AddSegmentsAction) -> None:
     removed_segment_id = undone.segment_ids[-1] if undone.segment_ids else ""
 
     # Handle case where we're in idle state (e.g., after error recovery reset)
-    # The graph undo already happened, just need to reload the map
+    # The graph undo already happened, just reload the map
     if sm.is_idle:
-        logger.info(f"[ACTION] Undo from idle state (segment={removed_segment_id}), reloading map")
+        logger.info(f"[ACTION] Undo from idle state (segment={removed_segment_id})")
+        logger.warning(
+            "[ACTION] Undo from idle doesn't restore building mode - click on a node or terrain to start a new slope"
+        )
         reload_map()
         return
 

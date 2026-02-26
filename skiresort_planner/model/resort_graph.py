@@ -484,12 +484,12 @@ class ResortGraph:
             add_seg = cast(AddSegmentsAction, action)
             for seg_id in add_seg.segment_ids:
                 self.segments.pop(seg_id, None)
-            self.cleanup_isolated_nodes()  # Remove orphaned nodes
+            self.cleanup_isolated_nodes()  # Remove orphaned nodes from segment removal
 
         elif action.action_type == ActionType.ADD_LIFT:
             add_lift = cast(AddLiftAction, action)
             self.lifts.pop(add_lift.lift_id, None)
-            self.cleanup_isolated_nodes()  # Remove orphaned nodes created for lift
+            self.cleanup_isolated_nodes()  # Remove orphaned station nodes
 
         elif action.action_type == ActionType.FINISH_SLOPE:
             finish = cast(FinishSlopeAction, action)
@@ -548,8 +548,7 @@ class ResortGraph:
             )
         )
 
-        # Cleanup isolated nodes
-        self.cleanup_isolated_nodes()
+        self.cleanup_isolated_nodes()  # Remove orphaned nodes from segment removal
 
         logger.info(f"Deleted slope {slope.name} with {len(slope.segment_ids)} segments")
         return True
@@ -578,8 +577,7 @@ class ResortGraph:
             )
         )
 
-        # Cleanup isolated nodes (lift stations may become isolated)
-        self.cleanup_isolated_nodes()
+        self.cleanup_isolated_nodes()  # Remove orphaned station nodes
 
         logger.info(f"Deleted lift {lift.name}")
         return True
@@ -815,20 +813,3 @@ class ResortGraph:
             del self.nodes[node_id]
 
         return len(isolated_node_ids)
-
-    def perform_cleanup(self) -> None:
-        """Perform maintenance tasks on the graph.
-
-        Called by StreamlitUIListener.after_transition() before st.rerun().
-        Ensures the graph is always in a clean state after any state change.
-
-        Current cleanup tasks:
-        - Remove isolated nodes (nodes not connected to any segment or lift)
-        - Create automatic backup (JSON file)
-        """
-        # Remove isolated nodes and log how many were removed
-        removed_count = self.cleanup_isolated_nodes()
-        if removed_count > 0:
-            logger.info(f"Cleanup: removed {removed_count} isolated node(s)")
-
-        # Other possible cleanup tasks in the future...

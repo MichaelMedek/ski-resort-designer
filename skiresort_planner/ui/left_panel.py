@@ -290,11 +290,11 @@ class SidebarRenderer:
         if buttons_disabled:
             st.caption("⏳ Complete or cancel current build to change type")
         elif viewing_slope:
-            st.markdown("- ✖️ **Close** in the right panel to return\n- 🗺️ Click terrain/node → new slope")
+            st.markdown("- ✖️ **Close** the right panel to return\n- 🗺️ Click terrain/node → new slope")
         elif viewing_lift:
             st.markdown(
                 "- 🔄 Use lift buttons to change type\n"
-                "- ✖️ **Close** in the right panel to return\n"
+                "- ✖️ **Close** the right panel to return\n"
                 "- 🗺️ Click terrain/node → new lift"
             )
         else:

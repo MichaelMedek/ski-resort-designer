@@ -18,9 +18,9 @@ from math import exp
 from typing import Optional
 
 import numpy as np
-from scipy.interpolate import splev, splprep  # type: ignore[import-untyped]
-from scipy.sparse import csr_matrix  # type: ignore[import-untyped]
-from scipy.sparse.csgraph import shortest_path  # type: ignore[import-untyped]
+from scipy.interpolate import splev, splprep
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import shortest_path
 
 from skiresort_planner.constants import PathConfig, PlannerConfig
 from skiresort_planner.core.dem_service import DEMService
@@ -492,6 +492,7 @@ class LeastCostPathPlanner:
 
         try:
             # Fit cubic smoothing spline
+            # splprep returns a complex tuple that Mypy can't unpack into tck, u
             tck, _ = splprep(
                 [lons, lats, elevs],
                 u=cumdist,
@@ -501,7 +502,8 @@ class LeastCostPathPlanner:
 
             # Resample evenly along the path
             new_dists = np.arange(0, total_length + step_m / 2, step_m)
-            new_lon, new_lat, new_elev_approx = splev(new_dists, tck)
+            # splev has multiple overloads; Mypy can't determine which applies
+            new_lon, new_lat, new_elev_approx = splev(new_dists, tck)  # type: ignore[call-overload]
 
             # Re-query DEM for accurate elevations at smoothed positions
             final_points = []

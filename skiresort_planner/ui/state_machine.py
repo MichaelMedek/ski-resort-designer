@@ -13,7 +13,7 @@ This module implements a UI state machine integrated with Streamlit's reactive m
 The key pattern is:
 
 1. User action triggers state transition (e.g., click map → start_slope)
-2. StreamlitUIListener fires after_transition and calls graph.perform_cleanup() + st.rerun()
+2. StreamlitUIListener fires after_transition and calls st.rerun()
 3. On the next render cycle, handle_deferred_actions() checks pending flags
 4. Deferred work (e.g., path generation) executes with access to full context
 
@@ -222,11 +222,18 @@ Undo Transitions (special cases)
     - undo_restore_to_building: IDLE_READY → SLOPE_BUILDING (undo after error recovery)
     - undo_restore_from_lift_to_*: IDLE_VIEWING_LIFT → SLOPE_* (undo after building lift from slope)
 
-Cleanup on Transition
----------------------
-StreamlitUIListener.after_transition() calls graph.perform_cleanup() before st.rerun().
-This ensures the resort graph is always in a clean state by:
-- Removing isolated nodes (nodes not connected to any segment or lift)
+Cleanup Policy
+--------------
+Orphaned node cleanup is NOT called on every transition. Instead, cleanup_isolated_nodes()
+is called explicitly when entities are removed:
+- undo ADD_SEGMENTS (segment deleted)
+- undo ADD_LIFT (lift deleted)
+- delete_slope (slope and segments deleted)
+- delete_lift (lift deleted)
+- cancel_current_slope (building segments discarded)
+
+This prevents premature deletion of nodes that are still needed (e.g., start node
+in custom connect mode from SlopeStarting state, before any segment is committed).
 """
 
 from __future__ import annotations
@@ -293,10 +300,10 @@ class StreamlitUIListener:
         """
         logger.info(f"[STATE] {source.name} --({event})--> {target.name}")
 
-        # Perform graph cleanup before rerun (isolated nodes, auto-backup)
-        graph: ResortGraph | None = st.session_state.get("graph")
-        if graph is not None:
-            graph.perform_cleanup()
+        # NOTE: Orphaned node cleanup is NOT called here. It's called explicitly
+        # in operations that remove entities (undo, delete, cancel). This prevents
+        # premature deletion of nodes still in use (e.g., start nodes in custom
+        # connect mode before any segment is committed).
 
         logger.info(f'[STATE] Calling st.rerun() after {event} transition"')
         st.rerun()
@@ -412,7 +419,7 @@ class PlannerStateMachine(StateMachine):
     commit_first_path = slope_starting.to(slope_building, event="commit_path")  # 4.5 [event: commit_path]
     cancel_from_starting = slope_starting.to(idle_ready, event="cancel_slope")  # 4.1 [event: cancel_slope]
     enable_custom_from_starting = slope_starting.to(
-        slope_custom_picking, event="enable_custom"
+        slope_custom_picking, event="enable_custom", before="_enable_custom_from_starting"
     )  # 4.6 [event: enable_custom]
 
     # ==========================================================================
@@ -430,7 +437,7 @@ class PlannerStateMachine(StateMachine):
     finish_slope = slope_building.to(idle_viewing_slope)  # 5.2 [direct]
     cancel_from_building = slope_building.to(idle_ready, event="cancel_slope")  # 5.1 [event: cancel_slope]
     enable_custom_from_building = slope_building.to(
-        slope_custom_picking, event="enable_custom"
+        slope_custom_picking, event="enable_custom", before="_enable_custom_from_building"
     )  # 5.6 [event: enable_custom]
     undo_to_idle = slope_building.to(
         idle_ready, cond="undo_leaves_no_segments", event="undo"
@@ -859,38 +866,29 @@ class PlannerStateMachine(StateMachine):
     # Custom Connect Transitions (Single Source of Truth for ctx.custom_connect.*)
     # ──────────────────────────────────────────────────────────────────────────────
     # All custom_connect state mutations happen ONLY in these hooks:
-    # - enable_custom: Sets enabled=True, start_node
+    # - _enable_custom_from_*: Attached via before= in .to() for path-specific logic
     # - select_custom_target: Sets target_location, enabled=False, force_mode=True
     # - cancel_custom/cancel_path: Clears state via clear_custom_connect() or field resets
     # ──────────────────────────────────────────────────────────────────────────────
 
-    def before_enable_custom(self) -> None:
-        """Event-level hook for enable_custom. Transition-specific hooks do the work."""
-        pass
+    def _enable_custom_from_starting(self) -> None:
+        """Transition action: From STARTING, get or create start node, enable custom connect.
 
-    def before_enable_custom_from_starting(self) -> None:
-        """Action before enabling custom connect from starting.
-
-        Sets up custom_connect state using building.start_node as the start point.
-        If starting from terrain (no start_node), creates a new node at selection location.
+        Attached via before= parameter to enable_custom_from_starting transition.
         """
         start_node_id = self.context.building.start_node
-
-        # If started from terrain (not a node), create a node at the selection location
         if start_node_id is None:
             sel = self.context.selection
             node, _ = self._resort_graph.get_or_create_node(lon=sel.lon, lat=sel.lat, elevation=sel.elevation)
             start_node_id = node.id
-            # Also update building.start_node so the state is consistent
             self.context.building.start_node = start_node_id
-
         self.context.custom_connect.enabled = True
         self.context.custom_connect.start_node = start_node_id
 
-    def before_enable_custom_from_building(self) -> None:
-        """Action before enabling custom connect from building.
+    def _enable_custom_from_building(self) -> None:
+        """Transition action: From BUILDING, use current endpoint, enable custom connect.
 
-        Sets up custom_connect state using the current endpoint as start point.
+        Attached via before= parameter to enable_custom_from_building transition.
         """
         self.context.custom_connect.enabled = True
         if self.context.building.endpoints:

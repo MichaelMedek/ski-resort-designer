@@ -14,7 +14,7 @@ from skiresort_planner.constants import ClickConfig
 from skiresort_planner.model.click_info import ClickInfo, MapClickType, MarkerType
 
 if TYPE_CHECKING:
-    from skiresort_planner.ui.state_machine import ClickDeduplicationContext
+    from skiresort_planner.ui.context import ClickDeduplicationContext
 
 logger = logging.getLogger(__name__)
 

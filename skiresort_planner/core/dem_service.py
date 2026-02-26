@@ -18,9 +18,10 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import numpy as np
+import numpy.typing as npt
 import rasterio
 import requests
 from rasterio.warp import transform
@@ -85,11 +86,11 @@ class DEMService:
     _instance: Optional["DEMService"] = None
     _load_lock = threading.Lock()
     _dem_path: Path
-    _dem = None
+    _dem: Any = None
     _dem_crs: Optional[str] = None
-    _dem_array: Optional[np.ndarray] = None
-    _dem_transform = None
-    _dem_nodata = None
+    _dem_array: Optional[npt.NDArray[np.floating[Any]]] = None
+    _dem_transform: Any = None
+    _dem_nodata: Any = None
 
     def __new__(cls, dem_path: Optional[Path] = None) -> "DEMService":
         """Create or return the singleton instance.
