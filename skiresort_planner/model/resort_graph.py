@@ -96,6 +96,7 @@ class DeleteSlopeAction:
     slope_id: str
     deleted_slope: "Slope"
     deleted_segments: tuple["SlopeSegment", ...]
+    deleted_nodes: tuple["Node", ...] = ()  # Nodes orphaned by segment removal
 
     @property
     def action_type(self) -> ActionType:
@@ -109,6 +110,7 @@ class DeleteLiftAction:
 
     lift_id: str
     deleted_lift: "Lift"
+    deleted_nodes: tuple["Node", ...] = ()  # Nodes orphaned by lift removal
 
     @property
     def action_type(self) -> ActionType:
@@ -515,17 +517,26 @@ class ResortGraph:
 
         elif action.action_type == ActionType.DELETE_SLOPE:
             del_slope = cast(DeleteSlopeAction, action)
+            # Restore orphaned nodes first (they're needed by segments)
+            for node in del_slope.deleted_nodes:
+                self.nodes[node.id] = node
             # Restore deleted slope and its segments
             self.slopes[del_slope.slope_id] = del_slope.deleted_slope
             for seg in del_slope.deleted_segments:
                 self.segments[seg.id] = seg
-            logger.info(f"Restored slope {del_slope.slope_id} with {len(del_slope.deleted_segments)} segments")
+            logger.info(
+                f"Restored slope {del_slope.slope_id} with {len(del_slope.deleted_segments)} segments "
+                f"and {len(del_slope.deleted_nodes)} nodes"
+            )
 
         elif action.action_type == ActionType.DELETE_LIFT:
             del_lift = cast(DeleteLiftAction, action)
+            # Restore orphaned nodes first (they're needed by lift)
+            for node in del_lift.deleted_nodes:
+                self.nodes[node.id] = node
             # Restore deleted lift
             self.lifts[del_lift.lift_id] = del_lift.deleted_lift
-            logger.info(f"Restored lift {del_lift.lift_id}")
+            logger.info(f"Restored lift {del_lift.lift_id} with {len(del_lift.deleted_nodes)} nodes")
 
         return action
 
@@ -552,12 +563,16 @@ class ResortGraph:
         # Remove the slope
         del self.slopes[slope_id]
 
-        # Push to undo stack with full data for restore
+        # Identify nodes that will be orphaned (connection_count == 0 after removal)
+        orphaned_nodes = [self.nodes[nid] for nid in self.nodes if self.get_connection_count(node_id=nid) == 0]
+
+        # Push to undo stack with full data for restore (including orphaned nodes)
         self._push_undo(
             DeleteSlopeAction(
                 slope_id=slope_id,
                 deleted_slope=slope,
                 deleted_segments=tuple(deleted_segments),
+                deleted_nodes=tuple(orphaned_nodes),
             )
         )
 
@@ -582,11 +597,15 @@ class ResortGraph:
         # Remove the lift
         del self.lifts[lift_id]
 
-        # Push to undo stack with full data for restore
+        # Identify nodes that will be orphaned (connection_count == 0 after removal)
+        orphaned_nodes = [self.nodes[nid] for nid in self.nodes if self.get_connection_count(node_id=nid) == 0]
+
+        # Push to undo stack with full data for restore (including orphaned nodes)
         self._push_undo(
             DeleteLiftAction(
                 lift_id=lift_id,
                 deleted_lift=lift,
+                deleted_nodes=tuple(orphaned_nodes),
             )
         )
 
