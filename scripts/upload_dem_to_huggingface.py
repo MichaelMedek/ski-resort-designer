@@ -39,7 +39,7 @@ def upload_dem_to_hf() -> None:
         repo_type="dataset",
     )
 
-    print(f"\nUploaded successfully!")
+    print("\nUploaded successfully!")
     print(f"Download URL: {DEMConfig.HF_DOWNLOAD_URL}")
 
 

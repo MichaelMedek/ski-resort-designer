@@ -13,7 +13,7 @@ All rendering logic is encapsulated to keep the main app.py concise.
 import json
 import logging
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal, cast
 
 import streamlit as st
 
@@ -21,17 +21,82 @@ from skiresort_planner.constants import (
     PathConfig,
     StyleConfig,
 )
-from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.message import (
     FileLoadErrorMessage,
 )
-from skiresort_planner.model.resort_graph import ResortGraph
-from skiresort_planner.ui.actions import bump_map_version
+from skiresort_planner.model.resort_graph import (
+    ActionType,
+    AddLiftAction,
+    AddSegmentsAction,
+    DeleteLiftAction,
+    DeleteSlopeAction,
+    FinishSlopeAction,
+    ResortGraph,
+    UndoAction,
+)
+from skiresort_planner.ui.actions import bump_map_version, reload_map, undo_last_action
 from skiresort_planner.ui.state_machine import (
     BuildMode,
     PlannerContext,
     PlannerStateMachine,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _describe_undo_action(action: UndoAction, graph: ResortGraph) -> str:
+    """Generate human-readable description of what undo will do.
+
+    IMPORTANT: We compare by .name (string) instead of direct enum equality because
+    Streamlit's module reloading creates NEW enum class instances on each rerun.
+    Objects in st.session_state.graph.undo_stack hold references to the OLD enum
+    values, which fail `==` comparison against the NEW enum class values.
+    Using .name ensures stable comparison across module reloads.
+    """
+    if action.action_type.name == ActionType.ADD_SEGMENTS.name:
+        act = cast(AddSegmentsAction, action)
+        n_segments = len(act.segment_ids)
+        return f"Remove {n_segments} segment(s) from current slope"
+
+    elif action.action_type.name == ActionType.FINISH_SLOPE.name:
+        act = cast(FinishSlopeAction, action)
+        return f"Restore slope **{act.slope_name}** to building mode"
+
+    elif action.action_type.name == ActionType.ADD_LIFT.name:
+        act = cast(AddLiftAction, action)
+        lift = graph.lifts.get(act.lift_id)
+        name = lift.name if lift else act.lift_id
+        return f"Delete lift **{name}**"
+
+    elif action.action_type.name == ActionType.DELETE_SLOPE.name:
+        act = cast(DeleteSlopeAction, action)
+        return f"Restore deleted slope **{act.deleted_slope.name}**"
+
+    elif action.action_type.name == ActionType.DELETE_LIFT.name:
+        act = cast(DeleteLiftAction, action)
+        return f"Restore deleted lift **{act.deleted_lift.name}**"
+
+    else:
+        raise RuntimeError(f"Unknown action type: {action.action_type}")
+
+
+@st.dialog("Confirm Undo")
+def _confirm_undo_dialog(action: UndoAction, graph: ResortGraph) -> None:
+    """Show confirmation dialog before undoing an action."""
+    description = _describe_undo_action(action=action, graph=graph)
+    st.write("**Action to undo:**")
+    st.write(description)
+
+    col_yes, col_no = st.columns(2)
+    with col_yes:
+        if st.button("↩️ Yes, Undo", type="primary", use_container_width=True):
+            # Set flag for main render loop to execute undo after dialog closes
+            st.session_state._pending_undo = True
+            st.rerun()
+    with col_no:
+        if st.button("✖️ Cancel", use_container_width=True):
+            st.rerun()
+
 
 logger = logging.getLogger(__name__)
 
@@ -114,10 +179,13 @@ class SidebarRenderer:
         Returns:
             Dict with keys: undo, cancel_slope, finish_slope, recompute, lift_type
         """
-        with st.sidebar:
-            self._render_mode_selector()
-            st.divider()
+        # Handle pending undo from confirmation dialog (must be before UI rendering)
+        if st.session_state.get("_pending_undo"):
+            st.session_state._pending_undo = False
+            undo_last_action()
+            # undo_last_action() calls st.rerun() internally
 
+        with st.sidebar:
             actions = {
                 "undo": False,
                 "cancel_slope": False,
@@ -126,43 +194,67 @@ class SidebarRenderer:
                 "lift_type": self.ctx.lift.type,
             }
 
-            # Mode-specific instructions (above buttons for consistency)
-            self._render_mode_instructions()
+            self._render_mode_selector()
+            st.divider()
 
-            # Building state controls
-            if self.sm.is_slope_building:
+            # Mode-specific controls: close button OR building/placing controls
+            if self.sm.is_idle_viewing_slope or self.sm.is_idle_viewing_lift:
+                self._render_close_panel_button()
+            elif self.sm.is_any_slope_state:
                 actions.update(self._render_building_controls())
+            elif self.sm.is_lift_placing:
+                self._render_lift_cancel_button()
 
-            # Lift placing controls - cancel button
-            if self.sm.is_lift_placing:
-                if st.button(
-                    "❌ Cancel Lift Placement",
-                    width="stretch",
-                    help="Discard start point and return to idle",
-                ):
-                    bump_map_version()  # Clear stale click state
-                    self.sm.cancel_lift()
-                    st.rerun()
-
-            # Divider before always-present undo control
             st.divider()
-
-            # Undo button - always visible, same position for all states
-            can_undo = bool(self.graph.undo_stack)
-            actions["undo"] = st.button(
-                "↩️ Undo Last Action",
-                width="stretch",
-                disabled=not can_undo,
-                help="Nothing to undo" if not can_undo else "Undo the last action",
-            )
-
-            # Divider before stats section
+            self._render_undo_reset_buttons()
             st.divider()
-
             self._render_resort_stats()
+            st.divider()
             self._render_save_load()
 
             return actions
+
+    def _render_close_panel_button(self) -> None:
+        """Render close panel button for viewing states."""
+        if st.button(
+            "✖️ Close Right Panel",
+            width="stretch",
+            help="Close the right panel to start building new slopes and lifts",
+        ):
+            bump_map_version()
+            # Uses close_panel event - SM resolves to appropriate transition
+            # NOTE: State transition triggers st.rerun() via listener
+            self.sm.hide_info_panel()
+
+    def _render_lift_cancel_button(self) -> None:
+        """Render cancel button during lift placement."""
+        if st.button(
+            "✖️ Cancel Lift Placement",
+            width="stretch",
+            help="Discard start point and return to idle",
+        ):
+            bump_map_version()  # Clear stale click state
+            self.sm.cancel_lift()  # Triggers st.rerun() via listener
+
+    def _render_undo_reset_buttons(self) -> None:
+        """Render undo and reset view buttons."""
+        can_undo = bool(self.graph.undo_stack)
+        if st.button(
+            "↩️ Undo Last Action",
+            width="stretch",
+            disabled=not can_undo,
+            help="Nothing to undo" if not can_undo else "Undo the last action",
+        ):
+            last_action = self.graph.undo_stack[-1]
+            _confirm_undo_dialog(action=last_action, graph=self.graph)
+
+        if st.button(
+            "📷 Reset View",
+            width="stretch",
+            help="Reset camera to standard position and orientation",
+        ):
+            self.ctx.map.reset_view()
+            reload_map()  # Bumps version and triggers rerun
 
     def _render_mode_selector(self) -> None:
         """Render unified build type selector with 5 buttons.
@@ -174,53 +266,43 @@ class SidebarRenderer:
         When viewing a lift, the lift type buttons change that lift's type.
         Slope is pre-selected by default.
         """
-        state_name = self.sm.get_state_name()
-
-        # Viewing states take priority over underlying state
-        viewing_slope = self.ctx.viewing.panel_visible and self.ctx.viewing.slope_id is not None
-        viewing_lift = self.ctx.viewing.panel_visible and self.ctx.viewing.lift_id is not None
+        # Use state machine properties for viewing checks
+        viewing_slope = self.sm.is_idle_viewing_slope
+        viewing_lift = self.sm.is_idle_viewing_lift
 
         if viewing_slope:
             st.markdown("### 👁️ Viewing Slope")
         elif viewing_lift:
             st.markdown("### 👁️ Viewing Lift")
-        elif state_name == "SlopeBuilding":
+        elif self.sm.is_any_slope_state:
             st.markdown("### 🏗️ Building Slope...")
-        elif state_name == "LiftPlacing":
+        elif self.sm.is_lift_placing:
             st.markdown("### 🏗️ Placing Lift...")
-        elif state_name == "Idle":
-            st.markdown("### ⛷️🚡 Ready to Build")
         else:
-            raise ValueError(
-                f"Unknown state for header: state_name={state_name}, "
-                f"viewing_slope={viewing_slope}, viewing_lift={viewing_lift}"
-            )
+            # All Idle* states (IdleReady, IdleViewingSlope, IdleViewingLift)
+            st.markdown("### ⛷️🚡 Ready to Build")
 
         # Buttons disabled during building/placing
-        buttons_disabled = self.sm.is_slope_building or self.sm.is_lift_placing
+        buttons_disabled = self.sm.is_any_slope_state or self.sm.is_lift_placing
         current_mode = self.ctx.build_mode.mode
 
         # Note: viewing_slope and viewing_lift already computed above for header
         if buttons_disabled:
             st.caption("⏳ Complete or cancel current build to change type")
         elif viewing_slope:
-            st.markdown("- ✖️ **Close** in the right panel to return\n- 🗺️ Click terrain/node → new slope")
+            st.markdown("- ✖️ **Close** the right panel to return\n- 🗺️ Click terrain/node → new slope")
         elif viewing_lift:
             st.markdown(
                 "- 🔄 Use lift buttons to change type\n"
-                "- ✖️ **Close** in the right panel to return\n"
+                "- ✖️ **Close** the right panel to return\n"
                 "- 🗺️ Click terrain/node → new lift"
             )
-        elif state_name == "Idle":
+        else:
+            # All Idle* states without viewing panel
             st.markdown(
                 "- 🔘 Select **Slope** or **Lift** type below\n"
                 "- 🗺️ Click terrain/node → start building\n"
                 "- 👁️ Click existing slope/lift → view stats"
-            )
-        else:
-            raise ValueError(
-                f"Unknown state for caption: state_name={state_name}, "
-                f"buttons_disabled={buttons_disabled}, viewing_slope={viewing_slope}, viewing_lift={viewing_lift}"
             )
 
         # Build type options for lifts (2x2 grid)
@@ -242,7 +324,7 @@ class SidebarRenderer:
         # === SLOPE button (full width) ===
         slope_disabled = buttons_disabled or viewing_lift
         slope_selected = current_mode == BuildMode.SLOPE
-        slope_type = "primary" if slope_selected else "secondary"
+        slope_type: Literal["primary", "secondary"] = "primary" if slope_selected else "secondary"
         slope_label = "⛷️ **Slope**" if slope_selected else "⛷️ Slope"
         slope_help = self._get_button_help(
             mode=BuildMode.SLOPE,
@@ -252,6 +334,7 @@ class SidebarRenderer:
             viewing_slope=viewing_slope,
             viewing_lift=viewing_lift,
         )
+        # Build mode changes are context-only → use canonical refresh helper
         if st.button(
             slope_label,
             width="stretch",
@@ -262,7 +345,7 @@ class SidebarRenderer:
         ):
             self.ctx.build_mode.mode = BuildMode.SLOPE
             logger.info("UI: Build mode set to Slope")
-            st.rerun()
+            reload_map()
 
         # === LIFT buttons (2x2 grid) ===
         # Row 1: Chairlift, Gondola
@@ -309,11 +392,11 @@ class SidebarRenderer:
         is_selected = current_mode == mode
 
         # When viewing lift, highlight the viewed lift's type
-        if viewing_lift:
+        if viewing_lift and self.ctx.viewing.lift_id:
             viewed_lift = self.graph.lifts.get(self.ctx.viewing.lift_id)
-            is_selected = viewed_lift and viewed_lift.lift_type == mode
+            is_selected = viewed_lift is not None and viewed_lift.lift_type == mode
 
-        button_type = "primary" if is_selected else "secondary"
+        button_type: Literal["primary", "secondary"] = "primary" if is_selected else "secondary"
         button_label = f"{icon} **{label}**" if is_selected else f"{icon} {label}"
         button_help = self._get_button_help(
             mode=mode,
@@ -339,7 +422,7 @@ class SidebarRenderer:
                 self.ctx.build_mode.mode = mode
                 self.ctx.lift.type = mode
                 logger.info(f"UI: Build mode set to {BuildMode.display_name(mode)}")
-            st.rerun()
+            reload_map()  # Build mode changes are context-only
 
     def _change_viewed_lift_type(self, new_type: str) -> None:
         """Change the type of the currently viewed lift.
@@ -393,7 +476,7 @@ class SidebarRenderer:
 
         # Cancel slope - immediate action (no confirmation)
         cancel_slope = st.button(
-            "❌ Cancel Full Slope",
+            "✖️ Cancel Full Slope",
             width="stretch",
             help="Discard current slope and return to IDLE",
         )
@@ -428,10 +511,6 @@ class SidebarRenderer:
             "cancel_slope": cancel_slope,
             "recompute": recompute,
         }
-
-    def _render_mode_instructions(self) -> None:
-        """Placeholder - context messages now render in right panel."""
-        pass  # All context messages moved to right panel
 
     def _render_resort_stats(self) -> None:
         """Render resort summary statistics panel with detailed breakdowns."""
@@ -523,12 +602,12 @@ class SidebarRenderer:
                         lons = [n.lon for n in loaded_graph.nodes.values()]
                         mean_lat = sum(lats) / len(lats)
                         mean_lon = sum(lons) / len(lons)
-                        self.ctx.map.center = (mean_lat, mean_lon)
+                        self.ctx.map.set_center(lon=mean_lon, lat=mean_lat)
                         logger.info(f"Centered map on mean: ({mean_lat:.5f}, {mean_lon:.5f})")
 
                     logger.info(f"Loaded resort from file: {uploaded_file.name}")
                     st.session_state._upload_counter = st.session_state.get("_upload_counter", 0) + 1
-                    st.rerun()
+                    reload_map()  # Fresh graph needs map version bump for Pydeck
                 except Exception as e:
                     FileLoadErrorMessage(error=str(e)).display()
                     logger.error(f"Failed to load resort file: {e}")

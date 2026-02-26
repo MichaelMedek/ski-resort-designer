@@ -1,9 +1,9 @@
 # Requirements for ski_terrain_planner module
-# Install with: pip install -r requirements_ski_terrain.txt
+# Install with: pip install -r requirements.txt
 
 # Web UI
 streamlit>=1.30.0
-streamlit-folium>=0.15.0
+streamlit-deckgl>=0.5.0  # Full deck.gl events including terrain clicks
 
 # Geospatial processing
 shapely>=2.0.0
@@ -16,9 +16,12 @@ requests>=2.28.0
 # Note: Download EuroDEM (2.3GB) from https://www.mapsforeurope.org/datasets/euro-dem
 # Here a crop of the Alps is provided for convenience, but you can also use the full dataset
 
-# Visualization
-folium>=0.15.0
+# Visualization - Pydeck for GPU-accelerated maps, Plotly for charts
+pydeck>=0.8.0
 plotly>=5.18.0
+
+# Data handling for Pydeck layers
+pandas>=2.0.0
 
 # Numerical
 numpy>=1.24.0
@@ -26,6 +29,13 @@ scipy
 
 # State machine
 python-statemachine>=2.0.0
+
+# Testing (dev)
+pytest>=8.0.0
+pytest-cov>=7.0.0
+hypothesis>=6.0.0
+mypy
+pytest-mypy
 
 # Hugging Face (Only to push the DEM to Hugging Face, not required for end users)
 # huggingface-hub

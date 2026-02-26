@@ -12,14 +12,13 @@ Provides operations for:
 Reference: DETAILS.md
 """
 
-import json
 import logging
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime
-from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from enum import Enum, auto
+from typing import TYPE_CHECKING, Any, Optional, cast
 
-from skiresort_planner.constants import OUTPUT_DIR, EntityPrefixes, PathConfig, UndoConfig
+from skiresort_planner.constants import EntityPrefixes, PathConfig, UndoConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.model.lift import Lift
@@ -40,12 +39,27 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 
+class ActionType(Enum):
+    """Enum identifying the type of (undo) action for reliable dispatch."""
+
+    ADD_SEGMENTS = auto()
+    FINISH_SLOPE = auto()
+    ADD_LIFT = auto()
+    DELETE_SLOPE = auto()
+    DELETE_LIFT = auto()
+
+
 @dataclass(frozen=True)
 class AddSegmentsAction:
     """Undo action for committed path segments."""
 
     segment_ids: tuple[str, ...]
     node_ids: tuple[str, ...]
+
+    @property
+    def action_type(self) -> ActionType:
+        """Return the enum type for dispatch."""
+        return ActionType.ADD_SEGMENTS
 
 
 @dataclass(frozen=True)
@@ -57,12 +71,22 @@ class FinishSlopeAction:
     slope_name: str
     start_node_id: str | None
 
+    @property
+    def action_type(self) -> ActionType:
+        """Return the enum type for dispatch."""
+        return ActionType.FINISH_SLOPE
+
 
 @dataclass(frozen=True)
 class AddLiftAction:
     """Undo action for creating a lift."""
 
     lift_id: str
+
+    @property
+    def action_type(self) -> ActionType:
+        """Return the enum type for dispatch."""
+        return ActionType.ADD_LIFT
 
 
 @dataclass(frozen=True)
@@ -73,6 +97,11 @@ class DeleteSlopeAction:
     deleted_slope: "Slope"
     deleted_segments: tuple["SlopeSegment", ...]
 
+    @property
+    def action_type(self) -> ActionType:
+        """Return the enum type for dispatch."""
+        return ActionType.DELETE_SLOPE
+
 
 @dataclass(frozen=True)
 class DeleteLiftAction:
@@ -80,6 +109,11 @@ class DeleteLiftAction:
 
     lift_id: str
     deleted_lift: "Lift"
+
+    @property
+    def action_type(self) -> ActionType:
+        """Return the enum type for dispatch."""
+        return ActionType.DELETE_LIFT
 
 
 UndoAction = AddSegmentsAction | FinishSlopeAction | AddLiftAction | DeleteSlopeAction | DeleteLiftAction
@@ -241,6 +275,7 @@ class ResortGraph:
 
             # Get or create start node
             start_pt = path.start
+            assert start_pt is not None  # Guaranteed by `if not path.points: continue` check
             start_node, start_created = self.get_or_create_node(
                 lon=start_pt.lon,
                 lat=start_pt.lat,
@@ -250,12 +285,26 @@ class ResortGraph:
                 new_node_ids.append(start_node.id)
 
             # Get or create end node
-            end_pt = path.end
-            end_node, end_created = self.get_or_create_node(
-                lon=end_pt.lon,
-                lat=end_pt.lat,
-                elevation=end_pt.elevation,
-            )
+            # If this is a connector path with target_node_id, use that node directly
+            # to avoid creating a duplicate node slightly off from the target
+            if path.target_node_id and path.target_node_id in self.nodes:
+                end_node = self.nodes[path.target_node_id]
+                end_created = False
+                # Snap path geometry to exact node coordinates (avoids visual kinks in 3D)
+                if path.points:
+                    path.points[-1] = PathPoint(
+                        lon=end_node.lon,
+                        lat=end_node.lat,
+                        elevation=end_node.elevation,
+                    )
+            else:
+                end_pt = path.end
+                assert end_pt is not None  # Guaranteed by `if not path.points: continue` check
+                end_node, end_created = self.get_or_create_node(
+                    lon=end_pt.lon,
+                    lat=end_pt.lat,
+                    elevation=end_pt.elevation,
+                )
             if end_created:
                 new_node_ids.append(end_node.id)
 
@@ -340,8 +389,8 @@ class ResortGraph:
 
         slope_id = self._next_slope_id()
 
-        # Determine difficulty
-        max_slope = max(self.segments[sid].avg_slope_pct for sid in segment_ids if sid in self.segments)
+        # Determine difficulty from steepest section (max_slope_pct considers rolling windows)
+        max_slope = max(self.segments[sid].max_slope_pct for sid in segment_ids if sid in self.segments)
         difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=max_slope)
 
         # Generate name
@@ -444,34 +493,39 @@ class ResortGraph:
 
         action = self.undo_stack.pop()
 
-        if isinstance(action, AddSegmentsAction):
-            for seg_id in action.segment_ids:
+        if action.action_type == ActionType.ADD_SEGMENTS:
+            add_seg = cast(AddSegmentsAction, action)
+            for seg_id in add_seg.segment_ids:
                 self.segments.pop(seg_id, None)
-            self.cleanup_isolated_nodes()  # Remove orphaned nodes
+            self.cleanup_isolated_nodes()  # Remove orphaned nodes from segment removal
 
-        elif isinstance(action, AddLiftAction):
-            self.lifts.pop(action.lift_id, None)
-            self.cleanup_isolated_nodes()  # Remove orphaned nodes created for lift
+        elif action.action_type == ActionType.ADD_LIFT:
+            add_lift = cast(AddLiftAction, action)
+            self.lifts.pop(add_lift.lift_id, None)
+            self.cleanup_isolated_nodes()  # Remove orphaned station nodes
 
-        elif isinstance(action, FinishSlopeAction):
-            self.slopes.pop(action.slope_id, None)
-            for seg_id in action.segment_ids:
+        elif action.action_type == ActionType.FINISH_SLOPE:
+            finish = cast(FinishSlopeAction, action)
+            self.slopes.pop(finish.slope_id, None)
+            for seg_id in finish.segment_ids:
                 seg = self.segments.get(seg_id)
                 if seg:
                     seg.name = f"Segment {seg_id[1:]}"
             # No nodes are added in finish_slope only in last segment, so no cleanup needed
 
-        elif isinstance(action, DeleteSlopeAction):
+        elif action.action_type == ActionType.DELETE_SLOPE:
+            del_slope = cast(DeleteSlopeAction, action)
             # Restore deleted slope and its segments
-            self.slopes[action.slope_id] = action.deleted_slope
-            for seg in action.deleted_segments:
+            self.slopes[del_slope.slope_id] = del_slope.deleted_slope
+            for seg in del_slope.deleted_segments:
                 self.segments[seg.id] = seg
-            logger.info(f"Restored slope {action.slope_id} with {len(action.deleted_segments)} segments")
+            logger.info(f"Restored slope {del_slope.slope_id} with {len(del_slope.deleted_segments)} segments")
 
-        elif isinstance(action, DeleteLiftAction):
+        elif action.action_type == ActionType.DELETE_LIFT:
+            del_lift = cast(DeleteLiftAction, action)
             # Restore deleted lift
-            self.lifts[action.lift_id] = action.deleted_lift
-            logger.info(f"Restored lift {action.lift_id}")
+            self.lifts[del_lift.lift_id] = del_lift.deleted_lift
+            logger.info(f"Restored lift {del_lift.lift_id}")
 
         return action
 
@@ -507,8 +561,7 @@ class ResortGraph:
             )
         )
 
-        # Cleanup isolated nodes
-        self.cleanup_isolated_nodes()
+        self.cleanup_isolated_nodes()  # Remove orphaned nodes from segment removal
 
         logger.info(f"Deleted slope {slope.name} with {len(slope.segment_ids)} segments")
         return True
@@ -537,8 +590,7 @@ class ResortGraph:
             )
         )
 
-        # Cleanup isolated nodes (lift stations may become isolated)
-        self.cleanup_isolated_nodes()
+        self.cleanup_isolated_nodes()  # Remove orphaned station nodes
 
         logger.info(f"Deleted lift {lift.name}")
         return True
@@ -561,7 +613,7 @@ class ResortGraph:
                 return slope
         return None
 
-    def get_segment_stats(self, segment_ids: list[str]) -> dict:
+    def get_segment_stats(self, segment_ids: list[str]) -> dict[str, Any]:
         """Get statistics for specific segments (used for running stats during building).
 
         Args:
@@ -569,32 +621,33 @@ class ResortGraph:
 
         Returns:
             Dict with: total_drop, total_length, avg_gradient, max_gradient, difficulty, start_elev, current_elev
+            All numeric values are guaranteed non-None (defaults to 0.0 if segments not found).
         """
+        default_stats = {
+            "total_drop": 0.0,
+            "total_length": 0.0,
+            "avg_gradient": 0.0,
+            "max_gradient": 0.0,
+            "difficulty": "green",
+            "start_elev": 0.0,
+            "current_elev": 0.0,
+        }
+
         if not segment_ids:
-            return {
-                "total_drop": 0.0,
-                "total_length": 0.0,
-                "avg_gradient": 0.0,
-                "max_gradient": 0.0,
-                "difficulty": "green",
-                "start_elev": None,
-                "current_elev": None,
-            }
+            return default_stats
 
         first_seg = self.segments.get(segment_ids[0])
         last_seg = self.segments.get(segment_ids[-1])
 
         if not first_seg or not last_seg:
-            return {
-                "total_drop": 0.0,
-                "total_length": 0.0,
-                "avg_gradient": 0.0,
-                "max_gradient": 0.0,
-                "difficulty": "green",
-                "start_elev": None,
-                "current_elev": None,
-            }
+            logger.warning(
+                f"get_segment_stats: missing segments - first={segment_ids[0]} exists={first_seg is not None}, "
+                f"last={segment_ids[-1]} exists={last_seg is not None}"
+            )
+            return default_stats
 
+        assert first_seg.start is not None  # Segments always have points
+        assert last_seg.end is not None  # Segments always have points
         start_elev = first_seg.start.elevation
         current_elev = last_seg.end.elevation
 
@@ -603,8 +656,8 @@ class ResortGraph:
         total_drop = start_elev - current_elev
         avg_gradient = (total_drop / total_length * 100) if total_length > 0 else 0.0
 
-        # Difficulty is based on steepest segment (not average)
-        max_slope = max(self.segments[sid].avg_slope_pct for sid in segment_ids if sid in self.segments)
+        # Difficulty based on steepest section in any segment (max_slope_pct uses rolling window)
+        max_slope = max(self.segments[sid].max_slope_pct for sid in segment_ids if sid in self.segments)
         difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=max_slope)
 
         return {
@@ -617,7 +670,7 @@ class ResortGraph:
             "current_elev": current_elev,
         }
 
-    def get_stats(self) -> dict:
+    def get_stats(self) -> dict[str, Any]:
         """Get resort statistics."""
         if not self.segments:
             return {
@@ -654,7 +707,7 @@ class ResortGraph:
     # Serialization
     # =========================================================================
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """Serialize entire graph to JSON-compatible dict."""
         return {
             "version": "2.0",
@@ -671,7 +724,7 @@ class ResortGraph:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "ResortGraph":
+    def from_dict(cls, data: dict[str, Any]) -> "ResortGraph":
         """Deserialize graph from dict."""
         graph = cls()
 
@@ -773,20 +826,3 @@ class ResortGraph:
             del self.nodes[node_id]
 
         return len(isolated_node_ids)
-
-    def perform_cleanup(self) -> None:
-        """Perform maintenance tasks on the graph.
-
-        Called by StreamlitUIListener.after_transition() before st.rerun().
-        Ensures the graph is always in a clean state after any state change.
-
-        Current cleanup tasks:
-        - Remove isolated nodes (nodes not connected to any segment or lift)
-        - Create automatic backup (JSON file)
-        """
-        # Remove isolated nodes and log how many were removed
-        removed_count = self.cleanup_isolated_nodes()
-        if removed_count > 0:
-            logger.info(f"Cleanup: removed {removed_count} isolated node(s)")
-
-        # Other possible cleanup tasks in the future...

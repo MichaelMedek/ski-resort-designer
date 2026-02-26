@@ -10,38 +10,22 @@ Design Principles:
 - Caller controls when/how to display the message
 """
 
-from skiresort_planner.constants import ConnectionConfig
+from skiresort_planner.constants import ConnectionConfig, PathConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.model.message import (
     LiftMustGoUphillMessage,
-    Message,
-    OutsideTerrainMessage,
     SameNodeLiftMessage,
     TargetNotDownhillMessage,
     TargetTooFarMessage,
+    ToastMessage,
 )
 from skiresort_planner.model.node import Node
-
-
-def validate_elevation_exists(
-    lat: float,
-    lon: float,
-    elevation: float | None,
-) -> Message | None:
-    """Validate that elevation data exists for the given coordinates.
-
-    Returns:
-        None if valid, OutsideTerrainMessage if elevation is None.
-    """
-    if elevation is None:
-        return OutsideTerrainMessage(lat=lat, lon=lon)
-    return None
 
 
 def validate_lift_goes_uphill(
     start_node: Node,
     end_node: Node,
-) -> Message | None:
+) -> ToastMessage | None:
     """Validate that lift end station is higher than start station.
 
     Returns:
@@ -58,7 +42,7 @@ def validate_lift_goes_uphill(
 def validate_lift_different_nodes(
     start_node_id: str,
     end_node_id: str,
-) -> Message | None:
+) -> ToastMessage | None:
     """Validate that lift start and end are different nodes.
 
     Returns:
@@ -72,7 +56,7 @@ def validate_lift_different_nodes(
 def validate_custom_target_downhill(
     start_elevation: float,
     target_elevation: float,
-) -> Message | None:
+) -> ToastMessage | None:
     """Validate that custom target is sufficiently downhill.
 
     Returns:
@@ -93,8 +77,7 @@ def validate_custom_target_distance(
     start_lon: float,
     target_lat: float,
     target_lon: float,
-    max_distance_m: float,
-) -> Message | None:
+) -> ToastMessage | None:
     """Validate that custom target is within allowed distance.
 
     Returns:
@@ -106,9 +89,9 @@ def validate_custom_target_distance(
         lat2=target_lat,
         lon2=target_lon,
     )
-    if distance_m > max_distance_m:
+    if distance_m > PathConfig.SEGMENT_LENGTH_MAX_M:
         return TargetTooFarMessage(
             distance_m=distance_m,
-            max_distance_m=max_distance_m,
+            max_distance_m=PathConfig.SEGMENT_LENGTH_MAX_M,
         )
     return None

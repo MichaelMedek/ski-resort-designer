@@ -140,18 +140,7 @@ The skier experiences a comfortable 22% slope, but the cross-slope is 45% — re
 
 ## 4. Civil Engineering: Earthwork & Excavation
 
-### 4.1 The Belt Model
-
-A ski piste has a physical width called the **Belt**. The path is planned along the **centerline** of this belt.
-
-| Difficulty | Belt Width ($W$) |
-|------------|------------------|
-| 🟢 Green | 8m |
-| 🔵 Blue | 25m |
-| 🔴 Red | 40m |
-| ⚫ Black | 30m |
-
-### 4.2 Side Slope Creates a Cross-Section Problem
+### 4.1 Side Slope Creates a Cross-Section Problem
 
 When traversing, the natural terrain slopes perpendicular to the ski direction. To create a level piste:
 - **Excavate** (cut) on the uphill/inner side
@@ -170,6 +159,18 @@ When traversing, the natural terrain slopes perpendicular to the ski direction. 
                     ╲
 ```
 
+### 4.2 The Belt Model
+
+A ski piste has a physical width called the **Belt**. The path is planned along the **centerline** of this belt.
+
+Belt width is calculated adaptively from side slope to keep excavation within limits:
+
+$$W = \frac{H_{\text{threshold}} \cdot 200}{S_{\text{side}}}$$
+
+Where $H_{\text{threshold}} = 2.5\text{m}$ is the maximum acceptable excavation depth.
+
+For steeper side slopes, the belt narrows to reduce excavation. For gentler side slopes, a wider belt can be used.
+
 ### 4.3 Vertical Cut/Fill Depth
 
 **Vertical displacement** at edge (cut or fill depth):
@@ -180,14 +181,11 @@ $$H_{\text{edge}} = \frac{S_{\text{side}}}{100} \cdot \frac{W}{2} = \frac{S_{\te
 
 ### 4.4 🚜 Side Cut Warning
 
-A warning is triggered when edge cut/fill exceeds **2.5 meters**:
+A warning is triggered when the side slope exceeds what even the minimum belt width can handle:
 
-$$H_{\text{edge}} > 2.5\text{m} \implies \text{Side Cut Warning}$$
+$$S_{\text{side}} > \frac{H_{\text{threshold}} \cdot 200}{W_{\text{min}}} = \frac{2.5 \cdot 200}{10} = 50\%$$
 
-Rearranging for side slope limit:
-$$S_{\text{side,limit}} = \frac{500}{W}$$
-
-This results in a respective side slope limits for each difficulty, and triggers a warning if the path requires more excavation than that.
+When side slope exceeds 50%, the excavation would exceed 2.5m even at minimum belt width.
 
 ### 4.5 📐 Too Flat Warning
 
@@ -323,12 +321,12 @@ This creates **natural curving**:
 
 ### 6.1 Segment Classification
 
-When a path is committed, it becomes a segment classified by **average slope**:
+When a path is committed, it becomes a segment classified by the **steepest 300m section** (rolling window):
 
-$$S_{\text{avg}} = \frac{\Delta h}{L} \times 100\%$$
+$$S_{\text{max}} = \max_{\text{window}} \left( \frac{\Delta h_{\text{window}}}{L_{\text{window}}} \times 100\% \right)$$
 
-| Avg Slope | Classification |
-|-----------|----------------|
+| Steepest Section | Classification |
+|------------------|----------------|
 | < 15% | 🟢 Green |
 | 15% – 25% | 🔵 Blue |
 | 25% – 40% | 🔴 Red |
@@ -336,7 +334,7 @@ $$S_{\text{avg}} = \frac{\Delta h}{L} \times 100\%$$
 
 ### 6.2 Slope Classification (Multi-Segment)
 
-The final slope classification is determined by the **steepest segment**, while each segment itself is claasified by its average slope. The reason is that a short steep section will make the entire slope not skiable for beginners, even if the overall average is low.
+The final slope classification is determined by the **steepest section among all segments**. A short steep section will make the entire slope not skiable for beginners, even if the overall average is low.
 
 ---
 

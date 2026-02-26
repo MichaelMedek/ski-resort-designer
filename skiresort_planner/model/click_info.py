@@ -7,7 +7,7 @@ This module defines the canonical types for ALL click detection:
 
 ID Storage:
     IDs are stored directly (node_id="N1", slope_id="SL1", etc.)
-    Tooltips are user-friendly strings generated on the fly
+    Display names are generated via the display_name property
     No intermediate "element_id" - IDs are the source of truth
 
 Index Convention:
@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
-from skiresort_planner.constants import ClickConfig, CoordinateConfig
+from skiresort_planner.constants import CoordinateConfig
 
 
 class MapClickType(Enum):
@@ -121,105 +121,6 @@ class ClickInfo:
             raise RuntimeError(f"Unknown marker_type: {mt}")
 
     # =========================================================================
-    # FACTORY METHOD - parse tooltip to ClickInfo
-    # =========================================================================
-
-    @classmethod
-    def from_tooltip(cls, tooltip: str) -> "ClickInfo":
-        """Parse marker tooltip into ClickInfo.
-
-        STRICT: Unknown tooltips raise ValueError immediately.
-
-        Tooltip formats (user-friendly, parsed to direct IDs):
-            "Build From Node N1" → NODE, node_id="N1"
-            "View Slope SL1" → SLOPE, slope_id="SL1"
-            "View Lift L1" → LIFT, lift_id="L1"
-            "View Pylon 3 on L1" → PYLON, lift_id="L1", pylon_index=2 (0-indexed)
-            "Commit Proposal 5" → PROPOSAL_ENDPOINT, proposal_index=4 (0-indexed)
-            "Select Proposal 5" → PROPOSAL_BODY, proposal_index=4 (0-indexed)
-            "Segment S1" → SEGMENT, segment_id="S1"
-
-        Args:
-            tooltip: User-friendly tooltip string from marker
-
-        Returns:
-            ClickInfo with parsed marker_type and ID fields
-
-        Raises:
-            ValueError: If tooltip doesn't match any known format
-        """
-        # NODE: "Build From Node N1"
-        if tooltip.startswith(ClickConfig.TOOLTIP_PREFIX_NODE + " "):
-            node_id = tooltip[len(ClickConfig.TOOLTIP_PREFIX_NODE) + 1 :]
-            return cls(
-                click_type=MapClickType.MARKER,
-                marker_type=MarkerType.NODE,
-                node_id=node_id,
-            )
-
-        # SLOPE: "View Slope SL1"
-        if tooltip.startswith(ClickConfig.TOOLTIP_PREFIX_SLOPE_ICON + " "):
-            slope_id = tooltip[len(ClickConfig.TOOLTIP_PREFIX_SLOPE_ICON) + 1 :]
-            return cls(
-                click_type=MapClickType.MARKER,
-                marker_type=MarkerType.SLOPE,
-                slope_id=slope_id,
-            )
-
-        # LIFT: "View Lift L1"
-        if tooltip.startswith(ClickConfig.TOOLTIP_PREFIX_LIFT_ICON + " "):
-            lift_id = tooltip[len(ClickConfig.TOOLTIP_PREFIX_LIFT_ICON) + 1 :]
-            return cls(
-                click_type=MapClickType.MARKER,
-                marker_type=MarkerType.LIFT,
-                lift_id=lift_id,
-            )
-
-        # PYLON: "View Pylon 3 on L1"
-        if tooltip.startswith(ClickConfig.TOOLTIP_PREFIX_PYLON + " "):
-            rest = tooltip[len(ClickConfig.TOOLTIP_PREFIX_PYLON) + 1 :]
-            pylon_num_str, lift_id = rest.split(ClickConfig.TOOLTIP_SEPARATOR_ON, 1)
-            pylon_number = int(pylon_num_str)  # 1-indexed in tooltip
-            return cls(
-                click_type=MapClickType.MARKER,
-                marker_type=MarkerType.PYLON,
-                lift_id=lift_id,
-                pylon_index=pylon_number - 1,  # Convert to 0-indexed
-            )
-
-        # PROPOSAL ENDPOINT: "Commit Proposal 5"
-        if tooltip.startswith(ClickConfig.TOOLTIP_PREFIX_PROPOSAL_END + " "):
-            num_str = tooltip[len(ClickConfig.TOOLTIP_PREFIX_PROPOSAL_END) + 1 :]
-            proposal_number = int(num_str)  # 1-indexed in tooltip
-            return cls(
-                click_type=MapClickType.MARKER,
-                marker_type=MarkerType.PROPOSAL_ENDPOINT,
-                proposal_index=proposal_number - 1,  # Convert to 0-indexed
-            )
-
-        # PROPOSAL BODY: "Select Proposal 5"
-        if tooltip.startswith(ClickConfig.TOOLTIP_PREFIX_PROPOSAL_BODY + " "):
-            num_str = tooltip[len(ClickConfig.TOOLTIP_PREFIX_PROPOSAL_BODY) + 1 :]
-            proposal_number = int(num_str)  # 1-indexed in tooltip
-            return cls(
-                click_type=MapClickType.MARKER,
-                marker_type=MarkerType.PROPOSAL_BODY,
-                proposal_index=proposal_number - 1,  # Convert to 0-indexed
-            )
-
-        # SEGMENT: "Segment S1"
-        if tooltip.startswith("Segment "):
-            segment_id = tooltip[len("Segment ") :]
-            return cls(
-                click_type=MapClickType.MARKER,
-                marker_type=MarkerType.SEGMENT,
-                segment_id=segment_id,
-            )
-
-        # STRICT: Unknown tooltip is a PROGRAMMING ERROR
-        raise ValueError(f"Unknown marker tooltip: '{tooltip}'")
-
-    # =========================================================================
     # DISPLAY PROPERTIES
     # =========================================================================
 
@@ -251,10 +152,13 @@ class ClickInfo:
             elif mt == MarkerType.LIFT:
                 return f"Lift {self.lift_id}"
             elif mt == MarkerType.PYLON:
+                assert self.pylon_index is not None
                 return f"Pylon {self.pylon_index + 1} on Lift {self.lift_id}"
             elif mt == MarkerType.PROPOSAL_ENDPOINT:
+                assert self.proposal_index is not None
                 return f"Path option {self.proposal_index + 1} (endpoint)"
             elif mt == MarkerType.PROPOSAL_BODY:
+                assert self.proposal_index is not None
                 return f"Path option {self.proposal_index + 1}"
             else:
                 raise RuntimeError(f"Unknown marker_type: {mt}")
@@ -283,6 +187,7 @@ class ClickInfo:
             Unique string key for deduplication
         """
         if self.click_type == MapClickType.TERRAIN:
+            assert self.lat is not None and self.lon is not None
             lat_key = self.round_for_key(self.lat)
             lon_key = self.round_for_key(self.lon)
             return f"terrain_{lat_key}_{lon_key}"

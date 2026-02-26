@@ -10,6 +10,7 @@ Reference: DETAILS.md
 """
 
 from dataclasses import dataclass
+from typing import Any
 
 from skiresort_planner.model.path_point import PathPoint
 
@@ -49,6 +50,16 @@ class Node:
         """Elevation delegated from location."""
         return self.location.elevation
 
+    @property
+    def lat_lon(self) -> tuple[float, float]:
+        """Return (lat, lon) tuple - standard geographic order."""
+        return self.location.lat_lon
+
+    @property
+    def lon_lat(self) -> tuple[float, float]:
+        """Return (lon, lat) tuple - GeoJSON/Pydeck order."""
+        return self.location.lon_lat
+
     def distance_to(self, lon: float, lat: float) -> float:
         """Calculate distance to given coordinates in meters.
 
@@ -64,7 +75,7 @@ class Node:
         return self.location.distance_to(other=target)
 
     @classmethod
-    def from_dict(cls, data: dict) -> "Node":
+    def from_dict(cls, data: dict[str, Any]) -> "Node":
         """Create Node from dictionary."""
         return cls(
             id=data["id"],

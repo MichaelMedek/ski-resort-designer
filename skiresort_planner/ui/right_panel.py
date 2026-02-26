@@ -13,11 +13,11 @@ Design Principles:
 """
 
 import logging
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import streamlit as st
 
-from skiresort_planner.constants import StyleConfig
+from skiresort_planner.constants import MapConfig, SlopeConfig, StyleConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.model.message import (
     LiftActionMessage,
@@ -28,10 +28,136 @@ from skiresort_planner.model.message import (
     SlopeStartingContextMessage,
 )
 from skiresort_planner.model.resort_graph import ResortGraph
-from skiresort_planner.ui.actions import bump_map_version
+from skiresort_planner.ui.actions import bump_map_version, reload_map
 from skiresort_planner.ui.state_machine import PlannerContext, PlannerStateMachine
 
+if TYPE_CHECKING:
+    from skiresort_planner.model import Lift, Slope
+
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# CONFIRMATION DIALOGS
+# =============================================================================
+
+
+@st.dialog("Confirm Delete")
+def _confirm_delete_dialog(
+    entity_type: str,
+    entity_name: str,
+    entity_id: str,
+    delete_fn: Callable[[str], bool],
+    sm: PlannerStateMachine,
+) -> None:
+    """Show confirmation dialog before deleting a slope or lift."""
+    st.write(f"Are you sure you want to delete **{entity_name}**?")
+    st.caption("This action can be undone using the Undo button.")
+
+    col_yes, col_no = st.columns(2)
+    with col_yes:
+        if st.button("🗑️ Yes, Delete", type="primary", use_container_width=True):
+            if delete_fn(entity_id):
+                logger.info(f"Deleted {entity_type} {entity_name} (id={entity_id})")
+                bump_map_version()
+                # Uses close_panel event - SM resolves to appropriate transition
+                sm.hide_info_panel()
+            st.rerun()
+    with col_no:
+        if st.button("✖️ Cancel", use_container_width=True):
+            st.rerun()
+
+
+# =============================================================================
+# SHARED HELPERS FOR INFO PANELS
+# =============================================================================
+
+
+def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, entity_type: str, entity_id: str) -> None:
+    """Render 3D/2D view toggle button. Calls reload_map() if button is clicked."""
+    if ctx.viewing.view_3d:
+        if st.button("🗺️ Return to 2D View", key=f"{entity_type}_2d_view", use_container_width=True):
+            logger.info(f"Switching to 2D view from {entity_type} {entity_id}")
+            ctx.viewing.disable_3d()
+            # Reset pitch, bearing, and zoom to top-down 2D view
+            ctx.map.pitch = MapConfig.DEFAULT_PITCH
+            ctx.map.bearing = MapConfig.DEFAULT_BEARING
+            ctx.map.zoom = MapConfig.DEFAULT_ZOOM
+            # Update map center to entity center so we don't jump to stale position
+            if entity_type == "slope" and entity_id in graph.slopes:
+                slope = graph.slopes[entity_id]
+                # Compute center from segment endpoints
+                lats, lons = [], []
+                for seg_id in slope.segment_ids:
+                    seg = graph.segments.get(seg_id)
+                    if seg and seg.points:
+                        lats.append(seg.points[0].lat)
+                        lons.append(seg.points[0].lon)
+                        lats.append(seg.points[-1].lat)
+                        lons.append(seg.points[-1].lon)
+                if lats and lons:
+                    ctx.map.lat = sum(lats) / len(lats)
+                    ctx.map.lon = sum(lons) / len(lons)
+            elif entity_type == "lift" and entity_id in graph.lifts:
+                lift = graph.lifts[entity_id]
+                start_node = graph.nodes.get(lift.start_node_id)
+                end_node = graph.nodes.get(lift.end_node_id)
+                if start_node and end_node:
+                    ctx.map.lat = (start_node.lat + end_node.lat) / 2
+                    ctx.map.lon = (start_node.lon + end_node.lon) / 2
+            reload_map()  # Never returns - raises StopExecution
+    else:
+        if st.button(
+            "🏔️ View in 3D",
+            key=f"{entity_type}_3d_view",
+            use_container_width=True,
+            help=f"View {entity_type} from the side with terrain",
+        ):
+            logger.info(f"Switching to 3D view for {entity_type} {entity_id}")
+            ctx.viewing.enable_3d()
+            reload_map()  # Never returns - raises StopExecution
+
+
+def _render_close_delete_buttons(
+    sm: PlannerStateMachine,
+    ctx: PlannerContext,
+    graph: ResortGraph,
+    entity_type: str,
+    entity_id: str,
+    entity: "Slope | Lift",
+    delete_fn: Callable[[str], bool],
+) -> None:
+    """Render close and delete buttons. Triggers state transition or opens dialog."""
+    col_close, col_delete = st.columns(2)
+    with col_close:
+        if st.button(
+            "✖️ Close",
+            key=f"close_{entity_type}",
+            help="Close this panel to start building new slopes and lifts",
+        ):
+            logger.info(f"Closing {entity_type} panel for {entity_id}")
+            ctx.viewing.disable_3d()
+            # Reset pitch and bearing to top-down view (preserve zoom level)
+            ctx.map.pitch = MapConfig.DEFAULT_PITCH
+            ctx.map.bearing = MapConfig.DEFAULT_BEARING
+            bump_map_version()
+            # Uses close_panel event - SM resolves to appropriate transition
+            # State transition triggers st.rerun() via listener - never returns
+            sm.hide_info_panel()
+    with col_delete:
+        if st.button(
+            "🗑️ Delete",
+            type="secondary",
+            key=f"delete_{entity_type}",
+            help=f"Permanently remove this {entity_type}",
+        ):
+            _confirm_delete_dialog(
+                entity_type=entity_type,
+                entity_name=entity.name,
+                entity_id=entity_id,
+                delete_fn=delete_fn,
+                sm=sm,
+            )
 
 
 # =============================================================================
@@ -56,18 +182,17 @@ def render_control_panel(
     Raises:
         RuntimeError: If current state has no registered panel renderer
     """
-    state_name = sm.get_state_name()
-
-    renderers = {
-        "Idle": _render_idle_panel,
-        "SlopeBuilding": _render_slope_building_panel,
-        "LiftPlacing": _render_lift_placing_panel,
-    }
-
-    renderer = renderers.get(state_name)
-    if renderer is None:
+    # Use state machine properties instead of string comparison
+    if sm.is_idle:
+        renderer = _render_idle_panel
+    elif sm.is_any_slope_state:
+        renderer = _render_slope_building_panel
+    elif sm.is_lift_placing:
+        renderer = _render_lift_placing_panel
+    else:
         raise RuntimeError(
-            f"No control panel renderer for state '{state_name}'. Available states: {list(renderers.keys())}"
+            f"No control panel renderer for state '{sm.get_state_name()}'. "
+            f"Expected idle, slope building, or lift placing state."
         )
 
     renderer(
@@ -95,11 +220,10 @@ def _render_idle_panel(
     If panel is visible, show slope or lift stats depending on what's selected.
     Otherwise show nothing (empty panel).
     """
-    if ctx.viewing.panel_visible:
-        if ctx.viewing.slope_id:
-            _render_slope_info_panel(sm=sm, ctx=ctx, graph=graph)
-        elif ctx.viewing.lift_id:
-            _render_lift_info_panel(sm=sm, ctx=ctx, graph=graph)
+    if sm.is_idle_viewing_slope:
+        _render_slope_info_panel(sm=sm, ctx=ctx, graph=graph)
+    elif sm.is_idle_viewing_lift:
+        _render_lift_info_panel(sm=sm, ctx=ctx, graph=graph)
 
 
 def _render_slope_building_panel(
@@ -128,7 +252,7 @@ def _render_slope_building_panel(
 
 def _render_slope_progress_message(ctx: PlannerContext, graph: ResortGraph) -> None:
     """Render the slope progress context message (blue)."""
-    name = ctx.building.name
+    name = ctx.building.name or "Unnamed Slope"
     segs = len(ctx.building.segments)
     if segs > 0:
         stats = graph.get_segment_stats(segment_ids=ctx.building.segments)
@@ -203,30 +327,28 @@ def _render_slope_info_panel(
     ctx: PlannerContext,
     graph: ResortGraph,
 ) -> None:
-    """Render slope info panel with stats and actions (close/delete)."""
+    """Render slope info panel with stats and actions (close/delete/3D view)."""
     slope_id = ctx.viewing.slope_id
     if slope_id is None:
         raise ValueError("viewing.slope_id must be set when showing slope panel")
 
+    slope = graph.slopes.get(slope_id)
+    if slope is None:
+        raise ValueError(f"Slope {slope_id} must exist when panel shows it")
+
     SlopeStatsPanel(graph=graph).render(slope_id=slope_id)
 
-    col_close, col_delete = st.columns(2)
-    with col_close:
-        if st.button("✖️ Close", key="close_slope", help="Close this panel to start building new slopes and lifts"):
-            logger.info(f"Closing slope panel for {slope_id}")
-            bump_map_version()  # Clear stale click state
-            sm.hide_info_panel()
-            st.rerun()
-    with col_delete:
-        if st.button("🗑️ Delete", type="secondary", key="delete_slope", help="Permanently remove this slope"):
-            slope = graph.slopes.get(slope_id)
-            if slope is None:
-                raise ValueError(f"Slope {slope_id} must exist when panel shows it")
-            if graph.delete_slope(slope_id=slope_id):
-                logger.info(f"Deleted slope {slope.name} (id={slope_id})")
-                bump_map_version()  # Clear stale click state
-                sm.hide_info_panel()
-                st.rerun()
+    _render_3d_toggle_button(ctx=ctx, graph=graph, entity_type="slope", entity_id=slope_id)
+
+    _render_close_delete_buttons(
+        sm=sm,
+        ctx=ctx,
+        graph=graph,
+        entity_type="slope",
+        entity_id=slope_id,
+        entity=slope,
+        delete_fn=graph.delete_slope,
+    )
 
 
 def _render_lift_info_panel(
@@ -234,30 +356,28 @@ def _render_lift_info_panel(
     ctx: PlannerContext,
     graph: ResortGraph,
 ) -> None:
-    """Render lift info panel with stats and actions (close/delete)."""
+    """Render lift info panel with stats and actions (close/delete/3D view)."""
     lift_id = ctx.viewing.lift_id
     if lift_id is None:
         raise ValueError("viewing.lift_id must be set when showing lift panel")
 
+    lift = graph.lifts.get(lift_id)
+    if lift is None:
+        raise ValueError(f"Lift {lift_id} must exist when panel shows it")
+
     LiftStatsPanel(graph=graph).render(lift_id=lift_id)
 
-    col_close, col_delete = st.columns(2)
-    with col_close:
-        if st.button("✖️ Close", key="close_lift", help="Close this panel to start building new lifts and slopes"):
-            logger.info(f"Closing lift panel for {lift_id}")
-            bump_map_version()  # Clear stale click state
-            sm.hide_info_panel()
-            st.rerun()
-    with col_delete:
-        if st.button("🗑️ Delete", type="secondary", key="delete_lift", help="Permanently remove this lift"):
-            lift = graph.lifts.get(lift_id)
-            if lift is None:
-                raise ValueError(f"Lift {lift_id} must exist when panel shows it")
-            if graph.delete_lift(lift_id=lift_id):
-                logger.info(f"Deleted lift {lift.name} (id={lift_id})")
-                bump_map_version()  # Clear stale click state
-                sm.hide_info_panel()
-                st.rerun()
+    _render_3d_toggle_button(ctx=ctx, graph=graph, entity_type="lift", entity_id=lift_id)
+
+    _render_close_delete_buttons(
+        sm=sm,
+        ctx=ctx,
+        graph=graph,
+        entity_type="lift",
+        entity_id=lift_id,
+        entity=lift,
+        delete_fn=graph.delete_lift,
+    )
 
 
 # =============================================================================
@@ -289,7 +409,7 @@ class PathSelectionPanel:
         if self.ctx.custom_connect.enabled:
             SlopeActionMessage(is_custom_direction=True).display()
             if st.button(
-                "❌ Cancel Custom Direction",
+                "✖️ Cancel Custom Direction",
                 width="stretch",
                 help="Return to regular path proposals",
             ):
@@ -316,7 +436,7 @@ class PathSelectionPanel:
 
         path = self.ctx.proposals.paths[selected_idx]
         emoji = StyleConfig.DIFFICULTY_EMOJIS[path.difficulty]
-        is_connector = path.is_connector and path.target_node_id
+        is_connector = bool(path.is_connector and path.target_node_id)
 
         SlopeActionMessage(
             is_selecting_path=True,
@@ -340,13 +460,13 @@ class PathSelectionPanel:
         with col_prev:
             if st.button("◀", key="prev_path", width="stretch", help="Previous path variant"):
                 self.ctx.proposals.selected_idx = (selected_idx - 1) % num_paths
-                st.rerun()
+                reload_map()  # Refresh map with new selection
         with col_nav_label:
             st.markdown(f"**◀ ▶ Browse {num_paths} paths**")
         with col_next:
             if st.button("▶", key="next_path", width="stretch", help="Next path variant"):
                 self.ctx.proposals.selected_idx = (selected_idx + 1) % num_paths
-                st.rerun()
+                reload_map()  # Refresh map with new selection
 
         # Commit button
         if is_connector:
@@ -360,8 +480,8 @@ class PathSelectionPanel:
             logger.info(f"UI: Commit button clicked for path {selected_idx}, is_connector={is_connector}")
             self.on_commit(selected_idx)
 
-        # Custom Direction button
-        if not self.ctx.custom_connect.enabled and not self.ctx.custom_connect.force_mode:
+        # Custom Direction button (not shown if already in custom connect mode)
+        if not self.ctx.custom_connect.enabled and not self.ctx.custom_connect.force_mode:  # type: ignore[redundant-expr]  # noqa: SIM102
             if st.button(
                 "🎯 Custom Direction",
                 width="stretch",
@@ -373,7 +493,7 @@ class PathSelectionPanel:
         # Cancel Connection button
         if self.ctx.custom_connect.force_mode:
             if st.button(
-                "❌ Cancel Connection",
+                "✖️ Cancel Connection",
                 width="stretch",
                 help="Return to regular path proposals",
             ):
@@ -423,14 +543,14 @@ class SlopeStatsPanel:
         with col1:
             st.metric("Top Elevation", f"{top_elev:.0f}m")
             st.metric("Length", f"{total_length:.0f}m")
-            st.metric("Avg Gradient", f"{avg_gradient:.0f}%")
+            st.metric("Overall Gradient", f"{avg_gradient:.0f}%")
         with col2:
             st.metric("Bottom Elevation", f"{bottom_elev:.0f}m")
             st.metric("Drop", f"{total_drop:.0f}m")
             st.metric(
-                "Max Segment Gradient",
+                "Steepest Section",
                 f"{max_segment_gradient:.0f}%",
-                help="Steepest segment average gradient - determines the slope difficulty rating",
+                help=f"Steepest {SlopeConfig.ROLLING_WINDOW_M}m section within any segment - determines difficulty rating",
             )
 
         with st.expander("📋 Segment Details", expanded=False):
@@ -440,7 +560,7 @@ class SlopeStatsPanel:
                     continue
 
                 seg_emoji = StyleConfig.DIFFICULTY_EMOJIS[seg.difficulty]
-                seg_line = f"{i}. {seg_emoji} **{seg.difficulty.capitalize()}** — {seg.length_m:.0f}m, {seg.avg_slope_pct:.0f}%"
+                seg_line = f"{i}. {seg_emoji} **{seg.difficulty.capitalize()}** — {seg.length_m:.0f}m, {seg.max_slope_pct:.0f}% steepest, {seg.width_m:.0f}m wide"
 
                 if seg.warnings:
                     st.markdown(f"{seg_line}")
@@ -502,13 +622,13 @@ class LiftStatsPanel:
                 st.metric("Bottom Elevation", f"{start_node.elevation:.0f}m")
                 st.metric("Horizontal Length", f"{horizontal_length:.0f}m")
                 st.metric("Vertical Rise", f"{vertical_rise:.0f}m")
-                st.metric("Avg Gradient", f"{avg_gradient:.0f}%")
+                st.metric("Overall Gradient", f"{avg_gradient:.0f}%")
             with col2:
                 st.metric("Top Elevation", f"{end_node.elevation:.0f}m")
                 st.metric("Inclined Length", f"{inclined_length:.0f}m")
                 st.metric("Pylons", f"{num_pylons}")
                 st.metric(
-                    "Max Cable Gradient",
+                    "Steepest Section",
                     f"{max_cable_gradient:.0f}%",
                     help="Steepest gradient between any two adjacent pylons",
                 )

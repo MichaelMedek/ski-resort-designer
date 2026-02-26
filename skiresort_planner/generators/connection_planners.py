@@ -165,7 +165,7 @@ class LeastCostPathPlanner:
         target_lon: float,
         target_lat: float,
         direct_distance: float,
-    ) -> Optional[tuple]:
+    ) -> Optional[tuple[list[list[float]], list[list[float]], list[list[float]], GridNode, GridNode]]:
         """Build elevation grid covering the search area."""
         # Calculate grid bounds with buffer
         buffer_m = direct_distance * PlannerConfig.GRID_BUFFER_FACTOR
@@ -223,7 +223,9 @@ class LeastCostPathPlanner:
 
                 elev = self.dem.get_elevation(lon=lon, lat=lat)
                 if elev is None:
-                    raise RuntimeError(f"DEM returned None for grid point at row={row}, col={col} (lon={lon}, lat={lat}), cannot build grid with missing elevation data")
+                    raise RuntimeError(
+                        f"DEM returned None for grid point at row={row}, col={col} (lon={lon}, lat={lat}), cannot build grid with missing elevation data"
+                    )
 
                 elev_row.append(elev)
                 lon_row.append(lon)
@@ -347,39 +349,34 @@ class LeastCostPathPlanner:
         start_id = start.row * n_cols + start.col
         target_id = target.row * n_cols + target.col
 
-        try:
-            dist, pred = shortest_path(
-                csgraph=csgraph,
-                method="auto",  # chooses fastest (Dijkstra for positive weights)
-                directed=True,
-                indices=start_id,
-                return_predecessors=True,
-            )
+        dist, pred = shortest_path(
+            csgraph=csgraph,
+            method="auto",  # chooses fastest (Dijkstra for positive weights)
+            directed=True,
+            indices=start_id,
+            return_predecessors=True,
+        )
 
-            if np.isinf(dist[target_id]):
+        if np.isinf(dist[target_id]):
+            return None, 0, 0
+
+        # Reconstruct path
+        path_ids: list[int] = []
+        current = target_id
+        while True:
+            path_ids.append(current)
+            if current == start_id:
+                break
+            current = pred[current]
+            if current == -9999:
                 return None, 0, 0
 
-            # Reconstruct path
-            path_ids: list[int] = []
-            current = target_id
-            while True:
-                path_ids.append(current)
-                if current == start_id:
-                    break
-                current = pred[current]
-                if current == -9999:
-                    return None, 0, 0
+        path_ids.reverse()
 
-            path_ids.reverse()
+        path_nodes = [GridNode(row=pid // n_cols, col=pid % n_cols) for pid in path_ids]
 
-            path_nodes = [GridNode(row=pid // n_cols, col=pid % n_cols) for pid in path_ids]
-
-            # Return same tuple shape for drop-in compatibility
-            return path_nodes, len(path_nodes), N
-
-        except Exception as e:
-            logger.warning(f"SciPy csgraph failed: {e}")
-            return None, 0, 0
+        # Return same tuple shape for drop-in compatibility
+        return path_nodes, len(path_nodes), N
 
     def _calc_edge_cost(
         self,
@@ -495,6 +492,7 @@ class LeastCostPathPlanner:
 
         try:
             # Fit cubic smoothing spline
+            # splprep returns a complex tuple that Mypy can't unpack into tck, u
             tck, _ = splprep(
                 [lons, lats, elevs],
                 u=cumdist,
@@ -504,7 +502,8 @@ class LeastCostPathPlanner:
 
             # Resample evenly along the path
             new_dists = np.arange(0, total_length + step_m / 2, step_m)
-            new_lon, new_lat, new_elev_approx = splev(new_dists, tck)
+            # splev has multiple overloads; Mypy can't determine which applies
+            new_lon, new_lat, new_elev_approx = splev(new_dists, tck)  # type: ignore[call-overload]
 
             # Re-query DEM for accurate elevations at smoothed positions
             final_points = []
