@@ -323,7 +323,7 @@ This creates **natural curving**:
 
 When a path is committed, it becomes a segment classified by the **steepest 300m section** (rolling window):
 
-$$S_{\text{max}} = \max_{\text{window}} \left( \frac{\Delta h_{\text{window}}}{L_{\text{window}}} \times 100\% \right)$$
+$$S_{\text{max}} = \max_{\text{window}} \left( \frac{\Delta h_{\text{window}}}{L_{\text{window}}} \right) \times 100\%$$
 
 | Steepest Section | Classification |
 |------------------|----------------|
