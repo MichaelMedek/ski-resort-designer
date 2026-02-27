@@ -2,6 +2,8 @@
 
 Design ski resorts on real terrain with an addictive, game-like interface.
 
+![Full Resort Overview](docs/images/7-FullResort.png)
+
 ## Installation Guide (macOS)
 
 You've cloned the repository and opened the folder in Terminal. Follow these steps to run the app.
