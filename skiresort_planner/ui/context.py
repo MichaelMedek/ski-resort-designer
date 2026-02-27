@@ -535,7 +535,7 @@ class ClickDeduplicationContext(BaseContext):
 class DeferredContext(BaseContext):
     """Deferred action flags for work that runs after st.rerun().
 
-    When set, handle_deferred_actions() in app.py performs the work on the
+    When set, process_path_generation_deferred() (called from app.py) performs the work on the
     next render cycle. This ensures expensive operations (path generation)
     run with full access to session state after the UI refresh.
     """

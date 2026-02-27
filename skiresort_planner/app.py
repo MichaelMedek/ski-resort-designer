@@ -30,6 +30,7 @@ from skiresort_planner.ui import (
     PlannerStateMachine,
     ProfileChart,
     SidebarRenderer,
+    bump_map_version,
     cancel_current_slope,
     cancel_custom_direction_mode,
     cancel_custom_path,
@@ -37,11 +38,14 @@ from skiresort_planner.ui import (
     dispatch_click,
     enter_custom_direction_mode,
     finish_current_slope,
-    handle_deferred_actions,
+    handle_fast_deferred_actions,
+    process_custom_connect_deferred,
+    process_path_generation_deferred,
     recompute_paths,
     render_building_profiles,
     render_control_panel,
     render_proposal_preview,
+    trigger_rerun,
 )
 from skiresort_planner.ui.pydeck_click_handler import render_pydeck_map
 from skiresort_planner.ui.terrain_layer import create_aws_terrain_layer
@@ -105,7 +109,7 @@ def reset_ui_state() -> None:
     st.session_state.context = ctx
 
     # Increment map version to force fresh map component
-    st.session_state.map_version = st.session_state.get("map_version", 0) + 1
+    bump_map_version()
 
     logger.info("UI state reset complete - graph preserved")
 
@@ -145,7 +149,7 @@ def load_dem_data() -> bool:
         st.session_state.dem_service = dem_service
         st.session_state.path_factory = PathFactory(dem_service=dem_service)
 
-    st.rerun()  # Raises StopExecution, never returns
+    trigger_rerun()  # Raises StopExecution, never returns
 
 
 # =============================================================================
@@ -183,7 +187,7 @@ def _render_map_fragment() -> None:
 
         # Add a button to manually recover
         if st.button("🔄 Reset and Continue", type="primary"):
-            st.rerun()
+            trigger_rerun()
 
 
 def _render_map_fragment_inner() -> None:
@@ -415,7 +419,7 @@ def main() -> None:
 
         # Add a button to manually recover
         if st.button("🔄 Reset and Continue", type="primary"):
-            st.rerun()
+            trigger_rerun()
 
 
 def _run_app_ui() -> None:
@@ -430,7 +434,15 @@ def _run_app_ui() -> None:
     logger.info(f"[MAIN] Render cycle starting: state={sm.get_state_name()}, map_version={map_version}")
 
     # Handle deferred actions from previous transitions
-    handle_deferred_actions()
+    # Slow ops get spinners, fast ops run directly
+    if ctx.deferred.custom_connect:
+        with st.spinner("🎯 Computing custom path options..."):
+            process_custom_connect_deferred()
+    elif ctx.deferred.path_generation:
+        with st.spinner("🗺️ Generating path options..."):
+            process_path_generation_deferred()
+    else:
+        handle_fast_deferred_actions()
 
     # Sidebar
     sidebar = SidebarRenderer(state_machine=sm, context=ctx, graph=graph)

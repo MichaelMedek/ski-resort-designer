@@ -14,7 +14,7 @@ The key pattern is:
 
 1. User action triggers state transition (e.g., click map → start_slope)
 2. StreamlitUIListener fires after_transition and calls st.rerun()
-3. On the next render cycle, handle_deferred_actions() checks pending flags
+3. On the next render cycle, handle_fast_deferred_actions() checks pending flags
 4. Deferred work (e.g., path generation) executes with access to full context
 
 This separates state transitions (instant) from business logic (deferred), ensuring
@@ -255,6 +255,7 @@ from skiresort_planner.ui.context import (
     LonLatElev,
     PlannerContext,
 )
+from skiresort_planner.ui.infra import trigger_rerun
 from skiresort_planner.ui.state_lifecycle import (
     enter_idle_ready,
     enter_idle_viewing_lift,
@@ -318,7 +319,7 @@ class StreamlitUIListener:
             return
 
         logger.info(f'[STATE] Calling st.rerun() after {event} transition"')
-        st.rerun()
+        trigger_rerun()
 
 
 def _forbidden_call(name: str):

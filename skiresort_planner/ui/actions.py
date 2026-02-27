@@ -9,11 +9,10 @@ This module handles:
 - Slope operations (finish_current_slope, cancel_current_slope)
 - Undo operations (undo_last_action)
 - Custom direction mode (enter/cancel)
-- Deferred action handling (handle_deferred_actions)
+- Deferred action handling (handle_fast_deferred_actions, process_*_deferred)
 """
 
 import logging
-from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
 
 import streamlit as st
@@ -31,69 +30,13 @@ from skiresort_planner.model.resort_graph import (
     ResortGraph,
 )
 from skiresort_planner.model.slope import Slope
+from skiresort_planner.ui.infra import bump_map_version, reload_map, trigger_rerun
 from skiresort_planner.ui.state_machine import PlannerContext, PlannerStateMachine
 
 if TYPE_CHECKING:
     from skiresort_planner.model.proposed_path import ProposedSlopeSegment
 
 logger = logging.getLogger(__name__)
-
-
-# =============================================================================
-# MAP RELOAD ABSTRACTION
-# =============================================================================
-
-
-def reload_map(before: "Callable[[], None] | None" = None) -> None:
-    """Reload map with optional pre-reload callback.
-
-    This is the canonical way to reload the map. It provides a single point
-    for all map reloads, making the pattern explicit and consistent.
-
-    The flow is:
-    1. Execute before callback (if provided) - runs BEFORE st.rerun()
-    2. Bump map version to clear stale click state
-    3. Call st.rerun() which raises StopExecution
-
-    For actions that need to run AFTER the reload, use the deferred action
-    pattern (set ctx.deferred.* flags before calling this).
-
-    Args:
-        before: Optional callback to execute before rerun.
-                Use for state updates that must happen before reload.
-
-    Example:
-        # Simple reload
-        reload_map()
-
-        # Reload with pre-action
-        def setup_for_reload():
-            ctx.set_selection(lon=x, lat=y, elevation=e)
-            ctx.deferred.path_generation = True
-        reload_map(before=setup_for_reload)
-    """
-    if before is not None:
-        before()
-    bump_map_version()
-    st.rerun()
-
-
-# =============================================================================
-# MAP VERSION HELPER
-# =============================================================================
-
-
-def bump_map_version() -> None:
-    """Increment map_version to create fresh Pydeck component.
-
-    This eliminates ghost clicks by creating a new component instance
-    with no memory of previous click events. Call this when completing
-    actions that should clear stale click state.
-    """
-    old_version = st.session_state.get("map_version", 0)
-    new_version = old_version + 1
-    st.session_state.map_version = new_version
-    logger.info(f"[MAP] Bumped map_version: {old_version} -> {new_version}")
 
 
 # =============================================================================
@@ -146,17 +89,16 @@ def center_on_lift(
 # =============================================================================
 
 
-def handle_deferred_actions() -> None:
-    """Execute pending work deferred from previous state transition.
+def handle_fast_deferred_actions() -> None:
+    """Execute fast deferred actions that don't need spinners.
 
-    Called at start of main() every render. Handles:
+    Called at start of main() for quick state transitions:
     - Auto-finish for connector paths
-    - Custom connect path generation (2-stage)
-    - Regular path generation
+    - Start building from node (triggers path generation)
+    - Start lift from node
 
-    Note: Panel view switching is now handled by explicit transitions
-    (switch_to_lift_view, switch_to_slope_view, switch_slope, switch_lift)
-    instead of deferred actions.
+    NOTE: Slow operations (custom_connect, path_generation) are handled
+    separately in app.py with spinners around process_*_deferred() calls.
     """
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
@@ -165,14 +107,6 @@ def handle_deferred_actions() -> None:
     if ctx.deferred.auto_finish:
         ctx.deferred.auto_finish = False
         finish_current_slope()
-        return
-
-    # Custom connect - generate paths immediately (no two-stage delay)
-    if ctx.deferred.custom_connect:
-        ctx.deferred.custom_connect = False
-        with st.spinner("🎯 Computing path options..."):
-            _generate_custom_connect_paths()
-        bump_map_version()  # Clear stale click state so proposal 1 can be clicked
         return
 
     if ctx.deferred.start_building_from_node_id:
@@ -197,15 +131,46 @@ def handle_deferred_actions() -> None:
             sm.select_lift_start(node_id=node_id)
         return
 
+
+def process_custom_connect_deferred() -> bool:
+    """Process pending custom connect path generation.
+
+    Call this wrapped in st.spinner() from app.py.
+
+    Returns:
+        True if processed, False if nothing pending.
+    """
+    ctx: PlannerContext = st.session_state.context
+
+    if not ctx.deferred.custom_connect:
+        return False
+
+    ctx.deferred.custom_connect = False
+    _generate_custom_connect_paths()
+    bump_map_version()  # Clear stale click state so proposal 1 can be clicked
+    return True
+
+
+def process_path_generation_deferred() -> bool:
+    """Process pending path generation.
+
+    Call this wrapped in st.spinner() from app.py.
+
+    Returns:
+        True if processed, False if nothing pending.
+    """
+    sm: PlannerStateMachine = st.session_state.state_machine
+    ctx: PlannerContext = st.session_state.context
+
     if not ctx.deferred.path_generation:
-        return
+        return False
 
     if sm.is_any_slope_state:
-        with st.spinner("🗺️ Generating path options..."):
-            _generate_paths_for_building_state()
+        _generate_paths_for_building_state()
         bump_map_version()  # Clear stale click state so proposal 1 can be clicked
 
     ctx.deferred.path_generation = False
+    return True
 
 
 def _generate_paths_for_building_state() -> None:
@@ -592,7 +557,7 @@ def _undo_add_segments(undone: AddSegmentsAction) -> None:
         sm.force_idle()
 
     bump_map_version()
-    st.rerun()
+    trigger_rerun()
 
 
 def _undo_finish_slope(undone: FinishSlopeAction) -> None:
@@ -617,7 +582,7 @@ def _undo_finish_slope(undone: FinishSlopeAction) -> None:
         # Edge case: finished slope had no segments (shouldn't happen)
         sm.force_idle()
         bump_map_version()
-        st.rerun()
+        trigger_rerun()
         return
 
     last_seg = graph.segments.get(ctx.building.segments[-1])
@@ -625,7 +590,7 @@ def _undo_finish_slope(undone: FinishSlopeAction) -> None:
         # Segment data missing - go to idle
         sm.force_idle()
         bump_map_version()
-        st.rerun()
+        trigger_rerun()
         return
 
     # Set selection and regenerate paths
@@ -646,7 +611,7 @@ def _undo_finish_slope(undone: FinishSlopeAction) -> None:
     # Force to building state (exit hooks handle cleanup automatically)
     sm.force_building()
     bump_map_version()
-    st.rerun()
+    trigger_rerun()
 
 
 def _undo_add_lift(undone: AddLiftAction) -> None:
@@ -659,14 +624,14 @@ def _undo_add_lift(undone: AddLiftAction) -> None:
     if sm.is_lift_placing:
         sm.force_idle()
         bump_map_version()
-        st.rerun()
+        trigger_rerun()
         return
 
     # If we were viewing the deleted lift, force to idle (exit hooks handle cleanup)
     if sm.is_idle_viewing_lift and st.session_state.context.viewing.lift_id == undone.lift_id:
         sm.force_idle()
         bump_map_version()
-        st.rerun()
+        trigger_rerun()
     else:
         reload_map()
 
@@ -770,3 +735,74 @@ def cancel_custom_path() -> None:
     sm: PlannerStateMachine = st.session_state.state_machine
     logger.info("[ACTION] Cancel Custom Path - triggering state transition")
     sm.cancel_custom_connect()
+
+
+# =============================================================================
+# DELETE OPERATIONS
+# =============================================================================
+
+
+def delete_slope_action(slope_id: str) -> bool:
+    """Delete a slope and trigger UI updates.
+
+    This is the canonical function to delete a slope. It handles:
+    - Graph deletion (with undo support)
+    - State machine transition if viewing the deleted slope
+    - Map version bump for UI refresh
+
+    Args:
+        slope_id: ID of slope to delete
+
+    Returns:
+        True if deleted, False if not found.
+    """
+    sm: PlannerStateMachine = st.session_state.state_machine
+    ctx: PlannerContext = st.session_state.context
+    graph: ResortGraph = st.session_state.graph
+
+    result = graph.delete_slope(slope_id=slope_id)
+    if not result:
+        logger.warning(f"[ACTION] delete_slope_action: slope {slope_id} not found")
+        return False
+
+    logger.info(f"[ACTION] Deleted slope {slope_id}")
+
+    # If viewing the deleted slope, return to idle
+    if sm.is_idle_viewing_slope and ctx.viewing.slope_id == slope_id:
+        sm.close_panel()
+
+    bump_map_version()
+    return True
+
+
+def delete_lift_action(lift_id: str) -> bool:
+    """Delete a lift and trigger UI updates.
+
+    This is the canonical function to delete a lift. It handles:
+    - Graph deletion (with undo support)
+    - State machine transition if viewing the deleted lift
+    - Map version bump for UI refresh
+
+    Args:
+        lift_id: ID of lift to delete
+
+    Returns:
+        True if deleted, False if not found.
+    """
+    sm: PlannerStateMachine = st.session_state.state_machine
+    ctx: PlannerContext = st.session_state.context
+    graph: ResortGraph = st.session_state.graph
+
+    result = graph.delete_lift(lift_id=lift_id)
+    if not result:
+        logger.warning(f"[ACTION] delete_lift_action: lift {lift_id} not found")
+        return False
+
+    logger.info(f"[ACTION] Deleted lift {lift_id}")
+
+    # If viewing the deleted lift, return to idle
+    if sm.is_idle_viewing_lift and ctx.viewing.lift_id == lift_id:
+        sm.close_panel()
+
+    bump_map_version()
+    return True
