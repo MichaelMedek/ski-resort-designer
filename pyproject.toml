@@ -102,5 +102,6 @@ module = [
     "rasterio.*",
     "statemachine.*",
     "gpxpy.*",
+    "scipy.*",
 ]
 ignore_missing_imports = true
