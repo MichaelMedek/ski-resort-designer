@@ -502,8 +502,7 @@ class LeastCostPathPlanner:
 
             # Resample evenly along the path
             new_dists = np.arange(0, total_length + step_m / 2, step_m)
-            # splev has multiple overloads; Mypy can't determine which applies
-            new_lon, new_lat, new_elev_approx = splev(new_dists, tck)  # type: ignore[call-overload]
+            new_lon, new_lat, new_elev_approx = splev(new_dists, tck)
 
             # Re-query DEM for accurate elevations at smoothed positions
             final_points = []

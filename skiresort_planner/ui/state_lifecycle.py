@@ -323,16 +323,16 @@ def enter_slope_custom_picking(ctx: PlannerContext) -> None:
 
 
 def exit_slope_custom_picking(ctx: PlannerContext) -> None:
-    """Exit SLOPE_CUSTOM_PICKING: No-op (cleanup in before_* hooks).
+    """Exit SLOPE_CUSTOM_PICKING: No-op.
 
-    Possible destinations:
-    - SLOPE_CUSTOM_PATH: Target selected (before_select_custom_target clears enabled)
-    - SLOPE_STARTING: Cancel (before_cancel_custom_to_starting clears all)
-    - SLOPE_BUILDING: Cancel (before_cancel_custom_to_building clears all)
+    Cleanup is intentionally NOT done here because:
+    - Transition to SLOPE_CUSTOM_PATH needs to preserve custom_connect state
+    - Cancel transitions handle cleanup in before_cancel_custom hook
+    - force_idle()/force_building() handle cleanup explicitly
 
-    Note: All cleanup moved to before_* hooks → single source of truth.
+    This follows the "destination controls cleanup" pattern.
     """
-    # Cleanup intentionally in before_* hooks, not here
+    logger.debug("EXIT: slope_custom_picking - no cleanup (destination handles it)")
     pass
 
 
@@ -359,17 +359,16 @@ def enter_slope_custom_path(ctx: PlannerContext) -> None:
 
 
 def exit_slope_custom_path(ctx: PlannerContext) -> None:
-    """Exit SLOPE_CUSTOM_PATH: No-op (cleanup in before_* hooks).
+    """Exit SLOPE_CUSTOM_PATH: No-op.
 
-    Possible destinations:
-    - SLOPE_BUILDING: Path committed (before_commit_custom_continue clears)
-    - IDLE_VIEWING_SLOPE: Connector path finishes slope (before_commit_custom_finish clears)
-    - SLOPE_STARTING: Cancel (before_cancel_path_to_starting clears)
-    - SLOPE_BUILDING: Cancel (before_cancel_path_to_building clears)
+    Cleanup is intentionally NOT done here because:
+    - Different transitions need different cleanup
+    - before_commit_* and before_cancel_* hooks handle specific cases
+    - force_idle()/force_building() handle cleanup explicitly
 
-    Note: All cleanup moved to before_* hooks → single source of truth.
+    This follows the "destination controls cleanup" pattern.
     """
-    # Cleanup intentionally in before_* hooks, not here
+    logger.debug("EXIT: slope_custom_path - no cleanup (destination handles it)")
     pass
 
 

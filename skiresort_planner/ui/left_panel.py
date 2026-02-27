@@ -34,7 +34,7 @@ from skiresort_planner.model.resort_graph import (
     ResortGraph,
     UndoAction,
 )
-from skiresort_planner.ui.actions import bump_map_version, reload_map, undo_last_action
+from skiresort_planner.ui.actions import bump_map_version, reload_map, trigger_rerun, undo_last_action
 from skiresort_planner.ui.state_machine import (
     BuildMode,
     PlannerContext,
@@ -92,10 +92,10 @@ def _confirm_undo_dialog(action: UndoAction, graph: ResortGraph) -> None:
         if st.button("↩️ Yes, Undo", type="primary", use_container_width=True):
             # Set flag for main render loop to execute undo after dialog closes
             st.session_state._pending_undo = True
-            st.rerun()
+            trigger_rerun()
     with col_no:
         if st.button("✖️ Cancel", use_container_width=True):
-            st.rerun()
+            trigger_rerun()
 
 
 logger = logging.getLogger(__name__)

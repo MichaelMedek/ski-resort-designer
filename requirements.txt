@@ -37,6 +37,10 @@ hypothesis>=6.0.0
 mypy
 pytest-mypy
 
+# Type stubs for mypy
+types-requests
+types-shapely
+
 # Hugging Face (Only to push the DEM to Hugging Face, not required for end users)
 # huggingface-hub
 

@@ -28,7 +28,13 @@ from skiresort_planner.model.message import (
     SlopeStartingContextMessage,
 )
 from skiresort_planner.model.resort_graph import ResortGraph
-from skiresort_planner.ui.actions import bump_map_version, reload_map
+from skiresort_planner.ui.actions import (
+    bump_map_version,
+    delete_lift_action,
+    delete_slope_action,
+    reload_map,
+    trigger_rerun,
+)
 from skiresort_planner.ui.state_machine import PlannerContext, PlannerStateMachine
 
 if TYPE_CHECKING:
@@ -48,7 +54,6 @@ def _confirm_delete_dialog(
     entity_name: str,
     entity_id: str,
     delete_fn: Callable[[str], bool],
-    sm: PlannerStateMachine,
 ) -> None:
     """Show confirmation dialog before deleting a slope or lift."""
     st.write(f"Are you sure you want to delete **{entity_name}**?")
@@ -59,13 +64,11 @@ def _confirm_delete_dialog(
         if st.button("🗑️ Yes, Delete", type="primary", use_container_width=True):
             if delete_fn(entity_id):
                 logger.info(f"Deleted {entity_type} {entity_name} (id={entity_id})")
-                bump_map_version()
-                # Uses close_panel event - SM resolves to appropriate transition
-                sm.hide_info_panel()
-            st.rerun()
+            # Action functions handle state transition and map version bump
+            trigger_rerun()
     with col_no:
         if st.button("✖️ Cancel", use_container_width=True):
-            st.rerun()
+            trigger_rerun()
 
 
 # =============================================================================
@@ -156,7 +159,6 @@ def _render_close_delete_buttons(
                 entity_name=entity.name,
                 entity_id=entity_id,
                 delete_fn=delete_fn,
-                sm=sm,
             )
 
 
@@ -347,7 +349,7 @@ def _render_slope_info_panel(
         entity_type="slope",
         entity_id=slope_id,
         entity=slope,
-        delete_fn=graph.delete_slope,
+        delete_fn=delete_slope_action,
     )
 
 
@@ -376,7 +378,7 @@ def _render_lift_info_panel(
         entity_type="lift",
         entity_id=lift_id,
         entity=lift,
-        delete_fn=graph.delete_lift,
+        delete_fn=delete_lift_action,
     )
 
 
