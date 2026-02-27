@@ -9,6 +9,7 @@ COORDINATE SYSTEM:
 """
 
 from typing import TYPE_CHECKING
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -29,6 +30,30 @@ if TYPE_CHECKING:
 # Type alias for workflow_setup fixture return value
 WorkflowSetup = tuple[PlannerStateMachine, "UIContext", ResortGraph, PathFactory, "MockDEMService"]
 SMAndCtx = tuple[PlannerStateMachine, "UIContext"]
+
+
+# =============================================================================
+# INFRA MOCKING - Mock Streamlit infrastructure for unit tests
+# =============================================================================
+
+
+@pytest.fixture(autouse=True)
+def mock_infra_rerun(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> MagicMock | None:
+    """Auto-mock trigger_rerun() for unit tests to prevent Streamlit reruns.
+
+    Enabled automatically for all tests EXCEPT those marked with @pytest.mark.apptest.
+    AppTests (E2E) should handle reruns via their own mechanisms.
+
+    Returns:
+        MagicMock for unit tests, None for AppTests (no mocking).
+    """
+    # Skip mocking for AppTests - they handle reruns via add_ui_listener=False or real execution
+    if request.node.get_closest_marker("apptest"):
+        return None
+
+    mock = MagicMock()
+    monkeypatch.setattr("skiresort_planner.ui.infra.trigger_rerun", mock)
+    return mock
 
 
 class MockDEMService(DEMService):
