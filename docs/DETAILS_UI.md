@@ -1,275 +1,379 @@
 # 🎮 User Guide: Alpin Architect
 
-A complete guide to designing ski resorts with Alpin Architect.
+Design ski resorts on real Alpine terrain with an interactive map-based tool.
 
-For technical/mathematical details, see [DETAILS.md](DETAILS.md).
+![Full Resort Overview](images/7-FullResort.png)
 
----
-
-## Quick Overview
-
-Alpin Architect lets you design ski slopes on real terrain by clicking on a map:
-
-1. **Click** anywhere on terrain to generate path proposals
-2. **Select** a path by clicking on it
-3. **Review** the stats (gradient, length, warnings)
-4. **Commit** the path with a button or by clicking on the orange endpoint — new proposals appear from the endpoint
-5. **Finish** the slope when complete
+> **Technical Reference:** For mathematical details on path generation, traverse physics, and pylon placement algorithms, see [DETAILS.md](DETAILS.md).
 
 ---
 
-## The Main Interface
+## Quick Start
 
-### Map (Center)
+1. **Click** on the map to place a starting point → path proposals appear
+2. **Click** a dashed line to select it → stats appear in right panel
+3. **Click "✅ Commit"** → segment becomes solid, new proposals appear
+4. **Click "🏁 Finish Slope"** → slope is complete with a name and difficulty rating
+
+---
+
+## Interface Overview
+
+The interface has three main areas:
+
+| Area | Purpose |
+|------|---------|
+| **Sidebar (Left)** | Build mode selector, controls, resort stats, save/load |
+| **Map (Center)** | Interactive 3D terrain with slopes, lifts, and nodes |
+| **Control Panel (Right)** | Path selection, statistics, commit/finish actions |
+
+### Map Elements
 
 | Element | Appearance | Meaning |
 |---------|------------|---------|
-| **Proposed paths** | Dashed colored lines | Uncommitted path options |
-| **Selected path** | Bold dashed line | Currently selected |
-| **Committed slopes** | Solid colored ribbons | Finalized segments |
-| **Nodes** | White circles | Junction points |
-| **Active endpoints** | Yellow circles | Continue building here |
-| **Lifts** | Purple dashed lines | Ski lifts |
-| **Orientation arrows** | Gray arrows | Fall line direction |
-
-### Right Panel
-
-| Section | Purpose |
-|---------|---------|
-| **Selected Path Stats** | Gradient, drop, length, warnings |
-| **Commit Button** | Finalize the selected path |
-| **Custom Direction** | Pick a target point not in proposals |
-| **Elevation Profile** | Visual profile of descent |
-
-### Sidebar (Left)
-
-| Control | Function |
-|---------|----------|
-| **Mode selector** | Switch between Slopes / Lifts |
-| **Segment Length** | Control path length (100-1000m) |
-| **Finish Slope** | Complete current slope |
-| **Undo / Clear** | Remove last action |
-| **Stats** | Total slopes, drop, length |
-| **Export GPX** | Download design |
+| **Proposed paths** | Dashed colored lines | Uncommitted path options to choose from |
+| **Selected path** | Bold dashed line | Currently highlighted proposal |
+| **Committed segments** | Solid colored ribbons | Finalized slope sections |
+| **Nodes** | White circles | Junction points (click to start here) |
+| **Proposal endpoints** | Orange circles | Click to commit selected path |
+| **Lifts** | Purple lines with pylon markers | Ski lifts connecting nodes |
+| **Orientation arrows** | Gray arrows | Fall line direction at selection point |
 
 ---
 
-## Designing Slopes
+## Building Slopes
 
-### Step 1: Click to Start
+### Step 1: Start a New Slope
 
-1. Navigate to any mountain (pan/zoom)
-2. **Click on terrain** to place a starting point
-3. Path proposals appear radiating from the click
+![Starting a Slope](images/1-StartSlope.png)
 
-### Step 2: Select a Path
+1. Ensure **⛷️ Slope** is selected in the sidebar (highlighted button)
+2. Navigate to your desired starting location (pan/zoom the map)
+3. **Click on terrain** or an existing **white node** to start
+4. Multiple colored path proposals radiate outward from your click
 
-1. **Click on any dashed line** to select it
-2. The path becomes bold
-3. Stats appear in the right panel
+### Step 2: Select and Review a Path
 
-### Step 3: Review Stats
+The right panel shows proposal statistics:
 
-| Stat | What to Look For |
-|------|------------------|
-| **Overall Gradient** | Average over full segment |
-| **Steepest Section** | Determines difficulty classification |
-| **Drop** | Vertical meters |
-| **Warnings** | Construction issues |
+| Stat | Description |
+|------|-------------|
+| **Difficulty** | Color-coded rating based on steepest section |
+| **Gradient** | Average slope percentage |
+| **Length** | Horizontal distance in meters |
+| **Drop** | Vertical descent in meters |
+| **Warnings** | Construction alerts (excavation needed, too flat) |
 
-### Step 4: Commit
+Use the **◀ ▶ arrows** to browse all available paths sorted left-to-right relative to the fall line.
 
-1. Click **"✅ Commit This Path"**
-2. Path becomes a solid ribbon
-3. New proposals appear from endpoint
-4. Repeat to continue building
+### Step 3: Commit the Path
 
-### Step 5: Finish
+Two ways to commit:
+- Click **"✅ Commit This Path"** button in the right panel
+- Click the **orange endpoint marker** directly on the map
 
-1. Click **"🏁 Finish Slope"**
-2. Final difficulty = maximum segment difficulty
-3. All segments get unified name
+The path becomes a solid ribbon, and new proposals appear from the endpoint.
+
+### Step 4: Continue Building
+
+Repeat steps 2-3 to add more segments. The right panel shows cumulative stats:
+- Total segments committed
+- Current difficulty (based on steepest segment)
+- Total drop and length so far
+
+### Step 5: Finish the Slope
+
+![Finished Slope](images/2-FinishSlope.png)
+
+Click **"🏁 Finish Slope"** in the sidebar when done.
+
+- The slope receives an auto-generated name
+- Final difficulty = the steepest segment's rating
+- All segments are unified under one slope entity
 
 ---
 
-## Path Proposals
+## Viewing Slope Details
+
+![Viewing Slope Statistics](images/3-ViewSlope.png)
+
+Click on any **finished slope** (the colored ribbon or its icon) to open the statistics panel:
+
+| Metric | Description |
+|--------|-------------|
+| **Top/Bottom Elevation** | Start and end heights |
+| **Length** | Total horizontal distance |
+| **Drop** | Total vertical descent |
+| **Overall Gradient** | Average slope percentage |
+| **Steepest Section** | Maximum gradient in any 300m window (determines difficulty) |
+
+Expand **📋 Segment Details** to see per-segment breakdown with warnings.
+
+### 3D View
+
+Click **"🏔️ View in 3D"** to see the slope from an angled perspective with terrain mesh. Click **"🗺️ Return to 2D View"** to go back.
+
+### Actions
+
+- **✖️ Close** — Return to build mode
+- **🗑️ Delete** — Remove the slope (confirms first, can be undone)
+
+---
+
+## Custom Direction
+
+When the auto-generated proposals don't go where you want:
+
+1. Click **"🎯 Custom Direction"** in the right panel
+2. Current proposals are hidden
+3. **Click anywhere downhill** on the map
+4. A path is generated using terrain-adaptive routing
+
+### Connecting to Existing Nodes
+
+If you click **directly on a node marker** (white circle):
+- A connection path is generated to that node
+- Committing this path **auto-finishes the slope** (creates a junction)
+
+**Constraint:** Target must be within the segment length slider range (default 500m, max 1000m).
+
+---
+
+## Path Generation Details
 
 ### How Many Paths?
 
-The number varies by terrain steepness:
+Up to 16 paths are generated per click (4 difficulties × 2 steepness variants × 2 directions):
 
-**On steep terrain:** Up to 16 paths (4 difficulties × 2 variants × 2 sides)
+| Difficulty | Target Gradients |
+|------------|------------------|
+| 🟢 Green | 7% (gentle), 12% (steep) |
+| 🔵 Blue | 17% (gentle), 22% (steep) |
+| 🔴 Red | 28% (gentle), 37% (steep) |
+| ⚫ Black | 45% (gentle), 60% (steep) |
 
-**On flat terrain:** Fewer paths due to "center-stop rule" — when paths go straight down, there's no left/right distinction
+On **flat terrain**, fewer paths appear because left/right variants merge when going straight downhill.
 
-### Path Variants
+> **Technical:** See [DETAILS.md](DETAILS.md) Section 5 for the traverse physics and path tracing algorithm.
 
-For each difficulty level two steepness variants and if terrain is steep enough, also left and right variants are generated:
+### Warnings Explained
 
-| Label | Meaning |
-|-------|---------|
-| **Left-Gentle** | Traverse left, easier target |
-| **Left-Steep** | Traverse left, steeper target |
-| **Right-Gentle** | Traverse right, easier target |
-| **Right-Steep** | Traverse right, steeper target |
-| **Center** | Straight down fall line |
+| Warning | Meaning | Action Needed |
+|---------|---------|---------------|
+| **🚜 Side Cut** | Cross-slope requires excavation | Construction work to flatten piste |
+| **⚠️ Too Flat** | Gradient < 5% | Skiers may need to pole; valid for connectors |
 
-### Path Ordering
-
-Paths are sorted **left-to-right** relative to the fall line. Arrow buttons cycle through in spatial order.
-
----
-
-## Custom Direction / Connect
-
-When the automatically proposed paths don't include the direction you want, use **🎯 Custom Direction** to manually select a target:
-
-### How It Works
-
-1. Click **"🎯 Custom Direction"** button in the path selection panel
-2. All current proposals are hidden
-3. **Click anywhere downhill** on the map to set your target
-4. A path is generated to your clicked point using terrain-adaptive traversal
-
-### Two Use Cases
-
-| Click Target | What Happens |
-|--------------|--------------|
-| **On terrain** | Creates a path to that location → new node created → continue building |
-| **Directly on node marker** | Creates a connection path → **auto-finishes the slope** |
-
-**Note:** Target must be within the current segment length (slider). Increase the slider to reach distant nodes.
-
----
-
-## Warnings
-
-### 🚜 Side Cut Warning
-
-**What:** Path needs excavation to create level piste
-
-**Why:** Traversing across steep terrain creates cross-slope
-
-**OK?** Yes — just needs construction work
-
-###  Too Flat Warning
-
-**What:** Average slope < 5% — may need to pole
-
-**Why:** Terrain is very gentle
-
-**OK?** Yes — valid connector segment
-
-
+> **Technical:** See [DETAILS.md](DETAILS.md) Section 4 for earthwork calculations.
 
 ---
 
 ## Difficulty Classification
 
-After finishing a slope, its difficulty is determined by the **steepest 300m section** within any segment. The classification follows the European standard:
-| Color | Steepest Section |
-|-------|------------------|
-| 🟢 Green | < 15% |
-| 🔵 Blue | 15% – 25% |
-| 🔴 Red | 25% – 40% |
-| ⚫ Black | ≥ 40% |
+A slope's difficulty is determined by its **steepest 300m section** (European standard):
 
-**Note:** Final classification is based on actual terrain, not target difficulty. A "Black" path on flat terrain becomes Green.
+| Color | Gradient Range | Description |
+|-------|----------------|-------------|
+| 🟢 Green | < 15% | Beginner — gentle, wide runs |
+| 🔵 Blue | 15% – 25% | Intermediate — moderate steepness |
+| 🔴 Red | 25% – 40% | Advanced — steep, requires skill |
+| ⚫ Black | ≥ 40% | Expert — very steep terrain |
 
----
-
-## Starting from Nodes
-
-Click on any **white circle** (node) to start new paths from that junction. This enables:
-- Branching slopes
-- Alternative descents
-- Connecting paths
+**Important:** The classification is based on **actual terrain gradient**, not your target difficulty. A "Black" target on gentle terrain will produce a Green slope.
 
 ---
 
 ## Designing Lifts
 
-### Step 1: Switch Mode
+### Step 1: Select Lift Type
 
-Click **"Design Lifts"** in sidebar
+![Starting Lift Placement](images/4-StartLift.png)
 
-### Step 2: Select Start Point
+In the sidebar, click one of the lift buttons:
 
-Click on the map to set the bottom station:
-- **On an existing node** — uses that junction
-- **On empty terrain** — creates a new node at that location
+| Icon | Type | Best For |
+|------|------|----------|
+| 🎿 | **Surface Lift** | Short beginner areas, max ~100m spans |
+| 🪑 | **Chairlift** | Standard mountain transport, up to ~200m spans |
+| 🚡 | **Gondola** | Longer distances, weather protection, up to ~300m spans |
+| 🚠 | **Aerial Tram** | Very long spans over difficult terrain |
 
-A purple marker with uphill arrow appears.
+### Step 2: Place Bottom Station
 
-### Step 3: Select End Point
+Click on the map to set the **bottom station**:
+- **On an existing node** — reuses that junction point
+- **On empty terrain** — creates a new node
 
-Click on the map to set the top station:
-- **On an existing node** — uses that junction
-- **On empty terrain** — creates a new node at that location
+A purple marker with an uphill arrow appears.
 
-The lift is created once both points are set.
+### Step 3: Place Top Station
 
-### Lift Types
+![Completed Lift](images/5-FinishLift.png)
 
-| Type | Purpose |
-|------|---------|
-| **Surface Lift** | Short distances |
-| **Chairlift** | Standard lift |
-| **Gondola** | Longer distances, weather protection |
-| **Aerial Tram** | Very long spans |
+Click uphill to set the **top station**:
+- Must be **higher elevation** than bottom (lifts go uphill)
+- Cannot be the same location as bottom
 
----
+The lift is created immediately with:
+- Auto-generated name
+- Calculated pylons based on terrain profile
+- Cable catenary curve
 
-## Elevation Profile
+### Lift Validation
 
-Shows the path descent:
-- **X-axis:** Distance (meters)
-- **Y-axis:** Elevation (meters)
-- **Color:** Matches difficulty
-
----
-
-## Undo
-
-**↩️ Undo** removes the last action:
-- In BUILDING: removes last segment
-- After FINISH: restores slope to building mode
+| Error | Cause | Solution |
+|-------|-------|----------|
+| "Lift Must Go Uphill" | Top station is lower than bottom | Click a higher location |
+| "Same Location" | Clicked same point twice | Click a different location |
 
 ---
 
-## Segment Length
+## Viewing Lift Details
 
-The slider (100-1000m) controls path segment length. Paths auto-regenerate when changed.
+![3D Lift View](images/6-View3DLift.png)
+
+Click on any **lift** (the purple line or its icon) to open the statistics panel:
+
+| Metric | Description |
+|--------|-------------|
+| **Bottom/Top Elevation** | Station heights |
+| **Horizontal Length** | Ground distance |
+| **Inclined Length** | Cable distance |
+| **Vertical Rise** | Elevation gain |
+| **Pylons** | Number of support towers |
+| **Steepest Section** | Maximum gradient between pylons |
+
+### Changing Lift Type
+
+While viewing a lift, click a different lift button in the sidebar to **change its type**. This updates the pylon configuration and cable profile.
+
+### 3D View
+
+Click **"🏔️ View in 3D"** to see pylons and cable from an angled perspective.
 
 ---
 
-## Tips
+## Sidebar Controls
 
-### Good Starting Points
-✅ Ridges, summits, peaks, saddles
+### Build Mode Selector
 
-### Avoid
-❌ Valley floors, flat plateaus
+- **⛷️ Slope** — Click terrain to start a new ski slope
+- **🪑🚡🎿🚠 Lift buttons** — Click terrain to place a lift
 
-### Slope Length
-✅ 3-6 segments (300-800m vertical)
-❌ Single segments or 20+ segments
+The currently active mode is highlighted.
 
-### Lift Placement
-✅ Valley floor to summit
-❌ Along the slope direction
+### During Slope Building
+
+| Control | Action |
+|---------|--------|
+| **Segment Length Slider** | Adjust path length (100–1000m) |
+| **🏁 Finish Slope** | Complete and name the current slope |
+| **✖️ Cancel Slope** | Discard all uncommitted segments |
+
+### During Lift Placement
+
+| Control | Action |
+|---------|--------|
+| **✖️ Cancel Lift Placement** | Discard start point, return to idle |
+
+### Always Available
+
+| Control | Action |
+|---------|--------|
+| **↩️ Undo Last Action** | Reverse the most recent change |
+| **📷 Reset View** | Return camera to default position |
 
 ---
 
-## Keyboard & Mouse
+## Resort Statistics
+
+The sidebar shows cumulative stats:
+
+| Stat | Description |
+|------|-------------|
+| **Slopes** | Total count by difficulty |
+| **Total Drop** | Sum of all vertical descent |
+| **Total Length** | Sum of all slope lengths |
+| **Lifts** | Total count by type |
+
+---
+
+## Save and Load
+
+### Saving Your Resort
+
+Click **💾 Save Resort** to download a JSON file containing:
+- All slopes with segments and waypoints
+- All lifts with pylon positions
+- Node connections
+
+### Loading a Resort
+
+Click **📂 Load Resort** and select a previously saved JSON file.
+
+### Export GPX
+
+Click **📤 Export GPX** to download GPS tracks of your slopes for use in other applications.
+
+---
+
+## Exploring New Areas
+
+![Exploring New Areas](images/8-NewAreas.png)
+
+### Navigation
 
 | Action | How |
 |--------|-----|
-| Pan | Click + drag |
-| Zoom | Mouse wheel |
-| Start slope | Click terrain |
+| **Pan** | Click + drag the map |
+| **Zoom** | Mouse wheel or pinch |
+| **Reset View** | Click 📷 button in sidebar |
+
+### Good Starting Points
+
+✅ Mountain ridges and summits
+✅ Saddles between peaks
+✅ Areas with varied terrain steepness
+
+### Areas to Avoid
+
+❌ Valley floors (too flat)
+❌ Uniform plateaus (boring slopes)
+❌ Areas outside terrain coverage (no elevation data)
+
+---
+
+## Tips for Good Designs
+
+### Slope Design
+
+- **3-6 segments** per slope works well (300-800m vertical)
+- Mix difficulties by varying traverse angles
+- Use **Custom Direction** to connect slopes at junctions
+
+### Lift Design
+
+- Place lifts from **valley to summit** (uphill direction)
+- Connect lift top stations to slope start points
+- Use **Gondolas** for long distances or exposed terrain
+
+### Resort Layout
+
+- Create a network with **multiple ways down**
+- Connect slopes at **nodes** for flexibility
+- Plan lift capacity to match slope throughput
+
+---
+
+## Keyboard Reference
+
+| Action | Input |
+|--------|-------|
+| Pan map | Click + drag |
+| Zoom in/out | Mouse wheel |
+| Start slope | Click terrain (Slope mode) |
 | Select path | Click dashed line |
+| Commit path | Click orange endpoint or Commit button |
 | Start from node | Click white circle |
-| Place lift | Click on map (Lift mode) |
+| Place lift station | Click terrain (Lift mode) |
 
 ---
