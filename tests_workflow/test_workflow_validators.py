@@ -1,4 +1,4 @@
-"""Unit tests for validator functions using parametrize with indirect fixtures.
+"""Unit tests for validator functions using parametrize.
 
 Tests lift and custom target validators with data-driven test cases.
 """
@@ -11,28 +11,12 @@ from skiresort_planner.model.message import (
     TargetNotDownhillMessage,
     TargetTooFarMessage,
 )
-from skiresort_planner.model.node import Node
-from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.ui.validators import (
     validate_custom_target_distance,
     validate_custom_target_downhill,
     validate_lift_different_nodes,
     validate_lift_goes_uphill,
 )
-
-
-# =============================================================================
-# INDIRECT FIXTURE FOR NODE PAIRS
-# =============================================================================
-
-
-@pytest.fixture
-def node_pair(request: pytest.FixtureRequest) -> tuple[Node, Node]:
-    """Create start/end Node pair from elevation tuple (start_elev, end_elev)."""
-    start_elev, end_elev = request.param
-    start = Node(id="N1", location=PathPoint(lon=10.0, lat=46.0, elevation=start_elev))
-    end = Node(id="N2", location=PathPoint(lon=10.0, lat=46.01, elevation=end_elev))
-    return start, end
 
 
 # =============================================================================
@@ -44,18 +28,16 @@ class TestLiftValidators:
     """Parametrized tests for lift placement validators."""
 
     @pytest.mark.parametrize(
-        "node_pair,expected_type",
+        "start_elevation,end_elevation,expected_type",
         [
-            pytest.param((1500.0, 2000.0), None, id="valid_uphill"),
-            pytest.param((2000.0, 1500.0), LiftMustGoUphillMessage, id="invalid_downhill"),
-            pytest.param((2000.0, 2000.0), LiftMustGoUphillMessage, id="invalid_same_elevation"),
+            pytest.param(1500.0, 2000.0, None, id="valid_uphill"),
+            pytest.param(2000.0, 1500.0, LiftMustGoUphillMessage, id="invalid_downhill"),
+            pytest.param(2000.0, 2000.0, LiftMustGoUphillMessage, id="invalid_same_elevation"),
         ],
-        indirect=["node_pair"],
     )
-    def test_lift_goes_uphill(self, node_pair: tuple[Node, Node], expected_type: type | None) -> None:
+    def test_lift_goes_uphill(self, start_elevation: float, end_elevation: float, expected_type: type | None) -> None:
         """validate_lift_goes_uphill returns None for valid, error message for invalid."""
-        start, end = node_pair
-        result = validate_lift_goes_uphill(start_node=start, end_node=end)
+        result = validate_lift_goes_uphill(start_elevation=start_elevation, end_elevation=end_elevation)
         if expected_type is None:
             assert result is None
         else:

@@ -19,22 +19,21 @@ from skiresort_planner.model.message import (
     TargetTooFarMessage,
     ToastMessage,
 )
-from skiresort_planner.model.node import Node
 
 
 def validate_lift_goes_uphill(
-    start_node: Node,
-    end_node: Node,
+    start_elevation: float,
+    end_elevation: float,
 ) -> ToastMessage | None:
     """Validate that lift end station is higher than start station.
 
     Returns:
         None if valid, LiftMustGoUphillMessage if end is not higher.
     """
-    if end_node.elevation <= start_node.elevation:
+    if end_elevation <= start_elevation:
         return LiftMustGoUphillMessage(
-            start_elevation_m=start_node.elevation,
-            end_elevation_m=end_node.elevation,
+            start_elevation_m=start_elevation,
+            end_elevation_m=end_elevation,
         )
     return None
 

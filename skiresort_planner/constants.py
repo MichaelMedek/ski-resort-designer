@@ -335,7 +335,7 @@ class LiftConfig:
         "chairlift": {
             "pylon_height_m": 25,
             "station_height_m": 6,
-            "min_spacing_m": 10,
+            "min_spacing_m": 15,
             "max_spacing_m": 200,
             "min_clearance_m": 15,
             "sag_factor": 0.06,
@@ -343,7 +343,7 @@ class LiftConfig:
         "gondola": {
             "pylon_height_m": 35,
             "station_height_m": 6,
-            "min_spacing_m": 10,
+            "min_spacing_m": 20,
             "max_spacing_m": 300,
             "min_clearance_m": 20,
             "sag_factor": 0.06,
@@ -351,7 +351,7 @@ class LiftConfig:
         "aerial_tram": {
             "pylon_height_m": 60,
             "station_height_m": 10,
-            "min_spacing_m": 10,
+            "min_spacing_m": 30,
             "max_spacing_m": 1e6,  # Can span very long distances
             "min_clearance_m": 30,
             "sag_factor": 0.06,

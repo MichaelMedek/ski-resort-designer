@@ -18,7 +18,6 @@ import streamlit as st
 from skiresort_planner.constants import MapConfig
 from skiresort_planner.model.click_info import ClickInfo, MapClickType, MarkerType
 from skiresort_planner.model.message import InvalidClickMessage, OutsideTerrainMessage
-from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.ui.actions import (
     bump_map_version,
@@ -434,6 +433,11 @@ def _handle_custom_connect_click(click_info: ClickInfo, elevation: float | None)
 def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) -> None:
     """Handle click in LIFT_PLACING state - complete lift placement.
 
+    Pattern: Validate with elevations BEFORE creating nodes.
+    - For terrain clicks: use elevation directly, create node only after validation passes
+    - For node clicks: use existing node
+    This prevents orphan nodes from failed validation attempts.
+
     Valid Click Types:
         NODE → Complete lift to existing node
         TERRAIN → Create new node and complete lift
@@ -484,72 +488,87 @@ def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) ->
                 "This indicates a bug - proposal markers should not be on the map."
             )
 
-    # Create start node if starting from empty terrain
-    if ctx.lift.start_node_id is None and ctx.lift.start_location:
-        loc = ctx.lift.start_location
-        start_node, _ = graph.get_or_create_node(lon=loc.lon, lat=loc.lat, elevation=loc.elevation)
+    # ─────────────────────────────────────────────────────────────────────────
+    # Determine START: existing node or pending location
+    # ─────────────────────────────────────────────────────────────────────────
+    if ctx.lift.start_node_id is not None:
+        start_node = graph.nodes.get(ctx.lift.start_node_id)
+        if start_node is None:
+            raise RuntimeError(f"Start node {ctx.lift.start_node_id} must exist but was not found")
+        start_elevation = start_node.elevation
+    elif ctx.lift.start_location is not None:
+        start_elevation = ctx.lift.start_location.elevation
+        start_node = None  # Will create after validation
+    else:
+        raise RuntimeError("Neither start_node_id nor start_location is set in lift context")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Determine END: existing node or terrain click
+    # ─────────────────────────────────────────────────────────────────────────
+    if click_info.click_type == MapClickType.MARKER and click_info.marker_type == MarkerType.NODE:
+        assert click_info.node_id is not None
+        end_node_existing = graph.nodes.get(click_info.node_id)
+        if end_node_existing is None:
+            raise RuntimeError(f"End node {click_info.node_id} must exist but was not found")
+        end_node_id = end_node_existing.id
+        end_elevation = end_node_existing.elevation
+        end_lon = end_node_existing.lon
+        end_lat = end_node_existing.lat
+        logger.info(f"[LIFT_PLACING] Node click: completing lift to {end_node_id}")
+    elif click_info.click_type == MapClickType.TERRAIN:
+        assert click_info.lat is not None and click_info.lon is not None
+        if elevation is None:
+            OutsideTerrainMessage(lat=click_info.lat, lon=click_info.lon).display()
+            return
+        end_node_id = None  # No existing node for terrain clicks
+        end_elevation = elevation
+        end_lon = click_info.lon
+        end_lat = click_info.lat
+    else:
+        raise RuntimeError(f"Expected NODE or TERRAIN click but got {click_info.click_type}")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # VALIDATION: Using elevations only - no nodes created yet for terrain clicks
+    # ─────────────────────────────────────────────────────────────────────────
+    if error := validate_lift_goes_uphill(start_elevation=start_elevation, end_elevation=end_elevation):
+        error.display()
+        return  # No orphan nodes - nothing was created
+
+    # Same-node check only applies if both are existing nodes
+    if ctx.lift.start_node_id is not None and end_node_id is not None:
+        if error := validate_lift_different_nodes(start_node_id=ctx.lift.start_node_id, end_node_id=end_node_id):
+            error.display()
+            return
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # NODE CREATION: Validation passed - now create nodes if needed
+    # ─────────────────────────────────────────────────────────────────────────
+    if start_node is None:
+        assert ctx.lift.start_location is not None
+        start_node, _ = graph.get_or_create_node(
+            lon=ctx.lift.start_location.lon,
+            lat=ctx.lift.start_location.lat,
+            elevation=ctx.lift.start_location.elevation,
+        )
         ctx.lift.start_node_id = start_node.id
         ctx.lift.start_location = None
-        logger.info(f"Created start node {start_node.id} for lift at ({loc.lat:.6f}, {loc.lon:.6f})")
+        logger.info(f"Created start node {start_node.id}")
 
-    # Determine end node
-    end_node = None
+    if end_node_id is not None:
+        end_node = graph.nodes[end_node_id]
+    else:
+        end_node, _ = graph.get_or_create_node(lon=end_lon, lat=end_lat, elevation=end_elevation)
+        logger.info(f"Created end node {end_node.id}")
 
-    # NODE click → use existing node
-    if click_info.click_type == MapClickType.MARKER and click_info.marker_type == MarkerType.NODE:
-        assert click_info.node_id is not None  # Validated in ClickInfo
-        end_node = graph.nodes.get(click_info.node_id)
-        if end_node:
-            logger.info(f"[LIFT_PLACING] Node click: completing lift to {end_node.id}")
-
-    # Get start node for validation
-    assert ctx.lift.start_node_id is not None  # Should be set by now
-    start_node_lookup = graph.nodes.get(ctx.lift.start_node_id)
-    if start_node_lookup is None:
-        raise RuntimeError(f"Start node {ctx.lift.start_node_id} must exist but was not found")
-    start_node = start_node_lookup
-
-    # TERRAIN click → validate BEFORE creating node (prevents orphaned nodes)
-    if end_node is None:
-        if click_info.click_type != MapClickType.TERRAIN:
-            raise RuntimeError(f"Expected TERRAIN click but got {click_info.click_type}")
-        assert click_info.lat is not None and click_info.lon is not None  # Validated in ClickInfo
-        lat, lon = click_info.lat, click_info.lon
-        if elevation is None:
-            OutsideTerrainMessage(lat=lat, lon=lon).display()
-            return
-
-        # Validate uphill BEFORE creating node - use temporary Node-like object for validation
-        temp_end_node = Node(id="_temp", location=PathPoint(lon=lon, lat=lat, elevation=elevation))
-        if error := validate_lift_goes_uphill(start_node=start_node, end_node=temp_end_node):
-            error.display()
-            return  # Don't create the node if validation fails
-
-        # Validation passed - now create the node
-        end_node, _ = graph.get_or_create_node(lon=lon, lat=lat, elevation=elevation)
-        logger.info(f"Created end node {end_node.id} for lift at ({lat:.6f}, {lon:.6f})")
-
-    # Validate lift placement (for node clicks, we still need to validate)
-    if error := validate_lift_different_nodes(
-        start_node_id=ctx.lift.start_node_id,
-        end_node_id=end_node.id,
-    ):
-        error.display()
-        return
-
-    # For node clicks, validate uphill (terrain clicks already validated above)
-    if click_info.click_type == MapClickType.MARKER:
-        if error := validate_lift_goes_uphill(start_node=start_node, end_node=end_node):
-            error.display()
-            return
-
+    # ─────────────────────────────────────────────────────────────────────────
+    # Create lift
+    # ─────────────────────────────────────────────────────────────────────────
     logger.info(
-        f"Creating lift from {ctx.lift.start_node_id} ({start_node.elevation:.0f}m) "
-        f"to {end_node.id} ({end_node.elevation:.0f}m)"
+        f"Creating lift from {start_node.id} ({start_node.elevation:.0f}m) to {end_node.id} ({end_node.elevation:.0f}m)"
     )
 
     lift = graph.add_lift(
-        start_node_id=ctx.lift.start_node_id,
+        start_node_id=start_node.id,
         end_node_id=end_node.id,
         lift_type=ctx.lift.type,
         dem=dem,
@@ -557,5 +576,5 @@ def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) ->
 
     logger.info(f"Lift {lift.name} created successfully")
     center_on_lift(ctx=ctx, graph=graph, lift=lift, zoom=MapConfig.VIEWING_ZOOM)
-    bump_map_version()  # Clear stale click state
+    bump_map_version()
     sm.complete_lift(lift_id=lift.id)

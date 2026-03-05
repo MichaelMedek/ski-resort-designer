@@ -254,6 +254,10 @@ class SidebarRenderer:
             help="Reset camera to standard position and orientation",
         ):
             self.ctx.map.reset_view()
+            # Manual cleanup fallback for any orphaned nodes
+            removed = self.graph.cleanup_isolated_nodes()
+            if removed > 0:
+                logger.warning(f"Reset View cleaned {removed} orphaned node(s)")
             reload_map()  # Bumps version and triggers rerun
 
     def _render_mode_selector(self) -> None:

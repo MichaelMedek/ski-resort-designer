@@ -228,15 +228,22 @@ Transition Summary Table
 Cleanup Policy
 --------------
 Orphaned node cleanup is NOT called on every transition. Instead, cleanup_isolated_nodes()
-is called explicitly when entities are removed:
+is called explicitly when entities are removed or operations are canceled:
 - undo ADD_SEGMENTS (segment deleted)
 - undo ADD_LIFT (lift deleted)
 - delete_slope (slope and segments deleted)
 - delete_lift (lift deleted)
 - cancel_current_slope (building segments discarded)
+- Reset View button (manual fallback for any edge cases)
 
 This prevents premature deletion of nodes that are still needed (e.g., start node
 in custom connect mode from SlopeStarting state, before any segment is committed).
+
+Lift Placement Pattern
+----------------------
+Lift placement validates using elevations BEFORE creating nodes for terrain clicks.
+This prevents orphan nodes from repeated failed uphill validation attempts.
+Both start and end nodes are only created AFTER validation passes.
 """
 
 from __future__ import annotations
