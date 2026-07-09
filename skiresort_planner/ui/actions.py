@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, cast
 
 import streamlit as st
 
-from skiresort_planner.constants import MapConfig, PathConfig
+from skiresort_planner.constants import MapConfig
 from skiresort_planner.generators.path_factory import PathFactory
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.resort_graph import (
@@ -187,7 +187,7 @@ def _generate_paths_for_building_state() -> None:
             lon=ctx.selection.lon,
             lat=ctx.selection.lat,
             elevation=ctx.selection.elevation,
-            target_length_m=PathConfig.SEGMENT_LENGTH_DEFAULT_M,
+            target_length_m=ctx.segment_length_m,
         )
     )
 
