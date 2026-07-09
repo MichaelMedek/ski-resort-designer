@@ -1,0 +1,29 @@
+{
+  "alwaysThinkingEnabled": true,
+  "effortLevel": "high",
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Bash",
+      "Edit",
+      "Write",
+      "NotebookEdit",
+      "WebFetch",
+      "WebSearch",
+      "Workflow",
+      "Skill",
+      "ExitPlanMode"
+    ],
+    "deny": [
+      "Bash(rm -*)",
+      "Bash(rm --*)",
+      "Bash(* && rm -*)",
+      "Bash(* ; rm -*)",
+      "Bash(*; rm -*)",
+      "Bash(* || rm -*)"
+    ],
+    "additionalDirectories": [
+      "/"
+    ]
+  }
+}
