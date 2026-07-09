@@ -16,7 +16,33 @@ from collections.abc import Callable
 
 import streamlit as st
 
+from skiresort_planner.persistence import backup_store
+
 logger = logging.getLogger(__name__)
+
+
+def _autosave_if_dirty() -> None:
+    """Persist the resort to disk if it changed since the last save.
+
+    Called from trigger_rerun() — the single choke point that runs after
+    every graph mutation and before every rerun (st.rerun raises
+    StopExecution, so any code placed *after* a mutation-triggered rerun
+    never executes; this is the only reliable central location).
+
+    A cheap change token (entity counters + undo-stack length) gates the
+    write so no-op reruns don't re-serialize the graph.
+    """
+    resort_id = st.session_state.get("resort_id")
+    graph = st.session_state.get("graph")
+    if resort_id is None or graph is None:
+        return
+
+    token = graph.change_token()
+    if token == st.session_state.get("_saved_token"):
+        return
+
+    backup_store.save(graph=graph, resort_id=resort_id)
+    st.session_state._saved_token = token
 
 
 def trigger_rerun(scope: str = "app") -> None:
@@ -26,9 +52,13 @@ def trigger_rerun(scope: str = "app") -> None:
     In tests, patch 'skiresort_planner.ui.infra.trigger_rerun' to prevent
     actual reruns (which raise StopExecution).
 
+    Autosaves the resort first (dirty-checked) so every mutation is
+    persisted before the browser re-requests.
+
     Args:
         scope: Rerun scope - "app" for full rerun, "fragment" for partial.
     """
+    _autosave_if_dirty()
     st.rerun(scope=scope)
 
 

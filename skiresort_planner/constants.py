@@ -34,6 +34,9 @@ DATA_DIR = PROJECT_ROOT / "data"
 # Output directory for saved graphs
 OUTPUT_DIR = PROJECT_ROOT / "output"
 
+# Auto-saved resort backups (per-session crash/outage safety net)
+BACKUP_DIR = PROJECT_ROOT / "backups"
+
 
 class AppConfig:
     """UI application settings."""

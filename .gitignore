@@ -4,6 +4,9 @@ data/*
 output/*
 !output/.gitkeep
 
+# Auto-saved resort backups (per-session, user-generated)
+backups/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
