@@ -20,7 +20,7 @@ from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.generators.path_factory import PathFactory
 from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint
-from skiresort_planner.model.proposed_path import ProposedSlopeSegment
+from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
@@ -213,9 +213,9 @@ def path_points_blue(mock_dem_blue_slope: MockDEMService) -> list[PathPoint]:
 
 
 @pytest.fixture
-def proposed_segment_blue(path_points_blue: list[PathPoint]) -> ProposedSlopeSegment:
+def proposed_segment_blue(path_points_blue: list[PathPoint]) -> ProposedPathSegment:
     """Proposed segment: 800m long, 20% slope, blue difficulty."""
-    return ProposedSlopeSegment(
+    return ProposedPathSegment(
         points=path_points_blue,
         target_slope_pct=20.0,
         target_difficulty="blue",

@@ -12,7 +12,7 @@ from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint
-from skiresort_planner.model.proposed_path import ProposedSlopeSegment
+from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.slope import Slope
 
 
@@ -74,7 +74,7 @@ class TestIdParsing:
     def test_number_from_id(self, model_type: str, id_str: str, expected_number: int) -> None:
         """Slope/Lift.number_from_id() extracts numeric part from ID."""
         if model_type == "slope":
-            result = Slope.number_from_id(slope_id=id_str)
+            result = Slope.number_from_id(entity_id=id_str)
         else:
             result = Lift.number_from_id(lift_id=id_str)
         assert result == expected_number
@@ -86,11 +86,11 @@ class TestIdParsing:
 
 
 class TestProposedSegmentComputedProperties:
-    """Tests for ProposedSlopeSegment computed metrics."""
+    """Tests for ProposedPathSegment computed metrics."""
 
     def test_computed_metrics_from_path_points(self, path_points_blue) -> None:
-        """ProposedSlopeSegment computes drop, length, slope, difficulty."""
-        segment = ProposedSlopeSegment(
+        """ProposedPathSegment computes drop, length, slope, difficulty."""
+        segment = ProposedPathSegment(
             points=path_points_blue,
             target_slope_pct=20.0,
             target_difficulty="blue",
@@ -132,7 +132,7 @@ class TestMaxSlopeRollingWindow:
                 elev -= drop
                 points.append(PathPoint(lon=base_lon, lat=lat, elevation=elev))
 
-        seg = ProposedSlopeSegment(points=points)
+        seg = ProposedPathSegment(points=points)
 
         total_steps = steps_per_section * 3
         expected_length = total_steps * step_m

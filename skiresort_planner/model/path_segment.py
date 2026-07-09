@@ -1,9 +1,9 @@
-"""SlopeSegment - A committed path section between two nodes.
+"""PathSegment - A committed path section between two nodes.
 
-A SlopeSegment is created when a proposed path is committed.
+A PathSegment is created when a proposed path is committed.
 It connects two nodes and stores the full path geometry.
 
-Inherits computed metrics from BaseSlopePath. Adds node connections,
+Inherits computed metrics from Path. Adds node connections,
 side slope data, and warnings.
 
 Reference: DETAILS.md
@@ -18,7 +18,7 @@ from shapely.geometry import LineString
 from shapely.ops import transform as shapely_transform
 
 from skiresort_planner.constants import EarthworkConfig, SlopeConfig
-from skiresort_planner.model.base_slope_path import BaseSlopePath
+from skiresort_planner.model.path_geometry import Path
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.warning import (
     ExcavatorWarning,
@@ -37,10 +37,10 @@ def _get_utm_zone(lon: float, lat: float) -> str:
 
 
 @dataclass
-class SlopeSegment(BaseSlopePath):
+class PathSegment(Path):
     """A committed slope segment between two nodes.
 
-    Inherits points and geometric metrics from BaseSlopePath.
+    Inherits points and geometric metrics from Path.
 
     Attributes:
         id: Unique identifier (e.g., "S1", "S2", ...)
@@ -190,8 +190,8 @@ class SlopeSegment(BaseSlopePath):
         return []
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "SlopeSegment":
-        """Create SlopeSegment from dictionary."""
+    def from_dict(cls, data: dict[str, Any]) -> "PathSegment":
+        """Create PathSegment from dictionary."""
         return cls(
             id=data["id"],
             name=data["name"],
@@ -203,4 +203,4 @@ class SlopeSegment(BaseSlopePath):
         )
 
     def __repr__(self) -> str:
-        return f"SlopeSegment({self.id}, {self.difficulty}, {self.avg_slope_pct:.1f}%, {self.length_m:.0f}m)"
+        return f"PathSegment({self.id}, {self.difficulty}, {self.avg_slope_pct:.1f}%, {self.length_m:.0f}m)"

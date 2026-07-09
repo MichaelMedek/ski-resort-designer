@@ -530,7 +530,7 @@ class SlopeStatsPanel:
         total_drop = slope.get_total_drop(segments=self.graph.segments)
         difficulty = slope.get_difficulty(segments=self.graph.segments)
         avg_gradient = (total_drop / total_length * 100) if total_length > 0 else 0
-        max_segment_gradient = slope.get_steepest_segment_slope(segments=self.graph.segments)
+        max_segment_gradient = slope.get_max_gradient(segments=self.graph.segments)
 
         first_seg = self.graph.segments.get(slope.segment_ids[0]) if slope.segment_ids else None
         last_seg = self.graph.segments.get(slope.segment_ids[-1]) if slope.segment_ids else None

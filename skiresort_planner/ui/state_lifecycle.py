@@ -72,6 +72,7 @@ def enter_idle_ready(ctx: PlannerContext) -> None:
     ctx.clear_building()
     ctx.clear_custom_connect()
     ctx.clear_lift()
+    ctx.clear_road()
     ctx.selection.node_id = None
     ctx.click_dedup.clear_marker()
     ctx.viewing.clear()
@@ -124,6 +125,7 @@ def enter_idle_viewing_slope(ctx: PlannerContext) -> None:
     ctx.clear_building()
     ctx.clear_custom_connect()
     ctx.clear_lift()
+    ctx.clear_road()
     ctx.selection.node_id = None
     ctx.click_dedup.clear_marker()
 
@@ -175,6 +177,7 @@ def enter_idle_viewing_lift(ctx: PlannerContext) -> None:
     ctx.clear_building()
     ctx.clear_custom_connect()
     ctx.clear_lift()
+    ctx.clear_road()
     ctx.selection.node_id = None
     ctx.click_dedup.clear_marker()
 
@@ -420,3 +423,63 @@ def exit_lift_placing(ctx: PlannerContext) -> None:
     """
     logger.debug("EXIT: lift_placing - clearing lift context")
     ctx.lift.clear()
+
+
+# =============================================================================
+# 9. IDLE_VIEWING_ROAD - Panel showing road details
+# =============================================================================
+
+
+def enter_idle_viewing_road(ctx: PlannerContext) -> None:
+    """Enter IDLE_VIEWING_ROAD: Make road panel visible (Single Point of Truth).
+
+    Mirrors enter_idle_viewing_lift: the road_id was set by a before_* hook;
+    this guarantees the panel is visible and clears any stale building state.
+    """
+    logger.debug("ENTER: idle_viewing_road - showing panel, clearing building state")
+    ctx.viewing.show_panel()
+    ctx.clear_proposals()
+    ctx.clear_building()
+    ctx.clear_custom_connect()
+    ctx.clear_lift()
+    ctx.clear_road()
+    ctx.selection.node_id = None
+    ctx.click_dedup.clear_marker()
+
+
+def exit_idle_viewing_road(ctx: PlannerContext) -> None:
+    """Exit IDLE_VIEWING_ROAD: No cleanup needed.
+
+    The destination state's enter function handles all necessary changes
+    (same Single Point of Truth pattern as exit_idle_viewing_lift).
+    """
+    logger.debug("EXIT: idle_viewing_road - no cleanup needed")
+    pass
+
+
+# =============================================================================
+# 10. ROAD_PLACING - First point selected, waiting for second click
+# =============================================================================
+
+
+def enter_road_placing(ctx: PlannerContext) -> None:
+    """Enter ROAD_PLACING: First road point selected (Single Point of Truth).
+
+    Mirrors enter_lift_placing: hide any viewing panel and clear the click
+    dedup marker so the second click is fresh. The first point was stored by
+    before_start_road.
+    """
+    logger.debug("ENTER: road_placing - hiding panel")
+    ctx.viewing.hide_panel()
+    ctx.click_dedup.clear_marker()
+
+
+def exit_road_placing(ctx: PlannerContext) -> None:
+    """Exit ROAD_PLACING: Clear road placement state.
+
+    Destinations: IDLE_VIEWING_ROAD (road built) or IDLE_READY (cancel).
+    before_complete_road/before_cancel_road handle the panel; the road
+    placement context is cleared since placement is done.
+    """
+    logger.debug("EXIT: road_placing - clearing road context")
+    ctx.road.clear()

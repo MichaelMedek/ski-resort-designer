@@ -27,8 +27,10 @@ from skiresort_planner.model.message import (
 from skiresort_planner.model.resort_graph import (
     ActionType,
     AddLiftAction,
+    AddRoadAction,
     AddSegmentsAction,
     DeleteLiftAction,
+    DeleteRoadAction,
     DeleteSlopeAction,
     FinishSlopeAction,
     ResortGraph,
@@ -69,6 +71,12 @@ def _describe_undo_action(action: UndoAction, graph: ResortGraph) -> str:
         name = lift.name if lift else act.lift_id
         return f"Delete lift **{name}**"
 
+    elif action.action_type.name == ActionType.ADD_ROAD.name:
+        act = cast(AddRoadAction, action)
+        road = graph.roads.get(act.road_id)
+        name = road.name if road else act.road_id
+        return f"Delete road **{name}**"
+
     elif action.action_type.name == ActionType.DELETE_SLOPE.name:
         act = cast(DeleteSlopeAction, action)
         return f"Restore deleted slope **{act.deleted_slope.name}**"
@@ -76,6 +84,10 @@ def _describe_undo_action(action: UndoAction, graph: ResortGraph) -> str:
     elif action.action_type.name == ActionType.DELETE_LIFT.name:
         act = cast(DeleteLiftAction, action)
         return f"Restore deleted lift **{act.deleted_lift.name}**"
+
+    elif action.action_type.name == ActionType.DELETE_ROAD.name:
+        act = cast(DeleteRoadAction, action)
+        return f"Restore deleted road **{act.deleted_road.name}**"
 
     else:
         raise RuntimeError(f"Unknown action type: {action.action_type}")

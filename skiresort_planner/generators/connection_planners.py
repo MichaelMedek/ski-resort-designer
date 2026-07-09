@@ -27,7 +27,7 @@ from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.model.path_point import PathPoint
-from skiresort_planner.model.proposed_path import ProposedSlopeSegment
+from skiresort_planner.model.proposed_path import ProposedPathSegment
 
 logger = logging.getLogger(__name__)
 
@@ -86,21 +86,25 @@ class LeastCostPathPlanner:
         target_elevation: float,
         target_slope_pct: float,
         side: str,
-    ) -> Optional[ProposedSlopeSegment]:
+        gradient_band: Optional[tuple[float, float]] = None,
+    ) -> Optional[ProposedPathSegment]:
         """Plan path using grid-based Dijkstra search.
 
         Args:
             start_lon, start_lat, start_elevation: Starting point
             target_lon, target_lat, target_elevation: Target point
-            target_slope_pct: Target effective slope percentage
+            target_slope_pct: Target effective slope percentage (slope mode)
             side: "left" or "right" - preferred side of direct line
+            gradient_band: Optional (min_pct, max_pct) signed gradient band. When
+                given (road mode), the cost stays flat inside the band and only
+                penalizes leaving it, with no uphill penalty — cars may climb.
+                When None (slope mode), behavior is unchanged.
 
         Returns:
-            ProposedSlopeSegment if path found, None otherwise.
+            ProposedPathSegment if path found, None otherwise.
         """
-        # Validate inputs
-        drop_m = start_elevation - target_elevation
-        if drop_m <= 0:
+        # Slope mode requires net descent; road mode may climb or descend.
+        if gradient_band is None and start_elevation - target_elevation <= 0:
             return None
 
         direct_distance_m = GeoCalculator.haversine_distance_m(
@@ -133,6 +137,7 @@ class LeastCostPathPlanner:
             side=side,
             lons=lons,
             lats=lats,
+            gradient_band=gradient_band,
         )
 
         if path_nodes is None:
@@ -152,7 +157,7 @@ class LeastCostPathPlanner:
             target_slope_pct=target_slope_pct,
         )
 
-        return ProposedSlopeSegment(
+        return ProposedPathSegment(
             points=points,
             target_slope_pct=target_slope_pct,
             is_connector=True,
@@ -278,6 +283,7 @@ class LeastCostPathPlanner:
         side: str,
         lons: list[list[float]],
         lats: list[list[float]],
+        gradient_band: Optional[tuple[float, float]] = None,
     ) -> tuple[Optional[list[GridNode]], int, int]:
         """Least-cost path using SciPy's C-optimized Dijkstra.
 
@@ -330,6 +336,7 @@ class LeastCostPathPlanner:
                         side=side,
                         target_lon=t_lon,
                         target_lat=t_lat,
+                        gradient_band=gradient_band,
                     )
 
                     if edge_cost < float("inf"):
@@ -390,14 +397,19 @@ class LeastCostPathPlanner:
         side: str,
         target_lon: float,
         target_lat: float,
+        gradient_band: Optional[tuple[float, float]] = None,
     ) -> float:
-        """Minimal cost function: distance weighted by slope deviation and uphill penalty.
+        """Cost function: distance weighted by a slope penalty.
 
-        Two soft constraints:
-        1. Exponential penalty for slope deviation from target
-        2. Exponential uphill penalty (zero for downhill, grows for uphill)
+        Slope mode (gradient_band is None): two soft constraints —
+        exponential penalty for deviation from target_slope_pct, plus an
+        exponential uphill penalty (zero downhill, grows uphill).
 
-        No hard cutoffs - allows occasional uphill due to DEM noise.
+        Road mode (gradient_band = (min_pct, max_pct)): cost is flat inside
+        the band and grows exponentially with the signed distance *outside*
+        it, with NO uphill penalty — cars may climb within the band.
+
+        No hard cutoffs - allows occasional band excursions due to DEM noise.
         """
         # Horizontal distance
         horiz_dist = GeoCalculator.haversine_distance_m(lat1=from_lat, lon1=from_lon, lat2=to_lat, lon2=to_lon)
@@ -409,12 +421,16 @@ class LeastCostPathPlanner:
         drop = from_elev - to_elev
         actual_slope = (drop / horiz_dist) * 100
 
-        # Slope deviation penalty
+        if gradient_band is not None:
+            # Road mode: penalize only leaving the band; no uphill penalty.
+            lo, hi = gradient_band
+            over = max(0.0, actual_slope - hi, lo - actual_slope)
+            return horiz_dist * exp(over / PlannerConfig.COST_SIGMA)
+
+        # Slope mode: deviation-from-target penalty + uphill penalty.
         slope_diff = abs(actual_slope - target_slope_pct)
         slope_cost = exp(slope_diff / PlannerConfig.COST_SIGMA)
 
-        # Uphill penalty: zero for downhill, exponential for uphill
-        # Uses same sigma as slope deviation for consistency
         uphill_penalty = 1.0
         if actual_slope < 0:
             uphill_penalty = exp(abs(actual_slope) / PlannerConfig.COST_SIGMA)

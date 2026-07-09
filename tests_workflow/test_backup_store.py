@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from skiresort_planner.model.proposed_path import ProposedSlopeSegment
+from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.persistence import backup_store
 
@@ -34,7 +34,7 @@ def _isolate_backup_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
 
 def _populate(graph: ResortGraph, path_points_blue: list) -> str:
     """Commit one slope so the graph has content worth saving; return its name."""
-    proposal = ProposedSlopeSegment(
+    proposal = ProposedPathSegment(
         points=path_points_blue,
         target_slope_pct=20.0,
         target_difficulty="blue",

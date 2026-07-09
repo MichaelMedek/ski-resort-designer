@@ -23,8 +23,10 @@ from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.resort_graph import (
     ActionType,
     AddLiftAction,
+    AddRoadAction,
     AddSegmentsAction,
     DeleteLiftAction,
+    DeleteRoadAction,
     DeleteSlopeAction,
     FinishSlopeAction,
     ResortGraph,
@@ -34,7 +36,7 @@ from skiresort_planner.ui.infra import bump_map_version, reload_map, trigger_rer
 from skiresort_planner.ui.state_machine import PlannerContext, PlannerStateMachine
 
 if TYPE_CHECKING:
-    from skiresort_planner.model.proposed_path import ProposedSlopeSegment
+    from skiresort_planner.model.proposed_path import ProposedPathSegment
 
 logger = logging.getLogger(__name__)
 
@@ -265,7 +267,7 @@ def _generate_custom_connect_paths() -> None:
     logger.info(f"Generated {len(paths)} custom paths from {start_node.id} to ({target_lat:.6f}, {target_lon:.6f})")
 
 
-def _find_closest_gradient_path(paths: "list[ProposedSlopeSegment]", target_gradient: float) -> int:
+def _find_closest_gradient_path(paths: "list[ProposedPathSegment]", target_gradient: float) -> int:
     """Find index of path with gradient closest to target."""
     if not paths:
         return 0
@@ -648,6 +650,27 @@ def _undo_delete_lift(undone: DeleteLiftAction) -> None:
     reload_map()
 
 
+def _undo_add_road(undone: AddRoadAction) -> None:
+    """Handle undo of ADD_ROAD action (road already removed from graph)."""
+    sm: PlannerStateMachine = st.session_state.state_machine
+
+    logger.info(f"Undone road addition: {undone.road_id}")
+
+    # If viewing the removed road, return to idle; otherwise just refresh.
+    if sm.is_idle_viewing_road and st.session_state.context.viewing.road_id == undone.road_id:
+        sm.force_idle()
+        bump_map_version()
+        trigger_rerun()
+    else:
+        reload_map()
+
+
+def _undo_delete_road(undone: DeleteRoadAction) -> None:
+    """Handle undo of DELETE_ROAD action."""
+    logger.info(f"Restored deleted road {undone.road_id}")
+    reload_map()
+
+
 def undo_last_action() -> None:
     """Undo the most recent action.
 
@@ -691,10 +714,14 @@ def undo_last_action() -> None:
         _undo_finish_slope(undone=cast(FinishSlopeAction, undone))
     elif action_type.name == ActionType.ADD_LIFT.name:
         _undo_add_lift(undone=cast(AddLiftAction, undone))
+    elif action_type.name == ActionType.ADD_ROAD.name:
+        _undo_add_road(undone=cast(AddRoadAction, undone))
     elif action_type.name == ActionType.DELETE_SLOPE.name:
         _undo_delete_slope(undone=cast(DeleteSlopeAction, undone))
     elif action_type.name == ActionType.DELETE_LIFT.name:
         _undo_delete_lift(undone=cast(DeleteLiftAction, undone))
+    elif action_type.name == ActionType.DELETE_ROAD.name:
+        _undo_delete_road(undone=cast(DeleteRoadAction, undone))
     else:
         raise RuntimeError(f"Unknown action type: {action_type}")
 

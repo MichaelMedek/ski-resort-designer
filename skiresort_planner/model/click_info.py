@@ -38,6 +38,7 @@ class MarkerType(Enum):
     SLOPE = "slope"
     SEGMENT = "segment"
     LIFT = "lift"
+    ROAD = "road"
     PYLON = "pylon"
     PROPOSAL_ENDPOINT = "proposal_endpoint"
     PROPOSAL_BODY = "proposal_body"
@@ -73,6 +74,7 @@ class ClickInfo:
     slope_id: Optional[str] = None  # "SL1" for SLOPE
     segment_id: Optional[str] = None  # "S1" for SEGMENT
     lift_id: Optional[str] = None  # "L1" for LIFT and PYLON
+    road_id: Optional[str] = None  # "R1" for ROAD
     pylon_index: Optional[int] = None  # 0-indexed (PYLON only)
     proposal_index: Optional[int] = None  # 0-indexed (PROPOSAL_* only)
 
@@ -94,31 +96,33 @@ class ClickInfo:
 
     def _validate_marker_ids(self) -> None:
         """Validate that exactly the right ID fields are set for marker type."""
-        mt = self.marker_type
-
-        if mt == MarkerType.NODE:
-            if self.node_id is None:
-                raise ValueError("NODE marker must have node_id set")
-        elif mt == MarkerType.SLOPE:
-            if self.slope_id is None:
-                raise ValueError("SLOPE marker must have slope_id set")
-        elif mt == MarkerType.SEGMENT:
-            if self.segment_id is None:
-                raise ValueError("SEGMENT marker must have segment_id set")
-        elif mt == MarkerType.LIFT:
-            if self.lift_id is None:
-                raise ValueError("LIFT marker must have lift_id set")
-        elif mt == MarkerType.PYLON:
-            if self.lift_id is None or self.pylon_index is None:
-                raise ValueError("PYLON marker must have lift_id and pylon_index set")
-        elif mt == MarkerType.PROPOSAL_ENDPOINT:
-            if self.proposal_index is None:
-                raise ValueError("PROPOSAL_ENDPOINT marker must have proposal_index set")
-        elif mt == MarkerType.PROPOSAL_BODY:
-            if self.proposal_index is None:
-                raise ValueError("PROPOSAL_BODY marker must have proposal_index set")
-        else:
-            raise RuntimeError(f"Unknown marker_type: {mt}")
+        match self.marker_type:
+            case MarkerType.NODE:
+                if self.node_id is None:
+                    raise ValueError("NODE marker must have node_id set")
+            case MarkerType.SLOPE:
+                if self.slope_id is None:
+                    raise ValueError("SLOPE marker must have slope_id set")
+            case MarkerType.SEGMENT:
+                if self.segment_id is None:
+                    raise ValueError("SEGMENT marker must have segment_id set")
+            case MarkerType.LIFT:
+                if self.lift_id is None:
+                    raise ValueError("LIFT marker must have lift_id set")
+            case MarkerType.ROAD:
+                if self.road_id is None:
+                    raise ValueError("ROAD marker must have road_id set")
+            case MarkerType.PYLON:
+                if self.lift_id is None or self.pylon_index is None:
+                    raise ValueError("PYLON marker must have lift_id and pylon_index set")
+            case MarkerType.PROPOSAL_ENDPOINT:
+                if self.proposal_index is None:
+                    raise ValueError("PROPOSAL_ENDPOINT marker must have proposal_index set")
+            case MarkerType.PROPOSAL_BODY:
+                if self.proposal_index is None:
+                    raise ValueError("PROPOSAL_BODY marker must have proposal_index set")
+            case _:
+                raise RuntimeError(f"Unknown marker_type: {self.marker_type}")
 
     # =========================================================================
     # DISPLAY PROPERTIES
@@ -142,26 +146,28 @@ class ClickInfo:
             return f"Map terrain at ({self.lat:.4f}, {self.lon:.4f})"
 
         if self.click_type == MapClickType.MARKER:
-            mt = self.marker_type
-            if mt == MarkerType.NODE:
-                return f"Junction {self.node_id}"
-            elif mt == MarkerType.SLOPE:
-                return f"Slope {self.slope_id}"
-            elif mt == MarkerType.SEGMENT:
-                return f"Segment {self.segment_id}"
-            elif mt == MarkerType.LIFT:
-                return f"Lift {self.lift_id}"
-            elif mt == MarkerType.PYLON:
-                assert self.pylon_index is not None
-                return f"Pylon {self.pylon_index + 1} on Lift {self.lift_id}"
-            elif mt == MarkerType.PROPOSAL_ENDPOINT:
-                assert self.proposal_index is not None
-                return f"Path option {self.proposal_index + 1} (endpoint)"
-            elif mt == MarkerType.PROPOSAL_BODY:
-                assert self.proposal_index is not None
-                return f"Path option {self.proposal_index + 1}"
-            else:
-                raise RuntimeError(f"Unknown marker_type: {mt}")
+            match self.marker_type:
+                case MarkerType.NODE:
+                    return f"Junction {self.node_id}"
+                case MarkerType.SLOPE:
+                    return f"Slope {self.slope_id}"
+                case MarkerType.SEGMENT:
+                    return f"Segment {self.segment_id}"
+                case MarkerType.LIFT:
+                    return f"Lift {self.lift_id}"
+                case MarkerType.ROAD:
+                    return f"Road {self.road_id}"
+                case MarkerType.PYLON:
+                    assert self.pylon_index is not None
+                    return f"Pylon {self.pylon_index + 1} on Lift {self.lift_id}"
+                case MarkerType.PROPOSAL_ENDPOINT:
+                    assert self.proposal_index is not None
+                    return f"Path option {self.proposal_index + 1} (endpoint)"
+                case MarkerType.PROPOSAL_BODY:
+                    assert self.proposal_index is not None
+                    return f"Path option {self.proposal_index + 1}"
+                case _:
+                    raise RuntimeError(f"Unknown marker_type: {self.marker_type}")
 
         raise RuntimeError(f"Unknown click_type: {self.click_type}")
 
@@ -193,23 +199,25 @@ class ClickInfo:
             return f"terrain_{lat_key}_{lon_key}"
 
         if self.click_type == MapClickType.MARKER:
-            mt = self.marker_type
-            if mt == MarkerType.NODE:
-                return f"marker_node_{self.node_id}"
-            elif mt == MarkerType.SLOPE:
-                return f"marker_slope_{self.slope_id}"
-            elif mt == MarkerType.SEGMENT:
-                return f"marker_segment_{self.segment_id}"
-            elif mt == MarkerType.LIFT:
-                return f"marker_lift_{self.lift_id}"
-            elif mt == MarkerType.PYLON:
-                return f"marker_pylon_{self.pylon_index}_{self.lift_id}"
-            elif mt == MarkerType.PROPOSAL_ENDPOINT:
-                return f"marker_proposal_end_{self.proposal_index}"
-            elif mt == MarkerType.PROPOSAL_BODY:
-                return f"marker_proposal_body_{self.proposal_index}"
-            else:
-                raise RuntimeError(f"Unknown marker_type: {mt}")
+            match self.marker_type:
+                case MarkerType.NODE:
+                    return f"marker_node_{self.node_id}"
+                case MarkerType.SLOPE:
+                    return f"marker_slope_{self.slope_id}"
+                case MarkerType.SEGMENT:
+                    return f"marker_segment_{self.segment_id}"
+                case MarkerType.LIFT:
+                    return f"marker_lift_{self.lift_id}"
+                case MarkerType.ROAD:
+                    return f"marker_road_{self.road_id}"
+                case MarkerType.PYLON:
+                    return f"marker_pylon_{self.pylon_index}_{self.lift_id}"
+                case MarkerType.PROPOSAL_ENDPOINT:
+                    return f"marker_proposal_end_{self.proposal_index}"
+                case MarkerType.PROPOSAL_BODY:
+                    return f"marker_proposal_body_{self.proposal_index}"
+                case _:
+                    raise RuntimeError(f"Unknown marker_type: {self.marker_type}")
 
         raise RuntimeError(f"Unknown click_type: {self.click_type}")
 

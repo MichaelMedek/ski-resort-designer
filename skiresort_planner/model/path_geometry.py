@@ -1,4 +1,4 @@
-"""BaseSlopePath - Base class for slope path geometry with computed metrics.
+"""Path - Base class for slope path geometry with computed metrics.
 
 Provides shared functionality for both proposed and committed slope segments:
 - Points storage
@@ -15,11 +15,11 @@ from skiresort_planner.model.path_point import PathPoint
 
 
 @dataclass
-class BaseSlopePath:
+class Path:
     """Base class for slope paths with computed geometric metrics.
 
     Stores path points and computes metrics on-the-fly from the point data.
-    Both ProposedSlopeSegment and SlopeSegment inherit from this.
+    Both ProposedPathSegment and PathSegment inherit from this.
 
     Attributes:
         points: Path points (source of truth for geometry)

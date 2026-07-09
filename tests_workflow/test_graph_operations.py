@@ -7,7 +7,7 @@ import pytest
 
 from skiresort_planner.constants import MapConfig
 from skiresort_planner.model.path_point import PathPoint
-from skiresort_planner.model.proposed_path import ProposedSlopeSegment
+from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import (
     AddSegmentsAction,
     FinishSlopeAction,
@@ -26,7 +26,7 @@ class TestCommitAndFinishWorkflow:
         - Undo action pushed to stack
         """
         graph = empty_graph
-        proposal = ProposedSlopeSegment(
+        proposal = ProposedPathSegment(
             points=path_points_blue,
             target_slope_pct=20.0,
             target_difficulty="blue",
@@ -50,7 +50,7 @@ class TestCommitAndFinishWorkflow:
         - Undo action pushed for finish
         """
         graph = empty_graph
-        proposal = ProposedSlopeSegment(
+        proposal = ProposedPathSegment(
             points=path_points_blue,
             target_slope_pct=20.0,
             target_difficulty="blue",
@@ -89,7 +89,7 @@ class TestNodeReuse:
             PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
             PathPoint(lon=0.0, lat=-500 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / M)),
         ]
-        proposal1 = ProposedSlopeSegment(
+        proposal1 = ProposedPathSegment(
             points=path1_points, target_slope_pct=20.0, target_difficulty="blue", sector_name="P1"
         )
 
@@ -105,7 +105,7 @@ class TestNodeReuse:
             ),
             PathPoint(lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M)),
         ]
-        proposal2 = ProposedSlopeSegment(
+        proposal2 = ProposedPathSegment(
             points=path2_points, target_slope_pct=20.0, target_difficulty="blue", sector_name="P2"
         )
 
@@ -132,7 +132,7 @@ class TestConnectorGeometrySnapping:
             PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
             PathPoint(lon=0.0, lat=-500 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / M)),
         ]
-        graph.commit_paths(paths=[ProposedSlopeSegment(points=path1_points, sector_name="P1")])
+        graph.commit_paths(paths=[ProposedPathSegment(points=path1_points, sector_name="P1")])
 
         # Get end node as target
         first_segment = list(graph.segments.values())[0]
@@ -148,7 +148,7 @@ class TestConnectorGeometrySnapping:
             PathPoint(lon=0.001, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.001, lat=0.0)),
             PathPoint(lon=offset_lon, lat=offset_lat, elevation=offset_elev),  # Slightly off from target
         ]
-        connector = ProposedSlopeSegment(
+        connector = ProposedPathSegment(
             points=connector_points,
             sector_name="Connector",
             is_connector=True,

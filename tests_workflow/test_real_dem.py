@@ -133,4 +133,4 @@ class TestPathGenerationOnRealTerrain:
 
         # May return None if terrain doesn't allow connection
         # But should not raise an error
-        assert path is None or hasattr(path, "points"), "Should return None or ProposedSlopeSegment"
+        assert path is None or hasattr(path, "points"), "Should return None or ProposedPathSegment"

@@ -53,6 +53,7 @@ class EntityPrefixes:
     SEGMENT = "S"
     SLOPE = "SL"
     LIFT = "L"
+    ROAD = "R"
 
 
 class MapConfig:
@@ -180,6 +181,10 @@ class PathConfig:
     FLAT_TERRAIN_THRESHOLD_PCT = 15.0  # Below this slope %, use momentum-based bearing smoothing
     MOMENTUM_WEIGHT_FACTOR = 0.8  # Weight factor for momentum bearing on flat terrain
 
+    # Roads for cars: gentle gradient band the routing must stay within.
+    # Cars may climb, descend, or run flat, but never exceed this steepness.
+    ROAD_MAX_GRADIENT_PCT = 12
+
 
 class EarthworkConfig:
     """Earthwork warning thresholds and belt width limits (DETAILS.md Section 4)."""
@@ -301,6 +306,7 @@ class ClickConfig:
     TYPE_NODE = "node"
     TYPE_SEGMENT = "segment"
     TYPE_SLOPE = "slope"
+    TYPE_ROAD = "road"
     TYPE_LIFT = "lift"
     TYPE_PYLON = "pylon"
     TYPE_PROPOSAL_ENDPOINT = "proposal_endpoint"
@@ -309,6 +315,7 @@ class ClickConfig:
     # Clickable marker radii (meters for Pydeck ScatterplotLayer)
     NODE_MARKER_RADIUS = 35
     SLOPE_ICON_MARKER_RADIUS = 30
+    ROAD_ICON_MARKER_RADIUS = 30
     LIFT_ICON_MARKER_RADIUS = 30
     PYLON_MARKER_RADIUS = 15
     PROPOSAL_BODY_RADIUS = 20
@@ -374,6 +381,7 @@ class StyleConfig:
         "black": "#1F2937",  # gray-800
     }
     assert set(SLOPE_COLORS.keys()) == set(SlopeConfig.DIFFICULTIES)
+    SLOPE_ICON = "⛷️"
 
     # Slope colors - RGBA lists for Pydeck (GPU-compatible format)
     SLOPE_COLORS_RGBA = {
@@ -392,6 +400,9 @@ class StyleConfig:
         "black": "⚫",
     }
     assert set(DIFFICULTY_EMOJIS.keys()) == set(SlopeConfig.DIFFICULTIES)
+
+    # Slope icon for map display and build-mode selector
+    SLOPE_ICON = "⛷️"
 
     # Lift colors - Hex for Plotly
     LIFT_COLORS = {
@@ -419,6 +430,16 @@ class StyleConfig:
         "aerial_tram": "🚠",
     }
     assert set(LIFT_ICONS.keys()) == set(LiftConfig.TYPES)
+
+    # Road (for cars): warm brown-orange, clearly visible against terrain and
+    # distinct from difficulty-colored slopes and purple lifts.
+    ROAD_COLOR = "#B45309"  # amber-700, for Plotly charts
+    ROAD_COLOR_RGBA = [180, 83, 9, 230]  # amber-700 for Pydeck
+    ROAD_ICON = "🛣️"
+
+    # Parking place (auto-shown where a road meets a slope or lift)
+    PARKING_ICON = "🅿️"
+    PARKING_COLOR_RGBA = [96, 165, 250, 180]  # soft blue, gently shown
 
     # Human-friendly lift display names (includes "slope" for unified build type selector)
     LIFT_DISPLAY_NAMES = {

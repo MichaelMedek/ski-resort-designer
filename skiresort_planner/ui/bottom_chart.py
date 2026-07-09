@@ -19,10 +19,10 @@ from skiresort_planner.constants import ChartConfig, LiftConfig, StyleConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.model.lift import Lift
-from skiresort_planner.model.proposed_path import ProposedSlopeSegment
+from skiresort_planner.model.path_segment import PathSegment
+from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.model.slope import Slope
-from skiresort_planner.model.slope_segment import SlopeSegment
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ class ProfileChart:
 
     def render_proposal(
         self,
-        proposal: ProposedSlopeSegment,
+        proposal: ProposedPathSegment,
         proposed_segment_title: str,
     ) -> go.Figure:
         """Render elevation profile for a proposed slope segment.
@@ -157,7 +157,7 @@ class ProfileChart:
 
     def render_segment(
         self,
-        segment: SlopeSegment,
+        segment: PathSegment,
         difficulty: str,
         title: Optional[str] = None,
     ) -> go.Figure:
@@ -360,7 +360,7 @@ class ProfileChart:
 
     def render_comparison(
         self,
-        proposals: list[ProposedSlopeSegment],
+        proposals: list[ProposedPathSegment],
         title: str = "Path Comparison",
     ) -> go.Figure:
         """Render multiple proposals overlaid for comparison.
@@ -738,12 +738,12 @@ def render_building_profiles(
     max_difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=max_avg_slope)
 
     chart = ProfileChart(width=ChartConfig.DEFAULT_WIDTH, height=ChartConfig.PROFILE_HEIGHT_SMALL)
-    combined = SlopeSegment(id="combined", name=building_name or "Current Slope", points=all_points)
+    combined = PathSegment(id="combined", name=building_name or "Current Slope", points=all_points)
     return chart.render_segment(segment=combined, difficulty=max_difficulty, title="Current committed Slope Progress")
 
 
 def render_proposal_preview(
-    proposals: list[ProposedSlopeSegment],
+    proposals: list[ProposedPathSegment],
     selected_idx: int,
 ) -> go.Figure:
     """Render elevation profile preview for selected proposal.

@@ -3,9 +3,9 @@
 Follows the separation of Geometry (where things are) vs Topology (how things connect):
 - PathPoint: Geometry atom (lon, lat, elevation)
 - Node: Junction point (wraps PathPoint, has ID)
-- BaseSlopePath: Base class for slope paths with computed metrics
-- SlopeSegment: Committed path section between nodes
-- ProposedSlopeSegment: Path proposal before committing
+- Path: Base class for slope paths with computed metrics
+- PathSegment: Committed path section between nodes
+- ProposedPathSegment: Path proposal before committing
 - Slope: Complete ski run (collection of segments)
 - Lift: Uphill connection between nodes
 - Pylon: Support structure for lifts
@@ -15,18 +15,18 @@ Follows the separation of Geometry (where things are) vs Topology (how things co
 Data structure details documented in DETAILS.md.
 """
 
-from skiresort_planner.model.base_slope_path import BaseSlopePath
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.node import Node
+from skiresort_planner.model.path_geometry import Path
 from skiresort_planner.model.path_point import PathPoint
-from skiresort_planner.model.proposed_path import ProposedSlopeSegment
+from skiresort_planner.model.path_segment import PathSegment
+from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.pylon import Pylon
 from skiresort_planner.model.resort_graph import (
     ResortGraph,
     UndoAction,
 )
 from skiresort_planner.model.slope import Slope
-from skiresort_planner.model.slope_segment import SlopeSegment
 from skiresort_planner.model.warning import (
     ExcavatorWarning,
     TooFlatWarning,
@@ -37,13 +37,13 @@ from skiresort_planner.model.warning import (
 __all__ = [
     "PathPoint",
     "Node",
-    "BaseSlopePath",
+    "Path",
     "Warning",
     "ExcavatorWarning",
     "TooSteepWarning",
     "TooFlatWarning",
-    "SlopeSegment",
-    "ProposedSlopeSegment",
+    "PathSegment",
+    "ProposedPathSegment",
     "Slope",
     "Pylon",
     "Lift",

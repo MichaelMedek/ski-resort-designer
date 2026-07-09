@@ -7,7 +7,7 @@ import pytest
 
 from skiresort_planner.constants import MapConfig
 from skiresort_planner.model.path_point import PathPoint
-from skiresort_planner.model.proposed_path import ProposedSlopeSegment
+from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import (
     AddSegmentsAction,
     DeleteSlopeAction,
@@ -21,7 +21,7 @@ class TestUndoWorkflow:
     def test_undo_single_segment_removes_segment_and_nodes(self, empty_graph, path_points_blue) -> None:
         """Undo AddSegmentsAction removes segment and cleans up isolated nodes."""
         graph = empty_graph
-        proposal = ProposedSlopeSegment(
+        proposal = ProposedPathSegment(
             points=path_points_blue,
             target_slope_pct=20.0,
             target_difficulty="blue",
@@ -53,7 +53,7 @@ class TestUndoWorkflow:
         ]
         graph.commit_paths(
             paths=[
-                ProposedSlopeSegment(points=points1, target_slope_pct=20.0, target_difficulty="blue", sector_name="P1")
+                ProposedPathSegment(points=points1, target_slope_pct=20.0, target_difficulty="blue", sector_name="P1")
             ]
         )
 
@@ -64,7 +64,7 @@ class TestUndoWorkflow:
         ]
         graph.commit_paths(
             paths=[
-                ProposedSlopeSegment(points=points2, target_slope_pct=20.0, target_difficulty="blue", sector_name="P2")
+                ProposedPathSegment(points=points2, target_slope_pct=20.0, target_difficulty="blue", sector_name="P2")
             ]
         )
 
@@ -81,7 +81,7 @@ class TestUndoWorkflow:
     def test_undo_finish_slope_keeps_segments(self, empty_graph, path_points_blue) -> None:
         """Undo FinishSlopeAction removes slope but preserves segments."""
         graph = empty_graph
-        proposal = ProposedSlopeSegment(
+        proposal = ProposedPathSegment(
             points=path_points_blue,
             target_slope_pct=20.0,
             target_difficulty="blue",
@@ -107,7 +107,7 @@ class TestUndoWorkflow:
     def test_undo_delete_slope_restores_slope(self, empty_graph, path_points_blue) -> None:
         """Undo DeleteSlopeAction restores the slope and its segments."""
         graph = empty_graph
-        proposal = ProposedSlopeSegment(
+        proposal = ProposedPathSegment(
             points=path_points_blue,
             target_slope_pct=20.0,
             target_difficulty="blue",
@@ -148,7 +148,7 @@ class TestUndoWorkflow:
             ]
             graph.commit_paths(
                 paths=[
-                    ProposedSlopeSegment(
+                    ProposedPathSegment(
                         points=points, target_slope_pct=20.0, target_difficulty="blue", sector_name=f"P{i}"
                     )
                 ]
@@ -195,7 +195,7 @@ class TestUndoStackSizeLimit:
             ]
             graph.commit_paths(
                 paths=[
-                    ProposedSlopeSegment(
+                    ProposedPathSegment(
                         points=points, target_slope_pct=20.0, target_difficulty="blue", sector_name=f"P{i}"
                     )
                 ]

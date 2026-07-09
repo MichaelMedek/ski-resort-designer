@@ -19,11 +19,11 @@ class TestMapRendering:
 
     def test_map_renderer_renders_graph_with_slope(self, empty_graph, path_points_blue) -> None:
         """MapRenderer renders graph with committed slope."""
-        from skiresort_planner.model.proposed_path import ProposedSlopeSegment
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
         from skiresort_planner.ui.center_map import MapRenderer
 
         graph = empty_graph
-        proposal = ProposedSlopeSegment(
+        proposal = ProposedPathSegment(
             points=path_points_blue,
             target_slope_pct=20.0,
             target_difficulty="blue",
@@ -39,11 +39,11 @@ class TestMapRendering:
 
     def test_map_renderer_renders_proposals(self, empty_graph, path_points_blue) -> None:
         """MapRenderer renders proposal paths."""
-        from skiresort_planner.model.proposed_path import ProposedSlopeSegment
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
         from skiresort_planner.ui.center_map import MapRenderer
 
         graph = empty_graph
-        proposal = ProposedSlopeSegment(
+        proposal = ProposedPathSegment(
             points=path_points_blue,
             target_slope_pct=20.0,
             target_difficulty="blue",
@@ -61,10 +61,10 @@ class TestProfileChartRendering:
 
     def test_proposal_chart_renders(self, path_points_blue) -> None:
         """ProfileChart can render a proposal."""
-        from skiresort_planner.model.proposed_path import ProposedSlopeSegment
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
         from skiresort_planner.ui.bottom_chart import ProfileChart
 
-        proposal = ProposedSlopeSegment(
+        proposal = ProposedPathSegment(
             points=path_points_blue,
             target_slope_pct=20.0,
             target_difficulty="blue",
@@ -79,11 +79,11 @@ class TestProfileChartRendering:
 
     def test_segment_chart_renders(self, empty_graph, path_points_blue) -> None:
         """ProfileChart can render a committed segment."""
-        from skiresort_planner.model.proposed_path import ProposedSlopeSegment
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
         from skiresort_planner.ui.bottom_chart import ProfileChart
 
         graph = empty_graph
-        proposal = ProposedSlopeSegment(
+        proposal = ProposedPathSegment(
             points=path_points_blue,
             target_slope_pct=20.0,
             target_difficulty="blue",

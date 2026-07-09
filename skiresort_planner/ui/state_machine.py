@@ -266,16 +266,20 @@ from skiresort_planner.ui.infra import trigger_rerun
 from skiresort_planner.ui.state_lifecycle import (
     enter_idle_ready,
     enter_idle_viewing_lift,
+    enter_idle_viewing_road,
     enter_idle_viewing_slope,
     enter_lift_placing,
+    enter_road_placing,
     enter_slope_building,
     enter_slope_custom_path,
     enter_slope_custom_picking,
     enter_slope_starting,
     exit_idle_ready,
     exit_idle_viewing_lift,
+    exit_idle_viewing_road,
     exit_idle_viewing_slope,
     exit_lift_placing,
+    exit_road_placing,
     exit_slope_building,
     exit_slope_custom_path,
     exit_slope_custom_picking,
@@ -372,6 +376,7 @@ class PlannerStateMachine(StateMachine):
     idle_ready = State("IdleReady", initial=True)
     idle_viewing_slope = State("IdleViewingSlope")
     idle_viewing_lift = State("IdleViewingLift")
+    idle_viewing_road = State("IdleViewingRoad")
 
     # SLOPE states (building in progress)
     slope_starting = State("SlopeStarting")
@@ -381,6 +386,9 @@ class PlannerStateMachine(StateMachine):
 
     # LIFT state
     lift_placing = State("LiftPlacing")
+
+    # ROAD state (two-click point-to-point, like a lift)
+    road_placing = State("RoadPlacing")
 
     # ==========================================================================
     # 1. Transitions: From IDLE_READY
@@ -393,8 +401,10 @@ class PlannerStateMachine(StateMachine):
 
     start_slope = idle_ready.to(slope_starting, event="start_slope")  # 1.4 [event: start_slope]
     start_lift = idle_ready.to(lift_placing, event="start_lift")  # 1.8 [event: start_lift]
+    start_road = idle_ready.to(road_placing, event="start_road")  # 1.9 [event: start_road]
     view_slope = idle_ready.to(idle_viewing_slope, event="view_slope")  # 1.2 [event: view_slope]
     view_lift = idle_ready.to(idle_viewing_lift, event="view_lift")  # 1.3 [event: view_lift]
+    view_road = idle_ready.to(idle_viewing_road, event="view_road")  # 1.5 [event: view_road]
 
     # ==========================================================================
     # 2. Transitions: From IDLE_VIEWING_SLOPE
@@ -409,8 +419,10 @@ class PlannerStateMachine(StateMachine):
     close_slope_panel = idle_viewing_slope.to(idle_ready, event="close_panel")  # 2.1 [event: close_panel]
     switch_slope = idle_viewing_slope.to(idle_viewing_slope, event="view_slope")  # 2.2 [event: view_slope] self-loop
     switch_to_lift_view = idle_viewing_slope.to(idle_viewing_lift, event="view_lift")  # 2.3 [event: view_lift]
+    switch_slope_to_road_view = idle_viewing_slope.to(idle_viewing_road, event="view_road")  # 2.5 [event: view_road]
     start_slope_from_slope_view = idle_viewing_slope.to(slope_starting, event="start_slope")  # 2.4 [event: start_slope]
     start_lift_from_slope_view = idle_viewing_slope.to(lift_placing, event="start_lift")  # 2.8 [event: start_lift]
+    start_road_from_slope_view = idle_viewing_slope.to(road_placing, event="start_road")  # 2.9 [event: start_road]
 
     # ==========================================================================
     # 3. Transitions: From IDLE_VIEWING_LIFT
@@ -425,8 +437,28 @@ class PlannerStateMachine(StateMachine):
     close_lift_panel = idle_viewing_lift.to(idle_ready, event="close_panel")  # 3.1 [event: close_panel]
     switch_to_slope_view = idle_viewing_lift.to(idle_viewing_slope, event="view_slope")  # 3.2 [event: view_slope]
     switch_lift = idle_viewing_lift.to(idle_viewing_lift, event="view_lift")  # 3.3 [event: view_lift] self-loop
+    switch_lift_to_road_view = idle_viewing_lift.to(idle_viewing_road, event="view_road")  # 3.5 [event: view_road]
     start_slope_from_lift_view = idle_viewing_lift.to(slope_starting, event="start_slope")  # 3.4 [event: start_slope]
     start_lift_from_lift_view = idle_viewing_lift.to(lift_placing, event="start_lift")  # 3.8 [event: start_lift]
+    start_road_from_lift_view = idle_viewing_lift.to(road_placing, event="start_road")  # 3.9 [event: start_road]
+
+    # ==========================================================================
+    # 3b. Transitions: From IDLE_VIEWING_ROAD
+    # ==========================================================================
+    # Events: close_panel, view_road (self-loop), view_slope, view_lift, start_*
+    # 3b.1. close_road_panel [event: close_panel]: Close button or click elsewhere
+    # 3b.5. switch_road [event: view_road, self-loop]: Click a different road
+    # 3b.2. switch_road_to_slope_view [event: view_slope]: Click a slope
+    # 3b.3. switch_road_to_lift_view [event: view_lift]: Click a lift
+    # 3b.4/8/9. start_* : Click terrain/node to start building in the active mode
+
+    close_road_panel = idle_viewing_road.to(idle_ready, event="close_panel")  # 3b.1 [event: close_panel]
+    switch_road = idle_viewing_road.to(idle_viewing_road, event="view_road")  # 3b.5 [event: view_road] self-loop
+    switch_road_to_slope_view = idle_viewing_road.to(idle_viewing_slope, event="view_slope")  # 3b.2 [event: view_slope]
+    switch_road_to_lift_view = idle_viewing_road.to(idle_viewing_lift, event="view_lift")  # 3b.3 [event: view_lift]
+    start_slope_from_road_view = idle_viewing_road.to(slope_starting, event="start_slope")  # 3b.4 [event: start_slope]
+    start_lift_from_road_view = idle_viewing_road.to(lift_placing, event="start_lift")  # 3b.8 [event: start_lift]
+    start_road_from_road_view = idle_viewing_road.to(road_placing, event="start_road")  # 3b.9 [event: start_road]
 
     # ==========================================================================
     # 4. Transitions: From SLOPE_STARTING (0 segments)
@@ -510,6 +542,16 @@ class PlannerStateMachine(StateMachine):
     cancel_lift = lift_placing.to(idle_ready)  # 8.1 [direct]
 
     # ==========================================================================
+    # 9. Transitions: From ROAD_PLACING
+    # ==========================================================================
+    # Direct transitions (two-click point-to-point, like a lift).
+    # 9.1. cancel_road [direct]: Cancel button
+    # 9.3. complete_road [direct]: Click end point → road built
+
+    complete_road = road_placing.to(idle_viewing_road)  # 9.3 [direct]
+    cancel_road = road_placing.to(idle_ready)  # 9.1 [direct]
+
+    # ==========================================================================
     # Guards (Conditions)
     # ==========================================================================
 
@@ -551,15 +593,27 @@ class PlannerStateMachine(StateMachine):
             # start_lift event (NOT start_lift - that IS the event entry point)
             "start_lift_from_slope_view",
             "start_lift_from_lift_view",
+            "start_lift_from_road_view",
+            # start_road event (NOT start_road - that IS the event entry point)
+            "start_road_from_slope_view",
+            "start_road_from_lift_view",
+            "start_road_from_road_view",
             # view_slope event (NOT view_slope - that IS the event entry point)
             "switch_to_slope_view",
             "switch_slope",
+            "switch_road_to_slope_view",
             # view_lift event (NOT view_lift - that IS the event entry point)
             "switch_to_lift_view",
             "switch_lift",
+            "switch_road_to_lift_view",
+            # view_road event (NOT view_road - that IS the event entry point)
+            "switch_slope_to_road_view",
+            "switch_lift_to_road_view",
+            "switch_road",
             # close_panel event (both are variants, event is "close_panel")
             "close_slope_panel",
             "close_lift_panel",
+            "close_road_panel",
         }
     )
 
@@ -570,7 +624,9 @@ class PlannerStateMachine(StateMachine):
     @property
     def is_idle(self) -> bool:
         """Check if in any idle state (not building)."""
-        return self.is_idle_ready or self.is_idle_viewing_slope or self.is_idle_viewing_lift
+        return (
+            self.is_idle_ready or self.is_idle_viewing_slope or self.is_idle_viewing_lift or self.is_idle_viewing_road
+        )
 
     @property
     def is_idle_ready(self) -> bool:
@@ -586,6 +642,11 @@ class PlannerStateMachine(StateMachine):
     def is_idle_viewing_lift(self) -> bool:
         """Check if viewing a lift."""
         return bool(self.idle_viewing_lift.is_active)
+
+    @property
+    def is_idle_viewing_road(self) -> bool:
+        """Check if viewing a road."""
+        return bool(self.idle_viewing_road.is_active)
 
     @property
     def is_slope_starting(self) -> bool:
@@ -612,6 +673,11 @@ class PlannerStateMachine(StateMachine):
         """Check if placing a lift."""
         return bool(self.lift_placing.is_active)
 
+    @property
+    def is_road_placing(self) -> bool:
+        """Check if placing a road (between two clicks)."""
+        return bool(self.road_placing.is_active)
+
     # Composite state checks
     @property
     def is_any_slope_state(self) -> bool:
@@ -628,8 +694,8 @@ class PlannerStateMachine(StateMachine):
 
     @property
     def is_info_panel_visible(self) -> bool:
-        """Check if info panel is visible (viewing slope or lift)."""
-        return self.is_idle_viewing_slope or self.is_idle_viewing_lift
+        """Check if info panel is visible (viewing slope, lift, or road)."""
+        return self.is_idle_viewing_slope or self.is_idle_viewing_lift or self.is_idle_viewing_road
 
     def is_slope_mode(self) -> bool:
         """Check if build mode is set to slope."""
@@ -638,6 +704,10 @@ class PlannerStateMachine(StateMachine):
     def is_lift_mode(self) -> bool:
         """Check if build mode is set to any lift type."""
         return BuildMode.is_lift(self.context.build_mode.mode)
+
+    def is_road_mode(self) -> bool:
+        """Check if build mode is set to road."""
+        return BuildMode.is_road(self.context.build_mode.mode)
 
     # ==========================================================================
     # Entry Hooks - Using lifecycle functions
@@ -654,6 +724,10 @@ class PlannerStateMachine(StateMachine):
     def on_enter_idle_viewing_lift(self) -> None:
         """Hook: Entering lift viewing state."""
         enter_idle_viewing_lift(self.context)
+
+    def on_enter_idle_viewing_road(self) -> None:
+        """Hook: Entering road viewing state."""
+        enter_idle_viewing_road(self.context)
 
     def on_enter_slope_starting(self) -> None:
         """Hook: Entering slope starting state."""
@@ -675,6 +749,10 @@ class PlannerStateMachine(StateMachine):
         """Hook: Entering lift placing state."""
         enter_lift_placing(self.context)
 
+    def on_enter_road_placing(self) -> None:
+        """Hook: Entering road placing state."""
+        enter_road_placing(self.context)
+
     # ==========================================================================
     # Exit Hooks - Using lifecycle functions
     # ==========================================================================
@@ -690,6 +768,10 @@ class PlannerStateMachine(StateMachine):
     def on_exit_idle_viewing_lift(self) -> None:
         """Hook: Exiting lift viewing state."""
         exit_idle_viewing_lift(self.context)
+
+    def on_exit_idle_viewing_road(self) -> None:
+        """Hook: Exiting road viewing state."""
+        exit_idle_viewing_road(self.context)
 
     def on_exit_slope_starting(self) -> None:
         """Hook: Exiting slope starting state."""
@@ -710,6 +792,10 @@ class PlannerStateMachine(StateMachine):
     def on_exit_lift_placing(self) -> None:
         """Hook: Exiting lift placing state."""
         exit_lift_placing(self.context)
+
+    def on_exit_road_placing(self) -> None:
+        """Hook: Exiting road placing state."""
+        exit_road_placing(self.context)
 
     # ==========================================================================
     # Transition Actions (before_* hooks)
@@ -769,6 +855,10 @@ class PlannerStateMachine(StateMachine):
         """Set lift_id before entering viewing state. Panel visibility set by enter function."""
         self.context.viewing.set_lift_id(lift_id=lift_id)
 
+    def before_view_road(self, road_id: str) -> None:
+        """Set road_id before entering viewing state. Panel visibility set by enter function."""
+        self.context.viewing.set_road_id(road_id=road_id)
+
     def before_switch_to_slope_view(self, slope_id: str) -> None:
         """Set slope_id when switching from lift view. Panel visibility set by enter function."""
         self.context.viewing.set_slope_id(slope_id=slope_id)
@@ -776,6 +866,10 @@ class PlannerStateMachine(StateMachine):
     def before_switch_to_lift_view(self, lift_id: str) -> None:
         """Set lift_id when switching from slope view. Panel visibility set by enter function."""
         self.context.viewing.set_lift_id(lift_id=lift_id)
+
+    def before_switch_to_road_view(self, road_id: str) -> None:
+        """Set road_id when switching from another view. Panel visibility set by enter function."""
+        self.context.viewing.set_road_id(road_id=road_id)
 
     def before_switch_slope(self, slope_id: str) -> None:
         """Set slope_id for different slope (self-loop). Panel visibility set by enter function."""
@@ -785,12 +879,20 @@ class PlannerStateMachine(StateMachine):
         """Set lift_id for different lift (self-loop). Panel visibility set by enter function."""
         self.context.viewing.set_lift_id(lift_id=lift_id)
 
+    def before_switch_road(self, road_id: str) -> None:
+        """Set road_id for a different road (self-loop). Panel visibility set by enter function."""
+        self.context.viewing.set_road_id(road_id=road_id)
+
     def before_close_slope_panel(self) -> None:
         """Before closing slope panel. Panel hidden by enter_idle_ready."""
         pass  # Visibility handled by enter_idle_ready
 
     def before_close_lift_panel(self) -> None:
         """Before closing lift panel. Panel hidden by enter_idle_ready."""
+        pass  # Visibility handled by enter_idle_ready
+
+    def before_close_road_panel(self) -> None:
+        """Before closing road panel. Panel hidden by enter_idle_ready."""
         pass  # Visibility handled by enter_idle_ready
 
     def before_start_lift(self, node_id: str | None = None, location: PathPoint | None = None) -> None:
@@ -802,10 +904,25 @@ class PlannerStateMachine(StateMachine):
     before_start_lift_from_slope_view = before_start_lift
     before_start_lift_from_lift_view = before_start_lift
 
+    def before_start_road(self, node_id: str | None = None, location: PathPoint | None = None) -> None:
+        """Action before starting road placement: store the first clicked point."""
+        self.context.road.start_node_id = node_id
+        self.context.road.start_location = location
+
+    # Reuse start_road logic for other entry points
+    before_start_road_from_slope_view = before_start_road
+    before_start_road_from_lift_view = before_start_road
+    before_start_road_from_road_view = before_start_road
+
     def before_complete_lift(self, lift_id: str) -> None:
         """Set lift_id before completing. Panel visibility set by enter_idle_viewing_lift."""
         self.context.viewing.set_lift_id(lift_id=lift_id)
         self.context.lift.clear()
+
+    def before_complete_road(self, road_id: str) -> None:
+        """Set road_id before completing. Panel visibility set by enter_idle_viewing_road."""
+        self.context.viewing.set_road_id(road_id=road_id)
+        self.context.road.clear()
 
     # ──────────────────────────────────────────────────────────────────────────────
     # Custom Connect Transitions (Single Source of Truth for ctx.custom_connect.*)
@@ -913,11 +1030,13 @@ class PlannerStateMachine(StateMachine):
         "idle_ready": exit_idle_ready,
         "idle_viewing_slope": exit_idle_viewing_slope,
         "idle_viewing_lift": exit_idle_viewing_lift,
+        "idle_viewing_road": exit_idle_viewing_road,
         "slope_starting": exit_slope_starting,
         "slope_building": exit_slope_building,
         "slope_custom_picking": exit_slope_custom_picking,
         "slope_custom_path": exit_slope_custom_path,
         "lift_placing": exit_lift_placing,
+        "road_placing": exit_road_placing,
     }
 
     def force_idle(self) -> None:
@@ -1040,6 +1159,13 @@ class PlannerStateMachine(StateMachine):
         """
         self.start_lift(node_id=node_id, location=location)
 
+    def select_road_start(self, node_id: str | None = None, location: PathPoint | None = None) -> None:
+        """Start placing a road from any idle state.
+
+        Uses start_road event - SM resolves to appropriate transition.
+        """
+        self.start_road(node_id=node_id, location=location)
+
     def commit_segment(self, segment_id: str, endpoint_node_id: str) -> None:
         """Commit a path segment. SM resolves to commit_first_path or commit_continue_path."""
         self.commit_path(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
@@ -1057,6 +1183,13 @@ class PlannerStateMachine(StateMachine):
         Uses view_lift event - SM resolves to appropriate transition.
         """
         self.view_lift(lift_id=lift_id)
+
+    def show_road_info_panel(self, road_id: str) -> None:
+        """Show road info panel from any idle state.
+
+        Uses view_road event - SM resolves to appropriate transition.
+        """
+        self.view_road(road_id=road_id)
 
     def hide_info_panel(self) -> None:
         """Hide info panel (transitions to idle_ready if viewing).

@@ -20,13 +20,13 @@ class TestResortGraphSerialization:
         - All slopes preserved with segment references
         - Counters restored correctly
         """
-        from skiresort_planner.model.proposed_path import ProposedSlopeSegment
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
         from skiresort_planner.model.resort_graph import ResortGraph
 
         graph = empty_graph
 
         # Create some data
-        proposal = ProposedSlopeSegment(
+        proposal = ProposedPathSegment(
             points=path_points_blue,
             target_slope_pct=20.0,
             target_difficulty="blue",
@@ -60,11 +60,11 @@ class TestResortGraphSerialization:
 
     def test_roundtrip_preserves_segment_points(self, empty_graph, path_points_blue) -> None:
         """Segment points are preserved through serialization."""
-        from skiresort_planner.model.proposed_path import ProposedSlopeSegment
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
         from skiresort_planner.model.resort_graph import ResortGraph
 
         graph = empty_graph
-        proposal = ProposedSlopeSegment(
+        proposal = ProposedPathSegment(
             points=path_points_blue,
             target_slope_pct=20.0,
             target_difficulty="blue",
@@ -94,11 +94,11 @@ class TestFileSaveLoad:
         """ResortGraph can be serialized to JSON file and loaded back using to_dict/from_dict."""
         import json
 
-        from skiresort_planner.model.proposed_path import ProposedSlopeSegment
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
         from skiresort_planner.model.resort_graph import ResortGraph
 
         graph = empty_graph
-        proposal = ProposedSlopeSegment(
+        proposal = ProposedPathSegment(
             points=path_points_blue,
             target_slope_pct=20.0,
             target_difficulty="blue",

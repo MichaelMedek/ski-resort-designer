@@ -1,7 +1,7 @@
-"""ProposedSlopeSegment - A slope segment proposal before committing to the graph.
+"""ProposedPathSegment - A slope segment proposal before committing to the graph.
 
-ProposedSlopeSegment represents a potential slope segment that has been traced
-but not yet committed. It inherits computed metrics from BaseSlopePath.
+ProposedPathSegment represents a potential slope segment that has been traced
+but not yet committed. It inherits computed metrics from Path.
 
 Created by PathFactory, consumed by ResortGraph.commit_paths().
 
@@ -11,17 +11,17 @@ Reference: DETAILS.md
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from skiresort_planner.model.base_slope_path import BaseSlopePath
+from skiresort_planner.model.path_geometry import Path
 
 if TYPE_CHECKING:
     pass
 
 
 @dataclass
-class ProposedSlopeSegment(BaseSlopePath):
+class ProposedPathSegment(Path):
     """A proposed slope segment before committing to the graph.
 
-    Inherits points and geometric metrics from BaseSlopePath.
+    Inherits points and geometric metrics from Path.
 
     Attributes:
         target_slope_pct: Target slope used during tracing

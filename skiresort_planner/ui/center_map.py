@@ -31,7 +31,7 @@ from skiresort_planner.constants import (
     StyleConfig,
 )
 from skiresort_planner.core.geo_calculator import GeoCalculator
-from skiresort_planner.model.proposed_path import ProposedSlopeSegment
+from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 
 if TYPE_CHECKING:
@@ -133,7 +133,7 @@ class MapRenderer:
 
     def render(
         self,
-        proposals: list[ProposedSlopeSegment] | None = None,
+        proposals: list[ProposedPathSegment] | None = None,
         selected_proposal_idx: int | None = None,
         show_nodes: bool = True,
         show_segments: bool = True,
@@ -694,7 +694,7 @@ class MapRenderer:
 
     def _create_proposal_layers(
         self,
-        proposals: list[ProposedSlopeSegment],
+        proposals: list[ProposedPathSegment],
         selected_idx: int | None,
         is_custom_path: bool = False,
         use_3d: bool = False,

@@ -8,21 +8,21 @@ import pytest
 
 from skiresort_planner.generators.path_factory import GradeConfig, PathFactory, Side
 from skiresort_planner.model.path_point import PathPoint
-from skiresort_planner.model.proposed_path import ProposedSlopeSegment
+from skiresort_planner.model.proposed_path import ProposedPathSegment
 
 
-def make_path(coords: list[tuple[float, float, float]], slope_pct: float = 20.0) -> ProposedSlopeSegment:
-    """Helper to create a ProposedSlopeSegment from coordinate tuples.
+def make_path(coords: list[tuple[float, float, float]], slope_pct: float = 20.0) -> ProposedPathSegment:
+    """Helper to create a ProposedPathSegment from coordinate tuples.
 
     Args:
         coords: List of (lon, lat, elev) tuples
         slope_pct: Target slope percentage
 
     Returns:
-        ProposedSlopeSegment with the given points
+        ProposedPathSegment with the given points
     """
     points = [PathPoint(lon=lon, lat=lat, elevation=elev) for lon, lat, elev in coords]
-    return ProposedSlopeSegment(points=points, target_slope_pct=slope_pct)
+    return ProposedPathSegment(points=points, target_slope_pct=slope_pct)
 
 
 class TestGradeConfig:
