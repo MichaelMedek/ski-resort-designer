@@ -34,6 +34,7 @@ from skiresort_planner.model.resort_graph import (
     ResortGraph,
     UndoAction,
 )
+from skiresort_planner.persistence import backup_store
 from skiresort_planner.ui.actions import bump_map_version, reload_map, trigger_rerun, undo_last_action
 from skiresort_planner.ui.state_machine import (
     BuildMode,
@@ -92,6 +93,31 @@ def _confirm_undo_dialog(action: UndoAction, graph: ResortGraph) -> None:
         if st.button("↩️ Yes, Undo", type="primary", use_container_width=True):
             # Set flag for main render loop to execute undo after dialog closes
             st.session_state._pending_undo = True
+            trigger_rerun()
+    with col_no:
+        if st.button("✖️ Cancel", use_container_width=True):
+            trigger_rerun()
+
+
+@st.dialog("🆕 Reset to Empty")
+def _confirm_reset_resort_dialog() -> None:
+    """Confirm resetting to a fresh empty resort.
+
+    Deletes the current resort's backup and starts a brand-new empty one.
+    Needed because the bare link always reloads the biggest existing backup,
+    so an empty start must be requested explicitly.
+    """
+    st.warning("This clears the current resort and starts empty. The current backup is deleted. Cannot be undone.")
+    col_yes, col_no = st.columns(2)
+    with col_yes:
+        if st.button("🆕 Yes, Start Empty", type="primary", use_container_width=True):
+            current = st.session_state.get("resort_id")
+            if current:
+                backup_store.delete(resort_id=current)
+            st.query_params["resort"] = backup_store.new_resort_id()
+            # Drop all session data so init_session_state rebuilds fresh
+            for key in ("resort_id", "graph", "state_machine", "context", "map_renderer", "_saved_token"):
+                st.session_state.pop(key, None)
             trigger_rerun()
     with col_no:
         if st.button("✖️ Cancel", use_container_width=True):
@@ -525,6 +551,12 @@ class SidebarRenderer:
 
             # Header with counts
             st.markdown(f"**{total_slopes} Slopes • {total_lifts} Lifts**")
+
+            # Elevation range across all nodes
+            elev_range = self.graph.get_elevation_range()
+            if elev_range is not None:
+                min_elev, max_elev = elev_range
+                st.markdown(f"⛰️ Elevation: {min_elev:.0f}m – {max_elev:.0f}m")
             st.divider()
 
             # === SLOPES SECTION ===
@@ -601,16 +633,19 @@ class SidebarRenderer:
                     st.session_state.graph = loaded_graph
 
                     # Center map on mean lat/lon of all nodes
-                    if loaded_graph.nodes:
-                        lats = [n.lat for n in loaded_graph.nodes.values()]
-                        lons = [n.lon for n in loaded_graph.nodes.values()]
-                        mean_lat = sum(lats) / len(lats)
-                        mean_lon = sum(lons) / len(lons)
-                        self.ctx.map.set_center(lon=mean_lon, lat=mean_lat)
-                        logger.info(f"Centered map on mean: ({mean_lat:.5f}, {mean_lon:.5f})")
+                    center = loaded_graph.get_center()
+                    if center is not None:
+                        center_lon, center_lat = center
+                        self.ctx.map.set_center(lon=center_lon, lat=center_lat)
+                        logger.info(f"Centered map on mean: ({center_lat:.5f}, {center_lon:.5f})")
 
                     logger.info(f"Loaded resort from file: {uploaded_file.name}")
                     st.session_state._upload_counter = st.session_state.get("_upload_counter", 0) + 1
+                    # Persist as the session's working backup so an F5 restores it
+                    resort_id = st.session_state.get("resort_id")
+                    if resort_id:
+                        backup_store.save(graph=loaded_graph, resort_id=resort_id)
+                        st.session_state._saved_token = loaded_graph.change_token()
                     reload_map()  # Fresh graph needs map version bump for Pydeck
                 except Exception as e:
                     FileLoadErrorMessage(error=str(e)).display()
@@ -656,3 +691,16 @@ class SidebarRenderer:
                     disabled=True,
                     help="Build some slopes or lifts first",
                 )
+
+            st.divider()
+
+            # Reset to a fresh empty resort. Needed because the bare link always
+            # reloads the biggest existing backup, so empty must be requested.
+            if st.button(
+                "🆕 Reset to Empty",
+                width="stretch",
+                help="Clear the current resort and start a new empty one",
+                disabled=not can_save,
+                key="reset_resort_button",
+            ):
+                _confirm_reset_resort_dialog()

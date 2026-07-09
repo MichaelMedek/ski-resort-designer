@@ -23,6 +23,7 @@ from skiresort_planner.core.dem_service import DEMService, download_dem_from_hug
 from skiresort_planner.generators.path_factory import PathFactory
 from skiresort_planner.model.message import DEMLoadingMessage
 from skiresort_planner.model.resort_graph import ResortGraph
+from skiresort_planner.persistence import backup_store
 from skiresort_planner.ui import (
     ClickDetector,
     MapRenderer,
@@ -64,6 +65,9 @@ logger = logging.getLogger(__name__)
 
 def init_session_state() -> None:
     """Initialize session state with DEM, graph, and UI components."""
+    if "resort_id" not in st.session_state:
+        _init_resort_from_url_or_new()
+
     if "graph" not in st.session_state:
         st.session_state.graph = ResortGraph()
 
@@ -73,19 +77,53 @@ def init_session_state() -> None:
         st.session_state.context = ctx
 
     if "map_renderer" not in st.session_state:
+        center = st.session_state.pop("_loaded_map_center", None)
+        center_lon = center[0] if center else MapConfig.START_CENTER_LON
+        center_lat = center[1] if center else MapConfig.START_CENTER_LAT
         st.session_state.map_renderer = MapRenderer(
-            center_lon=MapConfig.START_CENTER_LON,
-            center_lat=MapConfig.START_CENTER_LAT,
+            center_lon=center_lon,
+            center_lat=center_lat,
             zoom=MapConfig.DEFAULT_ZOOM,
             pitch=MapConfig.DEFAULT_PITCH,
             bearing=MapConfig.DEFAULT_BEARING,
         )
+        if center is not None:
+            st.session_state.context.map.set_center(lon=center_lon, lat=center_lat)
 
     if "_upload_counter" not in st.session_state:
         st.session_state._upload_counter = 0
 
     if "map_version" not in st.session_state:
         st.session_state.map_version = 0
+
+
+def _init_resort_from_url_or_new() -> None:
+    """Resolve the session's resort_id and prime the graph from a backup.
+
+    - If the URL has ?resort=<id> and a backup exists, load it. This is the
+      reload path — F5, brief outage, and reopened bookmarks keep the URL.
+    - Otherwise (bare link) fall back to the biggest existing backup by node
+      count — almost always the user's own work — and adopt its id.
+    - If no backups exist, start a fresh empty resort.
+    """
+    param_id = st.query_params.get("resort")
+    if not param_id:
+        param_id = backup_store.largest_resort_id()
+
+    if param_id:
+        loaded = backup_store.load(resort_id=param_id)
+        if loaded is not None:
+            st.session_state.resort_id = param_id
+            st.session_state.graph = loaded
+            st.session_state._saved_token = loaded.change_token()
+            st.query_params["resort"] = param_id
+            # Renderer/context don't exist yet; stash center for MapRenderer init.
+            st.session_state._loaded_map_center = loaded.get_center()
+            logger.info(f"Loaded resort {param_id} from backup")
+            return
+
+    st.session_state.resort_id = backup_store.new_resort_id()
+    st.query_params["resort"] = st.session_state.resort_id
 
 
 def reset_ui_state() -> None:
@@ -149,7 +187,8 @@ def load_dem_data() -> bool:
         st.session_state.dem_service = dem_service
         st.session_state.path_factory = PathFactory(dem_service=dem_service)
 
-    trigger_rerun()  # Raises StopExecution, never returns
+    trigger_rerun()  # Raises StopExecution in production; returns in tests
+    return False  # Reached only under a mocked rerun: DEM not ready yet
 
 
 # =============================================================================

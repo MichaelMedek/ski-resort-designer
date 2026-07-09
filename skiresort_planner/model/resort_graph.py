@@ -722,6 +722,36 @@ class ResortGraph:
             "total_lifts": len(self.lifts),
         }
 
+    def get_elevation_range(self) -> tuple[float, float] | None:
+        """Return (min, max) elevation across all nodes, or None if empty."""
+        if not self.nodes:
+            return None
+        elevations = [n.elevation for n in self.nodes.values()]
+        return min(elevations), max(elevations)
+
+    def get_center(self) -> tuple[float, float] | None:
+        """Return (lon, lat) mean of all node coordinates, or None if empty."""
+        if not self.nodes:
+            return None
+        lons = [n.lon for n in self.nodes.values()]
+        lats = [n.lat for n in self.nodes.values()]
+        return sum(lons) / len(lons), sum(lats) / len(lats)
+
+    def change_token(self) -> tuple[int, int, int, int, int]:
+        """Return a cheap snapshot that changes on any graph mutation.
+
+        The four entity counters only grow; undo_stack length moves on
+        commit/cancel/undo. Comparing this token to the last-saved one tells
+        the autosave hook whether a write is needed — no full serialization.
+        """
+        return (
+            self._node_counter,
+            self._segment_counter,
+            self._slope_counter,
+            self._lift_counter,
+            len(self.undo_stack),
+        )
+
     # =========================================================================
     # Serialization
     # =========================================================================
