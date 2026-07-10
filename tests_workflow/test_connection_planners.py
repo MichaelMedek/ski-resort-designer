@@ -259,6 +259,58 @@ class TestMomentumTurnPenalty:
         )
         assert with_momentum == pytest.approx(base, rel=1e-12), "beyond MOMENTUM_DECAY_M momentum has no effect"
 
+    def test_position_pin_penalizes_sideways_jump_at_node(self, planner: LeastCostPathPlanner) -> None:
+        """The position term makes an edge that jumps SIDEWAYS off the node far costlier
+        than one staying on the incoming line — so the path leaves from where it should,
+        not just at the right heading. Regression for the 'jumps left off the node' bug.
+        """
+        M = 111320.0
+        # Incoming due east (90°). On-line endpoint (east) vs sideways endpoint (north), same 20m from node.
+        on_line = planner._momentum_multiplier(
+            from_lon=0.0,
+            from_lat=0.0,
+            to_lon=20 / M,
+            to_lat=0.0,
+            incoming_bearing=90.0,
+            start_lon=0.0,
+            start_lat=0.0,
+        )
+        sideways = planner._momentum_multiplier(
+            from_lon=0.0,
+            from_lat=0.0,
+            to_lon=0.0,
+            to_lat=20 / M,
+            incoming_bearing=90.0,
+            start_lon=0.0,
+            start_lat=0.0,
+        )
+        assert on_line == pytest.approx(1.0, abs=1e-3), "staying on the incoming line has ~no penalty"
+        assert sideways > on_line * 3, "a sideways jump off the node is strongly penalized"
+
+    def test_position_pin_fades_faster_than_turn(self, planner: LeastCostPathPlanner) -> None:
+        """The position pin fades over MOMENTUM_POS_DECAY_M (≪ MOMENTUM_DECAY_M): a
+        lateral offset just past the position decay is unpenalized by position, while
+        the turn term can still act within its longer range.
+        """
+        from skiresort_planner.constants import PlannerConfig
+
+        assert PlannerConfig.MOMENTUM_POS_DECAY_M < PlannerConfig.MOMENTUM_DECAY_M, "position pin must fade faster"
+        M = 111320.0
+        # An endpoint laterally offset but beyond the POS decay radius → no position term;
+        # place both from and to past POS decay so only the (still-active) turn term remains.
+        past_pos = (PlannerConfig.MOMENTUM_POS_DECAY_M + 20.0) / M  # north of start, beyond pos range
+        mult = planner._momentum_multiplier(
+            from_lon=0.0,
+            from_lat=past_pos,
+            to_lon=20 / M,
+            to_lat=past_pos,  # on-heading (east) edge
+            incoming_bearing=90.0,
+            start_lon=0.0,
+            start_lat=0.0,
+        )
+        # On-heading + no position penalty in range → ~1.0 (turn term is 0 for a matching heading).
+        assert mult == pytest.approx(1.0, abs=1e-3)
+
 
 class TestGridNode:
     """Unit tests for GridNode dataclass."""

@@ -259,6 +259,14 @@ class PlannerConfig:
     MOMENTUM_TURN_WEIGHT = 0.6  # Turn-penalty strength near the start node (0 = off)
     MOMENTUM_DECAY_M = 300.0  # Turn penalty fades linearly to 0 over this distance from start
 
+    # Momentum — POSITION pin: on top of the bearing (turn) penalty above, penalize
+    # lateral drift away from the incoming line right at the node. Stronger
+    # weight but a MUCH faster fade than the turn term — it must nail the first few
+    # metres then release to terrain-following.
+    MOMENTUM_POS_WEIGHT = 2.0  # Cross-track (position) penalty strength at the node
+    MOMENTUM_POS_DECAY_M = 60.0  # Position pin fades linearly to 0 over this (≪ turn decay)
+    MOMENTUM_POS_SCALE_M = 15.0  # Lateral offset (m) that costs one unit of weight (~1 grid cell)
+
     # Path deduplication for overlapping path removal
     # ~0.0001 degrees ≈ ~10 meters at mid-latitudes
     PATH_SIMILARITY_TOLERANCE = 0.0001

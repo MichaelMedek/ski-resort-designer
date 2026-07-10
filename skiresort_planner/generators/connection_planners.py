@@ -14,7 +14,7 @@ Reference: DETAILS.md Section 7 for algorithm details.
 import logging
 import math
 from dataclasses import dataclass
-from math import exp
+from math import exp, radians, sin
 from typing import Optional
 
 import numpy as np
@@ -241,7 +241,8 @@ class LeastCostPathPlanner:
                 elev = self.dem.get_elevation(lon=lon, lat=lat)
                 if elev is None:
                     raise RuntimeError(
-                        f"DEM returned None for grid point at row={row}, col={col} (lon={lon}, lat={lat}), cannot build grid with missing elevation data"
+                        f"DEM returned None for grid point at row={row}, col={col} "
+                        f"(lon={lon}, lat={lat}), cannot build grid with missing elevation data"
                     )
 
                 elev_row.append(elev)
@@ -512,13 +513,19 @@ class LeastCostPathPlanner:
         start_lon: Optional[float],
         start_lat: Optional[float],
     ) -> float:
-        """Light, distance-decaying turn penalty for heading continuity at a node.
+        """Distance-decaying momentum penalty for a clean departure from a node.
 
-        Returns 1.0 (no effect) when there is no incoming heading, or once the edge
-        is farther than MOMENTUM_DECAY_M from the start node — so only the join
-        region is biased, never mid-segment. Near the start, an edge that turns
-        sharply away from `incoming_bearing` costs exp(w · decay · turn/90) more,
-        with w = MOMENTUM_TURN_WEIGHT. Kept light so slope/band penalties dominate.
+        Two stacked terms, both fading to 1.0 (no effect) past their range so
+        mid-segment routing is untouched:
+
+        - TURN: an edge whose heading deviates from `incoming_bearing` costs more,
+          fading over MOMENTUM_DECAY_M. Keeps the path leaving at the right heading.
+        - POSITION: the edge's endpoint drifting laterally off the incoming line
+          (cross-track offset) costs more — stronger weight, MUCH faster fade
+          (MOMENTUM_POS_DECAY_M). Pins WHERE the path leaves so it can't jump
+          sideways off the node, then releases quickly to terrain-following.
+
+        Returns 1.0 when there is no incoming heading / start position.
         """
         if incoming_bearing is None or start_lon is None or start_lat is None:
             return 1.0
@@ -526,16 +533,37 @@ class LeastCostPathPlanner:
         dist_from_start = GeoCalculator.haversine_distance_m(
             lat1=start_lat, lon1=start_lon, lat2=from_lat, lon2=from_lon
         )
-        if dist_from_start >= PlannerConfig.MOMENTUM_DECAY_M:
+
+        # TURN term (heading continuity), fading over the long decay.
+        turn_penalty = 0.0
+        if dist_from_start < PlannerConfig.MOMENTUM_DECAY_M:
+            edge_bearing = GeoCalculator.initial_bearing_deg(lon1=from_lon, lat1=from_lat, lon2=to_lon, lat2=to_lat)
+            turn = abs(edge_bearing - incoming_bearing) % 360
+            if turn > 180:
+                turn = 360 - turn  # normalize to [0, 180]
+            decay = 1.0 - dist_from_start / PlannerConfig.MOMENTUM_DECAY_M
+            turn_penalty = PlannerConfig.MOMENTUM_TURN_WEIGHT * decay * (turn / 90.0)
+
+        # POSITION term (cross-track pin), stronger but fading over the short decay.
+        # Cross-track = perpendicular distance of the edge endpoint from the incoming
+        # line through the start node; that is what a sideways jump increases.
+        pos_penalty = 0.0
+        to_dist_from_start = GeoCalculator.haversine_distance_m(
+            lat1=start_lat, lon1=start_lon, lat2=to_lat, lon2=to_lon
+        )
+        if to_dist_from_start < PlannerConfig.MOMENTUM_POS_DECAY_M:
+            to_bearing = GeoCalculator.initial_bearing_deg(lon1=start_lon, lat1=start_lat, lon2=to_lon, lat2=to_lat)
+            angle_off = abs(to_bearing - incoming_bearing) % 360
+            if angle_off > 180:
+                angle_off = 360 - angle_off
+            cross_track_m = to_dist_from_start * abs(sin(radians(angle_off)))
+            pos_decay = 1.0 - to_dist_from_start / PlannerConfig.MOMENTUM_POS_DECAY_M
+            lateral_units = cross_track_m / PlannerConfig.MOMENTUM_POS_SCALE_M
+            pos_penalty = PlannerConfig.MOMENTUM_POS_WEIGHT * pos_decay * lateral_units
+
+        if turn_penalty == 0.0 and pos_penalty == 0.0:
             return 1.0
-
-        edge_bearing = GeoCalculator.initial_bearing_deg(lon1=from_lon, lat1=from_lat, lon2=to_lon, lat2=to_lat)
-        turn = abs(edge_bearing - incoming_bearing) % 360
-        if turn > 180:
-            turn = 360 - turn  # normalize to [0, 180]
-
-        decay = 1.0 - dist_from_start / PlannerConfig.MOMENTUM_DECAY_M  # 1 at start → 0 at MOMENTUM_DECAY_M
-        return exp(PlannerConfig.MOMENTUM_TURN_WEIGHT * decay * (turn / 90.0))
+        return exp(turn_penalty + pos_penalty)
 
     def _path_to_points(
         self,
