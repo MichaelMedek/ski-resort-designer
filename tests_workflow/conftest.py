@@ -160,11 +160,12 @@ class FakeStreamlit:
 
 @pytest.fixture
 def fake_st(monkeypatch: pytest.MonkeyPatch) -> FakeStreamlit:
-    """Install a fake `st` into every skiresort_planner.ui module.
+    """Install a fake `st` into every skiresort_planner module that imports it.
 
-    UI modules do `import streamlit as st`, so we patch each module's `st`
-    attribute. Panel render() calls then exercise all widget code paths without
-    a browser — tests assert the function returned (didn't raise).
+    Modules do `import streamlit as st`, so we patch each module's `st`
+    attribute. Panel render() / app functions then exercise all widget code
+    paths without a browser. Covers the whole `skiresort_planner.ui` package
+    plus the top-level `app` module (which drives the full render loop).
     """
     import importlib
     import pkgutil
@@ -172,8 +173,9 @@ def fake_st(monkeypatch: pytest.MonkeyPatch) -> FakeStreamlit:
     import skiresort_planner.ui as ui_pkg
 
     fake = FakeStreamlit()
-    for mod_info in pkgutil.iter_modules(ui_pkg.__path__, ui_pkg.__name__ + "."):
-        module = importlib.import_module(mod_info.name)
+    modules = [importlib.import_module(mi.name) for mi in pkgutil.iter_modules(ui_pkg.__path__, ui_pkg.__name__ + ".")]
+    modules.append(importlib.import_module("skiresort_planner.app"))
+    for module in modules:
         if hasattr(module, "st"):
             monkeypatch.setattr(module, "st", fake, raising=False)
     return fake
