@@ -62,7 +62,9 @@ class TestClickDetectorParsing:
         [
             pytest.param({"type": "node", "id": "N42"}, MarkerType.NODE, {"node_id": "N42"}, id="node"),
             pytest.param({"type": "slope", "id": "SL1"}, MarkerType.SLOPE, {"slope_id": "SL1"}, id="slope"),
+            pytest.param({"type": "segment", "id": "S3"}, MarkerType.SEGMENT, {"segment_id": "S3"}, id="segment"),
             pytest.param({"type": "lift", "id": "L5"}, MarkerType.LIFT, {"lift_id": "L5"}, id="lift"),
+            pytest.param({"type": "road", "id": "R2"}, MarkerType.ROAD, {"road_id": "R2"}, id="road"),
             pytest.param(
                 {"type": "pylon", "lift_id": "L1", "pylon_index": 3},
                 MarkerType.PYLON,

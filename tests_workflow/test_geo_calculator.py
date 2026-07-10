@@ -16,7 +16,6 @@ class TestGeoCalculator:
         - 1° latitude = ~111km
         - 1° longitude at 46°N = ~77km
         - Bearing north = 0°, south = 180°, east = 90°
-        - destination() roundtrip consistent with haversine()
         """
         # 1 degree latitude should be ~111km
         dist_lat = GeoCalculator.haversine_distance_m(lat1=46.0, lon1=10.0, lat2=47.0, lon2=10.0)

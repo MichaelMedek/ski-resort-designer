@@ -93,14 +93,14 @@ class TestPathGenerationOnRealTerrain:
             assert path.total_drop_m > 0, f"Path {path.sector_name} should go downhill"
 
     def test_least_cost_path_planner(self, real_dem) -> None:
-        """LeastCostPathPlanner finds valid connection path.
+        """LeastCostPathPlanner finds a valid downhill connection path.
 
         Tests:
-        - Plans path between two points
-        - Path has valid endpoints
-        - Path respects terrain
+        - Plans a path between two real points (start guaranteed higher)
+        - Returned path genuinely connects start → target with ordered points
         """
         from skiresort_planner.constants import MapConfig
+        from skiresort_planner.core.geo_calculator import GeoCalculator
         from skiresort_planner.generators.connection_planners import LeastCostPathPlanner
 
         analyzer = TerrainAnalyzer(dem=real_dem)
@@ -108,29 +108,33 @@ class TestPathGenerationOnRealTerrain:
 
         M = MapConfig.METERS_PER_DEGREE_EQUATOR
 
-        # Plan from high point to lower point
-        start_lon, start_lat = 10.32, 46.98
-        start_elev = real_dem.get_elevation(lon=start_lon, lat=start_lat)
-        assert start_elev is not None, "Start point should have valid elevation"
+        # Two points ~500m apart on the N-S line. Slope-mode planning REQUIRES net
+        # descent, so orient the pair by elevation: higher point is the start.
+        lon = 10.32
+        lat_a, lat_b = 46.98, 46.98 - 500 / M
+        elev_a = real_dem.get_elevation(lon=lon, lat=lat_a)
+        elev_b = real_dem.get_elevation(lon=lon, lat=lat_b)
+        assert elev_a is not None and elev_b is not None, "Both sample points need valid elevation"
 
-        # Target point ~500m south (should be downhill in most terrain)
-        target_lat = start_lat - 500 / M
-        target_lon = start_lon
-        target_elev = real_dem.get_elevation(lon=target_lon, lat=target_lat)
-        assert target_elev is not None, "Target point should have valid elevation"
+        (start_lat, start_elev), (target_lat, target_elev) = (
+            ((lat_a, elev_a), (lat_b, elev_b)) if elev_a >= elev_b else ((lat_b, elev_b), (lat_a, elev_a))
+        )
 
-        # LeastCostPathPlanner.plan() returns a single path or None
         path = planner.plan(
-            start_lon=start_lon,
+            start_lon=lon,
             start_lat=start_lat,
             start_elevation=start_elev,
-            target_lon=target_lon,
+            target_lon=lon,
             target_lat=target_lat,
             target_elevation=target_elev,
             target_slope_pct=20.0,
             side="left",
         )
 
-        # May return None if terrain doesn't allow connection
-        # But should not raise an error
-        assert path is None or hasattr(path, "points"), "Should return None or ProposedPathSegment"
+        # With guaranteed descent over 500m of real terrain, a path must exist and
+        # genuinely connect start → target with ordered points.
+        assert path is not None, "downhill connection over 500m must yield a path"
+        assert len(path.points) >= 2, "a real path has at least start and end points"
+        first, last = path.points[0], path.points[-1]
+        assert GeoCalculator.haversine_distance_m(lat1=first.lat, lon1=first.lon, lat2=start_lat, lon2=lon) < 60
+        assert GeoCalculator.haversine_distance_m(lat1=last.lat, lon1=last.lon, lat2=target_lat, lon2=lon) < 60
