@@ -94,13 +94,48 @@ class TestClickDetectorParsing:
         "clicked_object",
         [
             pytest.param({"type": "unknown_thing"}, id="unknown_type"),
-            pytest.param({"type": "node"}, id="node_missing_id"),
+            pytest.param({}, id="no_type_field"),
+            pytest.param({"type": "terrain"}, id="terrain_missing_coords"),
+            pytest.param({"type": "Feature", "properties": {}}, id="feature_without_properties_type"),
         ],
     )
-    def test_invalid_object_returns_none(self, detector: ClickDetector, clicked_object: dict) -> None:
-        """Unknown type or missing required field returns None."""
+    def test_unrecognized_object_returns_none(self, detector: ClickDetector, clicked_object: dict) -> None:
+        """Genuinely unlabeled/unknown picks (pydeck can emit these) are ignored, not crashed."""
         result = detector.detect(clicked_object=clicked_object, clicked_coordinate=None)
         assert result is None
+
+    @pytest.mark.parametrize(
+        "clicked_object",
+        [
+            pytest.param({"type": "node"}, id="node_missing_id"),
+            pytest.param({"type": "segment"}, id="segment_missing_id"),
+            pytest.param({"type": "slope"}, id="slope_missing_id"),
+            pytest.param({"type": "lift"}, id="lift_missing_id"),
+            pytest.param({"type": "road"}, id="road_missing_id"),
+            pytest.param({"type": "pylon", "lift_id": "L1"}, id="pylon_missing_index"),
+            pytest.param({"type": "pylon", "pylon_index": 0}, id="pylon_missing_lift_id"),
+            pytest.param({"type": "proposal_endpoint"}, id="proposal_endpoint_missing_index"),
+            pytest.param({"type": "proposal_body"}, id="proposal_body_missing_index"),
+        ],
+    )
+    def test_marker_with_matching_type_but_missing_id_raises(
+        self, detector: ClickDetector, clicked_object: dict
+    ) -> None:
+        """A marker whose type matches but lacks its required id/index is a rendering bug → assert, not swallow.
+
+        We always render these markers with their id (center_map.py), so a miss here
+        can only be corrupted state — it must fail loudly, not silently return None.
+        """
+        with pytest.raises(AssertionError):
+            detector.detect(clicked_object=clicked_object, clicked_coordinate=None)
+
+    def test_geojson_feature_extracts_type_from_properties(self, detector: ClickDetector) -> None:
+        """A GeoJSON Feature parses its marker type from nested properties (segment belt click)."""
+        obj = {"type": "Feature", "properties": {"type": "segment", "id": "S3"}}
+        result = detector.detect(clicked_object=obj, clicked_coordinate=None)
+        assert result is not None
+        assert result.marker_type == MarkerType.SEGMENT
+        assert result.segment_id == "S3"
 
 
 class TestClickDetectorDeduplication:
