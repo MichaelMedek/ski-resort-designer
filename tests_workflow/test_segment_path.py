@@ -119,6 +119,31 @@ class TestSegmentKind:
         assert PathSegment.from_dict(data=data).kind is SegmentKind.ROAD
 
 
+class TestNaming:
+    """Deterministic naming threshold branches (drop/rise bands from NameConfig)."""
+
+    def test_slope_summit_name_for_large_drop(self) -> None:
+        # Drop above SUMMIT_RISE_M (500m) → "Summit" in the name.
+        name = Slope.generate_name(
+            difficulty="black", slope_id="SL1", start_elevation=3000.0, end_elevation=2400.0, avg_bearing=0.0
+        )
+        assert "Summit" in name
+
+    def test_slope_big_name_for_medium_drop(self) -> None:
+        # Drop between BIG_DROP_M (300m) and SUMMIT_RISE_M (500m) → "Big".
+        name = Slope.generate_name(
+            difficulty="red", slope_id="SL2", start_elevation=3000.0, end_elevation=2650.0, avg_bearing=90.0
+        )
+        assert "Big" in name
+
+    def test_lift_summit_name_for_large_rise(self) -> None:
+        # Vertical rise above SUMMIT_RISE_M (500m) → "Summit" lift name.
+        name = Lift.generate_name(
+            lift_type="chairlift", lift_id="L1", length_m=800.0, vertical_rise_m=600.0, avg_bearing=0.0
+        )
+        assert "Summit" in name
+
+
 class TestIdParsing:
     """Parametrized tests for ID number extraction (SegmentPath base + Lift)."""
 
