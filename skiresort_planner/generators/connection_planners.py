@@ -414,6 +414,15 @@ class LeastCostPathPlanner:
         it, with NO uphill penalty — cars may climb within the band.
 
         No hard cutoffs - allows occasional band excursions due to DEM noise.
+
+        FIXME(side-bias): `side` ("left"/"right") is currently DEAD — this cost is
+        purely position/slope-based and never reads it, so a left and a right plan
+        trace the IDENTICAL least-cost route. It is kept in the signature (and
+        threaded from plan()/_graph_dijkstra) for the planned side-aware upgrade: a
+        signed cross-track bias term (mirror PathTracer.trace_downhill's
+        `side_sign`) or an any-angle/heading-aware planner would make left/right
+        diverge into a real choice. Until then, callers generate a single side
+        (see PathFactory.generate_manual_paths road config).
         """
         # Horizontal distance
         horiz_dist = GeoCalculator.haversine_distance_m(lat1=from_lat, lon1=from_lon, lat2=to_lat, lon2=to_lon)

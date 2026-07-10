@@ -370,6 +370,14 @@ class PathFactory:
 
         # Road mode traces one gentle route per side within the band; slope mode
         # sweeps all difficulty-grade targets. Both feed the same planner + dedup.
+
+        # FIXME(side-bias): `side` is currently DEAD in the road planner —
+        # LeastCostPathPlanner._calc_edge_cost ignores it in road mode, so LEFT and
+        # RIGHT trace the identical least-cost route and dedup to one. Rather than
+        # emit a fake duplicate, road mode generates a single LEFT proposal. When a
+        # side-aware cost (signed cross-track bias) or an any-angle/heading-aware
+        # planner is added, restore a second RIGHT config here so roads offer a real
+        # left/right choice like the slope fan does.
         if gradient_band is not None:
             configs: list[GradeConfig] = [
                 GradeConfig(difficulty="", grade="road", target_slope_pct=0.0, side=Side.LEFT),

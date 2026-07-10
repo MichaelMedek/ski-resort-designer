@@ -702,6 +702,7 @@ def handle_road_building_click(click_info: ClickInfo, elevation: float | None) -
     # Generate up to TWO gentle proposals (left/right) to the target — same as
     # slope custom-connect, minus the fan-out. Band mode → no straight-line
     # fallback; hard-cap each proposal at the band. If none survive → refuse.
+    # max_slope_pct is a MAGNITUDE, so this cap catches steep climbs AND descents.
     # ─────────────────────────────────────────────────────────────────────────
     band_max = float(PathConfig.ROAD_MAX_GRADIENT_PCT)
     proposals = [
