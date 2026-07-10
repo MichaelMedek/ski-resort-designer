@@ -11,6 +11,8 @@ Reference: DETAILS.md Section 4
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from skiresort_planner.core.terrain_analyzer import SideDirection
+
 
 @dataclass(frozen=True)
 class Warning(ABC):
@@ -37,13 +39,13 @@ class ExcavatorWarning(Warning):
     Attributes:
         side_slope_pct: Absolute side slope percentage
         belt_width_m: Width of the piste in meters
-        side_slope_dir: Direction terrain leans ("left" or "right")
+        side_slope_dir: Direction terrain leans (SideDirection)
         warning_type: Type identifier for serialization
     """
 
     side_slope_pct: float
     belt_width_m: float
-    side_slope_dir: str
+    side_slope_dir: SideDirection
     warning_type: str = "ExcavatorWarning"
 
     @property
@@ -56,7 +58,7 @@ class ExcavatorWarning(Warning):
         return (
             f"🚜 Excavator Warning: {self.vertical_cut_m:.1f}m vertical side cut required "
             f"across {self.belt_width_m:.0f}m piste width. Cross-slope {self.side_slope_pct:.0f}% "
-            f"(terrain leans {self.side_slope_dir})"
+            f"(terrain leans {self.side_slope_dir.value})"
         )
 
 

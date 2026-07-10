@@ -126,6 +126,8 @@ def create_command_executor() -> None:
         commit_selected_path,
         finish_current_slope,
         cancel_current_slope,
+        finish_current_road,
+        cancel_current_road,
         cancel_custom_direction_mode,
         undo_last_action,
         enter_custom_direction_mode,
@@ -135,6 +137,7 @@ def create_command_executor() -> None:
         recompute_paths,
         delete_slope_action,
         delete_lift_action,
+        delete_road_action,
     )
     from skiresort_planner.ui.state_machine import PlannerStateMachine
     from skiresort_planner.ui.context import PlannerContext, BuildMode
@@ -243,6 +246,15 @@ def create_command_executor() -> None:
             cancel_current_slope()
 
         # -------------------------------------------------------------------------
+        # Road operations (actions.py) — mirror slope
+        # -------------------------------------------------------------------------
+        elif cmd_type == "finish_road":
+            finish_current_road()
+
+        elif cmd_type == "cancel_road":
+            cancel_current_road()
+
+        # -------------------------------------------------------------------------
         # Custom connect (actions.py) - THE ENDBOSS LOGIC!
         # -------------------------------------------------------------------------
         elif cmd_type == "enter_custom":
@@ -267,6 +279,10 @@ def create_command_executor() -> None:
             _, lift_id = cmd
             delete_lift_action(lift_id=lift_id)
 
+        elif cmd_type == "delete_road":
+            _, road_id = cmd
+            delete_road_action(road_id=road_id)
+
         # -------------------------------------------------------------------------
         # Control operations
         # -------------------------------------------------------------------------
@@ -281,6 +297,7 @@ def create_command_executor() -> None:
                 "GONDOLA": BuildMode.GONDOLA,
                 "SURFACE_LIFT": BuildMode.SURFACE_LIFT,
                 "AERIAL_TRAM": BuildMode.AERIAL_TRAM,
+                "ROAD": BuildMode.ROAD,
             }
             if mode not in mode_constants:
                 raise ValueError(f"Unknown build mode: {mode}")
@@ -594,6 +611,54 @@ class TestGrandResortTour:
         graph = at.session_state["graph"]
         assert lift1_id in graph.lifts, "LIFT_1 should be restored after undo"
         assert len(graph.lifts) == 1, f"Expected 1 lift after undo, got {len(graph.lifts)}"
+
+        # ================================================================
+        # PHASE 4b: ROAD (build → finish → delete → undo), mirroring slopes
+        # ================================================================
+        # Roads build like slope custom-connect: a target click generates gentle
+        # proposals (no fan/deferred), commit via the button (commit_path), then
+        # Finish Road. East heading is ~5% on the apptest DEM (within the ±15% band).
+        at.session_state["command_queue"] = [("close_panel",)]
+        at.run()
+
+        at.session_state["command_queue"] = [("set_build_mode", "ROAD")]
+        at.run()
+
+        # Start the road from the summit node (shared junction → parking).
+        at.session_state["command_queue"] = [("click_node", summit_node_id)]
+        at.run()
+        sm = at.session_state["state_machine"]
+        assert sm.is_road_starting, f"Should be starting a road, got {sm.get_state_name()}"
+
+        # Click terrain to the east (gentle) → road proposals generated directly.
+        at.session_state["command_queue"] = [("click_terrain", 0.004, 0.0)]
+        at.run()
+        ctx = at.session_state["context"]
+        assert len(ctx.proposals.paths) > 0, "Road target click should generate proposals"
+
+        # Commit the selected proposal via the button path, then finish the road.
+        at.session_state["command_queue"] = [("commit_path", 0)]
+        at.run()
+        assert sm.is_road_building_only, f"Should be building road, got {sm.get_state_name()}"
+
+        at.session_state["command_queue"] = [("finish_road",)]
+        at.run()
+
+        graph = at.session_state["graph"]
+        assert len(graph.roads) == 1, f"Expected 1 road, got {len(graph.roads)}"
+        road1_id = list(graph.roads.keys())[0]
+
+        # Delete the road, then undo the delete.
+        at.session_state["command_queue"] = [("delete_road", road1_id)]
+        at.run()
+        graph = at.session_state["graph"]
+        assert len(graph.roads) == 0, f"Expected 0 roads after delete, got {len(graph.roads)}"
+
+        at.session_state["command_queue"] = [("undo",)]
+        at.run()
+        graph = at.session_state["graph"]
+        assert road1_id in graph.roads, "Road should be restored after undo"
+        assert len(graph.roads) == 1, f"Expected 1 road after undo, got {len(graph.roads)}"
 
         # ================================================================
         # PHASE 5: CUSTOM CONNECT (The Endboss!)

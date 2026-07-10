@@ -549,7 +549,7 @@ def cancel_current_slope() -> None:
     """Cancel slope building and discard segments."""
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
-    _discard_build(ctx.slope_build)
+    _discard_build(build_ctx=ctx.slope_build)
     sm.cancel_slope()
 
 
@@ -576,7 +576,7 @@ def cancel_current_road() -> None:
     """Cancel road building and discard its segments (mirrors cancel_current_slope)."""
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
-    _discard_build(ctx.road_build)
+    _discard_build(build_ctx=ctx.road_build)
     sm.cancel_road()
 
 
@@ -900,7 +900,7 @@ def delete_slope_action(slope_id: str) -> bool:
     graph: ResortGraph = st.session_state.graph
     deleted = graph.delete_slope(slope_id=slope_id)
     return _close_panel_and_refresh(
-        deleted, is_viewing_deleted=sm.is_idle_viewing_slope and ctx.viewing.slope_id == slope_id
+        deleted=deleted, is_viewing_deleted=sm.is_idle_viewing_slope and ctx.viewing.slope_id == slope_id
     )
 
 
@@ -911,7 +911,7 @@ def delete_lift_action(lift_id: str) -> bool:
     graph: ResortGraph = st.session_state.graph
     deleted = graph.delete_lift(lift_id=lift_id)
     return _close_panel_and_refresh(
-        deleted, is_viewing_deleted=sm.is_idle_viewing_lift and ctx.viewing.lift_id == lift_id
+        deleted=deleted, is_viewing_deleted=sm.is_idle_viewing_lift and ctx.viewing.lift_id == lift_id
     )
 
 
@@ -922,5 +922,5 @@ def delete_road_action(road_id: str) -> bool:
     graph: ResortGraph = st.session_state.graph
     deleted = graph.delete_road(road_id=road_id)
     return _close_panel_and_refresh(
-        deleted, is_viewing_deleted=sm.is_idle_viewing_road and ctx.viewing.road_id == road_id
+        deleted=deleted, is_viewing_deleted=sm.is_idle_viewing_road and ctx.viewing.road_id == road_id
     )

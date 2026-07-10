@@ -19,6 +19,7 @@ from shapely.geometry import LineString
 from shapely.ops import transform as shapely_transform
 
 from skiresort_planner.constants import EarthworkConfig, SlopeConfig
+from skiresort_planner.core.terrain_analyzer import SideDirection
 from skiresort_planner.model.path_geometry import Path
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.warning import (
@@ -56,7 +57,7 @@ class PathSegment(Path):
         start_node_id: ID of the starting node
         end_node_id: ID of the ending node
         side_slope_pct: Cross-slope percentage at start (terrain-dependent)
-        side_slope_dir: "left", "right", or "flat"
+        side_slope_dir: Cross-slope lean direction (SideDirection)
         kind: Whether this segment is a ski slope or a vehicle road
 
     Properties:
@@ -70,7 +71,7 @@ class PathSegment(Path):
     start_node_id: str = ""
     end_node_id: str = ""
     side_slope_pct: float = 0.0
-    side_slope_dir: str = "flat"
+    side_slope_dir: SideDirection = SideDirection.FLAT
     kind: SegmentKind = SegmentKind.SLOPE
 
     @property
@@ -209,7 +210,7 @@ class PathSegment(Path):
             start_node_id=data["start_node_id"],
             end_node_id=data["end_node_id"],
             side_slope_pct=data.get("side_slope_pct", 0.0),
-            side_slope_dir=data.get("side_slope_dir", "flat"),
+            side_slope_dir=SideDirection(data.get("side_slope_dir", SideDirection.FLAT.value)),
             # Pre-enum saves have no "kind" → default to SLOPE.
             kind=SegmentKind(data.get("kind", SegmentKind.SLOPE.value)),
         )
