@@ -275,6 +275,25 @@ class TestRoadSerialization:
         # The segment's road kind survives the round-trip (persisted, not recomputed).
         assert restored.segments[road_seg_id].kind is SegmentKind.ROAD
 
+    def test_road_owned_slope_kind_segment_raises(self, empty_graph, path_points_blue) -> None:
+        """A road owning a kind=SLOPE segment (corrupt/stale save) fails loudly on load."""
+        import pytest
+
+        from skiresort_planner.model.path_segment import SegmentKind
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
+        from skiresort_planner.model.resort_graph import ResortGraph
+
+        proposal = ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)
+        empty_graph.commit_paths(paths=[proposal], record_undo=False)
+        road = empty_graph.finish_road(segment_ids=[list(empty_graph.segments.keys())[-1]])
+
+        data = empty_graph.to_dict()
+        # Corrupt the persisted segment's kind to simulate a pre-SegmentKind save.
+        data["segments"][road.segment_ids[0]]["kind"] = "slope"
+
+        with pytest.raises(AssertionError, match="expected ROAD"):
+            ResortGraph.from_dict(data=data)
+
     def test_pre_roads_backup_loads(self, empty_graph, path_points_blue) -> None:
         """A backup written before roads existed (no 'roads' key, no 'road' counter)
         must still load — schema evolution, not a crash. Regression for KeyError.

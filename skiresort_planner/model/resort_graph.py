@@ -24,7 +24,7 @@ from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint
-from skiresort_planner.model.path_segment import PathSegment
+from skiresort_planner.model.path_segment import PathSegment, SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.road import Road
 from skiresort_planner.model.slope import Slope
@@ -986,6 +986,15 @@ class ResortGraph:
         # backup has no "roads" key — default to empty
         for rid, road_data in data.get("roads", {}).items():
             graph.roads[rid] = Road.from_dict(data=road_data)
+
+        # A road-owned segment MUST be kind=ROAD; fail loudly rather than mis-render it as a slope.
+        for road in graph.roads.values():
+            for seg_id in road.segment_ids:
+                seg = graph.segments.get(seg_id)
+                assert seg is not None and seg.kind is SegmentKind.ROAD, (
+                    f"road {road.id} owns segment {seg_id} with kind "
+                    f"{seg.kind if seg else 'MISSING'} — expected ROAD (corrupt/stale save)"
+                )
 
         counters = data["counters"]
         graph._node_counter = counters["node"]
