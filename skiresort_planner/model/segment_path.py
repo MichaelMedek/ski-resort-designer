@@ -13,6 +13,8 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 
+from skiresort_planner.model.path_geometry import Path
+
 if TYPE_CHECKING:
     from skiresort_planner.model.path_point import PathPoint
     from skiresort_planner.model.path_segment import PathSegment
@@ -62,16 +64,16 @@ class SegmentPath:
         return sum(segments[sid].total_drop_m for sid in self.segment_ids if sid in segments)
 
     def get_max_gradient(self, segments: dict[str, "PathSegment"]) -> float:
-        """Steepest-section gradient magnitude among segments.
+        """Steepest-section gradient magnitude across the whole path.
 
-        Uses each segment's rolling-window steepest section as a magnitude, so
-        it reflects steepness regardless of direction (a slope descends → its
-        values are already positive; a road may climb → abs makes it positive).
+        Rolls the ROLLING_WINDOW_M steepest-section window over the ENTIRE point
+        chain (across segment boundaries), not per-segment — so a steep stretch
+        spanning two segments is measured as one window, and short segments do not
+        each fall back to their own average. `max_slope_pct` is already a
+        magnitude (climb or descent), so this reflects steepness in either
+        direction. This is the authoritative value for difficulty and the road cap.
         """
-        return max(
-            (abs(segments[sid].max_slope_pct) for sid in self.segment_ids if sid in segments),
-            default=0.0,
-        )
+        return Path(points=self.get_all_points(segments=segments)).max_slope_pct
 
     def get_all_points(self, segments: dict[str, "PathSegment"]) -> list["PathPoint"]:
         """All points across segments, deduplicated at shared junction nodes."""

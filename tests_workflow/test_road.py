@@ -47,9 +47,9 @@ class TestRoadMaxGradient:
     def test_max_gradient_is_magnitude_for_short_climb(self, empty_graph) -> None:
         """A short steep CLIMB must report a positive steepness, not a negative avg.
 
-        A climbing segment's max_slope_pct is negative (its seed is the signed
-        avg). get_max_gradient takes the magnitude, so the ±15% road badge
-        correctly catches a steep climb.
+        max_slope_pct is a MAGNITUDE (steepest-section steepness, direction-agnostic),
+        so a climbing road's steepness is positive and the ±15% road badge / commit
+        cap correctly catches a steep climb the same as a steep descent.
         """
         # ~20% climb over 100m (well under the 300m rolling window).
         steep_climb = [
@@ -58,3 +58,46 @@ class TestRoadMaxGradient:
         ]
         road = _commit_road(empty_graph, steep_climb)
         assert road.get_max_gradient(segments=empty_graph.segments) == pytest.approx(20.0, abs=1.0)
+
+    def test_max_slope_pct_is_magnitude_for_climb(self) -> None:
+        """max_slope_pct is a magnitude: a climbing path reports POSITIVE steepness.
+
+        Regression for the signed-value bug where a steep climb (negative slope)
+        slipped under the road `<= +15%` cap because max_slope_pct returned the
+        signed average instead of its magnitude.
+        """
+        climb = ProposedPathSegment(
+            points=[
+                PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
+                PathPoint(lon=0.0, lat=100 / M, elevation=2020.0),  # +20m over 100m → 20% climb
+            ]
+        )
+        assert climb.avg_slope_pct < 0.0, "climb has a negative signed average"
+        assert climb.max_slope_pct == pytest.approx(20.0, abs=1.0), "steepest section is a positive magnitude"
+
+    def test_max_gradient_spans_segment_boundary(self, empty_graph) -> None:
+        """Steepest section is measured over the WHOLE path, across segment joins.
+
+        Two consecutive ~200m segments that are each ~13% form a sustained
+        steeper-than-either stretch over the 300m window. Per-segment measurement
+        would hide it; whole-path measurement surfaces it.
+        """
+        # Segment A: 200m at ~13% climb; Segment B: continues 200m at ~15% climb.
+        a = [
+            PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
+            PathPoint(lon=0.0, lat=200 / M, elevation=2026.0),  # +26m/200m = 13%
+        ]
+        b = [
+            PathPoint(lon=0.0, lat=200 / M, elevation=2026.0),
+            PathPoint(lon=0.0, lat=400 / M, elevation=2056.0),  # +30m/200m = 15%
+        ]
+        empty_graph.commit_paths(
+            paths=[ProposedPathSegment(points=a, is_connector=True, kind=SegmentKind.ROAD)], record_undo=False
+        )
+        empty_graph.commit_paths(
+            paths=[ProposedPathSegment(points=b, is_connector=True, kind=SegmentKind.ROAD)], record_undo=False
+        )
+        seg_ids = list(empty_graph.segments.keys())[-2:]
+        road = empty_graph.finish_road(segment_ids=seg_ids)
+        # The 300m window straddling the join is steeper than segment A's 13% alone.
+        assert road.get_max_gradient(segments=empty_graph.segments) > 13.0
