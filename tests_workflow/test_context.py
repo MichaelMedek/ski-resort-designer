@@ -88,25 +88,20 @@ class TestViewingContextSetters:
 
 
 class TestMapContextViews:
-    def test_viewing_view_sets_zoom_and_pitch(self) -> None:
+    def test_building_view_sets_zoom_and_pitch(self) -> None:
         from skiresort_planner.constants import MapConfig
 
         mc = MapContext()
-        mc.set_viewing_view(lon=10.0, lat=46.0)
+        mc.set_building_view(lon=10.0, lat=46.0)
         assert (mc.lon, mc.lat) == (10.0, 46.0)
-        assert mc.zoom == MapConfig.VIEWING_ZOOM
-        assert mc.pitch == MapConfig.VIEWING_PITCH
-
-    def test_3d_view_sets_all_camera_params(self) -> None:
-        mc = MapContext()
-        mc.set_3d_view(lon=10.0, lat=46.0, pitch=55.0, zoom=15)
-        assert (mc.lon, mc.lat, mc.pitch, mc.zoom) == (10.0, 46.0, 55.0, 15)
+        assert mc.zoom == MapConfig.BUILDING_ZOOM
+        assert mc.pitch == MapConfig.BUILDING_PITCH
 
     def test_reset_and_clear_restore_defaults(self) -> None:
         from skiresort_planner.constants import MapConfig
 
         mc = MapContext()
-        mc.set_3d_view(lon=1.0, lat=2.0, pitch=60.0, zoom=18)
+        mc.set_building_view(lon=1.0, lat=2.0)
         mc.reset_view()
         assert mc.pitch == MapConfig.DEFAULT_PITCH and mc.bearing == MapConfig.DEFAULT_BEARING
 

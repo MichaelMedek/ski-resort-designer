@@ -47,12 +47,7 @@ class TestLiftPlacementWorkflow:
         # === Phase 1: Start lift placement ===
         assert sm.current_state_value == "idle_ready"
 
-        sm.start_lift(
-            node_id="N1",
-            lon=start_loc.lon,
-            lat=start_loc.lat,
-            elevation=start_loc.elevation,
-        )
+        sm.start_lift(node_id="N1")
 
         assert sm.current_state_value == "lift_placing", "Should be in LiftPlacing"
         assert ctx.lift.start_node_id == "N1", "Start node should be stored"
@@ -93,17 +88,26 @@ class TestLiftPlacementWorkflow:
         )
         graph.nodes["N1"] = Node(id="N1", location=start_loc)
 
-        sm.start_lift(
-            node_id="N1",
-            lon=start_loc.lon,
-            lat=start_loc.lat,
-            elevation=start_loc.elevation,
-        )
+        sm.start_lift(node_id="N1")
         assert sm.current_state_value == "lift_placing"
 
         sm.cancel_lift()
 
         assert sm.current_state_value == "idle_ready", "Should return to IdleReady"
+
+    def test_start_lift_from_terrain_location(self, mock_dem_blue_slope) -> None:
+        """start_lift with a location (no node) stores start_location for a new node."""
+        dem = mock_dem_blue_slope
+        M = MapConfig.METERS_PER_DEGREE_EQUATOR
+        graph = ResortGraph()
+        sm, ctx = PlannerStateMachine.create(graph=graph)
+
+        loc = PathPoint(lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M))
+        sm.start_lift(node_id=None, location=loc)
+
+        assert sm.current_state_value == "lift_placing"
+        assert ctx.lift.start_node_id is None, "no existing node when starting from terrain"
+        assert ctx.lift.start_location is loc, "terrain start stores the location for new-node creation"
 
 
 class TestSwitchLiftSelfLoop:

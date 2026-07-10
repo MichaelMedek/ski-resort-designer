@@ -823,7 +823,7 @@ class MapRenderer:
             start_pt = proposal.points[0]
             body_data.append(
                 {
-                    "type": "start_marker",
+                    "type": ClickConfig.TYPE_START_MARKER,
                     "position": [
                         start_pt.lon,
                         start_pt.lat,

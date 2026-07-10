@@ -18,6 +18,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Single source of truth guard: every MarkerType value must have a matching
+# ClickConfig.TYPE_* tag. If the two drift, mapping silently breaks — fail loudly at import.
+_CLICK_TYPE_TAGS = {v for k, v in vars(ClickConfig).items() if k.startswith("TYPE_")}
+assert {m.value for m in MarkerType} <= _CLICK_TYPE_TAGS, (
+    "MarkerType values must all have a matching ClickConfig.TYPE_* tag"
+)
+
 
 @dataclass
 class ClickDetector:

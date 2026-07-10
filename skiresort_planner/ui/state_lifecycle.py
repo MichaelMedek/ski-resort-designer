@@ -1,13 +1,13 @@
 """State Lifecycle Functions - Entry and exit handlers for each state.
 
-This module provides 16 lifecycle functions (8 states × 2 = enter + exit) that
+This module provides all lifecycle functions (all states × 2 = enter + exit) that
 define exactly what happens when transitioning into or out of each state.
 
 Architecture:
 - Each function is called by the state machine's on_enter_* / on_exit_* hooks
 - Functions receive the PlannerContext to modify UI state
 - Functions are idempotent and safe to call multiple times
-- All 16 functions are implemented even if they do nothing (pass)
+- All functions are implemented even if they do nothing (pass)
 
 Usage in state machine:
     def on_enter_idle_ready(self) -> None:
@@ -20,11 +20,14 @@ State Definitions:
     1. IDLE_READY: No panel visible, ready to start building
     2. IDLE_VIEWING_SLOPE: Panel showing slope details, profile visible, 3D available
     3. IDLE_VIEWING_LIFT: Panel showing lift details, profile visible, 3D available
-    4. SLOPE_STARTING: 0 segments committed, picking first fan direction
-    5. SLOPE_BUILDING: 1+ segments committed, continuing slope picking next fan direction
-    6. SLOPE_CUSTOM_PICKING: Waiting for custom target click or cancel to return to building/starting
-    7. SLOPE_CUSTOM_PATH: Showing custom path options
-    8. LIFT_PLACING: Start selected, waiting for end station
+    4. IDLE_VIEWING_ROAD: Panel showing road details, profile visible, 3D available
+    5. SLOPE_STARTING: 0 segments committed, picking first fan direction
+    6. SLOPE_BUILDING: 1+ segments committed, continuing slope picking next fan direction
+    7. SLOPE_CUSTOM_PICKING: Waiting for custom target click or cancel to return to building/starting
+    8. SLOPE_CUSTOM_PATH: Showing custom path options
+    9. LIFT_PLACING: Start selected, waiting for end station
+    10. ROAD_STARTING: 0 road segments committed, picking first target
+    11. ROAD_BUILDING: 1+ road segments committed, extending the road
 
 Design Philosophy:
     → NO workflow mutations here (force_mode, target_location, proposals, etc.)

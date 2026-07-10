@@ -21,8 +21,6 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
-from skiresort_planner.constants import CoordinateConfig
-
 
 class MapClickType(Enum):
     """Source of click on the map - EXACTLY one per interaction."""
@@ -166,56 +164,6 @@ class ClickInfo:
                 case MarkerType.PROPOSAL_BODY:
                     assert self.proposal_index is not None
                     return f"Path option {self.proposal_index + 1}"
-                case _:
-                    raise RuntimeError(f"Unknown marker_type: {self.marker_type}")
-
-        raise RuntimeError(f"Unknown click_type: {self.click_type}")
-
-    @staticmethod
-    def round_for_key(value: float) -> str:
-        """Round coordinate to string for dedup key."""
-        return f"{value:.{CoordinateConfig.DEDUP_KEY_DECIMALS}f}"
-
-    def make_dedup_key(self) -> str:
-        """Generate deduplication key for click tracking.
-
-        Key format by type:
-            TERRAIN: "terrain_{lat:.6f}_{lon:.6f}"
-            NODE: "marker_node_N1"
-            SLOPE: "marker_slope_SL1"
-            SEGMENT: "marker_segment_S1"
-            LIFT: "marker_lift_L1"
-            PYLON: "marker_pylon_2_L1" (0-indexed)
-            PROPOSAL_ENDPOINT: "marker_proposal_end_4" (0-indexed)
-            PROPOSAL_BODY: "marker_proposal_body_4" (0-indexed)
-
-        Returns:
-            Unique string key for deduplication
-        """
-        if self.click_type == MapClickType.TERRAIN:
-            assert self.lat is not None and self.lon is not None
-            lat_key = self.round_for_key(self.lat)
-            lon_key = self.round_for_key(self.lon)
-            return f"terrain_{lat_key}_{lon_key}"
-
-        if self.click_type == MapClickType.MARKER:
-            match self.marker_type:
-                case MarkerType.NODE:
-                    return f"marker_node_{self.node_id}"
-                case MarkerType.SLOPE:
-                    return f"marker_slope_{self.slope_id}"
-                case MarkerType.SEGMENT:
-                    return f"marker_segment_{self.segment_id}"
-                case MarkerType.LIFT:
-                    return f"marker_lift_{self.lift_id}"
-                case MarkerType.ROAD:
-                    return f"marker_road_{self.road_id}"
-                case MarkerType.PYLON:
-                    return f"marker_pylon_{self.pylon_index}_{self.lift_id}"
-                case MarkerType.PROPOSAL_ENDPOINT:
-                    return f"marker_proposal_end_{self.proposal_index}"
-                case MarkerType.PROPOSAL_BODY:
-                    return f"marker_proposal_body_{self.proposal_index}"
                 case _:
                     raise RuntimeError(f"Unknown marker_type: {self.marker_type}")
 

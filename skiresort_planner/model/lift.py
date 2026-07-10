@@ -208,14 +208,14 @@ class Lift:
         suffix = random.choice(suffixes)
 
         length_desc = ""
-        if length_m < 500:
+        if length_m < NameConfig.LENGTH_SHORT_MAX_M:
             length_desc = random.choice(NameConfig.LENGTH_DESCRIPTORS["short"]) + " "
-        elif length_m > 1500:
+        elif length_m > NameConfig.LENGTH_LONG_MIN_M:
             length_desc = random.choice(NameConfig.LENGTH_DESCRIPTORS["long"]) + " "
 
         name = f"{length_desc}{prefix} {direction}{suffix}"
 
-        if vertical_rise_m > 500:
+        if vertical_rise_m > NameConfig.SUMMIT_RISE_M:
             name = f"{prefix} {direction}Summit {suffix}"
 
         return f"{lift_number} ({name.strip()})"

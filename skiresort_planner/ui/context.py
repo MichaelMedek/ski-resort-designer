@@ -33,7 +33,6 @@ from typing import TYPE_CHECKING
 from skiresort_planner.constants import ClickConfig, LiftConfig, MapConfig, PathConfig
 
 if TYPE_CHECKING:
-    from skiresort_planner.core import TerrainOrientation
     from skiresort_planner.model.path_point import PathPoint
     from skiresort_planner.model.proposed_path import ProposedPathSegment
 
@@ -111,12 +110,10 @@ class ProposalContext(BaseContext):
 
     paths: list[ProposedPathSegment] = field(default_factory=list)
     selected_idx: int | None = None
-    terrain_orientation: TerrainOrientation | None = None
 
     def clear(self) -> None:
         self.paths = []
         self.selected_idx = None
-        self.terrain_orientation = None
 
 
 @dataclass
@@ -403,8 +400,7 @@ class MapContext(BaseContext):
 
     State Machine Integration:
     - Use set_building_view() when entering building states (zoomed in, top-down)
-    - Use set_viewing_view() when entering viewing states (zoomed out, overview)
-    - Use set_3d_view() for 3D terrain viewing
+    - Viewing/3D camera is set by center_on_* + calculate_3d_view_for_* in actions/center_map
 
     Note: center is [lon, lat] order (GeoJSON/Pydeck standard).
     """
@@ -462,35 +458,6 @@ class MapContext(BaseContext):
         self.lat = lat
         self.zoom = MapConfig.BUILDING_ZOOM
         self.pitch = MapConfig.BUILDING_PITCH
-
-    def set_viewing_view(self, lon: float, lat: float) -> None:
-        """Set map to viewing mode: centered, zoomed out, top-down overview.
-
-        Use when viewing completed slopes/lifts.
-        Provides good overview of the entire element.
-
-        Args:
-            lon: Center longitude
-            lat: Center latitude
-        """
-        self.lon = lon
-        self.lat = lat
-        self.zoom = MapConfig.VIEWING_ZOOM
-        self.pitch = MapConfig.VIEWING_PITCH
-
-    def set_3d_view(self, lon: float, lat: float, pitch: float, zoom: int) -> None:
-        """Set map to 3D terrain view with specified camera angle.
-
-        Args:
-            lon: Center longitude
-            lat: Center latitude
-            pitch: Camera tilt angle in degrees (0=top-down, higher=more tilted)
-            zoom: Zoom level (adjusted for elevation to prevent camera clipping)
-        """
-        self.lon = lon
-        self.lat = lat
-        self.pitch = pitch
-        self.zoom = zoom
 
     def reset_view(self) -> None:
         """Reset zoom, pitch, and bearing to defaults for 2D viewing."""
@@ -678,11 +645,6 @@ class PlannerContext:
     # HELPER METHODS
     # =========================================================================
 
-    def clear_selection(self) -> None:
-        """Clear current selection state."""
-        self.selection.clear()
-        self.messages.clear()
-
     def clear_proposals(self) -> None:
         """Clear path proposals."""
         self.proposals.clear()
@@ -698,10 +660,6 @@ class PlannerContext:
     def clear_road(self) -> None:
         """Clear road building state."""
         self.road_build.clear()
-
-    def clear_viewing(self) -> None:
-        """Clear viewing state."""
-        self.viewing.clear()
 
     def clear_custom_connect(self) -> None:
         """Clear custom connect mode."""

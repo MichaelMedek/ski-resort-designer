@@ -170,7 +170,7 @@ class TerrainAnalyzer:
 
         gradient = analyzer.compute_gradient(lon=start_lon, lat=start_lat)
 
-        if gradient.slope_pct < 0.5:
+        if gradient.slope_pct < SlopeConfig.FLAT_GRADIENT_EPS_PCT:
             return SideSlope(slope_pct=0.0, direction="flat")
 
         # Side slope = gradient × sin(angle between ski direction and fall line)
@@ -178,7 +178,7 @@ class TerrainAnalyzer:
         side_slope = gradient.slope_pct * sin(angle_diff)
 
         # Determine direction
-        if abs(side_slope) < 2:
+        if abs(side_slope) < SlopeConfig.SIDE_SLOPE_FLAT_PCT:
             direction = "flat"
         elif side_slope > 0:
             direction = "right"  # Terrain falls to right when looking downhill

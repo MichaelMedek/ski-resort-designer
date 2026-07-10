@@ -150,6 +150,32 @@ class TestInfoPanelButtonClicks:
         _render_lift_info_panel(sm=sm, ctx=ctx, graph=empty_graph)
         assert ctx.viewing.view_3d, "clicking 'View in 3D' on a lift must enable 3D"
 
+    def test_enable_3d_from_road_panel(self, fake_st, empty_graph, path_points_blue) -> None:
+        from skiresort_planner.ui.right_panel import _render_road_info_panel
+
+        road_id = _build_road(empty_graph, path_points_blue)
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        sm.show_road_info_panel(road_id=road_id)
+        self._bump_ready(fake_st, sm, ctx, empty_graph)
+
+        assert not ctx.viewing.view_3d
+        fake_st.clicked_keys = {"road_3d_view"}
+        _render_road_info_panel(sm=sm, ctx=ctx, graph=empty_graph)
+        assert ctx.viewing.view_3d, "clicking 'View in 3D' on a road must enable 3D"
+
+    def test_disable_3d_from_lift_panel(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
+        from skiresort_planner.ui.right_panel import _render_lift_info_panel
+
+        lift_id = _build_lift(empty_graph, mock_dem_blue_slope)
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        sm.show_lift_info_panel(lift_id=lift_id)
+        ctx.viewing.enable_3d()
+        self._bump_ready(fake_st, sm, ctx, empty_graph)
+
+        fake_st.clicked_keys = {"lift_2d_view"}
+        _render_lift_info_panel(sm=sm, ctx=ctx, graph=empty_graph)
+        assert not ctx.viewing.view_3d, "clicking 'Return to 2D' on a lift must disable 3D"
+
     def test_close_slope_panel_returns_to_idle(self, fake_st, empty_graph, path_points_blue) -> None:
         from skiresort_planner.ui.right_panel import _render_slope_info_panel
 

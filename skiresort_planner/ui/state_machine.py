@@ -1,7 +1,7 @@
 """State machine for ski resort planner UI.
 
 Uses python-statemachine for robust state management with:
-- Clear state definitions (8 explicit states)
+- Clear state definitions (all explicit states)
 - Guarded transitions (conditions)
 - Entry/exit hooks for side effects
 - Explicit event-driven transitions
@@ -21,16 +21,19 @@ This separates state transitions (instant) from business logic (deferred), ensur
 the state machine remains focused on state management while expensive operations
 run after the UI refresh.
 
-States (8 explicit states)
+States (all explicit states)
 --------------------------
     1. IDLE_READY: No panel visible, ready to start building
     2. IDLE_VIEWING_SLOPE: Panel showing slope details (3D toggle available)
     3. IDLE_VIEWING_LIFT: Panel showing lift details (3D toggle available)
-    4. SLOPE_STARTING: 0 segments committed, picking first direction
-    5. SLOPE_BUILDING: 1+ segments committed, continuing slope
-    6. SLOPE_CUSTOM_PICKING: Waiting for custom target click
-    7. SLOPE_CUSTOM_PATH: Showing custom path options
-    8. LIFT_PLACING: Start selected, waiting for end station
+    4. IDLE_VIEWING_ROAD: Panel showing road details (3D toggle available)
+    5. SLOPE_STARTING: 0 segments committed, picking first direction
+    6. SLOPE_BUILDING: 1+ segments committed, continuing slope
+    7. SLOPE_CUSTOM_PICKING: Waiting for custom target click
+    8. SLOPE_CUSTOM_PATH: Showing custom path options
+    9. LIFT_PLACING: Start selected, waiting for end station
+    10. ROAD_STARTING: 0 road segments committed, picking first target
+    11. ROAD_BUILDING: 1+ road segments committed, extending the road
 
 Orthogonal State (flags, not formal states)
 -------------------------------------------
@@ -113,7 +116,7 @@ IMPORTANT: Direct transition calls are BLOCKED at runtime via __getattribute__.
         - enable_custom_from_starting: SLOPE_STARTING → SLOPE_CUSTOM_PICKING
         - enable_custom_from_building: SLOPE_BUILDING → SLOPE_CUSTOM_PICKING
 
-Complete Transition Matrix (8x8 = 64 combinations)
+Complete Transition Matrix (all states)
 ==================================================
 
 # 1. Transitions: From IDLE_READY
@@ -356,22 +359,25 @@ class PlannerStateMachine(StateMachine):
     and hooks for validation and side effects. See module docstring
     for complete transition documentation.
 
-    States (8 explicit states):
+    States (all explicit states):
         IDLE_READY: No panel visible, ready to build
         IDLE_VIEWING_SLOPE: Panel showing slope details
         IDLE_VIEWING_LIFT: Panel showing lift details
+        IDLE_VIEWING_ROAD: Panel showing road details
         SLOPE_STARTING: 0 segments, picking first direction
         SLOPE_BUILDING: 1+ segments, continuing
         SLOPE_CUSTOM_PICKING: Waiting for custom target click
         SLOPE_CUSTOM_PATH: Showing custom path options
         LIFT_PLACING: Waiting for end station
+        ROAD_STARTING: 0 road segments, picking first target
+        ROAD_BUILDING: 1+ road segments, extending the road
 
     Using explicit states eliminates impossible state combinations
     and enables dispatch-table UI rendering pattern.
     """
 
     # ==========================================================================
-    # State Definitions (8 explicit states)
+    # State Definitions (11 explicit states)
     # ==========================================================================
 
     # IDLE states (no building in progress)
@@ -911,10 +917,6 @@ class PlannerStateMachine(StateMachine):
         """Set lift_id when switching from slope view. Panel visibility set by enter function."""
         self.context.viewing.set_lift_id(lift_id=lift_id)
 
-    def before_switch_to_road_view(self, road_id: str) -> None:
-        """Set road_id when switching from another view. Panel visibility set by enter function."""
-        self.context.viewing.set_road_id(road_id=road_id)
-
     def before_switch_slope(self, slope_id: str) -> None:
         """Set slope_id for different slope (self-loop). Panel visibility set by enter function."""
         self.context.viewing.set_slope_id(slope_id=slope_id)
@@ -1053,16 +1055,6 @@ class PlannerStateMachine(StateMachine):
         """Access to the context/model (PlannerContext)."""
         return self.model  # type: ignore[return-value]
 
-    def can_finish_slope(self) -> bool:
-        """Check if slope can be finished (in building state with segments)."""
-        return self.is_slope_building_only and len(self.context.slope_build.segments) > 0
-
-    def can_undo(self) -> bool:
-        """Check if undo is available in current building state (slope or road)."""
-        return (self.is_any_slope_state and len(self.context.slope_build.segments) > 0) or (
-            self.is_any_road_state and len(self.context.road_build.segments) > 0
-        )
-
     # ==========================================================================
     # Force State Methods (for Undo - bypasses transitions)
     # ==========================================================================
@@ -1178,10 +1170,6 @@ class PlannerStateMachine(StateMachine):
     def get_state_name(self) -> str:
         """Get current state name for display."""
         return str(self.current_state.name)
-
-    def get_available_actions(self) -> list[str]:
-        """Get list of available transition names (for UI display only)."""
-        return [t.event for t in self.current_state.transitions]
 
     def __repr__(self) -> str:
         """Return string representation of state machine."""

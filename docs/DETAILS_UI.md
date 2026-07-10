@@ -147,7 +147,7 @@ Up to 16 paths are generated per click (4 difficulties × 2 steepness variants �
 
 | Difficulty | Target Gradients |
 |------------|------------------|
-| 🟢 Green | 7% (gentle), 15% (steep) |
+| 🟢 Green | 7% (gentle), 12% (steep) |
 | 🔵 Blue | 17% (gentle), 22% (steep) |
 | 🔴 Red | 28% (gentle), 37% (steep) |
 | ⚫ Black | 45% (gentle), 60% (steep) |

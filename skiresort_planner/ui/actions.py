@@ -13,7 +13,7 @@ This module handles:
 """
 
 import logging
-from typing import TYPE_CHECKING, Callable, cast
+from typing import TYPE_CHECKING, cast
 
 import streamlit as st
 
@@ -492,15 +492,6 @@ def recompute_paths() -> None:
 # =============================================================================
 
 
-def _center_and_refresh(entity: "Slope | Road") -> None:
-    """Shared finish tail: log, center the map on the entity, bump the map version."""
-    ctx: PlannerContext = st.session_state.context
-    graph: ResortGraph = st.session_state.graph
-    logger.info(f"{type(entity).__name__} {entity.name} (id={entity.id}) created successfully")
-    center_on_segment_path(ctx=ctx, graph=graph, path=entity, zoom=MapConfig.VIEWING_ZOOM)
-    bump_map_version()  # Clear stale click state
-
-
 def finish_current_slope() -> None:
     """Finish building and create the finalized slope."""
     sm: PlannerStateMachine = st.session_state.state_machine
@@ -514,19 +505,17 @@ def finish_current_slope() -> None:
     if not slope:
         raise RuntimeError(f"graph.finish_slope() failed for segments: {ctx.slope_build.segments}")
 
-    _center_and_refresh(entity=slope)
+    logger.info(f"Slope {slope.name} (id={slope.id}) created successfully")
+    center_on_segment_path(ctx=ctx, graph=graph, path=slope, zoom=MapConfig.VIEWING_ZOOM)
+    bump_map_version()  # Clear stale click state
     sm.finish_slope(slope_id=slope.id)
 
 
-def _cancel_build(build_ctx: "SegmentBuildContext", cancel_event: Callable[[], None]) -> None:
-    """Cancel an in-progress slope OR road build and discard its segments.
+def _discard_build(build_ctx: "SegmentBuildContext") -> None:
+    """Discard an in-progress slope/road build: strip its undo entries, delete segments, clean up.
 
-    Shared by cancel_current_slope / cancel_current_road so their undo-stack
-    stripping, segment deletion, and orphan-node cleanup cannot drift apart.
-
-    Args:
-        build_ctx: The active build context (ctx.slope_build or ctx.road_build).
-        cancel_event: The state-machine cancel event to fire (sm.cancel_slope / sm.cancel_road).
+    Shared by cancel_current_slope / cancel_current_road (the SM cancel event is fired
+    by each caller). Recenters on the origin so the map doesn't jump.
     """
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
@@ -554,14 +543,14 @@ def _cancel_build(build_ctx: "SegmentBuildContext", cancel_event: Callable[[], N
 
     graph.cleanup_isolated_nodes()  # Remove orphaned nodes from the canceled build
     bump_map_version()  # Clear stale click state
-    cancel_event()
 
 
 def cancel_current_slope() -> None:
     """Cancel slope building and discard segments."""
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
-    _cancel_build(ctx.slope_build, sm.cancel_slope)
+    _discard_build(ctx.slope_build)
+    sm.cancel_slope()
 
 
 def finish_current_road() -> None:
@@ -577,7 +566,9 @@ def finish_current_road() -> None:
     if not road:
         raise RuntimeError(f"graph.finish_road() failed for segments: {ctx.road_build.segments}")
 
-    _center_and_refresh(entity=road)
+    logger.info(f"Road {road.name} (id={road.id}) created successfully")
+    center_on_segment_path(ctx=ctx, graph=graph, path=road, zoom=MapConfig.VIEWING_ZOOM)
+    bump_map_version()  # Clear stale click state
     sm.finish_road(road_id=road.id)
 
 
@@ -585,7 +576,8 @@ def cancel_current_road() -> None:
     """Cancel road building and discard its segments (mirrors cancel_current_slope)."""
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
-    _cancel_build(ctx.road_build, sm.cancel_road, what="road")
+    _discard_build(ctx.road_build)
+    sm.cancel_road()
 
 
 def _undo_add_segments(undone: AddSegmentsAction) -> None:

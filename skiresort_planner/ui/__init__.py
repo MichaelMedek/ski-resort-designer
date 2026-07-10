@@ -8,7 +8,7 @@ File Structure (layout-based naming):
 - pydeck_click_handler.py: Custom click handling for Pydeck maps
 
 Core Components:
-- state_machine.py: PlannerStateMachine (4 states) + PlannerContext
+- state_machine.py: PlannerStateMachine (all states) + PlannerContext
 - actions.py: All action functions (commit, finish, undo, etc.)
 - click_handlers.py: State-specific map click processing
 - validators.py: Input validation with Optional[Message] returns

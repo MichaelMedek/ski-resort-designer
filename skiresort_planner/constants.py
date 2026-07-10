@@ -118,8 +118,12 @@ class SlopeConfig:
     MIN_SKIABLE_PCT = 5  # Below this: need to push poles
     MAX_SKIABLE_PCT = 70  # Above this: dangerously steep
 
-    # European slope difficulty thresholds (by average gradient percentage)
-    # Classification: avg_slope = total_drop / total_length * 100
+    # Side-slope classification thresholds (compute_side_slope)
+    FLAT_GRADIENT_EPS_PCT = 0.5  # Terrain gradient below this → no meaningful side slope
+    SIDE_SLOPE_FLAT_PCT = 2  # |side slope| below this → "flat" direction (not left/right)
+
+    # European slope difficulty thresholds, classified by the steepest ROLLING_WINDOW_M
+    # (300m) section (max_slope_pct) — see DETAILS.md §6.
     DIFFICULTY_THRESHOLDS = {
         "green": (0, 15),  # Beginner: 0-15%
         "blue": (15, 25),  # Intermediate: 15-25%
@@ -318,6 +322,7 @@ class ClickConfig:
     TYPE_PYLON = "pylon"
     TYPE_PROPOSAL_ENDPOINT = "proposal_endpoint"
     TYPE_PROPOSAL_BODY = "proposal_body"
+    TYPE_START_MARKER = "start_marker"  # non-interactive origin dot on a proposal
 
     # Clickable marker radii (meters for Pydeck ScatterplotLayer)
     NODE_MARKER_RADIUS = 35
@@ -538,10 +543,15 @@ class NameConfig:
 
     # Length descriptors for lift naming
     LENGTH_DESCRIPTORS = {
-        "short": ["Little", "Mini", "Short"],  # < 500m
-        "medium": ["Classic", "Standard", "Regular"],  # 500-1500m
-        "long": ["Grand", "Big", "Giant"],  # > 1500m
+        "short": ["Little", "Mini", "Short"],  # < LENGTH_SHORT_MAX_M
+        "medium": ["Classic", "Standard", "Regular"],  # between short and long
+        "long": ["Grand", "Big", "Giant"],  # > LENGTH_LONG_MIN_M
     }
+    # Length/rise bands for entity naming (single source for lift + slope generate_name).
+    LENGTH_SHORT_MAX_M = 500  # below → "short" descriptor
+    LENGTH_LONG_MIN_M = 1500  # above → "long" descriptor
+    SUMMIT_RISE_M = 500  # lift rise / slope drop above this → "Summit" name
+    BIG_DROP_M = 300  # slope drop above this → "big" descriptor
 
     # 8-point compass directions for naming
     COMPASS_DIRECTIONS = {
@@ -605,14 +615,3 @@ class UndoConfig:
     # Maximum number of actions to keep in undo stack
     # Older actions are discarded when limit is reached
     MAX_UNDO_STACK_SIZE = 50
-
-
-class CoordinateConfig:
-    """Configuration for coordinate handling and comparison.
-
-    STRICT: All coordinate comparisons must use these methods,
-    NEVER use == for lat/lon floats directly!
-    """
-
-    # Decimal places for dedup key generation (6 decimals ≈ 10cm precision)
-    DEDUP_KEY_DECIMALS: int = 6

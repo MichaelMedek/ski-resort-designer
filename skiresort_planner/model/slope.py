@@ -77,9 +77,9 @@ class Slope(SegmentPath):
         name = f"{prefix} {direction}{suffix}"
 
         drop = start_elevation - end_elevation
-        if drop > 500:
+        if drop > NameConfig.SUMMIT_RISE_M:
             name = f"{prefix} {direction}Summit {suffix}"
-        elif drop > 300:
+        elif drop > NameConfig.BIG_DROP_M:
             name = f"{prefix} {direction}Big {suffix}"
 
         return f"{slope_number} ({name})"

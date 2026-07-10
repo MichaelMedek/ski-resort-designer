@@ -432,37 +432,6 @@ class ResortGraph:
         )
         return first_seg, last_seg, start_node, end_node, avg_bearing
 
-    def _register_finished_segment_path(
-        self,
-        entity: "Slope | Road",
-        owner_dict: "dict[str, Slope | Road]",
-        segment_ids: list[str],
-        action: "UndoAction",
-    ) -> None:
-        """Register a just-built slope/road: store it, rename its segments, record the undo action."""
-        owner_dict[entity.id] = entity
-        for seg_id in segment_ids:
-            seg = self.segments.get(seg_id)
-            if seg:
-                seg.name = entity.name
-        logger.info(f"{type(entity).__name__} finished: {entity.name}, {len(segment_ids)} segments")
-        self._push_undo(action)
-
-    def _ungroup_segment_path(
-        self, owner_dict: "dict[str, Slope | Road]", entity_id: str, segment_ids: tuple[str, ...]
-    ) -> None:
-        """Undo a finish: drop the slope/road grouping but keep its segments.
-
-        Shared by the FINISH_SLOPE / FINISH_ROAD undo branches. The segments carry
-        their own AddSegmentsAction entries, so further undos peel them individually;
-        here we only ungroup and reset the segment names to their default.
-        """
-        owner_dict.pop(entity_id, None)
-        for seg_id in segment_ids:
-            seg = self.segments.get(seg_id)
-            if seg:
-                seg.name = f"Segment {seg_id[1:]}"
-
     # =========================================================================
     # Slope Operations
     # =========================================================================
@@ -506,16 +475,17 @@ class ResortGraph:
             start_node_id=first_seg.start_node_id,
             end_node_id=last_seg.end_node_id,
         )
-        self._register_finished_segment_path(
-            entity=slope,
-            owner_dict=self.slopes,
-            segment_ids=segment_ids,
-            action=FinishSlopeAction(
+        self.slopes[slope_id] = slope
+        for seg_id in segment_ids:
+            self.segments[seg_id].name = name
+        logger.info(f"Slope finished: {name}, {len(segment_ids)} segments, difficulty={difficulty}")
+        self._push_undo(
+            FinishSlopeAction(
                 slope_id=slope_id,
                 segment_ids=tuple(segment_ids),
                 slope_name=name,
                 start_node_id=first_seg.start_node_id,
-            ),
+            )
         )
         return slope
 
@@ -556,40 +526,19 @@ class ResortGraph:
             start_node_id=first_seg.start_node_id,
             end_node_id=last_seg.end_node_id,
         )
-        self._register_finished_segment_path(
-            entity=road,
-            owner_dict=self.roads,
-            segment_ids=segment_ids,
-            action=FinishRoadAction(
+        self.roads[road_id] = road
+        for seg_id in segment_ids:
+            self.segments[seg_id].name = name
+        logger.info(f"Road finished: {name}, {len(segment_ids)} segments")
+        self._push_undo(
+            FinishRoadAction(
                 road_id=road_id,
                 segment_ids=tuple(segment_ids),
                 road_name=name,
                 start_node_id=first_seg.start_node_id,
-            ),
+            )
         )
         return road
-
-    def _remove_segment_path(
-        self, entity_id: str, owner_dict: "dict[str, Slope | Road]"
-    ) -> tuple["Slope | Road", tuple[PathSegment, ...], tuple[Node, ...]] | None:
-        """Remove a slope/road and its segments; return (entity, deleted_segments, orphaned_nodes).
-
-        Shared removal for delete_slope / delete_road (the differing bit — which
-        Delete*Action to record — stays in each caller). Returns None if not found.
-        The caller must _push_undo its action and call cleanup_isolated_nodes.
-        """
-        entity = owner_dict.get(entity_id)
-        if not entity:
-            return None
-
-        deleted_segments = [self.segments[seg_id] for seg_id in entity.segment_ids if seg_id in self.segments]
-        for seg_id in entity.segment_ids:
-            self.segments.pop(seg_id, None)
-        del owner_dict[entity_id]
-
-        # Nodes orphaned by segment removal (connection_count == 0).
-        orphaned_nodes = [self.nodes[nid] for nid in self.nodes if self.get_connection_count(node_id=nid) == 0]
-        return entity, tuple(deleted_segments), tuple(orphaned_nodes)
 
     def delete_road(self, road_id: str) -> bool:
         """Delete a road and its segments.
@@ -600,16 +549,23 @@ class ResortGraph:
         Returns:
             True if deleted, False if not found.
         """
-        removed = self._remove_segment_path(entity_id=road_id, owner_dict=self.roads)
-        if removed is None:
+        road = self.roads.get(road_id)
+        if not road:
             return False
-        road, deleted_segments, orphaned_nodes = removed
+
+        deleted_segments = [self.segments[seg_id] for seg_id in road.segment_ids if seg_id in self.segments]
+        for seg_id in road.segment_ids:
+            self.segments.pop(seg_id, None)
+        del self.roads[road_id]
+
+        # Nodes orphaned by segment removal (connection_count == 0).
+        orphaned_nodes = [self.nodes[nid] for nid in self.nodes if self.get_connection_count(node_id=nid) == 0]
         self._push_undo(
             DeleteRoadAction(
                 road_id=road_id,
-                deleted_road=cast(Road, road),
-                deleted_segments=deleted_segments,
-                deleted_nodes=orphaned_nodes,
+                deleted_road=road,
+                deleted_segments=tuple(deleted_segments),
+                deleted_nodes=tuple(orphaned_nodes),
             )
         )
         self.cleanup_isolated_nodes()
@@ -689,12 +645,19 @@ class ResortGraph:
             self.cleanup_isolated_nodes()  # Remove orphaned station nodes
 
         elif action.action_type == ActionType.FINISH_SLOPE:
+            # Ungroup the slope but keep its segments; their own AddSegmentsAction
+            # entries handle per-segment removal on further undo.
             finish = cast(FinishSlopeAction, action)
-            self._ungroup_segment_path(self.slopes, finish.slope_id, finish.segment_ids)
+            self.slopes.pop(finish.slope_id, None)
+            for seg_id in finish.segment_ids:
+                self.segments[seg_id].name = f"Segment {seg_id[1:]}"
 
         elif action.action_type == ActionType.FINISH_ROAD:
+            # Mirror FINISH_SLOPE: ungroup the road, keep its segments.
             finish_road = cast(FinishRoadAction, action)
-            self._ungroup_segment_path(self.roads, finish_road.road_id, finish_road.segment_ids)
+            self.roads.pop(finish_road.road_id, None)
+            for seg_id in finish_road.segment_ids:
+                self.segments[seg_id].name = f"Segment {seg_id[1:]}"
 
         elif action.action_type == ActionType.DELETE_SLOPE:
             del_slope = cast(DeleteSlopeAction, action)
@@ -743,16 +706,23 @@ class ResortGraph:
         Returns:
             True if deleted, False if not found.
         """
-        removed = self._remove_segment_path(entity_id=slope_id, owner_dict=self.slopes)
-        if removed is None:
+        slope = self.slopes.get(slope_id)
+        if not slope:
             return False
-        slope, deleted_segments, orphaned_nodes = removed
+
+        deleted_segments = [self.segments[seg_id] for seg_id in slope.segment_ids if seg_id in self.segments]
+        for seg_id in slope.segment_ids:
+            self.segments.pop(seg_id, None)
+        del self.slopes[slope_id]
+
+        # Nodes orphaned by segment removal (connection_count == 0).
+        orphaned_nodes = [self.nodes[nid] for nid in self.nodes if self.get_connection_count(node_id=nid) == 0]
         self._push_undo(
             DeleteSlopeAction(
                 slope_id=slope_id,
-                deleted_slope=cast(Slope, slope),
-                deleted_segments=deleted_segments,
-                deleted_nodes=orphaned_nodes,
+                deleted_slope=slope,
+                deleted_segments=tuple(deleted_segments),
+                deleted_nodes=tuple(orphaned_nodes),
             )
         )
         self.cleanup_isolated_nodes()
