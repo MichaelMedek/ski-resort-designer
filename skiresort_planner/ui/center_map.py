@@ -434,12 +434,16 @@ class MapRenderer:
                         "polygon": list(polygon_coords),
                         "center_line": center_line,
                         "color": list(StyleConfig.ROAD_COLOR_RGBA),
-                        "name": road.name if road is not None else f"Building road: {seg_id}",
+                        "name": f"{StyleConfig.ROAD_ICON} {road.name}"
+                        if road is not None
+                        else f"Building road: {seg_id}",
                         "icon_type": ClickConfig.TYPE_ROAD if road is not None else ClickConfig.TYPE_SEGMENT,
                         "icon_id": road.id if road is not None else seg_id,
                         "icon_position": icon_position,
                         "icon_color": list(StyleConfig.ROAD_COLOR_RGBA),
-                        "icon_name": road.name if road is not None else f"Building road: {seg_id}",
+                        "icon_name": f"{StyleConfig.ROAD_ICON} {road.name}"
+                        if road is not None
+                        else f"Building road: {seg_id}",
                     }
                 )
                 continue
@@ -474,7 +478,9 @@ class MapRenderer:
                     "icon_id": slope_id if slope is not None else seg_id,
                     "icon_position": icon_position,
                     "icon_color": StyleConfig.SLOPE_COLORS_RGBA[difficulty],
-                    "icon_name": f"Slope {slope_id}" if slope is not None else f"Building: {seg_id}",
+                    "icon_name": f"{StyleConfig.SLOPE_ICON} {slope.name}"
+                    if slope is not None
+                    else f"Building: {seg_id}",
                 }
             )
 
@@ -602,7 +608,7 @@ class MapRenderer:
                     "id": lift_id,
                     "path": cable_path,
                     "color": color,
-                    "name": lift.name,
+                    "name": f"{StyleConfig.LIFT_ICONS[lift.lift_type]} {lift.name}",
                     "lift_type": lift.lift_type,
                 }
             )
@@ -634,7 +640,7 @@ class MapRenderer:
                     "id": lift_id,
                     "position": [mid_lon, mid_lat, icon_z],
                     "color": color,
-                    "name": lift.name,
+                    "name": f"{StyleConfig.LIFT_ICONS[lift.lift_type]} {lift.name}",
                     "lift_type": lift.lift_type,
                 }
             )

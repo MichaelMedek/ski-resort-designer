@@ -142,7 +142,7 @@ class ProfileChart:
         stats_text = (
             f"Length: {proposal.length_m:.0f}m | "
             f"Drop: {proposal.total_drop_m:.0f}m | "
-            f"Avg Slope: {proposal.avg_slope_pct:.0f}%"
+            f"Drop Avg Slope: {proposal.avg_slope_pct:.0f}%"
         )
 
         fig.add_annotation(

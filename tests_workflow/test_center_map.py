@@ -181,6 +181,34 @@ class TestMapRendering:
         assert record["id"] == road.id
         assert record["color"] == list(StyleConfig.ROAD_COLOR_RGBA)
 
+        # The road icon tooltip carries the road icon + name (hover feedback for a finished road).
+        road_icons = next(layer for layer in layers["roads"] if layer.id == "roads_icons")
+        assert road_icons.data[0]["name"] == f"{StyleConfig.ROAD_ICON} {road.name}"
+
+        # The slope icon tooltip carries the slope icon + name.
+        slope = next(iter(graph.slopes.values()))
+        slope_icons = next(layer for layer in layers["slopes"] if layer.id == "segments_icons")
+        assert slope_icons.data[0]["name"] == f"{StyleConfig.SLOPE_ICON} {slope.name}"
+
+    def test_lift_icon_tooltip_carries_lift_icon_and_name(self, empty_graph, mock_dem_blue_slope) -> None:
+        """A finished lift's cable/icon tooltips show the per-type lift icon + name."""
+        from skiresort_planner.constants import StyleConfig
+        from skiresort_planner.ui.center_map import MapRenderer
+
+        graph = empty_graph
+        dem = mock_dem_blue_slope
+        bottom, _ = graph.get_or_create_node(
+            lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M)
+        )
+        top, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
+        lift = graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
+
+        layers = MapRenderer(graph=graph)._create_lift_layers(use_3d=False)
+        expected = f"{StyleConfig.LIFT_ICONS[lift.lift_type]} {lift.name}"
+        names = [d["name"] for layer in layers["cables_icons"] for d in layer.data if "name" in d and "lift_type" in d]
+        assert names, "lift cable/icon records should exist"
+        assert all(name == expected for name in names), names
+
     def test_segment_layers_render_parking_at_shared_node(self, empty_graph) -> None:
         """A road sharing a node with a slope renders that node as a parking marker.
 
