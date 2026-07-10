@@ -147,7 +147,7 @@ Up to 16 paths are generated per click (4 difficulties × 2 steepness variants �
 
 | Difficulty | Target Gradients |
 |------------|------------------|
-| 🟢 Green | 7% (gentle), 12% (steep) |
+| 🟢 Green | 7% (gentle), 15% (steep) |
 | 🔵 Blue | 17% (gentle), 22% (steep) |
 | 🔴 Red | 28% (gentle), 37% (steep) |
 | ⚫ Black | 45% (gentle), 60% (steep) |
@@ -254,22 +254,32 @@ Click **"🏔️ View in 3D"** to see pylons and cable from an angled perspectiv
 
 ## Building Roads
 
-Roads are **vehicle roads** — access roads and connectors between areas of the resort. Unlike a ski slope, a road may climb, descend, or run flat, but it always stays within a gentle **±12% gradient** so cars can drive it. Roads are drawn as a distinct **brown-orange** ribbon.
+Roads are **vehicle roads** — access roads and connectors between areas of the resort. Unlike a ski slope, a road may climb, descend, or run flat, but it always stays within a gentle **±15% gradient** so cars can drive it. Roads are drawn as a distinct **brown-orange** ribbon.
+
+Roads are built **segment by segment, just like slopes**: you click the next point, a gentle segment is traced to it, and you keep extending until you press **🏁 Finish Road**.
 
 ### Step 1: Select Road mode
 
 Click the **🛣️ Road** button in the sidebar.
 
-### Step 2: Click two points
+### Step 2: Click the start point
 
-1. Click the **start** point (terrain or an existing junction node).
-2. Click the **end** point.
+Click the road's **origin** — empty terrain or an existing **junction node** (to branch a road off a slope/lift junction).
 
-The planner traces the gentlest route between them that stays within the ±12% band, following the terrain. If no gentle route exists, a direct line is used. The road is created immediately and its details panel opens.
+### Step 3: Extend segment by segment
+
+Click the **next point** the road should reach. Gentle route **proposals** are traced to it and drawn as **dashed translucent-brown** paths (just like slope custom-connect) — with **no endpoint dots**, since the proposals share the same target. Browse them with the **◀ ▶ arrows** in the right panel or by clicking a dashed proposal to highlight it, then press **✅ Commit Road Segment** to commit; the segment turns solid brown and you can extend further. Clicking an existing **node** targets that junction so the road joins it on commit.
+
+- If the terrain to your clicked point is too steep to stay within **±15%**, **no proposal** is offered and you get a message. Pick a closer point or route across gentler ground.
+- **Undo** removes the last committed segment (then the one before it), exactly like a slope.
+
+### Step 4: Finish the road
+
+Press **🏁 Finish Road** in the sidebar. The road receives an auto-generated name and its details panel opens. Press **✖️ Cancel Road** to discard the whole in-progress road.
 
 ### Parking places
 
-Wherever a road **shares a junction with a slope or a lift**, a **🅿️ parking marker** appears automatically.
+Wherever a road **shares a junction with a slope or a lift**, that junction node renders as a **🅿️ bigger blue parking marker** automatically.
 
 ### Viewing Road Details
 
@@ -281,9 +291,9 @@ Click any road (its brown line or icon) to open its panel:
 | **Length** | Total road length |
 | **Average Gradient** | Overall steepness |
 | **Elevation Change** | Net rise/fall (signed) |
-| **Steepest Section** | Steepest 300m section (magnitude) |
+| **Steepest Section** | Steepest 300m section (magnitude), always ≤15% |
 
-A badge confirms the road is within the ±12% car-road limit (✅) or flags any section that exceeds it (⚠️). As with slopes and lifts, you can view the road's elevation profile, switch to **🏔️ 3D**, **🗑️ Delete** it, or **↩️ Undo**.
+As with slopes and lifts, you can view the road's elevation profile, switch to **🏔️ 3D**, **🗑️ Delete** it, or **↩️ Undo**.
 
 ---
 
@@ -293,7 +303,7 @@ A badge confirms the road is within the ±12% car-road limit (✅) or flags any 
 
 - **⛷️ Slope** — Click terrain to start a new ski slope
 - **🪑🚡🎿🚠 Lift buttons** — Click terrain to place a lift
-- **🛣️ Road** — Click two points to connect them with a gentle car road
+- **🛣️ Road** — Build a gentle car road segment by segment
 
 The currently active mode is highlighted.
 
@@ -311,11 +321,12 @@ The currently active mode is highlighted.
 |---------|--------|
 | **✖️ Cancel Lift Placement** | Discard start point, return to idle |
 
-### During Road Placement
+### During Road Building
 
 | Control | Action |
 |---------|--------|
-| **✖️ Cancel Road Placement** | Discard the start point, return to idle |
+| **🏁 Finish Road** | Finalize the road (enabled after ≥1 segment) |
+| **✖️ Cancel Road** | Discard the whole in-progress road, return to idle |
 
 ### Always Available
 

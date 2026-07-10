@@ -388,11 +388,15 @@ Where:
 
 ### 7.3 Roads (for cars)
 
-A **Road** is a vehicle road between two clicked points. It reuses the exact same grid-Dijkstra planner as custom slope connections (§7.2) — the only change is the edge cost, selected by passing a signed **gradient band** to the planner:
+A **Road** is a vehicle road built **segment-by-segment**, exactly like a custom-connect slope minus the fan-out (roads are "always custom-connect").
 
-$$\text{cost}_{\text{road}} = d \times \exp\left(\frac{\max(0,\; \text{slope}_{\text{actual}} - g_{\max},\; g_{\min} - \text{slope}_{\text{actual}})}{\sigma}\right)$$
+Road tracing reuses the exact same grid-Dijkstra planner as custom slope connections (§7.2) — the only change is the edge cost, selected by passing a signed **gradient band** to the planner:
 
-with the band $[g_{\min}, g_{\max}] = [-12\%, +12\%]$ (`ROAD_MAX_GRADIENT_PCT`). The cost is **flat inside the band** (the max term is 0 → $\exp(0)=1$) and rises exponentially outside it. Because the band is a *soft* penalty (not a hard cutoff), a road may still exceed ±12% where terrain forces it — the road panel flags such sections. Road mode applies **no uphill penalty**: a car road may climb, descend, or run flat with equal preference inside the band. Slope mode (no band passed) is unchanged.
+$$\text{cost}_{\text{road}} = d \times \exp\left(\frac{\max(0,\; |\text{slope}_{\text{actual}}| - g_{\text{soft}})}{\sigma}\right)$$
+
+with a **soft comfort knee** $g_{\text{soft}} = 12\%$ (`ROAD_SOFT_GRADIENT_PCT`) and a **hard cap** $g_{\max} = 15\%$ (`ROAD_MAX_GRADIENT_PCT`) — both single-sourced, no hardcoded percentages in code or UI. The cost is **flat up to the 12% comfort knee** ($\exp(0)=1$) and ramps exponentially between 12% and the hard cap, so the planner *prefers* gentler lines and fewer near-limit routes get traced only to be refused. Road mode applies **no uphill penalty**: a car road may climb, descend, or run flat with equal preference. Slope mode (no band passed) is unchanged.
+
+**±15% is a HARD cap at build time.** The exponential term above is only a *soft* Dijkstra preference (ramping from 12%); the click handler additionally **hard-caps** every proposal at `ROAD_MAX_GRADIENT_PCT` and refuses to propose anything steeper ("No car road within ±15% is possible to that point"). A committed road therefore never exceeds the hard cap.
 
 ---
 

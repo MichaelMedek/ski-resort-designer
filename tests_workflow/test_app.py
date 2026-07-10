@@ -8,6 +8,7 @@ stubbed st_deckgl so the deck.gl component call returns no event.
 
 import skiresort_planner.app as app
 import skiresort_planner.ui.pydeck_click_handler as pch
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.state_machine import PlannerStateMachine
@@ -95,7 +96,7 @@ class TestRenderLoop:
     def test_run_app_ui_viewing_road(self, fake_st, monkeypatch, mock_dem_blue_slope, path_points_blue) -> None:
         _stub_deckgl(monkeypatch)
         graph, sm, ctx = _seed_full_session(fake_st, mock_dem_blue_slope)
-        proposal = ProposedPathSegment(points=path_points_blue, is_connector=True)
+        proposal = ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)
         graph.commit_paths(paths=[proposal], record_undo=False)
         road = graph.finish_road(segment_ids=[list(graph.segments.keys())[-1]])
         sm.show_road_info_panel(road_id=road.id)

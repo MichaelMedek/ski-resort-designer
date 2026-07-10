@@ -13,7 +13,7 @@ Architecture:
 Sub-contexts:
     SelectionContext: Current click/selection data
     ProposalContext: Generated path proposals
-    BuildingContext: Slope building progress
+    SegmentBuildContext: Segment-by-segment build progress (slopes and roads)
     LiftContext: Lift placement state
     BuildModeContext: What type of element to build
     ViewingContext: Which slope/lift is being viewed
@@ -120,19 +120,28 @@ class ProposalContext(BaseContext):
 
 
 @dataclass
-class BuildingContext(BaseContext):
-    """Slope building state."""
+class SegmentBuildContext(BaseContext):
+    """Segment-by-segment build progress, shared by slopes AND roads.
+
+    A slope and a road are both built the same way: each click commits one
+    segment, accumulating `segments`/`endpoints` from an origin (`start_node_id`
+    for an existing junction, or `start_location` for a fresh point). The model
+    layer already unifies these as SegmentPath → Slope/Road; this is the UI-state
+    counterpart, so there is no reason to duplicate it per build type.
+    """
 
     name: str | None = None
     segments: list[str] = field(default_factory=list)
-    start_node: str | None = None
     endpoints: list[str] = field(default_factory=list)
+    start_node_id: str | None = None
+    start_location: PathPoint | None = None  # For new node creation
 
     def clear(self) -> None:
         self.name = None
         self.segments = []
-        self.start_node = None
         self.endpoints = []
+        self.start_node_id = None
+        self.start_location = None
 
     def has_committed_segments(self) -> bool:
         return len(self.segments) > 0
@@ -145,18 +154,6 @@ class LiftContext(BaseContext):
     start_node_id: str | None = None
     start_location: PathPoint | None = None  # For new node creation
     type: str = "chairlift"
-
-    def clear(self) -> None:
-        self.start_node_id = None
-        self.start_location = None
-
-
-@dataclass
-class RoadContext(BaseContext):
-    """Road placement state (first clicked point, awaiting the second)."""
-
-    start_node_id: str | None = None
-    start_location: PathPoint | None = None  # For new node creation
 
     def clear(self) -> None:
         self.start_node_id = None
@@ -643,8 +640,9 @@ class PlannerContext:
     Sub-contexts:
         selection: Current click/selection data
         proposals: Generated path proposals
-        building: Slope building progress
+        slope_build: Slope building progress (SegmentBuildContext)
         lift: Lift placement state
+        road_build: Road building progress (SegmentBuildContext)
         viewing: Which slope/lift is being viewed
         custom_connect: Custom target connection mode
         map: Map center and zoom
@@ -662,9 +660,9 @@ class PlannerContext:
     # Organized sub-contexts
     selection: SelectionContext = field(default_factory=SelectionContext)
     proposals: ProposalContext = field(default_factory=ProposalContext)
-    building: BuildingContext = field(default_factory=BuildingContext)
+    slope_build: SegmentBuildContext = field(default_factory=SegmentBuildContext)
     lift: LiftContext = field(default_factory=LiftContext)
-    road: RoadContext = field(default_factory=RoadContext)
+    road_build: SegmentBuildContext = field(default_factory=SegmentBuildContext)
     viewing: ViewingContext = field(default_factory=ViewingContext)
     custom_connect: CustomConnectContext = field(default_factory=CustomConnectContext)
     map: MapContext = field(default_factory=MapContext)
@@ -691,15 +689,15 @@ class PlannerContext:
 
     def clear_building(self) -> None:
         """Clear slope building state."""
-        self.building.clear()
+        self.slope_build.clear()
 
     def clear_lift(self) -> None:
         """Clear lift placement state."""
         self.lift.clear()
 
     def clear_road(self) -> None:
-        """Clear road placement state."""
-        self.road.clear()
+        """Clear road building state."""
+        self.road_build.clear()
 
     def clear_viewing(self) -> None:
         """Clear viewing state."""
@@ -724,8 +722,8 @@ class PlannerContext:
         return (
             f"PlannerContext(state={self.state}, "
             f"coordinate={self.selection.coordinate}, "
-            f"slope={self.building.name}, "
-            f"segments={len(self.building.segments)}, "
+            f"slope={self.slope_build.name}, "
+            f"segments={len(self.slope_build.segments)}, "
             f"lift_start={self.lift.start_node_id})"
         )
 
@@ -735,4 +733,4 @@ class PlannerContext:
 
     def has_committed_segments(self) -> bool:
         """Check if there are committed segments in current slope."""
-        return self.building.has_committed_segments()
+        return self.slope_build.has_committed_segments()

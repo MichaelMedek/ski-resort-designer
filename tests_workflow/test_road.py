@@ -1,12 +1,13 @@
 """Unit tests for the Road model (model/road.py).
 
 Road is a SegmentPath subclass for vehicle roads. Covers its compass-based name
-and the max-gradient magnitude used by the ±12% car-road badge.
+and the max-gradient magnitude used by the ±15% (ROAD_MAX_GRADIENT_PCT) car-road badge.
 """
 
 import pytest
 
 from skiresort_planner.model.path_point import PathPoint
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.model.road import Road
@@ -15,16 +16,26 @@ M = 111320.0
 
 
 def _commit_road(graph: ResortGraph, path_points: list[PathPoint]) -> Road:
-    graph.commit_paths(paths=[ProposedPathSegment(points=path_points, is_connector=True)], record_undo=False)
+    graph.commit_paths(
+        paths=[ProposedPathSegment(points=path_points, is_connector=True, kind=SegmentKind.ROAD)], record_undo=False
+    )
     road = graph.finish_road(segment_ids=[list(graph.segments.keys())[-1]])
     assert road is not None
     return road
 
 
 class TestRoadName:
-    def test_road_name_is_compass_based(self) -> None:
-        # bearing 90 → East
-        assert Road.generate_name(road_id="R1", avg_bearing=90.0) == "1 (E Access)"
+    def test_road_name_is_creative_and_compass_based(self) -> None:
+        # bearing 90 → East. Format: "{n} ({direction} {Prefix} {Suffix})".
+        from skiresort_planner.constants import NameConfig
+
+        name = Road.generate_name(road_id="R1", avg_bearing=90.0)
+        assert name.startswith("1 (E "), f"expected number + compass direction, got {name!r}"
+        assert name.endswith(")")
+        inner = name[len("1 (E ") : -1]  # "{Prefix} {Suffix}"
+        prefix, suffix = inner.split(" ")
+        assert prefix in NameConfig.ROAD_PREFIXES
+        assert suffix in NameConfig.ROAD_SUFFIXES
 
 
 class TestRoadMaxGradient:
@@ -37,7 +48,7 @@ class TestRoadMaxGradient:
         """A short steep CLIMB must report a positive steepness, not a negative avg.
 
         A climbing segment's max_slope_pct is negative (its seed is the signed
-        avg). get_max_gradient takes the magnitude, so the ±12% road badge
+        avg). get_max_gradient takes the magnitude, so the ±15% road badge
         correctly catches a steep climb.
         """
         # ~20% climb over 100m (well under the 300m rolling window).

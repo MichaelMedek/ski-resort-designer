@@ -42,6 +42,7 @@ from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.path_tracer import PathTracer
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.generators.connection_planners import LeastCostPathPlanner
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 
 logger = logging.getLogger(__name__)
@@ -172,13 +173,13 @@ class PathFactory:
         )
 
         # Track statistics
-        count_by_diff = {"green": 0, "blue": 0, "red": 0, "black": 0}
+        count_by_diff = {d: 0 for d in SlopeConfig.DIFFICULTIES}
         center_count = 0
         paths_generated = 0
         stop_generation = False
 
         # Nested loop: Difficulty → Grade → Side
-        for difficulty in ["green", "blue", "red", "black"]:
+        for difficulty in SlopeConfig.DIFFICULTIES:
             if stop_generation:
                 break
 
@@ -195,8 +196,8 @@ class PathFactory:
 
                 if needs_center:
                     center_count += 1
-                    # Stop if we've generated paths at multiple difficulties AND hit limit
-                    all_diffs_seen = all(count_by_diff[d] > 0 for d in ["green", "blue", "red"])
+                    # Stop if we've generated paths at all but the hardest difficulty AND hit limit
+                    all_diffs_seen = all(count_by_diff[d] > 0 for d in SlopeConfig.DIFFICULTIES[:-1])
                     if center_count > PathConfig.MAX_CENTER_PATHS and all_diffs_seen:
                         stop_generation = True
                     side_variants = [Side.CENTER]
@@ -377,7 +378,7 @@ class PathFactory:
         else:
             configs = [
                 GradeConfig(difficulty=difficulty, grade=grade_name, target_slope_pct=target_slope, side=side_enum)
-                for difficulty in ["green", "blue", "red", "black"]
+                for difficulty in SlopeConfig.DIFFICULTIES
                 for grade_name, target_slope in SlopeConfig.DIFFICULTY_TARGETS[difficulty].items()
                 for side_enum in [Side.LEFT, Side.RIGHT]
             ]
@@ -402,6 +403,7 @@ class PathFactory:
                 path.sector_name = f"🎯 {config.name}"
             else:
                 path.sector_name = "🛣️ Road"
+                path.kind = SegmentKind.ROAD
             all_paths.append(path)
 
         # Deduplicate paths (keep gentlest slope for overlapping paths)
@@ -409,8 +411,10 @@ class PathFactory:
 
         logger.info(f"generate_manual_paths: {len(all_paths)} raw → {len(unique_paths)} unique paths")
 
-        # No optimized path found → straight-line result so points always connect
-        if not unique_paths:
+        # No optimized path found. In SLOPE mode, fall back to a straight line so
+        # the user can always connect two points. In ROAD mode there is NO
+        # fallback: a straight line across steep ground is not a valid car road.
+        if not unique_paths and gradient_band is None:
             logger.info("No optimized path found, creating straight-line result")
             straight = self._create_straight_line_path(
                 start_lon=start_lon,
@@ -420,8 +424,6 @@ class PathFactory:
                 target_lat=target_lat,
                 target_elevation=target_elevation,
             )
-            if gradient_band is not None:
-                straight.sector_name = "🛣️ Road (direct)"
             unique_paths = [straight]
 
         yield from unique_paths

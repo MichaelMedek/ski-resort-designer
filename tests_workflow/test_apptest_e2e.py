@@ -531,7 +531,7 @@ class TestGrandResortTour:
             at.run()
 
         ctx = at.session_state["context"]
-        segments_before_undo = len(ctx.building.segments)
+        segments_before_undo = len(ctx.slope_build.segments)
         assert segments_before_undo == 2, f"Should have 2 segments, got {segments_before_undo}"
 
         # UNDO last segment
@@ -539,7 +539,7 @@ class TestGrandResortTour:
         at.run()
 
         ctx = at.session_state["context"]
-        segments_after_undo = len(ctx.building.segments)
+        segments_after_undo = len(ctx.slope_build.segments)
         assert segments_after_undo == segments_before_undo - 1, (
             f"After undo: expected {segments_before_undo - 1} segments, got {segments_after_undo}"
         )

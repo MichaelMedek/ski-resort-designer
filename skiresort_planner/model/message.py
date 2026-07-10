@@ -192,7 +192,11 @@ class TargetNotDownhillMessage(ToastMessage):
     @property
     def message(self) -> str:
         drop = self.start_elevation_m - self.target_elevation_m
-        return f"Not Downhill Enough — drop: {drop:.0f}m, need: {self.min_drop_m:.0f}m"
+        if drop < 0:
+            drop_explainer = f" (Target is {abs(drop):.0f}m above your current point)"
+        else:
+            drop_explainer = ""
+        return f"Not Downhill Enough — drop: {drop:.0f}m, need at least {self.min_drop_m:.0f}m" + drop_explainer
 
 
 @dataclass(frozen=True)
@@ -423,15 +427,17 @@ class LiftActionMessage(Message):
 
 @dataclass(frozen=True)
 class RoadPlacingContextMessage(Message):
-    """RIGHT panel: road placing progress message.
+    """RIGHT panel: road building progress message.
 
-    Shows the start point while awaiting the road's end point.
+    Shows where the road currently extends from (origin or last endpoint) and,
+    once building has started, how many segments have been committed.
     """
 
     start_node_id: Optional[str] = None
     start_lat: Optional[float] = None
     start_lon: Optional[float] = None
     start_elevation_m: float = 0.0
+    segment_count: int = 0
 
     @property
     def level(self) -> MessageLevel:
@@ -447,16 +453,18 @@ class RoadPlacingContextMessage(Message):
             location = f"({self.start_lat:.4f}, {self.start_lon:.4f})"
         else:
             raise ValueError("RoadPlacingContextMessage requires start_node_id or start_lat/lon")
+        anchor = "From" if self.segment_count else "Start"
+        progress = f"\n- ↔️ {self.segment_count} segment(s) committed" if self.segment_count else ""
         return (
-            f"{StyleConfig.ROAD_ICON} **Road** — Placing\n\n"
-            f"- 🚏 Start: {location}\n"
-            f"- 📍 Elevation: {self.start_elevation_m:.0f}m"
+            f"{StyleConfig.ROAD_ICON} **Road** — Building\n\n"
+            f"- 🚏 {anchor}: {location}\n"
+            f"- 📍 Elevation: {self.start_elevation_m:.0f}m{progress}"
         )
 
 
 @dataclass(frozen=True)
 class RoadActionMessage(Message):
-    """RIGHT panel: action instruction while placing a road (awaiting end point)."""
+    """RIGHT panel: action instruction while building a road (extend or finish)."""
 
     @property
     def level(self) -> MessageLevel:
@@ -464,12 +472,14 @@ class RoadActionMessage(Message):
 
     @property
     def message(self) -> str:
-        from skiresort_planner.constants import StyleConfig
+        from skiresort_planner.constants import PathConfig, StyleConfig
 
+        limit = PathConfig.ROAD_MAX_GRADIENT_PCT
         return (
-            f"{StyleConfig.ROAD_ICON} **Select Road End**\n\n"
-            "- 👆 Click terrain to end the road\n"
-            "- ⚪ Or click an existing **node**"
+            f"{StyleConfig.ROAD_ICON} **Extend the Road**\n\n"
+            f"- 👆 Click terrain to trace a gentle (±{limit}%) segment\n"
+            "- ⚪ Or click a **node** to join it\n"
+            "- 🏁 Press **Finish Road** in the sidebar when done"
         )
 
 

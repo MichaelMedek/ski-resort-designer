@@ -7,6 +7,7 @@ Uses the shared `fake_st` fixture (no browser).
 
 import pytest
 
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.context import BuildMode
@@ -24,7 +25,7 @@ def _build_slope(graph: ResortGraph, path_points: list) -> str:
 
 
 def _build_road(graph: ResortGraph, path_points: list) -> str:
-    graph.commit_paths(paths=[ProposedPathSegment(points=path_points, is_connector=True)], record_undo=False)
+    graph.commit_paths(paths=[ProposedPathSegment(points=path_points, is_connector=True, kind=SegmentKind.ROAD)])
     road = graph.finish_road(segment_ids=[list(graph.segments.keys())[-1]])
     assert road is not None
     return road.id
@@ -75,14 +76,15 @@ class TestSidebarRuns:
         sm.show_slope_info_panel(slope_id=slope_id)
         SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
 
-    def test_sidebar_during_road_placing(self, fake_st, empty_graph) -> None:
-        # Road placing state renders the road cancel button.
+    def test_sidebar_during_road_building(self, fake_st, empty_graph) -> None:
+        # Road building state renders the Finish Road / Cancel Road controls.
         from skiresort_planner.model.path_point import PathPoint
 
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         sm.start_road(node_id=None, location=PathPoint(lon=0.0, lat=0.0, elevation=2000.0))
-        assert sm.is_road_placing
-        SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
+        assert sm.is_road_starting
+        actions = SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
+        assert "finish_road" in actions and "cancel_road" in actions
 
     def test_sidebar_while_viewing_road(self, fake_st, empty_graph, path_points_blue) -> None:
         # Viewing a road renders the close-panel button path and road summary.
@@ -123,7 +125,15 @@ class TestDescribeUndoAction:
 
     def test_add_segments_label(self, empty_graph, path_points_blue) -> None:
         empty_graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
-        assert "segment" in self._describe_top(empty_graph).lower()
+        label = self._describe_top(empty_graph)
+        assert "segment" in label.lower() and "slope" in label.lower()
+
+    def test_add_segments_label_says_road_for_road_kind(self, empty_graph, path_points_blue) -> None:
+        # Roads commit via the same AddSegmentsAction — the label must say "road", not "slope".
+        empty_graph.commit_paths(
+            paths=[ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)]
+        )
+        assert "road" in self._describe_top(empty_graph).lower()
 
     def test_finish_slope_label(self, empty_graph, path_points_blue) -> None:
         slope_id = _build_slope(empty_graph, path_points_blue)
@@ -134,10 +144,10 @@ class TestDescribeUndoAction:
         label = self._describe_top(empty_graph)
         assert "Delete lift" in label and empty_graph.lifts[lift_id].name in label
 
-    def test_add_road_label(self, empty_graph, path_points_blue) -> None:
-        road_id = _build_road(empty_graph, path_points_blue)  # finish_road records ADD_ROAD
+    def test_finish_road_label(self, empty_graph, path_points_blue) -> None:
+        road_id = _build_road(empty_graph, path_points_blue)  # finish_road records FINISH_ROAD on top
         label = self._describe_top(empty_graph)
-        assert "Delete road" in label and empty_graph.roads[road_id].name in label
+        assert "Restore road" in label and empty_graph.roads[road_id].name in label
 
     def test_delete_slope_label(self, empty_graph, path_points_blue) -> None:
         slope_id = _build_slope(empty_graph, path_points_blue)

@@ -11,6 +11,7 @@ Reference: DETAILS.md
 """
 
 import logging
+import random
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -41,15 +42,21 @@ class Road(SegmentPath):
 
     @staticmethod
     def generate_name(road_id: str, avg_bearing: float) -> str:
-        """Generate a road name like '1 (North Access)'.
+        """Generate a creative road name like '1 (North Serpentine Pass)'.
+
+        Mirrors Slope.generate_name: compass direction + a random creative
+        prefix/suffix. Roads have no difficulty, so the words are geographic
+        rather than difficulty-themed.
 
         Args:
-            road_id: Road ID (e.g., "R1")
-            avg_bearing: Average bearing in degrees, for a compass label.
+            road_id: Road ID (e.g., "R1").
+            avg_bearing: Average bearing in degrees, for the compass label.
 
         Returns:
-            Road name with number prefix.
+            Road name like "1 (North Serpentine Pass)".
         """
         road_number = Road.number_from_id(road_id)
         direction = NameConfig.get_compass_direction(bearing_deg=avg_bearing)
-        return f"{road_number} ({direction} Access)"
+        prefix = random.choice(NameConfig.ROAD_PREFIXES)
+        suffix = random.choice(NameConfig.ROAD_SUFFIXES)
+        return f"{road_number} ({direction} {prefix} {suffix})"

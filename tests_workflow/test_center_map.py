@@ -5,6 +5,8 @@ the 2D/3D full-resort render, LayerCollection z-ordering, and the
 calculate_3d_view_for_* camera calculators.
 """
 
+from skiresort_planner.model.path_segment import SegmentKind
+
 M = 111320.0  # metres per degree near the equator
 
 
@@ -36,6 +38,7 @@ def _populate_full_resort(graph, dem):
                     PathPoint(lon=400 / M, lat=0.0, elevation=dem.get_elevation_or_raise(lon=400 / M, lat=0.0)),
                 ],
                 is_connector=True,
+                kind=SegmentKind.ROAD,
             )
         ],
         record_undo=False,
@@ -101,6 +104,47 @@ class TestMapRendering:
 
         assert deck is not None, "Should produce a Deck object"
 
+    def test_proposal_color_matches_kind(self, empty_graph, path_points_blue) -> None:
+        """A ROAD proposal renders translucent brown; a slope proposal difficulty-colored."""
+        from skiresort_planner.constants import StyleConfig
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
+        from skiresort_planner.ui.center_map import MapRenderer
+
+        renderer = MapRenderer(graph=empty_graph)
+
+        road_proposal = ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)
+        road_layers = renderer._create_proposal_layers(proposals=[road_proposal], selected_idx=None, use_3d=False)
+        road_path_layer = next(layer for layer in road_layers if layer.id == "proposal_paths")
+        assert road_path_layer.data[0]["color"][:3] == StyleConfig.ROAD_PROPOSAL_COLOR_RGBA[:3]
+
+        slope_proposal = ProposedPathSegment(points=path_points_blue, target_difficulty="blue")
+        slope_layers = renderer._create_proposal_layers(proposals=[slope_proposal], selected_idx=None, use_3d=False)
+        slope_path_layer = next(layer for layer in slope_layers if layer.id == "proposal_paths")
+        assert slope_path_layer.data[0]["color"][:3] == list(StyleConfig.SLOPE_COLORS_RGBA["blue"])[:3]
+
+    def test_custom_path_proposals_have_no_endpoint_markers(self, empty_graph, path_points_blue) -> None:
+        """is_custom_path=True (custom-connect AND roads) suppresses proposal endpoint markers.
+
+        Their proposals all run to the same clicked target, so overlapping endpoint
+        dots would be ambiguous — commit is button-only. Fan-out (is_custom_path=False)
+        keeps distinct endpoint markers.
+        """
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
+        from skiresort_planner.ui.center_map import MapRenderer
+
+        renderer = MapRenderer(graph=empty_graph)
+        proposal = ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)
+
+        custom = renderer._create_proposal_layers(
+            proposals=[proposal], selected_idx=0, is_custom_path=True, use_3d=False
+        )
+        assert not any(layer.id == "proposal_endpoints" for layer in custom), (
+            "custom/road proposals must NOT render endpoint markers"
+        )
+
+        fan = renderer._create_proposal_layers(proposals=[proposal], selected_idx=0, is_custom_path=False, use_3d=False)
+        assert any(layer.id == "proposal_endpoints" for layer in fan), "fan-out proposals keep endpoint markers"
+
     def test_segment_layers_split_slope_and_road_buckets(self, empty_graph, path_points_blue) -> None:
         """_create_segment_layers routes a road's segments to the 'roads' bucket
         (brown, road-typed) and a slope's to 'slopes' (difficulty-colored).
@@ -118,7 +162,9 @@ class TestMapRendering:
             type(path_points_blue[0])(lon=500 / M, lat=0.0, elevation=2000.0),
             type(path_points_blue[0])(lon=800 / M, lat=0.0, elevation=1990.0),
         ]
-        graph.commit_paths(paths=[ProposedPathSegment(points=road_pts, is_connector=True)], record_undo=False)
+        graph.commit_paths(
+            paths=[ProposedPathSegment(points=road_pts, is_connector=True, kind=SegmentKind.ROAD)], record_undo=False
+        )
         road_seg = list(graph.segments.keys())[-1]
         road = graph.finish_road(segment_ids=[road_seg])
 
@@ -136,7 +182,12 @@ class TestMapRendering:
         assert record["color"] == list(StyleConfig.ROAD_COLOR_RGBA)
 
     def test_segment_layers_render_parking_at_shared_node(self, empty_graph) -> None:
-        """A road sharing a node with a slope yields a parking marker layer."""
+        """A road sharing a node with a slope renders that node as a parking marker.
+
+        Parking is not a separate layer — the shared node in the *nodes* layer gets
+        the parking color, larger radius, and a "Parking place" tooltip.
+        """
+        from skiresort_planner.constants import ClickConfig, MarkerConfig, StyleConfig
         from skiresort_planner.model.path_point import PathPoint
         from skiresort_planner.model.proposed_path import ProposedPathSegment
         from skiresort_planner.ui.center_map import MapRenderer
@@ -155,16 +206,32 @@ class TestMapRendering:
         graph.commit_paths(
             paths=[
                 ProposedPathSegment(
-                    points=[shared, PathPoint(lon=300 / M, lat=0.0, elevation=1990.0)], is_connector=True
+                    points=[shared, PathPoint(lon=300 / M, lat=0.0, elevation=1990.0)],
+                    is_connector=True,
+                    kind=SegmentKind.ROAD,
                 )
             ],
-            record_undo=False,
         )
         graph.finish_road(segment_ids=[list(graph.segments.keys())[-1]])
 
+        parking_ids = {n.id for n in graph.get_parking_nodes()}
+        assert parking_ids, "shared road/slope node should be a parking node"
+
         renderer = MapRenderer(graph=graph)
-        parking = renderer._create_parking_layers(use_3d=False)
-        assert parking, "shared road/slope node should produce a parking layer"
+        node_layer = renderer._create_node_layer(use_3d=False)
+        parking_points = [d for d in node_layer.data if d["id"] in parking_ids]
+        assert parking_points, "parking node should appear in the nodes layer"
+        for point in parking_points:
+            assert point["color"] == list(StyleConfig.PARKING_COLOR_RGBA)
+            assert point["radius"] == ClickConfig.PARKING_MARKER_RADIUS
+            assert point["radius"] > ClickConfig.NODE_MARKER_RADIUS, "parking marker must be bigger than a plain node"
+            assert StyleConfig.PARKING_ICON in point["name"] and "Parking place" in point["name"]
+
+        # Non-parking nodes keep the normal white node styling.
+        plain_points = [d for d in node_layer.data if d["id"] not in parking_ids]
+        for point in plain_points:
+            assert point["color"] == list(MarkerConfig.NODE_MARKER_COLOR)
+            assert point["radius"] == ClickConfig.NODE_MARKER_RADIUS
 
 
 class TestFullResortRendering:
@@ -243,7 +310,7 @@ class TestThreeDViewCalculators:
         from skiresort_planner.model.proposed_path import ProposedPathSegment
         from skiresort_planner.ui.center_map import MapRenderer
 
-        proposal = ProposedPathSegment(points=path_points_blue, is_connector=True)
+        proposal = ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)
         empty_graph.commit_paths(paths=[proposal], record_undo=False)
         road = empty_graph.finish_road(segment_ids=[list(empty_graph.segments.keys())[-1]])
 
@@ -255,7 +322,10 @@ class TestLayerCollection:
     """Tests for layer collection z-ordering."""
 
     def test_layer_collection_maintains_z_order(self) -> None:
-        """LayerCollection z-order: terrain → pylons → slopes → roads → lifts → parking → nodes → proposals → markers."""
+        """LayerCollection z-order: terrain → pylons → slopes → roads → lifts → nodes → proposals → markers.
+
+        Parking is not its own bucket — a parking node renders inside the nodes layer.
+        """
         from skiresort_planner.ui.center_map import LayerCollection
 
         collection = LayerCollection()
@@ -264,7 +334,6 @@ class TestLayerCollection:
         collection.terrain.append({"id": "terrain"})
         collection.slopes.append({"id": "slopes"})
         collection.roads.append({"id": "roads"})
-        collection.parking.append({"id": "parking"})
         collection.nodes.append({"id": "nodes"})
         collection.markers.append({"id": "markers"})
 
@@ -274,6 +343,5 @@ class TestLayerCollection:
         layer_ids = [layer["id"] for layer in layers]
         assert layer_ids.index("terrain") < layer_ids.index("slopes"), "terrain before slopes"
         assert layer_ids.index("slopes") < layer_ids.index("roads"), "slopes before roads"
-        assert layer_ids.index("roads") < layer_ids.index("parking"), "roads before parking"
-        assert layer_ids.index("parking") < layer_ids.index("nodes"), "parking before nodes"
+        assert layer_ids.index("roads") < layer_ids.index("nodes"), "roads before nodes"
         assert layer_ids.index("nodes") < layer_ids.index("markers"), "nodes before markers"

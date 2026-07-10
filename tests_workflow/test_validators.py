@@ -71,6 +71,23 @@ class TestCustomTargetDownhill:
             validate_custom_target_downhill(start_elevation=2400.0, target_elevation=2500.0), TargetNotDownhillMessage
         )
 
+    def test_uphill_message_explains_target_is_above(self) -> None:
+        # Target 100m ABOVE start: the message must explain it's above the current
+        # point, NOT just print a confusing negative drop with no explanation.
+        msg = TargetNotDownhillMessage(
+            start_elevation_m=2400.0, target_elevation_m=2500.0, min_drop_m=ConnectionConfig.MIN_DROP_M
+        ).message
+        assert "100m above" in msg
+
+    def test_too_little_drop_message_keeps_need_wording(self) -> None:
+        # Target below start but not enough drop: keep the "need at least Xm" wording,
+        # with no "above" explainer.
+        msg = TargetNotDownhillMessage(
+            start_elevation_m=2500.0, target_elevation_m=2498.0, min_drop_m=ConnectionConfig.MIN_DROP_M
+        ).message
+        assert "above" not in msg
+        assert f"{ConnectionConfig.MIN_DROP_M:.0f}m" in msg
+
 
 class TestCustomTargetDistance:
     def test_within_range_valid(self) -> None:

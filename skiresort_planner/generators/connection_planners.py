@@ -173,6 +173,10 @@ class LeastCostPathPlanner:
     ) -> Optional[tuple[list[list[float]], list[list[float]], list[list[float]], GridNode, GridNode]]:
         """Build elevation grid covering the search area."""
         # Calculate grid bounds with buffer
+        # TODO(serpentine): this buffer (0.5×direct) is too tight for road
+        # switchbacks — a zig-zag needs much more lateral room than a slope.
+        # A serpentine road redesign (see _calc_edge_cost FIXME) should widen this
+        # for road mode so in-band switchbacks physically fit in the search grid.
         buffer_m = direct_distance * PlannerConfig.GRID_BUFFER_FACTOR
         total_extent = direct_distance + 2 * buffer_m
 
@@ -422,9 +426,26 @@ class LeastCostPathPlanner:
         actual_slope = (drop / horiz_dist) * 100
 
         if gradient_band is not None:
-            # Road mode: penalize only leaving the band; no uphill penalty.
-            lo, hi = gradient_band
-            over = max(0.0, actual_slope - hi, lo - actual_slope)
+            # Road mode: soft penalty ramps from the COMFORT threshold (12%), NOT
+            # the hard cap (15%) — so Dijkstra prefers gentler lines and fewer
+            # near-limit routes get traced only to be hard-capped-and-refused by
+            # the caller. The hard cap stays the true validity limit.
+            soft = PathConfig.ROAD_SOFT_GRADIENT_PCT
+            over = max(0.0, abs(actual_slope) - soft)
+            # FIXME(serpentine): this SOFT penalty (now knee'd at the 12% comfort
+            # threshold) still lets Dijkstra prefer a short out-of-band route over a
+            # long in-band switchback — so on steep terrain roads still exceed the
+            # band instead of zig-zagging (the caller then hard-caps and refuses).
+            # To make roads serpentine "like a green slope always works", redesign
+            # to EITHER:
+            #   (a) hard cutoff: return inf when the slope exceeds the hard cap so
+            #       Dijkstra only routes through in-band cells, AND widen the grid
+            #       buffer (see _build_grid) so switchbacks fit; expose ONE
+            #       user-tunable "max detour" knob; OR
+            #   (b) replace grid-Dijkstra for roads with an angle-based tracer that
+            #       lays fixed-grade zig-zag legs (mirror PathTracer.trace_downhill /
+            #       DETAILS.md §3 traverse-angle math).
+            # Deferred intentionally — see plan. Keep the soft form for now.
             return horiz_dist * exp(over / PlannerConfig.COST_SIGMA)
 
         # Slope mode: deviation-from-target penalty + uphill penalty.

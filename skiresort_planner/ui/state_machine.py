@@ -269,7 +269,8 @@ from skiresort_planner.ui.state_lifecycle import (
     enter_idle_viewing_road,
     enter_idle_viewing_slope,
     enter_lift_placing,
-    enter_road_placing,
+    enter_road_building,
+    enter_road_starting,
     enter_slope_building,
     enter_slope_custom_path,
     enter_slope_custom_picking,
@@ -279,7 +280,8 @@ from skiresort_planner.ui.state_lifecycle import (
     exit_idle_viewing_road,
     exit_idle_viewing_slope,
     exit_lift_placing,
-    exit_road_placing,
+    exit_road_building,
+    exit_road_starting,
     exit_slope_building,
     exit_slope_custom_path,
     exit_slope_custom_picking,
@@ -387,8 +389,9 @@ class PlannerStateMachine(StateMachine):
     # LIFT state
     lift_placing = State("LiftPlacing")
 
-    # ROAD state (two-click point-to-point, like a lift)
-    road_placing = State("RoadPlacing")
+    # ROAD states (segment-by-segment, like a slope: build then finish)
+    road_starting = State("RoadStarting")
+    road_building = State("RoadBuilding")
 
     # ==========================================================================
     # 1. Transitions: From IDLE_READY
@@ -401,7 +404,7 @@ class PlannerStateMachine(StateMachine):
 
     start_slope = idle_ready.to(slope_starting, event="start_slope")  # 1.4 [event: start_slope]
     start_lift = idle_ready.to(lift_placing, event="start_lift")  # 1.8 [event: start_lift]
-    start_road = idle_ready.to(road_placing, event="start_road")  # 1.9 [event: start_road]
+    start_road = idle_ready.to(road_starting, event="start_road")  # 1.9 [event: start_road]
     view_slope = idle_ready.to(idle_viewing_slope, event="view_slope")  # 1.2 [event: view_slope]
     view_lift = idle_ready.to(idle_viewing_lift, event="view_lift")  # 1.3 [event: view_lift]
     view_road = idle_ready.to(idle_viewing_road, event="view_road")  # 1.5 [event: view_road]
@@ -422,7 +425,7 @@ class PlannerStateMachine(StateMachine):
     switch_slope_to_road_view = idle_viewing_slope.to(idle_viewing_road, event="view_road")  # 2.5 [event: view_road]
     start_slope_from_slope_view = idle_viewing_slope.to(slope_starting, event="start_slope")  # 2.4 [event: start_slope]
     start_lift_from_slope_view = idle_viewing_slope.to(lift_placing, event="start_lift")  # 2.8 [event: start_lift]
-    start_road_from_slope_view = idle_viewing_slope.to(road_placing, event="start_road")  # 2.9 [event: start_road]
+    start_road_from_slope_view = idle_viewing_slope.to(road_starting, event="start_road")  # 2.9 [event: start_road]
 
     # ==========================================================================
     # 3. Transitions: From IDLE_VIEWING_LIFT
@@ -440,7 +443,7 @@ class PlannerStateMachine(StateMachine):
     switch_lift_to_road_view = idle_viewing_lift.to(idle_viewing_road, event="view_road")  # 3.5 [event: view_road]
     start_slope_from_lift_view = idle_viewing_lift.to(slope_starting, event="start_slope")  # 3.4 [event: start_slope]
     start_lift_from_lift_view = idle_viewing_lift.to(lift_placing, event="start_lift")  # 3.8 [event: start_lift]
-    start_road_from_lift_view = idle_viewing_lift.to(road_placing, event="start_road")  # 3.9 [event: start_road]
+    start_road_from_lift_view = idle_viewing_lift.to(road_starting, event="start_road")  # 3.9 [event: start_road]
 
     # ==========================================================================
     # 3b. Transitions: From IDLE_VIEWING_ROAD
@@ -458,7 +461,7 @@ class PlannerStateMachine(StateMachine):
     switch_road_to_lift_view = idle_viewing_road.to(idle_viewing_lift, event="view_lift")  # 3b.3 [event: view_lift]
     start_slope_from_road_view = idle_viewing_road.to(slope_starting, event="start_slope")  # 3b.4 [event: start_slope]
     start_lift_from_road_view = idle_viewing_road.to(lift_placing, event="start_lift")  # 3b.8 [event: start_lift]
-    start_road_from_road_view = idle_viewing_road.to(road_placing, event="start_road")  # 3b.9 [event: start_road]
+    start_road_from_road_view = idle_viewing_road.to(road_starting, event="start_road")  # 3b.9 [event: start_road]
 
     # ==========================================================================
     # 4. Transitions: From SLOPE_STARTING (0 segments)
@@ -542,14 +545,21 @@ class PlannerStateMachine(StateMachine):
     cancel_lift = lift_placing.to(idle_ready)  # 8.1 [direct]
 
     # ==========================================================================
-    # 9. Transitions: From ROAD_PLACING
+    # 9. Transitions: From ROAD_STARTING (0 segments) / ROAD_BUILDING (1+ segments)
     # ==========================================================================
-    # Direct transitions (two-click point-to-point, like a lift).
-    # 9.1. cancel_road [direct]: Cancel button
-    # 9.3. complete_road [direct]: Click end point → road built
+    # Roads build segment-by-segment like slopes: each click traces one gentle
+    # (gentle-gradient) segment to the clicked point. No custom-connect (every segment is
+    # already point-to-point).
+    # 9.1. cancel_road [direct]: Cancel button, from either state
+    # 9.4. commit_road_first [event: commit_road]: first traced segment
+    # 9.5. commit_road_continue [event: commit_road, self-loop]: extend the road
+    # 9.2. finish_road [direct]: Finish button
 
-    complete_road = road_placing.to(idle_viewing_road)  # 9.3 [direct]
-    cancel_road = road_placing.to(idle_ready)  # 9.1 [direct]
+    commit_road_first = road_starting.to(road_building, event="commit_road")  # 9.4 [event: commit_road]
+    commit_road_continue = road_building.to(road_building, event="commit_road")  # 9.5 [event: commit_road] self-loop
+    finish_road = road_building.to(idle_viewing_road)  # 9.2 [direct]
+    cancel_road_from_starting = road_starting.to(idle_ready, event="cancel_road")  # 9.1 [event: cancel_road]
+    cancel_road_from_building = road_building.to(idle_ready, event="cancel_road")  # 9.1 [event: cancel_road]
 
     # ==========================================================================
     # Guards (Conditions)
@@ -557,7 +567,7 @@ class PlannerStateMachine(StateMachine):
 
     def has_no_segments(self) -> bool:
         """Guard: Check if there are no committed segments."""
-        return len(self.context.building.segments) == 0
+        return len(self.context.slope_build.segments) == 0
 
     # ==========================================================================
     # Event-Only Access Control
@@ -574,11 +584,17 @@ class PlannerStateMachine(StateMachine):
             # commit_path event
             "commit_first_path",
             "commit_continue_path",
+            # commit_road event
+            "commit_road_first",
+            "commit_road_continue",
             # cancel_slope event
             "cancel_from_starting",
             "cancel_from_building",
             "cancel_slope_from_custom_picking",
             "cancel_slope_from_custom_path",
+            # cancel_road event
+            "cancel_road_from_starting",
+            "cancel_road_from_building",
             # cancel_custom_connect event
             "cancel_custom_to_starting",
             "cancel_custom_to_building",
@@ -674,9 +690,19 @@ class PlannerStateMachine(StateMachine):
         return bool(self.lift_placing.is_active)
 
     @property
-    def is_road_placing(self) -> bool:
-        """Check if placing a road (between two clicks)."""
-        return bool(self.road_placing.is_active)
+    def is_road_starting(self) -> bool:
+        """Check if starting a road (0 segments)."""
+        return bool(self.road_starting.is_active)
+
+    @property
+    def is_road_building_only(self) -> bool:
+        """Check if in road_building state specifically (1+ segments)."""
+        return bool(self.road_building.is_active)
+
+    @property
+    def is_any_road_state(self) -> bool:
+        """Check if in any road-building state (starting or building)."""
+        return self.is_road_starting or self.is_road_building_only
 
     # Composite state checks
     @property
@@ -749,9 +775,13 @@ class PlannerStateMachine(StateMachine):
         """Hook: Entering lift placing state."""
         enter_lift_placing(self.context)
 
-    def on_enter_road_placing(self) -> None:
-        """Hook: Entering road placing state."""
-        enter_road_placing(self.context)
+    def on_enter_road_starting(self) -> None:
+        """Hook: Entering road starting state."""
+        enter_road_starting(self.context)
+
+    def on_enter_road_building(self) -> None:
+        """Hook: Entering road building state."""
+        enter_road_building(self.context)
 
     # ==========================================================================
     # Exit Hooks - Using lifecycle functions
@@ -793,9 +823,13 @@ class PlannerStateMachine(StateMachine):
         """Hook: Exiting lift placing state."""
         exit_lift_placing(self.context)
 
-    def on_exit_road_placing(self) -> None:
-        """Hook: Exiting road placing state."""
-        exit_road_placing(self.context)
+    def on_exit_road_starting(self) -> None:
+        """Hook: Exiting road starting state."""
+        exit_road_starting(self.context)
+
+    def on_exit_road_building(self) -> None:
+        """Hook: Exiting road building state."""
+        exit_road_building(self.context)
 
     # ==========================================================================
     # Transition Actions (before_* hooks)
@@ -810,25 +844,35 @@ class PlannerStateMachine(StateMachine):
     ) -> None:
         """Action before starting to build a slope."""
         self.context.set_selection(lon=lon, lat=lat, elevation=elevation)
-        self.context.building.start_node = node_id
+        self.context.slope_build.start_node_id = node_id
         self.context.selection.node_id = node_id
         slope_number = self._resort_graph._slope_counter + 1
-        self.context.building.name = f"Slope {slope_number}"
+        self.context.slope_build.name = f"Slope {slope_number}"
 
     def _add_segment_to_building(self, segment_id: str, endpoint_node_id: str) -> None:
         """Common logic for adding segment to building context."""
-        self.context.building.segments.append(segment_id)
-        self.context.building.endpoints = [endpoint_node_id]
+        self.context.slope_build.segments.append(segment_id)
+        self.context.slope_build.endpoints = [endpoint_node_id]
         self.context.clear_proposals()
 
     def before_commit_path(self, segment_id: str, endpoint_node_id: str) -> None:
         """Action before committing a path segment (event hook only)."""
         self._add_segment_to_building(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
 
+    def _add_segment_to_road(self, segment_id: str, endpoint_node_id: str) -> None:
+        """Common logic for adding a traced segment to the road context."""
+        self.context.road_build.segments.append(segment_id)
+        self.context.road_build.endpoints = [endpoint_node_id]
+        self.context.clear_proposals()
+
+    def before_commit_road(self, segment_id: str, endpoint_node_id: str) -> None:
+        """Action before committing a road segment (event hook; both first + continue)."""
+        self._add_segment_to_road(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
+
     def before_commit_custom_continue(self, segment_id: str, endpoint_node_id: str) -> None:
         """Action before committing custom path and continuing."""
-        self.context.building.segments.append(segment_id)
-        self.context.building.endpoints = [endpoint_node_id]
+        self.context.slope_build.segments.append(segment_id)
+        self.context.slope_build.endpoints = [endpoint_node_id]
         self.context.clear_proposals()
         self.context.custom_connect.clear()
 
@@ -838,8 +882,8 @@ class PlannerStateMachine(StateMachine):
         Note: segment_id may already be in building.segments if added before
         calling graph.finish_slope(). This hook is idempotent.
         """
-        if segment_id not in self.context.building.segments:
-            self.context.building.segments.append(segment_id)
+        if segment_id not in self.context.slope_build.segments:
+            self.context.slope_build.segments.append(segment_id)
         self.context.viewing.set_slope_id(slope_id=slope_id)
         self.context.custom_connect.clear()
 
@@ -906,8 +950,8 @@ class PlannerStateMachine(StateMachine):
 
     def before_start_road(self, node_id: str | None = None, location: PathPoint | None = None) -> None:
         """Action before starting road placement: store the first clicked point."""
-        self.context.road.start_node_id = node_id
-        self.context.road.start_location = location
+        self.context.road_build.start_node_id = node_id
+        self.context.road_build.start_location = location
 
     # Reuse start_road logic for other entry points
     before_start_road_from_slope_view = before_start_road
@@ -919,10 +963,10 @@ class PlannerStateMachine(StateMachine):
         self.context.viewing.set_lift_id(lift_id=lift_id)
         self.context.lift.clear()
 
-    def before_complete_road(self, road_id: str) -> None:
-        """Set road_id before completing. Panel visibility set by enter_idle_viewing_road."""
+    def before_finish_road(self, road_id: str) -> None:
+        """Set road_id before finishing. Panel visibility set by enter_idle_viewing_road."""
         self.context.viewing.set_road_id(road_id=road_id)
-        self.context.road.clear()
+        self.context.road_build.clear()
 
     # ──────────────────────────────────────────────────────────────────────────────
     # Custom Connect Transitions (Single Source of Truth for ctx.custom_connect.*)
@@ -938,12 +982,12 @@ class PlannerStateMachine(StateMachine):
 
         Attached via before= parameter to enable_custom_from_starting transition.
         """
-        start_node_id = self.context.building.start_node
+        start_node_id = self.context.slope_build.start_node_id
         if start_node_id is None:
             sel = self.context.selection
             node, _ = self._resort_graph.get_or_create_node(lon=sel.lon, lat=sel.lat, elevation=sel.elevation)
             start_node_id = node.id
-            self.context.building.start_node = start_node_id
+            self.context.slope_build.start_node_id = start_node_id
         self.context.custom_connect.enabled = True
         self.context.custom_connect.start_node = start_node_id
 
@@ -953,8 +997,8 @@ class PlannerStateMachine(StateMachine):
         Attached via before= parameter to enable_custom_from_building transition.
         """
         self.context.custom_connect.enabled = True
-        if self.context.building.endpoints:
-            self.context.custom_connect.start_node = self.context.building.endpoints[0]
+        if self.context.slope_build.endpoints:
+            self.context.custom_connect.start_node = self.context.slope_build.endpoints[0]
 
     def before_select_custom_target(self, target_location: LonLatElev) -> None:
         """Action before selecting custom target."""
@@ -972,7 +1016,7 @@ class PlannerStateMachine(StateMachine):
         """Event hook for cancel_slope. Clears all building and custom state."""
         self.context.clear_custom_connect()
         self.context.clear_proposals()
-        self.context.building.clear()
+        self.context.slope_build.clear()
 
     # ==========================================================================
     # Initialization
@@ -1011,11 +1055,13 @@ class PlannerStateMachine(StateMachine):
 
     def can_finish_slope(self) -> bool:
         """Check if slope can be finished (in building state with segments)."""
-        return self.is_slope_building_only and len(self.context.building.segments) > 0
+        return self.is_slope_building_only and len(self.context.slope_build.segments) > 0
 
     def can_undo(self) -> bool:
-        """Check if undo is available in current slope state."""
-        return self.is_any_slope_state and len(self.context.building.segments) > 0
+        """Check if undo is available in current building state (slope or road)."""
+        return (self.is_any_slope_state and len(self.context.slope_build.segments) > 0) or (
+            self.is_any_road_state and len(self.context.road_build.segments) > 0
+        )
 
     # ==========================================================================
     # Force State Methods (for Undo - bypasses transitions)
@@ -1036,7 +1082,8 @@ class PlannerStateMachine(StateMachine):
         "slope_custom_picking": exit_slope_custom_picking,
         "slope_custom_path": exit_slope_custom_path,
         "lift_placing": exit_lift_placing,
-        "road_placing": exit_road_placing,
+        "road_starting": exit_road_starting,
+        "road_building": exit_road_building,
     }
 
     def force_idle(self) -> None:
@@ -1048,7 +1095,7 @@ class PlannerStateMachine(StateMachine):
         """
         logger.info(f"[STATE] Forcing state from {self.get_state_name()} to IdleReady")
         # Clear all context state (state-specific cleanup via exit hook in _set_current_state)
-        self.context.building.clear()
+        self.context.slope_build.clear()
         self.context.clear_custom_connect()
         self.context.clear_proposals()
         self.context.viewing.clear()
@@ -1061,7 +1108,7 @@ class PlannerStateMachine(StateMachine):
         """Force state machine to SlopeBuilding state without transition.
 
         Used after undo operations when building context should be restored.
-        Assumes caller has already set up ctx.building with the restored segments.
+        Assumes caller has already set up ctx.slope_build with the restored segments.
         Does NOT trigger st.rerun() - caller is responsible for UI refresh.
         """
         logger.info(f"[STATE] Forcing state from {self.get_state_name()} to SlopeBuilding")
@@ -1072,6 +1119,28 @@ class PlannerStateMachine(StateMachine):
         self._set_current_state(state=self.slope_building)
         # Run entry hook to ensure consistent state
         enter_slope_building(self.context)
+
+    def force_road_building(self) -> None:
+        """Force state machine to RoadBuilding without transition (undo helper).
+
+        Used after undoing a road segment/finish when road segments remain.
+        Assumes caller has already set up ctx.road_build with the restored segments.
+        """
+        logger.info(f"[STATE] Forcing state from {self.get_state_name()} to RoadBuilding")
+        self.context.viewing.clear()
+        self._set_current_state(state=self.road_building)
+        enter_road_building(self.context)
+
+    def force_road_starting(self) -> None:
+        """Force state machine to RoadStarting without transition (undo helper).
+
+        Used after undoing the last road segment when the origin is still set
+        but no segments remain.
+        """
+        logger.info(f"[STATE] Forcing state from {self.get_state_name()} to RoadStarting")
+        self.context.viewing.clear()
+        self._set_current_state(state=self.road_starting)
+        enter_road_starting(self.context)
 
     def _set_current_state(self, state: State) -> None:
         """Force state change with proper exit hook lifecycle.
@@ -1165,10 +1234,6 @@ class PlannerStateMachine(StateMachine):
         Uses start_road event - SM resolves to appropriate transition.
         """
         self.start_road(node_id=node_id, location=location)
-
-    def commit_segment(self, segment_id: str, endpoint_node_id: str) -> None:
-        """Commit a path segment. SM resolves to commit_first_path or commit_continue_path."""
-        self.commit_path(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
 
     def show_slope_info_panel(self, slope_id: str) -> None:
         """Show slope info panel from any idle state.

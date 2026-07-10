@@ -63,7 +63,7 @@ class TestCancelCustomConnect:
         sm.enable_custom()
 
         assert sm.current_state_value == "slope_custom_picking"
-        assert len(ctx.building.segments) == 0, "No segments committed"
+        assert len(ctx.slope_build.segments) == 0, "No segments committed"
 
         # Cancel custom - should return to starting (no segments)
         sm.cancel_custom()
@@ -86,7 +86,7 @@ class TestCancelCustomConnect:
         # Enable custom
         sm.enable_custom()
         assert sm.current_state_value == "slope_custom_picking"
-        assert len(ctx.building.segments) == 1, "Has 1 segment"
+        assert len(ctx.slope_build.segments) == 1, "Has 1 segment"
 
         # Cancel custom - should return to building (has segments)
         sm.cancel_custom()
@@ -180,7 +180,7 @@ class TestCommitCustomContinue:
         sm.commit_custom_continue(segment_id=seg_id_2, endpoint_node_id=endpoint_ids_2[0])
 
         assert sm.current_state_value == "slope_building", "Should return to slope_building"
-        assert seg_id_2 in ctx.building.segments, "New segment should be tracked"
+        assert seg_id_2 in ctx.slope_build.segments, "New segment should be tracked"
         assert ctx.custom_connect.target_location is None, "Custom connect should be cleared"
 
 
@@ -219,10 +219,10 @@ class TestCommitCustomFinish:
         seg_id_2 = list(graph.segments.keys())[-1]
 
         # Add segment to building context before finishing
-        ctx.building.segments.append(seg_id_2)
+        ctx.slope_build.segments.append(seg_id_2)
 
         # Finish the slope
-        slope = graph.finish_slope(segment_ids=ctx.building.segments)
+        slope = graph.finish_slope(segment_ids=ctx.slope_build.segments)
         assert slope is not None, "Slope should be created"
 
         # 5. Call commit_custom_finish

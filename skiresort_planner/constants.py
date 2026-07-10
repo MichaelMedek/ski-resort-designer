@@ -183,7 +183,14 @@ class PathConfig:
 
     # Roads for cars: gentle gradient band the routing must stay within.
     # Cars may climb, descend, or run flat, but never exceed this steepness.
-    ROAD_MAX_GRADIENT_PCT = 12
+    ROAD_MAX_GRADIENT_PCT = 15
+    # Soft comfort threshold (< hard cap): the Dijkstra cost stays flat up to this
+    # gradient and ramps gently between here and the hard cap, so the planner
+    # prefers gentler routes. The hard cap (above) is what actually refuses a road.
+    ROAD_SOFT_GRADIENT_PCT = 12
+
+
+assert PathConfig.ROAD_SOFT_GRADIENT_PCT < PathConfig.ROAD_MAX_GRADIENT_PCT
 
 
 class EarthworkConfig:
@@ -314,6 +321,7 @@ class ClickConfig:
 
     # Clickable marker radii (meters for Pydeck ScatterplotLayer)
     NODE_MARKER_RADIUS = 35
+    PARKING_MARKER_RADIUS = 50  # Parking nodes render bigger than plain nodes
     SLOPE_ICON_MARKER_RADIUS = 30
     ROAD_ICON_MARKER_RADIUS = 30
     LIFT_ICON_MARKER_RADIUS = 30
@@ -435,6 +443,9 @@ class StyleConfig:
     # distinct from difficulty-colored slopes and purple lifts.
     ROAD_COLOR = "#B45309"  # amber-700, for Plotly charts
     ROAD_COLOR_RGBA = [180, 83, 9, 230]  # amber-700 for Pydeck
+    # Road PROPOSAL (dashed browse path before commit): lighter, translucent amber-600
+    # so "proposed" reads as distinct from a committed solid amber-700 road.
+    ROAD_PROPOSAL_COLOR_RGBA = [217, 119, 6, 150]
     ROAD_ICON = "🛣️"
 
     # Parking place (auto-shown where a road meets a slope or lift)
@@ -481,6 +492,31 @@ class NameConfig:
         "Route",
         "Pitch",
         "Section",
+    ]
+
+    # Road name components (roads have no difficulty — creative geography words)
+    ROAD_PREFIXES = [
+        "Alpine",
+        "Valley",
+        "Ridgeline",
+        "Serpentine",
+        "Highland",
+        "Forest",
+        "Mountain",
+        "Meadow",
+        "Glacier",
+        "Summit",
+    ]
+
+    ROAD_SUFFIXES = [
+        "Road",
+        "Route",
+        "Way",
+        "Drive",
+        "Pass",
+        "Trail",
+        "Access",
+        "Lane",
     ]
 
     # Lift name prefixes by type

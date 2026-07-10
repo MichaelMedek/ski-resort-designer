@@ -9,11 +9,13 @@ mode's click flow is exercised the same way:
     handle_idle_click            → TestIdleClickRouting
     handle_slope_building_click  → TestSlopeBuildingClick
     handle_lift_placing_click    → TestLiftPlacingClick
-    handle_road_placing_click    → TestRoadPlacingClick
+    handle_road_building_click  → TestRoadBuildingClick
 """
 
+from skiresort_planner.constants import PathConfig
 from skiresort_planner.model.click_info import ClickInfo, MapClickType, MarkerType
 from skiresort_planner.model.path_point import PathPoint
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.context import BuildMode
@@ -37,7 +39,9 @@ def _session(fake_st, graph, factory, dem):
 def _commit_road(graph: ResortGraph):
     """Build a finished road on the graph and return it."""
     pts = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=300 / M, lat=0.0, elevation=1990.0)]
-    graph.commit_paths(paths=[ProposedPathSegment(points=pts, is_connector=True)], record_undo=False)
+    graph.commit_paths(
+        paths=[ProposedPathSegment(points=pts, is_connector=True, kind=SegmentKind.ROAD)], record_undo=False
+    )
     return graph.finish_road(segment_ids=[list(graph.segments.keys())[-1]])
 
 
@@ -73,7 +77,7 @@ class TestIdleClickRouting:
         )
         assert sm.is_lift_placing
 
-    def test_road_mode_node_click_starts_placing(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
+    def test_road_mode_node_click_starts_building(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         from skiresort_planner.ui.click_handlers import handle_idle_click
 
         graph = ResortGraph()
@@ -84,8 +88,8 @@ class TestIdleClickRouting:
         handle_idle_click(
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id), elevation=None
         )
-        assert sm.is_road_placing
-        assert ctx.road.start_node_id == node.id
+        assert sm.is_road_starting
+        assert ctx.road_build.start_node_id == node.id
 
     def test_slope_mode_node_click_starts_building(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         from skiresort_planner.ui.click_handlers import handle_idle_click
@@ -386,68 +390,169 @@ class TestLiftPlacingClick:
 
 
 # =============================================================================
-# handle_road_placing_click — complete the two-click vehicle road
+# handle_road_building_click — propose gentle (±15%) segments per click; extend/refuse
 # =============================================================================
 
 
-class TestRoadPlacingClick:
-    def test_terrain_start_then_terrain_end_builds_road(
-        self, fake_st, path_factory, mock_dem_red_slope_diagonal
-    ) -> None:
-        from skiresort_planner.ui.click_handlers import handle_idle_click, handle_road_placing_click
-
-        dem = mock_dem_red_slope_diagonal
-        sm, ctx = _session(fake_st, ResortGraph(), path_factory, dem)
+class TestRoadBuildingClick:
+    def _building(self, fake_st, factory, dem):
+        """Start a road at the origin so the handler is in road_starting."""
+        sm, ctx = _session(fake_st, ResortGraph(), factory, dem)
         ctx.build_mode.mode = BuildMode.ROAD
+        from skiresort_planner.ui.click_handlers import handle_idle_click
 
         handle_idle_click(
             ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
             elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0),
         )
-        assert sm.is_road_placing
+        assert sm.is_road_starting
+        return sm, ctx, fake_st.session_state["graph"]
 
-        handle_road_placing_click(
+    def _commit_proposal(self, proposal_index: int = 0) -> None:
+        """Commit the selected road proposal via the button path (commit_selected_path).
+
+        Roads commit exactly like slope custom-connect: NOT by clicking a proposal
+        marker (those only select) but via the "✅ Commit Road Segment" button,
+        which calls commit_selected_path.
+        """
+        from skiresort_planner.ui.actions import commit_selected_path
+
+        commit_selected_path(path_idx=proposal_index)
+
+    def test_terrain_click_generates_proposals_without_committing(
+        self, fake_st, path_factory, mock_dem_red_slope_diagonal
+    ) -> None:
+        from skiresort_planner.ui.click_handlers import handle_road_building_click
+
+        dem = mock_dem_red_slope_diagonal
+        sm, ctx, graph = self._building(fake_st, path_factory, dem)
+
+        # A target click proposes route(s) to browse — like slope custom-connect,
+        # minus the fan-out. It commits NOTHING until a proposal is clicked.
+        # (Left/right variants are traced, then deduped: on smooth terrain the two
+        # collapse to one identical route, same shared dedup slopes use.)
+        handle_road_building_click(
             ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=300 / M),
             elevation=dem.get_elevation_or_raise(lon=300 / M, lat=0.0),
         )
-        assert len(fake_st.session_state["graph"].roads) == 1
-        assert sm.is_idle_viewing_road
+        assert len(ctx.proposals.paths) >= 1, "a reachable target proposes at least one gentle route"
+        assert all(p.max_slope_pct <= float(PathConfig.ROAD_MAX_GRADIENT_PCT) for p in ctx.proposals.paths)
+        assert ctx.proposals.selected_idx == 0
+        assert ctx.road_build.segments == [], "a target click proposes, it does not commit"
+        assert sm.is_road_starting, "still starting until a proposal is committed"
 
-    def test_marker_click_during_placing_is_rejected(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
-        from skiresort_planner.ui.click_handlers import handle_road_placing_click
-
-        graph = ResortGraph()
-        _sm, ctx = _session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
-        ctx.road.start_location = PathPoint(lon=0.0, lat=0.0, elevation=2000.0)
-
-        handle_road_placing_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SLOPE, slope_id="SL1"), elevation=None
-        )
-        assert len(graph.roads) == 0
-
-    def test_node_end_completes_road(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
-        from skiresort_planner.ui.click_handlers import handle_idle_click, handle_road_placing_click
+    def test_proposal_marker_click_selects_but_does_not_commit(
+        self, fake_st, path_factory, mock_dem_red_slope_diagonal
+    ) -> None:
+        """A PROPOSAL_ENDPOINT/BODY click only SELECTS (roads = custom-connect); commit is button-only."""
+        from skiresort_planner.ui.click_handlers import handle_road_building_click
 
         dem = mock_dem_red_slope_diagonal
-        graph = ResortGraph()
-        sm, ctx = _session(fake_st, graph, path_factory, dem)
-        ctx.build_mode.mode = BuildMode.ROAD
-
-        handle_idle_click(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
-            elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0),
+        sm, ctx, graph = self._building(fake_st, path_factory, dem)
+        handle_road_building_click(
+            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=300 / M),
+            elevation=dem.get_elevation_or_raise(lon=300 / M, lat=0.0),
         )
-        assert sm.is_road_placing
-        # Existing node as the road end.
+
+        # Endpoint-marker click → select only, NO commit.
+        handle_road_building_click(
+            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_ENDPOINT, proposal_index=0),
+            elevation=None,
+        )
+        assert ctx.road_build.segments == [], "endpoint click must NOT commit a road segment"
+        assert sm.is_road_starting, "still starting — no commit happened"
+        assert graph.segments == {}, "no segment committed on a select-only marker click"
+        # Body-marker click → also select only.
+        handle_road_building_click(
+            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_BODY, proposal_index=0),
+            elevation=None,
+        )
+        assert ctx.road_build.segments == [], "body click must NOT commit either"
+
+    def test_proposal_commit_via_button_stays_building(
+        self, fake_st, path_factory, mock_dem_red_slope_diagonal
+    ) -> None:
+        from skiresort_planner.ui.click_handlers import handle_road_building_click
+
+        dem = mock_dem_red_slope_diagonal
+        sm, ctx, graph = self._building(fake_st, path_factory, dem)
+
+        handle_road_building_click(
+            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=300 / M),
+            elevation=dem.get_elevation_or_raise(lon=300 / M, lat=0.0),
+        )
+        self._commit_proposal()  # button path → commit_selected_path
+        assert sm.is_road_building_only, "a committed segment keeps building (no auto-finish)"
+        assert len(ctx.road_build.segments) == 1
+        assert len(graph.roads) == 0, "no Road entity until Finish Road"
+        # The committed segment's kind IS road — identity lives on the segment, not a UI list.
+        assert graph.segments[ctx.road_build.segments[-1]].kind is SegmentKind.ROAD
+        # Per-segment undo: the commit pushed an AddSegmentsAction.
+        assert graph.undo_stack, "committing a road segment records an undo entry"
+        assert graph.undo_stack[-1].action_type.name == "ADD_SEGMENTS"
+
+    def test_second_click_extends_the_road(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
+        from skiresort_planner.ui.click_handlers import handle_road_building_click
+
+        dem = mock_dem_red_slope_diagonal
+        sm, ctx, _graph = self._building(fake_st, path_factory, dem)
+
+        handle_road_building_click(
+            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=300 / M),
+            elevation=dem.get_elevation_or_raise(lon=300 / M, lat=0.0),
+        )
+        self._commit_proposal()
+        handle_road_building_click(
+            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=600 / M),
+            elevation=dem.get_elevation_or_raise(lon=600 / M, lat=0.0),
+        )
+        self._commit_proposal()
+        assert sm.is_road_building_only
+        assert len(ctx.road_build.segments) == 2, "each committed proposal adds one segment"
+
+    def test_too_steep_target_is_refused(self, fake_st, path_factory, mock_dem_black_slope) -> None:
+        from skiresort_planner.ui.click_handlers import handle_road_building_click
+
+        # 45% south DEM: a target straight downhill can't be reached within ±15%.
+        dem = mock_dem_black_slope
+        sm, ctx, graph = self._building(fake_st, path_factory, dem)
+
+        handle_road_building_click(
+            ClickInfo(click_type=MapClickType.TERRAIN, lat=-300 / M, lon=0.0),
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-300 / M),
+        )
+        assert ctx.proposals.paths == [], "steep target proposes nothing"
+        assert ctx.road_build.segments == [], "steep target commits nothing"
+        assert sm.is_road_starting, "stays in building flow, no segment added"
+        assert len(graph.segments) == 0
+
+    def test_stray_marker_click_is_rejected(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
+        from skiresort_planner.ui.click_handlers import handle_road_building_click
+
+        sm, ctx, graph = self._building(fake_st, path_factory, mock_dem_red_slope_diagonal)
+        handle_road_building_click(
+            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SLOPE, slope_id="SL1"), elevation=None
+        )
+        assert ctx.road_build.segments == []
+        assert len(graph.segments) == 0
+
+    def test_node_target_extends_and_joins(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
+        from skiresort_planner.ui.click_handlers import handle_road_building_click
+
+        dem = mock_dem_red_slope_diagonal
+        sm, ctx, graph = self._building(fake_st, path_factory, dem)
         end, _ = graph.get_or_create_node(
             lon=300 / M, lat=0.0, elevation=dem.get_elevation_or_raise(lon=300 / M, lat=0.0)
         )
 
-        handle_road_placing_click(
+        handle_road_building_click(
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=end.id), elevation=None
         )
-        assert len(graph.roads) == 1
-        assert sm.is_idle_viewing_road
+        assert len(ctx.proposals.paths) >= 1, "a node target also proposes a route to browse"
+        assert all(p.target_node_id == end.id for p in ctx.proposals.paths), "proposals snap onto the target node"
+        self._commit_proposal()
+        assert sm.is_road_building_only
+        assert len(ctx.road_build.segments) == 1
 
 
 # =============================================================================

@@ -19,7 +19,7 @@ from skiresort_planner.constants import ChartConfig, LiftConfig, StyleConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.model.lift import Lift
-from skiresort_planner.model.path_segment import PathSegment
+from skiresort_planner.model.path_segment import PathSegment, SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.model.road import Road
@@ -728,19 +728,21 @@ class ProfileChart:
 # =============================================================================
 
 
-def render_building_profiles(
+def render_building_profile(
     building_segments: list[str],
     building_name: str | None,
     graph: ResortGraph,
 ) -> go.Figure:
-    """Render elevation profile for slope being built.
+    """Render the in-build elevation profile for a slope OR road.
 
-    Uses max difficulty from average of individual segments (steepest segment determines
-    overall difficulty, matching the sidebar display).
+    One function for both: the committed segments carry their SegmentKind, so a
+    road renders brown (via render_road) and a slope renders difficulty-colored
+    (via render_segment). Uses max difficulty from the individual segments for a
+    slope (steepest segment determines color, matching the sidebar display).
 
     Args:
-        building_segments: List of segment IDs in current slope (must not be empty)
-        building_name: Name of slope being built
+        building_segments: Segment IDs in the current slope/road (must not be empty)
+        building_name: Name of the entity being built
         graph: Resort graph containing segments
 
     Returns:
@@ -763,12 +765,27 @@ def render_building_profiles(
     if not all_points:
         raise ValueError(f"Segments {building_segments} have no points - data integrity issue")
 
-    # Use max difficulty from individual segments (steepest segment determines color)
-    max_difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=max_avg_slope)
-
     chart = ProfileChart(width=ChartConfig.DEFAULT_WIDTH, height=ChartConfig.PROFILE_HEIGHT_SMALL)
-    combined = PathSegment(id="combined", name=building_name or "Current Slope", points=all_points)
-    return chart.render_segment(segment=combined, difficulty=max_difficulty, title="Current committed Slope Progress")
+
+    first_seg = graph.segments[building_segments[0]]
+    if first_seg.kind is SegmentKind.ROAD:
+        combined_road = Road(
+            id="combined",
+            name=building_name or "Current Road",
+            segment_ids=list(building_segments),
+            start_node_id="",
+            end_node_id="",
+        )
+        return chart.render_road(road=combined_road, graph=graph, title="Current committed Road Progress")
+    elif first_seg.kind is SegmentKind.SLOPE:
+        # Slope: color by the steepest segment's difficulty.
+        max_difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=max_avg_slope)
+        combined = PathSegment(id="combined", name=building_name or "Current Slope", points=all_points)
+        return chart.render_segment(
+            segment=combined, difficulty=max_difficulty, title="Current committed Slope Progress"
+        )
+    else:
+        raise RuntimeError(f"Unknown segment kind {first_seg.kind} for {first_seg.id}")
 
 
 def render_proposal_preview(

@@ -10,6 +10,7 @@ Reference: DETAILS.md
 """
 
 from dataclasses import dataclass
+from enum import Enum
 from math import floor
 from typing import Any
 
@@ -36,9 +37,16 @@ def _get_utm_zone(lon: float, lat: float) -> str:
     return f"EPSG:327{zone_number:02d}"
 
 
+class SegmentKind(str, Enum):
+    """What a committed segment IS — a ski slope or a vehicle road."""
+
+    SLOPE = "slope"
+    ROAD = "road"
+
+
 @dataclass
 class PathSegment(Path):
-    """A committed slope segment between two nodes.
+    """A committed slope or road segment between two nodes.
 
     Inherits points and geometric metrics from Path.
 
@@ -49,6 +57,7 @@ class PathSegment(Path):
         end_node_id: ID of the ending node
         side_slope_pct: Cross-slope percentage at start (terrain-dependent)
         side_slope_dir: "left", "right", or "flat"
+        kind: Whether this segment is a ski slope or a vehicle road
 
     Properties:
         warnings: List of Warning objects based on slope metrics
@@ -62,6 +71,7 @@ class PathSegment(Path):
     end_node_id: str = ""
     side_slope_pct: float = 0.0
     side_slope_dir: str = "flat"
+    kind: SegmentKind = SegmentKind.SLOPE
 
     @property
     def warnings(self) -> list[Warning]:
@@ -200,6 +210,8 @@ class PathSegment(Path):
             end_node_id=data["end_node_id"],
             side_slope_pct=data.get("side_slope_pct", 0.0),
             side_slope_dir=data.get("side_slope_dir", "flat"),
+            # Pre-enum saves have no "kind" → default to SLOPE.
+            kind=SegmentKind(data.get("kind", SegmentKind.SLOPE.value)),
         )
 
     def __repr__(self) -> str:

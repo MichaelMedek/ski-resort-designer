@@ -631,7 +631,7 @@ class Lift:
 
         config = cast(
             dict[str, int | float | None],
-            LiftConfig.PYLON_CONFIG.get(lift_type, LiftConfig.PYLON_CONFIG["chairlift"]),
+            LiftConfig.PYLON_CONFIG[lift_type],  # strict: lift_type is validated
         )
         station_height = cast(int, config["station_height_m"])
         sag_factor = cast(float, config["sag_factor"])

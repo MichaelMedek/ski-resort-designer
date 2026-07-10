@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from skiresort_planner.model.path_geometry import Path
+from skiresort_planner.model.path_segment import SegmentKind
 
 if TYPE_CHECKING:
     pass
@@ -19,7 +20,7 @@ if TYPE_CHECKING:
 
 @dataclass
 class ProposedPathSegment(Path):
-    """A proposed slope segment before committing to the graph.
+    """A proposed slope or road segment before committing to the graph.
 
     Inherits points and geometric metrics from Path.
 
@@ -29,6 +30,7 @@ class ProposedPathSegment(Path):
         sector_name: Name of sector (for multi-sector generation)
         is_connector: Whether this is a connection path
         target_node_id: Target node ID for connections
+        kind: Whether this proposal becomes a ski slope or a vehicle road
     """
 
     target_slope_pct: float = 0.0
@@ -36,3 +38,4 @@ class ProposedPathSegment(Path):
     sector_name: str = ""
     is_connector: bool = False
     target_node_id: str = ""
+    kind: SegmentKind = SegmentKind.SLOPE

@@ -32,18 +32,20 @@ from skiresort_planner.ui import (
     ProfileChart,
     SidebarRenderer,
     bump_map_version,
+    cancel_current_road,
     cancel_current_slope,
     cancel_custom_direction_mode,
     cancel_custom_path,
     commit_selected_path,
     dispatch_click,
     enter_custom_direction_mode,
+    finish_current_road,
     finish_current_slope,
     handle_fast_deferred_actions,
     process_custom_connect_deferred,
     process_path_generation_deferred,
     recompute_paths,
-    render_building_profiles,
+    render_building_profile,
     render_control_panel,
     render_proposal_preview,
     trigger_rerun,
@@ -375,8 +377,8 @@ def _render_map_fragment_inner() -> None:
             deck = renderer.render(
                 proposals=ctx.proposals.paths,
                 selected_proposal_idx=ctx.proposals.selected_idx,
-                highlight_segment_ids=ctx.building.segments,
-                is_custom_path=ctx.custom_connect.force_mode,
+                highlight_segment_ids=ctx.slope_build.segments,
+                is_custom_path=ctx.custom_connect.force_mode or sm.is_any_road_state,
                 extra_layers=extra_layers,
                 terrain_layer=basemap_layer,
                 use_3d=use_3d,
@@ -385,8 +387,8 @@ def _render_map_fragment_inner() -> None:
         deck = renderer.render(
             proposals=ctx.proposals.paths,
             selected_proposal_idx=ctx.proposals.selected_idx,
-            highlight_segment_ids=ctx.building.segments,
-            is_custom_path=ctx.custom_connect.force_mode,
+            highlight_segment_ids=ctx.slope_build.segments,
+            is_custom_path=ctx.custom_connect.force_mode or sm.is_any_road_state,
             extra_layers=extra_layers,
             terrain_layer=basemap_layer,
             use_3d=use_3d,
@@ -402,14 +404,22 @@ def _render_map_fragment_inner() -> None:
         key=map_key,
     )
 
-    # Elevation profiles below map
-    if sm.is_any_slope_state and ctx.building.segments:
-        fig = render_building_profiles(
-            building_segments=ctx.building.segments,
-            building_name=ctx.building.name,
+    # Elevation profiles below map — one function, kind-driven (slope or road).
+    if sm.is_any_slope_state and ctx.slope_build.segments:
+        fig = render_building_profile(
+            building_segments=ctx.slope_build.segments,
+            building_name=ctx.slope_build.name,
             graph=graph,
         )
         st.plotly_chart(fig, width="stretch", key="combined_profile")
+
+    if sm.is_any_road_state and ctx.road_build.segments:
+        fig = render_building_profile(
+            building_segments=ctx.road_build.segments,
+            building_name=ctx.road_build.name,
+            graph=graph,
+        )
+        st.plotly_chart(fig, width="stretch", key="combined_road_profile")
 
     if ctx.proposals.paths and ctx.proposals.selected_idx is not None:
         fig = render_proposal_preview(proposals=ctx.proposals.paths, selected_idx=ctx.proposals.selected_idx)
@@ -496,6 +506,10 @@ def _run_app_ui() -> None:
         finish_current_slope()
     if actions.get("cancel_slope"):
         cancel_current_slope()
+    if actions.get("finish_road"):
+        finish_current_road()
+    if actions.get("cancel_road"):
+        cancel_current_road()
     if actions.get("recompute") or ctx.click_dedup.pending_recompute:
         recompute_paths()
 

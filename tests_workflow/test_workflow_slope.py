@@ -32,7 +32,7 @@ class TestSlopeBuildingWorkflow:
         sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
 
         assert sm.current_state_value == "slope_starting", "After start_slope: slope_starting"
-        assert ctx.building.name is not None, "Building context should have slope name"
+        assert ctx.slope_build.name is not None, "Building context should have slope name"
 
         # === Phase 2: Generate proposals and commit first (SlopeStarting → SlopeBuilding) ===
         proposals = list(factory.generate_fan(lon=0.0, lat=0.0, elevation=start_elev))
@@ -45,10 +45,10 @@ class TestSlopeBuildingWorkflow:
         sm.commit_path(segment_id=seg_id, endpoint_node_id=endpoint_ids[0])
 
         assert sm.current_state_value == "slope_building", "After commit_path: slope_building"
-        assert seg_id in ctx.building.segments, "Segment should be in building context"
+        assert seg_id in ctx.slope_build.segments, "Segment should be in building context"
 
         # === Phase 3: Finish Slope (SlopeBuilding → IdleViewingSlope) ===
-        slope = graph.finish_slope(segment_ids=ctx.building.segments)
+        slope = graph.finish_slope(segment_ids=ctx.slope_build.segments)
         assert slope is not None, "finish_slope should return Slope"
 
         sm.finish_slope(slope_id=slope.id)
@@ -82,7 +82,7 @@ class TestSelfLoopBehavior:
         seg1_id = list(graph.segments.keys())[0]
 
         sm.commit_path(segment_id=seg1_id, endpoint_node_id=endpoint_ids[0])
-        slope1 = graph.finish_slope(segment_ids=ctx.building.segments)
+        slope1 = graph.finish_slope(segment_ids=ctx.slope_build.segments)
         sm.finish_slope(slope_id=slope1.id)
 
         assert ctx.viewing.slope_id == slope1.id, "Viewing first slope"
@@ -94,7 +94,7 @@ class TestSelfLoopBehavior:
         seg2_id = [s for s in graph.segments.keys() if s != seg1_id][0]
 
         sm.commit_path(segment_id=seg2_id, endpoint_node_id=endpoint_ids2[0])
-        slope2 = graph.finish_slope(segment_ids=ctx.building.segments)
+        slope2 = graph.finish_slope(segment_ids=ctx.slope_build.segments)
         sm.finish_slope(slope_id=slope2.id)
 
         # Self-loop: switch to first slope
@@ -127,13 +127,13 @@ class TestForceStateMethods:
         sm.commit_path(segment_id=seg1_id, endpoint_node_id=endpoint_ids[0])
 
         assert sm.current_state_value == "slope_building"
-        assert len(ctx.building.segments) == 1
+        assert len(ctx.slope_build.segments) == 1
 
         # Force to idle (simulates undo removing all segments)
         sm.force_idle()
 
         assert sm.current_state_value == "idle_ready"
-        assert len(ctx.building.segments) == 0, "Building context should be cleared"
+        assert len(ctx.slope_build.segments) == 0, "Building context should be cleared"
 
     def test_force_building_from_custom_picking(self, workflow_setup: WorkflowSetup) -> None:
         """force_building() from SlopeCustomPicking goes to SlopeBuilding."""

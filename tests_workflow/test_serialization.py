@@ -231,17 +231,40 @@ class TestGPXExport:
         assert root.find(f"{ns}metadata") is not None
         assert root.findall(f"{ns}trk") == []
 
+    def test_gpx_exports_roads(self, empty_graph, path_points_blue) -> None:
+        """to_gpx emits a <trk type='road'> per road (roads are SegmentPaths like slopes)."""
+        import xml.etree.ElementTree as ET
+
+        from skiresort_planner.model.path_segment import SegmentKind
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
+
+        empty_graph.commit_paths(
+            paths=[ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)],
+            record_undo=False,
+        )
+        road = empty_graph.finish_road(segment_ids=[list(empty_graph.segments.keys())[-1]])
+
+        root = ET.fromstring(empty_graph.to_gpx())
+        ns = "{http://www.topografix.com/GPX/1/1}"
+        road_tracks = [t for t in root.findall(f"{ns}trk") if t.find(f"{ns}type").text == "road"]
+        assert len(road_tracks) == 1, "the road must be exported as a GPX track"
+        assert road_tracks[0].find(f"{ns}name").text == road.name
+        pts = road_tracks[0].findall(f"{ns}trkseg/{ns}trkpt")
+        assert pts and pts[0].find(f"{ns}ele") is not None
+
 
 class TestRoadSerialization:
     """Roads round-trip through to_dict/from_dict with their counter preserved."""
 
     def test_roundtrip_preserves_roads(self, empty_graph, path_points_blue) -> None:
+        from skiresort_planner.model.path_segment import SegmentKind
         from skiresort_planner.model.proposed_path import ProposedPathSegment
         from skiresort_planner.model.resort_graph import ResortGraph
 
-        proposal = ProposedPathSegment(points=path_points_blue, is_connector=True)
+        proposal = ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)
         empty_graph.commit_paths(paths=[proposal], record_undo=False)
         road = empty_graph.finish_road(segment_ids=[list(empty_graph.segments.keys())[-1]])
+        road_seg_id = road.segment_ids[0]
 
         data = empty_graph.to_dict()
         restored = ResortGraph.from_dict(data=data)
@@ -249,6 +272,8 @@ class TestRoadSerialization:
         assert road.id in restored.roads
         assert restored.roads[road.id].name == road.name
         assert restored._road_counter == empty_graph._road_counter
+        # The segment's road kind survives the round-trip (persisted, not recomputed).
+        assert restored.segments[road_seg_id].kind is SegmentKind.ROAD
 
     def test_pre_roads_backup_loads(self, empty_graph, path_points_blue) -> None:
         """A backup written before roads existed (no 'roads' key, no 'road' counter)

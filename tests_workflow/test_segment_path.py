@@ -9,6 +9,7 @@ import pytest
 
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.path_point import PathPoint
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.model.road import Road
@@ -20,7 +21,9 @@ M = 111320.0
 
 def _commit_road(graph: ResortGraph, path_points: list[PathPoint]) -> Road:
     """Commit a path as a road (record_undo=False + finish_road), return the Road."""
-    graph.commit_paths(paths=[ProposedPathSegment(points=path_points, is_connector=True)], record_undo=False)
+    graph.commit_paths(
+        paths=[ProposedPathSegment(points=path_points, is_connector=True, kind=SegmentKind.ROAD)], record_undo=False
+    )
     road = graph.finish_road(segment_ids=[list(graph.segments.keys())[-1]])
     assert road is not None
     return road
@@ -64,6 +67,56 @@ class TestSegmentPathBaseMethods:
         road = _commit_road(empty_graph, path_points_blue)
         seg = empty_graph.segments[road.segment_ids[0]]
         assert road.has_warnings(segments=empty_graph.segments) == bool(seg.warnings)
+
+
+class TestSegmentKind:
+    """A committed segment's kind (SLOPE/ROAD) is intrinsic — set at commit,
+    persisted, and read straight off the segment (not reconstructed from owners).
+    """
+
+    def test_slope_commit_defaults_to_slope_kind(self, empty_graph, path_points_blue) -> None:
+        empty_graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        seg = list(empty_graph.segments.values())[-1]
+        assert seg.kind is SegmentKind.SLOPE
+
+    def test_road_commit_carries_road_kind(self, empty_graph, path_points_blue) -> None:
+        empty_graph.commit_paths(
+            paths=[ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)]
+        )
+        seg = list(empty_graph.segments.values())[-1]
+        assert seg.kind is SegmentKind.ROAD
+
+    def test_from_dict_defaults_to_slope_when_kind_absent(self) -> None:
+        # Pre-enum saves have no "kind" key → SLOPE (backward compatible).
+        from skiresort_planner.model.path_segment import PathSegment
+
+        data = {
+            "id": "S1",
+            "name": "Segment 1",
+            "points": [
+                {"lon": 0.0, "lat": 0.0, "elevation": 2000.0},
+                {"lon": 0.0, "lat": -0.001, "elevation": 1990.0},
+            ],
+            "start_node_id": "N1",
+            "end_node_id": "N2",
+        }
+        assert PathSegment.from_dict(data=data).kind is SegmentKind.SLOPE
+
+    def test_from_dict_reads_road_kind(self) -> None:
+        from skiresort_planner.model.path_segment import PathSegment
+
+        data = {
+            "id": "S1",
+            "name": "Segment 1",
+            "points": [
+                {"lon": 0.0, "lat": 0.0, "elevation": 2000.0},
+                {"lon": 0.0, "lat": -0.001, "elevation": 1990.0},
+            ],
+            "start_node_id": "N1",
+            "end_node_id": "N2",
+            "kind": "road",
+        }
+        assert PathSegment.from_dict(data=data).kind is SegmentKind.ROAD
 
 
 class TestIdParsing:

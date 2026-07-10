@@ -323,6 +323,9 @@ def enter_slope_custom_picking(ctx: PlannerContext) -> None:
     """
     logger.debug("ENTER: slope_custom_picking - clearing proposals")
     ctx.clear_proposals()
+    # Clear the click-dedup marker so the first target click always registers
+    # (matches enter_slope_starting / enter_lift_placing / enter_road_starting).
+    ctx.click_dedup.clear_marker()
 
 
 def exit_slope_custom_picking(ctx: PlannerContext) -> None:
@@ -458,28 +461,48 @@ def exit_idle_viewing_road(ctx: PlannerContext) -> None:
 
 
 # =============================================================================
-# 10. ROAD_PLACING - First point selected, waiting for second click
+# 10. ROAD_STARTING / ROAD_BUILDING - segment-by-segment, like a slope
 # =============================================================================
 
 
-def enter_road_placing(ctx: PlannerContext) -> None:
-    """Enter ROAD_PLACING: First road point selected (Single Point of Truth).
+def enter_road_starting(ctx: PlannerContext) -> None:
+    """Enter ROAD_STARTING: begin road building (Single Point of Truth).
 
-    Mirrors enter_lift_placing: hide any viewing panel and clear the click
-    dedup marker so the second click is fresh. The first point was stored by
-    before_start_road.
+    Mirrors enter_slope_starting. The origin point was stored by
+    before_start_road. Guarantees the panel is hidden and the click dedup
+    marker is fresh, regardless of which transition brought us here.
     """
-    logger.debug("ENTER: road_placing - hiding panel")
+    logger.debug("ENTER: road_starting - hiding panel, clearing marker dedup")
     ctx.viewing.hide_panel()
     ctx.click_dedup.clear_marker()
 
 
-def exit_road_placing(ctx: PlannerContext) -> None:
-    """Exit ROAD_PLACING: Clear road placement state.
+def exit_road_starting(ctx: PlannerContext) -> None:
+    """Exit ROAD_STARTING: minimal cleanup.
 
-    Destinations: IDLE_VIEWING_ROAD (road built) or IDLE_READY (cancel).
-    before_complete_road/before_cancel_road handle the panel; the road
-    placement context is cleared since placement is done.
+    Destinations handle their own cleanup:
+    - ROAD_BUILDING: before_commit_road_first clears proposals
+    - IDLE_READY: before_cancel_road / enter_idle_ready clears road state
     """
-    logger.debug("EXIT: road_placing - clearing road context")
-    ctx.road.clear()
+    logger.debug("EXIT: road_starting - no cleanup needed")
+
+
+def enter_road_building(ctx: PlannerContext) -> None:
+    """Enter ROAD_BUILDING: continue building road (Single Point of Truth).
+
+    Mirrors enter_slope_building. Sources: first segment committed
+    (commit_road_first), self-loop (commit_road_continue). Preserves the road
+    context (it holds the committed segments!) and only hides the panel.
+    """
+    logger.debug("ENTER: road_building - hiding panel, preserving road context")
+    ctx.viewing.hide_panel()
+
+
+def exit_road_building(ctx: PlannerContext) -> None:
+    """Exit ROAD_BUILDING: no cleanup here.
+
+    Destinations own their cleanup (self-loop clears proposals via
+    before_commit_road_continue; finish_road/cancel clear road context). Clearing
+    road state here would erase the committed segments on the self-loop.
+    """
+    logger.debug("EXIT: road_building - no cleanup needed")

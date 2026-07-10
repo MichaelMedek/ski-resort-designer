@@ -191,7 +191,7 @@ class TestCancelCustomGuards:
 
         # Setup: Force to slope_custom_picking with no committed segments
         _force_state(sm=sm, state_name="slope_custom_picking")
-        ctx.building.segments = []  # No segments committed
+        ctx.slope_build.segments = []  # No segments committed
 
         # Act: Call cancel_custom event
         sm.cancel_custom()
@@ -205,7 +205,7 @@ class TestCancelCustomGuards:
 
         # Setup: Force to slope_custom_picking with committed segments
         _force_state(sm=sm, state_name="slope_custom_picking")
-        ctx.building.segments = ["S1"]  # Has committed segments
+        ctx.slope_build.segments = ["S1"]  # Has committed segments
 
         # Act: Call cancel_custom event
         sm.cancel_custom()

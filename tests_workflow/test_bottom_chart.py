@@ -59,11 +59,14 @@ class TestProfileChartRendering:
     def test_road_chart_renders_brown_with_climb_stats(self, empty_graph) -> None:
         """render_road produces a figure (brown, elevation-change caption)."""
         from skiresort_planner.model.path_point import PathPoint
+        from skiresort_planner.model.path_segment import SegmentKind
         from skiresort_planner.model.proposed_path import ProposedPathSegment
         from skiresort_planner.ui.bottom_chart import ProfileChart
 
         pts = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=300 / M, lat=0.0, elevation=1990.0)]
-        empty_graph.commit_paths(paths=[ProposedPathSegment(points=pts, is_connector=True)], record_undo=False)
+        empty_graph.commit_paths(
+            paths=[ProposedPathSegment(points=pts, is_connector=True, kind=SegmentKind.ROAD)], record_undo=False
+        )
         road = empty_graph.finish_road(segment_ids=[list(empty_graph.segments.keys())[-1]])
 
         fig = ProfileChart(width=800, height=300).render_road(road=road, graph=empty_graph)
@@ -97,16 +100,34 @@ class TestProfileChartRendering:
         fig = ProfileChart(width=800, height=300).render_lift(lift=lift, graph=empty_graph)
         assert len(fig.data) > 0
 
-    def test_building_profiles_convenience(self, empty_graph, path_points_blue) -> None:
-        """render_building_profiles builds a combined in-progress slope figure."""
+    def test_building_profile_slope(self, empty_graph, path_points_blue) -> None:
+        """render_building_profile builds a combined in-progress SLOPE figure (kind-driven)."""
         from skiresort_planner.model.proposed_path import ProposedPathSegment
-        from skiresort_planner.ui.bottom_chart import render_building_profiles
+        from skiresort_planner.ui.bottom_chart import render_building_profile
 
         empty_graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         seg_ids = list(empty_graph.segments.keys())
 
-        fig = render_building_profiles(building_segments=seg_ids, building_name="WIP", graph=empty_graph)
+        fig = render_building_profile(building_segments=seg_ids, building_name="WIP", graph=empty_graph)
         assert len(fig.data) > 0
+
+    def test_building_profile_road_is_brown(self, empty_graph, path_points_blue) -> None:
+        """render_building_profile renders a brown ROAD figure when segments are road-kind."""
+        from skiresort_planner.constants import StyleConfig
+        from skiresort_planner.model.path_segment import SegmentKind
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
+        from skiresort_planner.ui.bottom_chart import render_building_profile
+
+        empty_graph.commit_paths(
+            paths=[ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)]
+        )
+        seg_ids = list(empty_graph.segments.keys())
+
+        fig = render_building_profile(building_segments=seg_ids, building_name="WIP Road", graph=empty_graph)
+        assert len(fig.data) > 0
+        # Brown road fill (same road color the finished-road profile uses).
+        line_colors = [tr.line.color for tr in fig.data if tr.line and tr.line.color]
+        assert StyleConfig.ROAD_COLOR in line_colors
 
     def test_proposal_preview_convenience(self, path_points_blue) -> None:
         """render_proposal_preview renders the selected proposal."""

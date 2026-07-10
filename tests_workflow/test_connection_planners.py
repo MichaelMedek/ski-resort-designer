@@ -302,7 +302,9 @@ class TestPlannerIntegration:
 
 
 class TestPlannerGradientBand:
-    """Road-mode cost: penalize only signed distance OUTSIDE the ±band, no uphill penalty."""
+    """Road-mode cost: soft penalty ramps from the COMFORT knee (ROAD_SOFT_GRADIENT_PCT,
+    12%), NOT the hard cap — no uphill penalty. Passing gradient_band selects road mode.
+    """
 
     def _planner(self, mock_dem_blue_slope) -> LeastCostPathPlanner:
         return LeastCostPathPlanner(
@@ -346,6 +348,19 @@ class TestPlannerGradientBand:
         # 40% descent (12m over 30m) is well outside the band → strictly costlier.
         out_of_band = self._cost(planner, 2000.0, 1988.0, band)
         assert out_of_band > in_band
+
+    def test_soft_penalty_ramps_from_comfort_knee_below_hard_cap(self, mock_dem_blue_slope) -> None:
+        """A ~13% grade (below the 15% hard cap, above the 12% soft knee) is already penalized.
+
+        Regression for the soft-band tightening: cost must NOT stay flat up to 15%.
+        """
+        planner = self._planner(mock_dem_blue_slope)
+        band = (-15.0, 15.0)  # road mode; the knee comes from ROAD_SOFT_GRADIENT_PCT
+        # ≤12% comfort → flat (x1.0).
+        comfort = self._cost(planner, 2000.0, 2000.0 - 0.12 * 30.0, band)  # exactly 12%
+        # ~13% (below 15% hard cap) → already ramped above flat.
+        near_limit = self._cost(planner, 2000.0, 2000.0 - 0.13 * 30.0, band)  # ~13%
+        assert near_limit > comfort, "soft penalty must start below the 15% hard cap (at the 12% knee)"
 
     def test_slope_mode_unchanged_by_band_param(self, mock_dem_blue_slope) -> None:
         """gradient_band=None must reproduce the original slope cost exactly."""

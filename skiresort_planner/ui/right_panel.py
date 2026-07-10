@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Callable
 
 import streamlit as st
 
-from skiresort_planner.constants import MapConfig, PathConfig, SlopeConfig, StyleConfig
+from skiresort_planner.constants import MapConfig, SlopeConfig, StyleConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.model.message import (
     LiftActionMessage,
@@ -201,12 +201,12 @@ def render_control_panel(
         renderer = _render_slope_building_panel
     elif sm.is_lift_placing:
         renderer = _render_lift_placing_panel
-    elif sm.is_road_placing:
-        renderer = _render_road_placing_panel
+    elif sm.is_any_road_state:
+        renderer = _render_road_building_panel
     else:
         raise RuntimeError(
             f"No control panel renderer for state '{sm.get_state_name()}'. "
-            f"Expected idle, slope building, lift placing, or road placing state."
+            f"Expected idle, slope building, lift placing, or road building state."
         )
 
     renderer(
@@ -268,10 +268,10 @@ def _render_slope_building_panel(
 
 def _render_slope_progress_message(ctx: PlannerContext, graph: ResortGraph) -> None:
     """Render the slope progress context message (blue)."""
-    name = ctx.building.name or "Unnamed Slope"
-    segs = len(ctx.building.segments)
+    name = ctx.slope_build.name or "Unnamed Slope"
+    segs = len(ctx.slope_build.segments)
     if segs > 0:
-        stats = graph.get_segment_stats(segment_ids=ctx.building.segments)
+        stats = graph.get_segment_stats(segment_ids=ctx.slope_build.segments)
         SlopeBuildingContextMessage(
             slope_name=name,
             num_segments=segs,
@@ -287,7 +287,7 @@ def _render_slope_progress_message(ctx: PlannerContext, graph: ResortGraph) -> N
         # New slope with no segments - show start location
         SlopeStartingContextMessage(
             slope_name=name,
-            start_node_id=ctx.building.start_node,
+            start_node_id=ctx.slope_build.start_node_id,
             start_lat=ctx.selection.lat,
             start_lon=ctx.selection.lon,
         ).display()
@@ -338,7 +338,7 @@ def _render_lift_placing_panel(
     LiftActionMessage(is_awaiting_top=True, bottom_elevation_m=start_elev).display()
 
 
-def _render_road_placing_panel(
+def _render_road_building_panel(
     sm: PlannerStateMachine,
     ctx: PlannerContext,
     graph: ResortGraph,
@@ -347,26 +347,68 @@ def _render_road_placing_panel(
     on_cancel_custom: Callable[[], None],
     on_cancel_connection: Callable[[], None],
 ) -> None:
-    """Render control panel for ROAD_PLACING state - progress + action."""
-    # Render progress context message (blue) first, mirroring lift placing.
-    if ctx.road.start_node_id:
-        node = graph.nodes.get(ctx.road.start_node_id)
+    """Render control panel while building a road (ROAD_STARTING / ROAD_BUILDING).
+
+    Shows a progress context message (origin point + committed segment count)
+    then the action instruction. The road is finished from the sidebar.
+    """
+    # Progress context (blue): where the road currently extends from.
+    if ctx.road_build.endpoints:
+        endpoint = graph.nodes.get(ctx.road_build.endpoints[-1])
         RoadPlacingContextMessage(
-            start_node_id=ctx.road.start_node_id,
+            start_node_id=ctx.road_build.endpoints[-1],
+            start_elevation_m=endpoint.elevation if endpoint else 0.0,
+            segment_count=len(ctx.road_build.segments),
+        ).display()
+    elif ctx.road_build.start_node_id:
+        node = graph.nodes.get(ctx.road_build.start_node_id)
+        RoadPlacingContextMessage(
+            start_node_id=ctx.road_build.start_node_id,
             start_elevation_m=node.elevation if node else 0.0,
         ).display()
-    elif ctx.road.start_location:
-        loc = ctx.road.start_location
+    elif ctx.road_build.start_location:
+        loc = ctx.road_build.start_location
         RoadPlacingContextMessage(
             start_lat=loc.lat,
             start_lon=loc.lon,
             start_elevation_m=loc.elevation,
         ).display()
     else:
-        raise RuntimeError("RoadPlacing state requires start_node_id or start_location to be set")
+        raise RuntimeError("Road building state requires an endpoint, start_node_id, or start_location")
 
-    # Then render action instruction (yellow)
+    # Action instruction (yellow).
     RoadActionMessage().display()
+
+    # Proposal browse + commit — roads work exactly like slope custom-connect:
+    # proposals have NO endpoint markers, so selection is via the ◀ ▶ arrows or a
+    # proposal-body click, and committing is ONLY via this button.
+    num_paths = len(ctx.proposals.paths)
+    if num_paths == 0:
+        return
+
+    selected_idx = ctx.proposals.selected_idx if ctx.proposals.selected_idx is not None else 0
+
+    if num_paths > 1:
+        col_prev, col_nav_label, col_next = st.columns([1, 2, 1])
+        with col_prev:
+            if st.button("◀", key="prev_road_path", width="stretch", help="Previous road option"):
+                ctx.proposals.selected_idx = (selected_idx - 1) % num_paths
+                reload_map()
+        with col_nav_label:
+            st.markdown(f"**◀ ▶ Browse {num_paths} options**")
+        with col_next:
+            if st.button("▶", key="next_road_path", width="stretch", help="Next road option"):
+                ctx.proposals.selected_idx = (selected_idx + 1) % num_paths
+                reload_map()
+
+    if st.button(
+        "✅ Commit Road Segment",
+        type="primary",
+        width="stretch",
+        help="Add this segment and keep extending the road",
+    ):
+        logger.info(f"UI: Commit road segment clicked for proposal {selected_idx}")
+        on_commit(selected_idx)
 
 
 def _render_slope_info_panel(
@@ -738,15 +780,6 @@ class RoadStatsPanel:
         last_seg = self.graph.segments[road.segment_ids[-1]]
         start_elev = first_seg.points[0].elevation
         end_elev = last_seg.points[-1].elevation
-
-        # Gradient badge vs the ±12% car-road limit. get_max_gradient returns
-        # the steepest rolling-window section as a magnitude, so it flags steep
-        # climbs and steep descents alike.
-        limit = PathConfig.ROAD_MAX_GRADIENT_PCT
-        if max_gradient <= limit:
-            st.success(f"✅ Gradient within ±{limit}% car-road limit")
-        else:
-            st.warning(f"⚠️ Steepest section {max_gradient:.0f}% exceeds the ±{limit}% limit")
 
         col1, col2 = st.columns(2)
         with col1:

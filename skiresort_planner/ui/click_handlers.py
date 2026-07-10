@@ -70,12 +70,12 @@ def get_click_handler(sm: "PlannerStateMachine") -> Callable[..., None]:
         return handle_slope_building_click
     elif sm.is_lift_placing:
         return handle_lift_placing_click
-    elif sm.is_road_placing:
-        return handle_road_placing_click
+    elif sm.is_any_road_state:
+        return handle_road_building_click
     else:
         raise RuntimeError(
             f"No click handler registered for state '{sm.get_state_name()}'. "
-            f"Expected idle, slope building, lift placing, or road placing state."
+            f"Expected idle, slope building, lift placing, or road building state."
         )
 
 
@@ -426,8 +426,8 @@ def _handle_custom_connect_click(click_info: ClickInfo, elevation: float | None)
 
     # Get start node
     start_node = None
-    if ctx.building.endpoints:
-        start_node = graph.nodes.get(ctx.building.endpoints[0])
+    if ctx.slope_build.endpoints:
+        start_node = graph.nodes.get(ctx.slope_build.endpoints[0])
     elif ctx.custom_connect.start_node:
         start_node = graph.nodes.get(ctx.custom_connect.start_node)
 
@@ -435,7 +435,7 @@ def _handle_custom_connect_click(click_info: ClickInfo, elevation: float | None)
         ctx.clear_custom_connect()
         raise RuntimeError(
             f"Start node not found in custom connect mode: "
-            f"building.endpoints={ctx.building.endpoints}, "
+            f"building.endpoints={ctx.slope_build.endpoints}, "
             f"custom_connect.start_node={ctx.custom_connect.start_node}"
         )
 
@@ -612,75 +612,86 @@ def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) ->
     sm.complete_lift(lift_id=lift.id)
 
 
-def handle_road_placing_click(click_info: ClickInfo, elevation: float | None) -> None:
-    """Handle click in ROAD_PLACING state - complete the road between two points.
+def handle_road_building_click(click_info: ClickInfo, elevation: float | None) -> None:
+    """Handle a click while building a road (ROAD_STARTING / ROAD_BUILDING).
 
-    Second click of the two-click road flow. Traces a gentle-gradient vehicle
-    road from the stored first point to this one, commits it, and finishes.
+    Roads build segment-by-segment like slope custom-connect, minus the fan-out:
+    clicking a target generates gentle-gradient proposals (left/right) from the
+    current road endpoint; a proposal click only SELECTS.
+    Committing is always via the "✅ Commit Road Segment" button in the panel.
+    "Finish Road" ends the road. Clicking an existing node targets that junction.
 
-    Pattern mirrors handle_lift_placing_click: validate with elevations before
-    creating nodes so failed attempts leave no orphan nodes.
-
-    Valid Click Types:
-        NODE → Complete road to existing node
-        TERRAIN → Create new node and complete road
-
-    Invalid Click Types (during placement):
-        SLOPE/LIFT/ROAD/PYLON → Cannot view while placing
-        PROPOSAL_* → No proposals in road mode
+    The gradient band is a HARD guarantee: if no in-band proposal can be traced
+    to the clicked point (steep terrain), nothing is proposed and the user is told.
     """
-    sm: "PlannerStateMachine" = st.session_state.state_machine
     ctx: "PlannerContext" = st.session_state.context
     graph: "ResortGraph" = st.session_state.graph
     factory: "PathFactory" = st.session_state.path_factory
 
-    # Reject marker clicks except an end NODE (mirrors lift placement).
+    # A proposal click only SELECTS the variant (browse) — never commits. Road
+    # proposals overlap at the same target, so endpoint and body clicks are
+    # equivalent here; the commit button is the sole commit path (custom-connect).
+    if click_info.click_type == MapClickType.MARKER and click_info.marker_type in {
+        MarkerType.PROPOSAL_ENDPOINT,
+        MarkerType.PROPOSAL_BODY,
+    }:
+        assert click_info.proposal_number is not None
+        idx = click_info.proposal_number - 1
+        if 0 <= idx < len(ctx.proposals.paths):
+            ctx.proposals.selected_idx = idx
+            reload_map()  # select + refresh; commit is button-only
+        return
+
+    # Reject other stray marker clicks except joining an existing NODE.
     if click_info.click_type == MapClickType.MARKER and click_info.marker_type != MarkerType.NODE:
         InvalidClickMessage(
-            action="view element",
-            reason="Finish placing the road first (click the end point).",
+            action="extend road",
+            reason="Click terrain or a junction node to extend the road, or press Finish Road.",
         ).display()
         return
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Determine START: existing node or pending location
+    # Determine the CURRENT endpoint we extend from:
+    # - after ≥1 committed segment → the last endpoint node
+    # - otherwise → the origin (existing node or pending start location)
     # ─────────────────────────────────────────────────────────────────────────
-    if ctx.road.start_node_id is not None:
-        start_node = graph.nodes.get(ctx.road.start_node_id)
-        if start_node is None:
-            raise RuntimeError(f"Start node {ctx.road.start_node_id} must exist but was not found")
-        start_lon, start_lat, start_elevation = start_node.lon, start_node.lat, start_node.elevation
-    elif ctx.road.start_location is not None:
-        loc = ctx.road.start_location
-        start_node = None  # Created after validation
+    if ctx.road_build.endpoints:
+        from_node = graph.nodes.get(ctx.road_build.endpoints[-1])
+        if from_node is None:
+            raise RuntimeError(f"Road endpoint {ctx.road_build.endpoints[-1]} must exist but was not found")
+        start_lon, start_lat, start_elevation = from_node.lon, from_node.lat, from_node.elevation
+    elif ctx.road_build.start_node_id is not None:
+        origin = graph.nodes.get(ctx.road_build.start_node_id)
+        if origin is None:
+            raise RuntimeError(f"Road start node {ctx.road_build.start_node_id} must exist but was not found")
+        start_lon, start_lat, start_elevation = origin.lon, origin.lat, origin.elevation
+    elif ctx.road_build.start_location is not None:
+        loc = ctx.road_build.start_location
         start_lon, start_lat, start_elevation = loc.lon, loc.lat, loc.elevation
     else:
-        raise RuntimeError("Neither start_node_id nor start_location is set in road context")
+        raise RuntimeError("Road context has no endpoint, start node, or start location")
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Determine END: existing node or terrain click
+    # Determine the target point of this segment (existing node or terrain).
     # ─────────────────────────────────────────────────────────────────────────
     if click_info.click_type == MapClickType.MARKER and click_info.marker_type == MarkerType.NODE:
         assert click_info.node_id is not None
-        end_node_existing = graph.nodes.get(click_info.node_id)
-        if end_node_existing is None:
-            raise RuntimeError(f"End node {click_info.node_id} must exist but was not found")
-        end_node_id: str | None = end_node_existing.id
-        end_lon, end_lat, end_elevation = end_node_existing.lon, end_node_existing.lat, end_node_existing.elevation
+        target_node = graph.nodes.get(click_info.node_id)
+        if target_node is None:
+            raise RuntimeError(f"Target node {click_info.node_id} must exist but was not found")
+        target_node_id: str | None = target_node.id
+        end_lon, end_lat, end_elevation = target_node.lon, target_node.lat, target_node.elevation
     elif click_info.click_type == MapClickType.TERRAIN:
         assert click_info.lat is not None and click_info.lon is not None
         if elevation is None:
             OutsideTerrainMessage(lat=click_info.lat, lon=click_info.lon).display()
             return
-        end_node_id = None
+        target_node_id = None
         end_lon, end_lat, end_elevation = click_info.lon, click_info.lat, elevation
     else:
         raise RuntimeError(f"Expected NODE or TERRAIN click but got {click_info.click_type}")
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # VALIDATION: cap the click distance so the planner grid stays bounded.
-    # Reuses the same guard as custom-connect slopes (prevents grid blow-up).
-    # ─────────────────────────────────────────────────────────────────────────
+    # Cap click distance so the planner grid stays bounded (reuses the slope guard).
     if error := validate_custom_target_distance(
         start_lat=start_lat, start_lon=start_lon, target_lat=end_lat, target_lon=end_lon
     ):
@@ -688,12 +699,14 @@ def handle_road_placing_click(click_info: ClickInfo, elevation: float | None) ->
         return
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Trace the gentle road path (±ROAD_MAX_GRADIENT_PCT band). Pick the first
-    # (gentlest) proposal — road mode returns them sorted by avg gradient.
+    # Generate up to TWO gentle proposals (left/right) to the target — same as
+    # slope custom-connect, minus the fan-out. Band mode → no straight-line
+    # fallback; hard-cap each proposal at the band. If none survive → refuse.
     # ─────────────────────────────────────────────────────────────────────────
     band_max = float(PathConfig.ROAD_MAX_GRADIENT_PCT)
-    road_paths = list(
-        factory.generate_manual_paths(
+    proposals = [
+        p
+        for p in factory.generate_manual_paths(
             start_lon=start_lon,
             start_lat=start_lat,
             start_elevation=start_elevation,
@@ -702,26 +715,20 @@ def handle_road_placing_click(click_info: ClickInfo, elevation: float | None) ->
             target_elevation=end_elevation,
             gradient_band=(-band_max, band_max),
         )
-    )
-    if not road_paths:
-        InvalidClickMessage(action="build road", reason="No route could be traced to that point.").display()
+        if p.max_slope_pct <= band_max
+    ]
+    if not proposals:
+        InvalidClickMessage(
+            action="extend road",
+            reason=f"No car road within ±{PathConfig.ROAD_MAX_GRADIENT_PCT}% is possible to that point.",
+        ).display()
         return
-    road_path = road_paths[0]
-    # If the end is an existing node, snap the traced path onto it in commit.
-    if end_node_id is not None:
-        road_path.target_node_id = end_node_id
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Commit the traced segment (no per-segment undo — finish_road records one
-    # atomic AddRoadAction) and group it into a Road.
-    # ─────────────────────────────────────────────────────────────────────────
-    graph.commit_paths(paths=[road_path], record_undo=False)
-    new_segment_id = list(graph.segments.keys())[-1]
-    road = graph.finish_road(segment_ids=[new_segment_id])
-    if road is None:
-        raise RuntimeError(f"graph.finish_road() failed for segment {new_segment_id}")
+    # Joining an existing node: snap proposal ends onto it on commit.
+    if target_node_id is not None:
+        for p in proposals:
+            p.target_node_id = target_node_id
 
-    logger.info(f"Road {road.name} created successfully")
-    center_on_road(ctx=ctx, graph=graph, road=road, zoom=MapConfig.VIEWING_ZOOM)
-    bump_map_version()
-    sm.complete_road(road_id=road.id)
+    ctx.proposals.paths = proposals
+    ctx.proposals.selected_idx = 0
+    bump_map_version()  # Clear stale click state so proposal 1 can be clicked

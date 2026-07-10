@@ -14,14 +14,15 @@ import pytest
 from skiresort_planner.constants import MapConfig
 from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import (
     AddLiftAction,
-    AddRoadAction,
     AddSegmentsAction,
     DeleteLiftAction,
     DeleteRoadAction,
     DeleteSlopeAction,
+    FinishRoadAction,
     FinishSlopeAction,
     ResortGraph,
 )
@@ -42,8 +43,12 @@ def _add_lift(graph: ResortGraph, dem, lift_type: str = "chairlift"):
 
 
 def _commit_road(graph: ResortGraph, path_points):
-    """Commit a path as a road (record_undo=False + finish_road), return the Road."""
-    graph.commit_paths(paths=[ProposedPathSegment(points=path_points, is_connector=True)], record_undo=False)
+    """Commit a path as a road segment (record_undo=True) + finish_road, return the Road.
+
+    Mirrors production road building: each segment carries its own AddSegmentsAction
+    undo entry, and finish_road records a FinishRoadAction on top.
+    """
+    graph.commit_paths(paths=[ProposedPathSegment(points=path_points, is_connector=True, kind=SegmentKind.ROAD)])
     road = graph.finish_road(segment_ids=[list(graph.segments.keys())[-1]])
     assert road is not None
     return road
@@ -336,20 +341,27 @@ class TestUndoStackSemantics:
 
 
 class TestRoadGraphOps:
-    def test_finish_road_creates_road_with_atomic_undo(self, empty_graph, path_points_blue) -> None:
+    def test_finish_road_records_finish_action_on_top_of_segments(self, empty_graph, path_points_blue) -> None:
         road = _commit_road(empty_graph, path_points_blue)
         assert road.id in empty_graph.roads
         assert len(empty_graph.roads) == 1
-        # commit used record_undo=False, so the only undo entry is the atomic AddRoadAction.
-        assert len(empty_graph.undo_stack) == 1
-        assert isinstance(empty_graph.undo_stack[0], AddRoadAction)
+        # One AddSegmentsAction (the committed segment) + one FinishRoadAction on top.
+        assert len(empty_graph.undo_stack) == 2
+        assert isinstance(empty_graph.undo_stack[0], AddSegmentsAction)
+        assert isinstance(empty_graph.undo_stack[-1], FinishRoadAction)
 
-    def test_undo_add_road_removes_everything(self, empty_graph, path_points_blue) -> None:
-        _commit_road(empty_graph, path_points_blue)
+    def test_undo_finish_road_ungroups_but_keeps_segments(self, empty_graph, path_points_blue) -> None:
+        road = _commit_road(empty_graph, path_points_blue)
+        seg_count = len(empty_graph.segments)
+        # First undo: pop the FinishRoadAction → road ungrouped, segments stay.
         empty_graph.undo_last()
+        assert road.id not in empty_graph.roads
         assert len(empty_graph.roads) == 0
+        assert len(empty_graph.segments) == seg_count, "Segments remain after ungrouping the road"
+        # Second undo: pop the AddSegmentsAction → segment (and orphan nodes) removed.
+        empty_graph.undo_last()
         assert len(empty_graph.segments) == 0
-        assert len(empty_graph.nodes) == 0  # orphaned nodes cleaned up
+        assert len(empty_graph.nodes) == 0
 
     def test_delete_road_removes_and_records_undo(self, empty_graph, path_points_blue) -> None:
         road = _commit_road(empty_graph, path_points_blue)

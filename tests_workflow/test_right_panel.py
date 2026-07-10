@@ -6,6 +6,7 @@ browser. Two flavors: render tests assert the panel runs across slope/lift/road;
 state change (3D toggle, close panel) is asserted.
 """
 
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.right_panel import (
@@ -27,7 +28,9 @@ def _build_slope(graph: ResortGraph, path_points: list) -> str:
 
 
 def _build_road(graph: ResortGraph, path_points: list) -> str:
-    graph.commit_paths(paths=[ProposedPathSegment(points=path_points, is_connector=True)], record_undo=False)
+    graph.commit_paths(
+        paths=[ProposedPathSegment(points=path_points, is_connector=True, kind=SegmentKind.ROAD)], record_undo=False
+    )
     road = graph.finish_road(segment_ids=[list(graph.segments.keys())[-1]])
     assert road is not None
     return road.id
@@ -189,18 +192,31 @@ class TestControlPanelDispatch:
         sm.show_lift_info_panel(lift_id=lift_id)
         _dispatch(sm, ctx, empty_graph)
 
-    def test_road_placing_panel_runs(self, fake_st, empty_graph, path_points_blue) -> None:
-        # Regression: render_control_panel must handle road_placing (not raise).
+    def test_road_starting_panel_runs(self, fake_st, empty_graph, path_points_blue) -> None:
+        # Regression: render_control_panel must handle road_starting (not raise).
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         sm.start_road(node_id=None, location=path_points_blue[0])
-        assert sm.is_road_placing
+        assert sm.is_road_starting
         _dispatch(sm, ctx, empty_graph)
 
-    def test_road_placing_panel_from_node_runs(self, fake_st, empty_graph) -> None:
+    def test_road_starting_panel_from_node_runs(self, fake_st, empty_graph) -> None:
         # Start from an existing node → exercises the node-start message branch.
         node, _ = empty_graph.get_or_create_node(lon=0.0, lat=0.0, elevation=2000.0)
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         sm.start_road(node_id=node.id, location=None)
+        _dispatch(sm, ctx, empty_graph)
+
+    def test_road_building_panel_runs(self, fake_st, empty_graph, path_points_blue) -> None:
+        # After committing a segment, the panel shows the building progress message.
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        sm.start_road(node_id=None, location=path_points_blue[0])
+        empty_graph.commit_paths(
+            paths=[ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)],
+            record_undo=False,
+        )
+        seg = list(empty_graph.segments.keys())[-1]
+        sm.commit_road(segment_id=seg, endpoint_node_id=empty_graph.segments[seg].end_node_id)
+        assert sm.is_road_building_only
         _dispatch(sm, ctx, empty_graph)
 
     def test_slope_starting_panel_runs(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:

@@ -7,6 +7,7 @@ delete actions for slope/lift/road uniformly.
 """
 
 from skiresort_planner.model.path_point import PathPoint
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.state_machine import PlannerStateMachine
@@ -34,7 +35,9 @@ def _make_slope(graph, path_points):
 def _make_road(graph):
     M = 111320.0
     pts = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=300 / M, lat=0.0, elevation=1990.0)]
-    graph.commit_paths(paths=[ProposedPathSegment(points=pts, is_connector=True)], record_undo=False)
+    graph.commit_paths(
+        paths=[ProposedPathSegment(points=pts, is_connector=True, kind=SegmentKind.ROAD)], record_undo=False
+    )
     return graph.finish_road(segment_ids=[list(graph.segments.keys())[-1]])
 
 
@@ -154,6 +157,36 @@ class TestUndoLastActionDispatch:
         undo_last_action()
         assert empty_graph.undo_stack == []
 
+    def test_undo_in_slope_starting_cancels_slope_not_stack(self, fake_st, empty_graph, path_points_blue) -> None:
+        """In slope_starting (0 segments) Undo cancels the slope, NOT an unrelated stack entry."""
+        from skiresort_planner.ui.actions import undo_last_action
+
+        _make_road(empty_graph)  # an unrelated FINISH_ROAD entry sits on the stack
+        sm, _ctx = _session(fake_st, empty_graph)
+        sm.start_slope(lon=0.0, lat=0.0, elevation=2500.0, node_id=None)
+        assert sm.is_slope_starting
+
+        undo_last_action()
+        assert sm.is_idle, "undo in slope_starting cancels the slope"
+        assert len(empty_graph.undo_stack) == 1, "the unrelated road entry must NOT be consumed"
+
+    def test_undo_in_road_starting_cancels_road_not_stack(self, fake_st, empty_graph, path_points_blue) -> None:
+        """In road_starting (0 segments) Undo cancels the road, NOT an unrelated stack entry.
+
+        Mirror of the slope guard — regression for the missing road short-circuit.
+        """
+        from skiresort_planner.ui.actions import undo_last_action
+
+        _make_slope(empty_graph, path_points_blue)  # unrelated ADD_SEGMENTS + FINISH_SLOPE
+        stack_before = len(empty_graph.undo_stack)
+        sm, _ctx = _session(fake_st, empty_graph)
+        sm.start_road(node_id=None, location=path_points_blue[0])
+        assert sm.is_road_starting
+
+        undo_last_action()
+        assert sm.is_idle, "undo in road_starting cancels the road"
+        assert len(empty_graph.undo_stack) == stack_before, "the unrelated slope entries must NOT be consumed"
+
 
 class TestCenterHelpers:
     """center_on_* set the map to the entity midpoint at the given zoom."""
@@ -217,7 +250,7 @@ class TestSlopeBuildingActionFlow:
         assert ctx.proposals.paths, "recompute must generate fan proposals"
 
         commit_selected_path(path_idx=0)
-        assert ctx.building.segments, "commit must add a segment to the building context"
+        assert ctx.slope_build.segments, "commit must add a segment to the building context"
 
         finish_current_slope()
         assert sm.is_idle_viewing_slope
@@ -234,6 +267,81 @@ class TestSlopeBuildingActionFlow:
         cancel_current_slope()
         assert sm.is_idle
         assert len(graph.slopes) == 0, "canceling discards the in-progress slope"
+
+    def test_finish_then_undo_restores_slope_building(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
+        # Finishing then undoing the finish must return to slope_building with segments + a regenerated fan.
+        from skiresort_planner.ui.actions import (
+            commit_selected_path,
+            finish_current_slope,
+            recompute_paths,
+            undo_last_action,
+        )
+
+        dem = mock_dem_red_slope_diagonal
+        sm, ctx, graph = self._start_building(fake_st, path_factory, dem)
+        recompute_paths()
+        commit_selected_path(path_idx=0)
+        seg_id = ctx.slope_build.segments[-1]
+        finish_current_slope()
+        assert sm.is_idle_viewing_slope
+
+        undo_last_action()  # undo FINISH_SLOPE
+        assert sm.is_slope_building_only, "undo of finish returns to slope building"
+        assert ctx.slope_build.segments == [seg_id], "segments are restored"
+        assert ctx.proposals.paths, "the fan is regenerated from the restored endpoint"
+
+
+class TestRoadBuildingActionFlow:
+    """Roads commit through the SAME commit_selected_path as slopes (no fan, no
+    connector auto-finish): a road-state commit fires the commit_road event and
+    stays in road_building with a road-kind segment + per-segment undo.
+    """
+
+    def test_commit_selected_path_in_road_state_commits_segment(
+        self, fake_st, path_factory, mock_dem_red_slope_diagonal, path_points_blue
+    ) -> None:
+        from skiresort_planner.model.path_segment import SegmentKind
+        from skiresort_planner.ui.actions import commit_selected_path
+
+        dem = mock_dem_red_slope_diagonal
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st, graph, factory=path_factory, dem=dem)
+        sm.start_road(node_id=None, location=path_points_blue[0])
+        assert sm.is_road_starting
+
+        # Seed a road proposal (as handle_road_building_click would) and commit it.
+        ctx.proposals.paths = [ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)]
+        ctx.proposals.selected_idx = 0
+        commit_selected_path(path_idx=0)
+
+        assert sm.is_road_building_only, "road commit stays in road_building"
+        assert len(ctx.road_build.segments) == 1
+        assert len(graph.roads) == 0, "no Road entity until Finish Road"
+        assert graph.segments[ctx.road_build.segments[-1]].kind is SegmentKind.ROAD
+        assert graph.undo_stack[-1].action_type.name == "ADD_SEGMENTS", "per-segment undo recorded"
+
+    def test_finish_then_undo_restores_road_building(
+        self, fake_st, path_factory, mock_dem_red_slope_diagonal, path_points_blue
+    ) -> None:
+        # Finishing then undoing the finish must return to road_building with segments (no fan).
+        from skiresort_planner.model.path_segment import SegmentKind
+        from skiresort_planner.ui.actions import commit_selected_path, finish_current_road, undo_last_action
+
+        dem = mock_dem_red_slope_diagonal
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st, graph, factory=path_factory, dem=dem)
+        sm.start_road(node_id=None, location=path_points_blue[0])
+        ctx.proposals.paths = [ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)]
+        ctx.proposals.selected_idx = 0
+        commit_selected_path(path_idx=0)
+        seg_id = ctx.road_build.segments[-1]
+        finish_current_road()
+        assert sm.is_idle_viewing_road
+
+        undo_last_action()  # undo FINISH_ROAD
+        assert sm.is_road_building_only, "undo of finish returns to road building"
+        assert ctx.road_build.segments == [seg_id], "segments are restored"
+        assert ctx.proposals.paths == [], "roads have no fan to regenerate"
 
 
 class TestDeferredProcessing:
