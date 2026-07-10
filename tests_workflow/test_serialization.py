@@ -230,3 +230,22 @@ class TestGPXExport:
         ns = "{http://www.topografix.com/GPX/1/1}"
         assert root.find(f"{ns}metadata") is not None
         assert root.findall(f"{ns}trk") == []
+
+
+class TestRoadSerialization:
+    """Roads round-trip through to_dict/from_dict with their counter preserved."""
+
+    def test_roundtrip_preserves_roads(self, empty_graph, path_points_blue) -> None:
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
+        from skiresort_planner.model.resort_graph import ResortGraph
+
+        proposal = ProposedPathSegment(points=path_points_blue, is_connector=True)
+        empty_graph.commit_paths(paths=[proposal], record_undo=False)
+        road = empty_graph.finish_road(segment_ids=[list(empty_graph.segments.keys())[-1]])
+
+        data = empty_graph.to_dict()
+        restored = ResortGraph.from_dict(data=data)
+
+        assert road.id in restored.roads
+        assert restored.roads[road.id].name == road.name
+        assert restored._road_counter == empty_graph._road_counter

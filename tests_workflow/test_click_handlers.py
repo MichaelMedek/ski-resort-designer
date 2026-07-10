@@ -87,6 +87,52 @@ class TestIdleClickRouting:
         assert sm.is_road_placing
         assert ctx.road.start_node_id == node.id
 
+    def test_slope_mode_node_click_starts_building(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
+        from skiresort_planner.ui.click_handlers import handle_idle_click
+
+        graph = ResortGraph()
+        node, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=2000.0)
+        sm, ctx = _session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
+        ctx.build_mode.mode = BuildMode.SLOPE
+
+        handle_idle_click(
+            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id), elevation=None
+        )
+        assert sm.is_slope_starting
+
+    def test_lift_mode_node_click_starts_placing(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
+        from skiresort_planner.ui.click_handlers import handle_idle_click
+
+        graph = ResortGraph()
+        node, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=2000.0)
+        sm, ctx = _session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
+        ctx.build_mode.mode = BuildMode.CHAIRLIFT
+
+        handle_idle_click(
+            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id), elevation=None
+        )
+        assert sm.is_lift_placing
+        assert ctx.lift.start_node_id == node.id
+
+    def test_click_pylon_opens_parent_lift_panel(self, fake_st, path_factory, mock_dem_blue_slope) -> None:
+        from skiresort_planner.ui.click_handlers import handle_idle_click
+
+        dem = mock_dem_blue_slope
+        graph = ResortGraph()
+        bottom, _ = graph.get_or_create_node(
+            lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M)
+        )
+        top, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
+        lift = graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
+        sm, ctx = _session(fake_st, graph, path_factory, dem)
+
+        handle_idle_click(
+            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PYLON, lift_id=lift.id, pylon_index=0),
+            elevation=None,
+        )
+        assert sm.is_idle_viewing_lift
+        assert ctx.viewing.lift_id == lift.id
+
     def test_click_existing_slope_opens_panel(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal, path_points_blue
     ) -> None:
@@ -222,6 +268,35 @@ class TestSlopeBuildingClick:
         )
         assert ctx.proposals.selected_idx == 1
 
+    def test_proposal_endpoint_click_commits_path(
+        self, fake_st, path_factory, mock_dem_red_slope_diagonal, path_points_blue
+    ) -> None:
+        from skiresort_planner.ui.click_handlers import handle_slope_building_click
+
+        _sm, ctx, graph = self._building(fake_st, mock_dem_red_slope_diagonal, path_factory)
+        # A non-connector proposal committed via its endpoint marker becomes a segment.
+        ctx.proposals.paths = [ProposedPathSegment(points=path_points_blue, target_difficulty="blue")]
+        ctx.proposals.selected_idx = 0
+
+        handle_slope_building_click(
+            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_ENDPOINT, proposal_index=0),
+            elevation=None,
+        )
+        assert len(graph.segments) == 1, "endpoint click on a non-connector commits the path"
+
+    def test_node_click_without_custom_connect_is_rejected(
+        self, fake_st, path_factory, mock_dem_red_slope_diagonal
+    ) -> None:
+        from skiresort_planner.ui.click_handlers import handle_slope_building_click
+
+        sm, _ctx, graph = self._building(fake_st, mock_dem_red_slope_diagonal, path_factory)
+        node, _ = graph.get_or_create_node(lon=0.0, lat=-0.001, elevation=1990.0)
+        # A node click while building without custom-connect is a user error: no state change.
+        handle_slope_building_click(
+            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id), elevation=None
+        )
+        assert sm.is_any_slope_state
+
     def test_terrain_click_without_custom_connect_is_rejected(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
     ) -> None:
@@ -295,6 +370,20 @@ class TestLiftPlacingClick:
         assert len(graph.lifts) == 0
         assert sm.is_lift_placing
 
+    def test_node_end_completes_lift(self, fake_st, path_factory, mock_dem_blue_slope) -> None:
+        from skiresort_planner.ui.click_handlers import handle_lift_placing_click
+
+        dem = mock_dem_blue_slope
+        sm, _ctx, graph = self._placing(fake_st, dem, path_factory)
+        # Existing uphill node as the end station.
+        top, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
+
+        handle_lift_placing_click(
+            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=top.id), elevation=None
+        )
+        assert len(graph.lifts) == 1
+        assert sm.is_idle_viewing_lift
+
 
 # =============================================================================
 # handle_road_placing_click — complete the two-click vehicle road
@@ -335,3 +424,59 @@ class TestRoadPlacingClick:
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SLOPE, slope_id="SL1"), elevation=None
         )
         assert len(graph.roads) == 0
+
+    def test_node_end_completes_road(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
+        from skiresort_planner.ui.click_handlers import handle_idle_click, handle_road_placing_click
+
+        dem = mock_dem_red_slope_diagonal
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st, graph, path_factory, dem)
+        ctx.build_mode.mode = BuildMode.ROAD
+
+        handle_idle_click(
+            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0),
+        )
+        assert sm.is_road_placing
+        # Existing node as the road end.
+        end, _ = graph.get_or_create_node(
+            lon=300 / M, lat=0.0, elevation=dem.get_elevation_or_raise(lon=300 / M, lat=0.0)
+        )
+
+        handle_road_placing_click(
+            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=end.id), elevation=None
+        )
+        assert len(graph.roads) == 1
+        assert sm.is_idle_viewing_road
+
+
+# =============================================================================
+# dispatch_click — entry point: elevation lookup + routing to state handler
+# =============================================================================
+
+
+class TestDispatchClick:
+    def test_terrain_click_routes_to_idle_handler(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
+        from skiresort_planner.ui.click_handlers import dispatch_click
+
+        dem = mock_dem_red_slope_diagonal
+        sm, ctx = _session(fake_st, ResortGraph(), path_factory, dem)
+        ctx.build_mode.mode = BuildMode.SLOPE
+
+        # dispatch_click looks up elevation for terrain clicks, then routes to the idle handler.
+        dispatch_click(ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0))
+        assert sm.is_slope_starting
+
+    def test_marker_click_routes_without_elevation_lookup(
+        self, fake_st, path_factory, mock_dem_red_slope_diagonal, path_points_blue
+    ) -> None:
+        from skiresort_planner.ui.click_handlers import dispatch_click
+
+        graph = ResortGraph()
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        sm, ctx = _session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
+
+        # A marker click carries no lat/lon; dispatch must route it straight to the handler.
+        dispatch_click(ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SLOPE, slope_id=slope.id))
+        assert sm.is_idle_viewing_slope and ctx.viewing.slope_id == slope.id

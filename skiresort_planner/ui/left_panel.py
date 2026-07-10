@@ -93,6 +93,11 @@ def _describe_undo_action(action: UndoAction, graph: ResortGraph) -> str:
         raise RuntimeError(f"Unknown action type: {action.action_type}")
 
 
+def _request_pending_undo() -> None:
+    """Flag the main render loop to execute the undo after the dialog closes."""
+    st.session_state._pending_undo = True
+
+
 @st.dialog("Confirm Undo")
 def _confirm_undo_dialog(action: UndoAction, graph: ResortGraph) -> None:
     """Show confirmation dialog before undoing an action."""
@@ -103,12 +108,25 @@ def _confirm_undo_dialog(action: UndoAction, graph: ResortGraph) -> None:
     col_yes, col_no = st.columns(2)
     with col_yes:
         if st.button("↩️ Yes, Undo", type="primary", use_container_width=True):
-            # Set flag for main render loop to execute undo after dialog closes
-            st.session_state._pending_undo = True
+            _request_pending_undo()
             trigger_rerun()
     with col_no:
         if st.button("✖️ Cancel", use_container_width=True):
             trigger_rerun()
+
+
+def _perform_reset_resort() -> None:
+    """Delete the current resort's backup and prime a fresh empty one.
+
+    Drops all session data so init_session_state rebuilds from scratch.
+    """
+    current = st.session_state.get("resort_id")
+    if current:
+        backup_store.delete(resort_id=current)
+    st.query_params["resort"] = backup_store.new_resort_id()
+    # Drop all session data so init_session_state rebuilds fresh.
+    for key in ("resort_id", "graph", "state_machine", "context", "map_renderer", "_saved_token"):
+        st.session_state.pop(key, None)
 
 
 @st.dialog("🆕 Reset to Empty")
@@ -123,13 +141,7 @@ def _confirm_reset_resort_dialog() -> None:
     col_yes, col_no = st.columns(2)
     with col_yes:
         if st.button("🆕 Yes, Start Empty", type="primary", use_container_width=True):
-            current = st.session_state.get("resort_id")
-            if current:
-                backup_store.delete(resort_id=current)
-            st.query_params["resort"] = backup_store.new_resort_id()
-            # Drop all session data so init_session_state rebuilds fresh
-            for key in ("resort_id", "graph", "state_machine", "context", "map_renderer", "_saved_token"):
-                st.session_state.pop(key, None)
+            _perform_reset_resort()
             trigger_rerun()
     with col_no:
         if st.button("✖️ Cancel", use_container_width=True):

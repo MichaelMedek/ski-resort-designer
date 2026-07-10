@@ -118,47 +118,41 @@ class TestDeleteLiftAction:
 
 
 class TestUndoLastActionDispatch:
-    """undo_last_action dispatches to the right handler by action type."""
+    """undo_last_action ROUTING only — the per-entity graph undo end-state is
+    owned by test_resort_graph. Here we assert the action layer pops the stack,
+    dispatches to a handler, and honors the empty-stack + slope-cancel guards.
+    """
 
-    def test_undo_add_road_removes_it(self, fake_st, empty_graph) -> None:
+    def test_dispatch_pops_the_stack(self, fake_st, empty_graph) -> None:
+        """A committed road leaves an undo entry; undo_last_action consumes it."""
         from skiresort_planner.ui.actions import undo_last_action
 
-        road = _make_road(empty_graph)
+        _make_road(empty_graph)
         _session(fake_st, empty_graph)
-        assert road.id in empty_graph.roads
+        assert len(empty_graph.undo_stack) == 1
 
         undo_last_action()
-        assert road.id not in empty_graph.roads
+        assert empty_graph.undo_stack == [], "dispatch must pop the undone action"
 
-    def test_undo_delete_road_restores_it(self, fake_st, empty_graph) -> None:
-        from skiresort_planner.ui.actions import undo_last_action
-
-        road = _make_road(empty_graph)
-        empty_graph.delete_road(road_id=road.id)  # records a DELETE_ROAD undo
-        _session(fake_st, empty_graph)
-
-        undo_last_action()
-        assert road.id in empty_graph.roads
-
-    def test_undo_finish_slope_keeps_segments(
+    def test_dispatch_routes_finish_slope_needs_factory(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal, empty_graph, path_points_blue
     ) -> None:
+        """FINISH_SLOPE routes to the slope handler (which reads path_factory)."""
         from skiresort_planner.ui.actions import undo_last_action
 
         slope = _make_slope(empty_graph, path_points_blue)  # ADD_SEGMENTS + FINISH_SLOPE
         _session(fake_st, empty_graph, factory=path_factory, dem=mock_dem_red_slope_diagonal)
-        n_segments = len(empty_graph.segments)
 
-        undo_last_action()  # undo FINISH_SLOPE
-        assert slope.id not in empty_graph.slopes
-        assert len(empty_graph.segments) == n_segments  # segments survive
+        undo_last_action()  # undo FINISH_SLOPE via the dispatch
+        assert slope.id not in empty_graph.slopes, "routed to the finish-slope undo handler"
 
-    def test_undo_empty_stack_is_noop(self, fake_st, empty_graph) -> None:
+    def test_empty_stack_is_noop(self, fake_st, empty_graph) -> None:
+        """Guard: undo_last_action on an empty stack does nothing and never raises."""
         from skiresort_planner.ui.actions import undo_last_action
 
         _session(fake_st, empty_graph)
-        undo_last_action()  # must not raise
-        assert not empty_graph.undo_stack
+        undo_last_action()
+        assert empty_graph.undo_stack == []
 
 
 class TestCenterHelpers:
@@ -240,3 +234,68 @@ class TestSlopeBuildingActionFlow:
         cancel_current_slope()
         assert sm.is_idle
         assert len(graph.slopes) == 0, "canceling discards the in-progress slope"
+
+
+class TestDeferredProcessing:
+    """Deferred-action processors read/clear ctx.deferred flags and act on them."""
+
+    def test_process_path_generation_noop_when_not_pending(
+        self, fake_st, path_factory, mock_dem_red_slope_diagonal
+    ) -> None:
+        from skiresort_planner.ui.actions import process_path_generation_deferred
+
+        _sm, ctx = _session(fake_st, ResortGraph(), factory=path_factory, dem=mock_dem_red_slope_diagonal)
+        ctx.deferred.path_generation = False
+        assert process_path_generation_deferred() is False
+
+    def test_process_path_generation_builds_fan_when_pending(
+        self, fake_st, path_factory, mock_dem_red_slope_diagonal
+    ) -> None:
+        from skiresort_planner.ui.actions import process_path_generation_deferred
+
+        dem = mock_dem_red_slope_diagonal
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st, graph, factory=path_factory, dem=dem)
+        start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
+        sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
+        ctx.selection.set(lon=0.0, lat=0.0, elevation=start_elev)
+        ctx.deferred.path_generation = True
+
+        assert process_path_generation_deferred() is True
+        assert ctx.deferred.path_generation is False, "flag cleared after processing"
+        assert ctx.proposals.paths, "fan proposals generated for the building state"
+
+    def test_process_custom_connect_noop_when_not_pending(
+        self, fake_st, path_factory, mock_dem_red_slope_diagonal
+    ) -> None:
+        from skiresort_planner.ui.actions import process_custom_connect_deferred
+
+        _sm, ctx = _session(fake_st, ResortGraph(), factory=path_factory, dem=mock_dem_red_slope_diagonal)
+        ctx.deferred.custom_connect = False
+        assert process_custom_connect_deferred() is False
+
+    def test_fast_deferred_start_building_from_node(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
+        from skiresort_planner.ui.actions import handle_fast_deferred_actions
+
+        dem = mock_dem_red_slope_diagonal
+        graph = ResortGraph()
+        node, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
+        sm, ctx = _session(fake_st, graph, factory=path_factory, dem=dem)
+        ctx.deferred.start_building_from_node_id = node.id
+
+        handle_fast_deferred_actions()
+        assert sm.is_slope_starting, "deferred start-building-from-node begins a slope"
+        assert ctx.deferred.start_building_from_node_id is None, "flag consumed"
+
+    def test_fast_deferred_start_lift_from_node(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
+        from skiresort_planner.ui.actions import handle_fast_deferred_actions
+
+        dem = mock_dem_red_slope_diagonal
+        graph = ResortGraph()
+        node, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
+        sm, ctx = _session(fake_st, graph, factory=path_factory, dem=dem)
+        ctx.deferred.start_lift_from_node_id = node.id
+
+        handle_fast_deferred_actions()
+        assert sm.is_lift_placing, "deferred start-lift-from-node begins lift placement"
+        assert ctx.deferred.start_lift_from_node_id is None, "flag consumed"

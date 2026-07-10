@@ -299,3 +299,66 @@ class TestPlannerIntegration:
         )
 
         assert result is None, "Zero distance path should return None"
+
+
+class TestPlannerGradientBand:
+    """Road-mode cost: penalize only signed distance OUTSIDE the ±band, no uphill penalty."""
+
+    def _planner(self, mock_dem_blue_slope) -> LeastCostPathPlanner:
+        return LeastCostPathPlanner(
+            dem_service=mock_dem_blue_slope, terrain_analyzer=TerrainAnalyzer(dem=mock_dem_blue_slope)
+        )
+
+    def _cost(self, planner, from_elev, to_elev, band):
+        # 30m east step; deterministic horizontal distance.
+        return planner._calc_edge_cost(
+            from_elev=from_elev,
+            to_elev=to_elev,
+            from_lon=0.0,
+            from_lat=0.0,
+            to_lon=30.0 / 111320.0,
+            to_lat=0.0,
+            target_slope_pct=0.0,
+            side="left",
+            target_lon=1.0,
+            target_lat=0.0,
+            gradient_band=band,
+        )
+
+    def test_in_band_flat_has_no_extra_penalty(self, mock_dem_blue_slope) -> None:
+        planner = self._planner(mock_dem_blue_slope)
+        # Flat edge inside band → cost == horizontal distance (exp(0) == 1).
+        flat_cost = self._cost(planner, 2000.0, 2000.0, (-12.0, 12.0))
+        assert flat_cost == pytest.approx(30.0, rel=0.05)
+
+    def test_uphill_in_band_not_penalized_in_road_mode(self, mock_dem_blue_slope) -> None:
+        planner = self._planner(mock_dem_blue_slope)
+        band = (-12.0, 12.0)
+        # +10% uphill (climb 3m over 30m) is within band → same as flat.
+        uphill = self._cost(planner, 2000.0, 2003.0, band)
+        flat = self._cost(planner, 2000.0, 2000.0, band)
+        assert uphill == pytest.approx(flat, rel=0.05)
+
+    def test_out_of_band_costs_more(self, mock_dem_blue_slope) -> None:
+        planner = self._planner(mock_dem_blue_slope)
+        band = (-12.0, 12.0)
+        in_band = self._cost(planner, 2000.0, 2000.0, band)
+        # 40% descent (12m over 30m) is well outside the band → strictly costlier.
+        out_of_band = self._cost(planner, 2000.0, 1988.0, band)
+        assert out_of_band > in_band
+
+    def test_slope_mode_unchanged_by_band_param(self, mock_dem_blue_slope) -> None:
+        """gradient_band=None must reproduce the original slope cost exactly."""
+        from math import exp
+
+        from skiresort_planner.constants import PlannerConfig
+        from skiresort_planner.core.geo_calculator import GeoCalculator
+
+        planner = self._planner(mock_dem_blue_slope)
+        cost = self._cost(planner, 2000.0, 1994.0, None)  # 6m drop over one east step, target 0
+        # Recompute expected via the documented slope formula, using the exact
+        # horizontal distance the cost function itself would measure.
+        horiz = GeoCalculator.haversine_distance_m(lat1=0.0, lon1=0.0, lat2=0.0, lon2=30.0 / 111320.0)
+        actual_slope = (6.0 / horiz) * 100
+        expected = horiz * exp(abs(actual_slope - 0.0) / PlannerConfig.COST_SIGMA)
+        assert cost == pytest.approx(expected, rel=1e-6)
