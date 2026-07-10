@@ -114,7 +114,7 @@ class TestMapContextViews:
         assert (mc.lon, mc.lat) == (MapConfig.START_CENTER_LON, MapConfig.START_CENTER_LAT)
 
 
-class TestClickDeduplication:
+class TestClickDeduplicationContext:
     def _ctx(self) -> ClickDeduplicationContext:
         # debounce 0 → timing never blocks, isolating the id/coord logic.
         return ClickDeduplicationContext(debounce_seconds=0.0)

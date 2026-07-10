@@ -101,8 +101,8 @@ class TestClickDetectorParsing:
         assert result is None
 
 
-class TestClickDeduplication:
-    """Tests for click deduplication logic."""
+class TestClickDetectorDeduplication:
+    """Tests for ClickDetector deduplication logic."""
 
     def test_duplicate_click_rejected_different_accepted(self, detector: ClickDetector) -> None:
         """Same click rejected on second occurrence; different clicks accepted."""
