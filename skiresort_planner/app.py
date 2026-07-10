@@ -301,6 +301,33 @@ def _render_map_fragment_inner() -> None:
                 use_3d=use_3d,
             )
             extra_layers.extend(lift_layers)
+
+    # Add road origin marker in RoadStarting state (no segments committed yet, so
+    # the click point needs a visible dot — like the lift bottom station, minus the
+    # direction arrow since a road has no fall-line orientation).
+    if sm.is_road_starting and (ctx.road_build.start_node_id or ctx.road_build.start_location):
+        if ctx.road_build.start_node_id:
+            road_start_node = graph.nodes.get(ctx.road_build.start_node_id)
+            if road_start_node is None:
+                raise ValueError(f"Road start node {ctx.road_build.start_node_id} not found in graph")
+            extra_layers.extend(
+                renderer.create_pending_road_marker_layers(
+                    lat=road_start_node.lat,
+                    lon=road_start_node.lon,
+                    elevation=road_start_node.elevation,
+                    use_3d=use_3d,
+                )
+            )
+        elif ctx.road_build.start_location:
+            loc = ctx.road_build.start_location
+            extra_layers.extend(
+                renderer.create_pending_road_marker_layers(
+                    lat=loc.lat,
+                    lon=loc.lon,
+                    elevation=loc.elevation,
+                    use_3d=use_3d,
+                )
+            )
     # 3D mode: TerrainLayer with AWS tiles + OpenTopoMap texture
     # 2D mode: No terrain_layer needed - render() uses OPENTOPOMAP_STYLE map_style dict
     #          (TileLayer doesn't work because pydeck doesn't expose renderSubLayers)
