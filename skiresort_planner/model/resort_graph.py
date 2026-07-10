@@ -1019,7 +1019,9 @@ class ResortGraph:
         for lid, lift_data in data["lifts"].items():
             graph.lifts[lid] = Lift.from_dict(data=lift_data)
 
-        for rid, road_data in data["roads"].items():
+        # Roads were added after the first backups shipped, so a pre-roads
+        # backup has no "roads" key — default to empty
+        for rid, road_data in data.get("roads", {}).items():
             graph.roads[rid] = Road.from_dict(data=road_data)
 
         counters = data["counters"]

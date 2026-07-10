@@ -249,3 +249,23 @@ class TestRoadSerialization:
         assert road.id in restored.roads
         assert restored.roads[road.id].name == road.name
         assert restored._road_counter == empty_graph._road_counter
+
+    def test_pre_roads_backup_loads(self, empty_graph, path_points_blue) -> None:
+        """A backup written before roads existed (no 'roads' key, no 'road' counter)
+        must still load — schema evolution, not a crash. Regression for KeyError.
+        """
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
+        from skiresort_planner.model.resort_graph import ResortGraph
+
+        empty_graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        empty_graph.finish_slope(segment_ids=list(empty_graph.segments.keys()))
+
+        data = empty_graph.to_dict()
+        # Simulate an old on-disk backup: strip the road fields entirely.
+        del data["roads"]
+        del data["counters"]["road"]
+
+        restored = ResortGraph.from_dict(data=data)
+        assert restored.roads == {}
+        assert restored._road_counter == 0
+        assert len(restored.slopes) == 1, "existing slopes still load"
