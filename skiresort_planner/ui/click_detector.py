@@ -173,6 +173,18 @@ class ClickDetector:
                 lift_id=lift_id,
             )
 
+        # ROAD click
+        if obj_type == ClickConfig.TYPE_ROAD:
+            road_id = obj.get("id")
+            if not road_id:
+                logger.warning("Road click missing id")
+                return None
+            return ClickInfo(
+                click_type=MapClickType.MARKER,
+                marker_type=MarkerType.ROAD,
+                road_id=road_id,
+            )
+
         # PYLON click
         if obj_type == ClickConfig.TYPE_PYLON:
             lift_id = obj.get("lift_id")

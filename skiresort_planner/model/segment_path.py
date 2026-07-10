@@ -62,16 +62,16 @@ class SegmentPath:
         return sum(segments[sid].total_drop_m for sid in self.segment_ids if sid in segments)
 
     def get_max_gradient(self, segments: dict[str, "PathSegment"]) -> float:
-        """Maximum steepest-section gradient (max_slope_pct) among segments.
+        """Steepest-section gradient magnitude among segments.
 
-        Uses each segment's rolling-window steepest section, not its average.
+        Uses each segment's rolling-window steepest section as a magnitude, so
+        it reflects steepness regardless of direction (a slope descends → its
+        values are already positive; a road may climb → abs makes it positive).
         """
-        max_slope = 0.0
-        for seg_id in self.segment_ids:
-            seg = segments.get(seg_id)
-            if seg and seg.max_slope_pct > max_slope:
-                max_slope = seg.max_slope_pct
-        return max_slope
+        return max(
+            (abs(segments[sid].max_slope_pct) for sid in self.segment_ids if sid in segments),
+            default=0.0,
+        )
 
     def get_all_points(self, segments: dict[str, "PathSegment"]) -> list["PathPoint"]:
         """All points across segments, deduplicated at shared junction nodes."""

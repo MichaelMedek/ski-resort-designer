@@ -421,6 +421,58 @@ class LiftActionMessage(Message):
         raise ValueError("No action message to display - all flags are False")
 
 
+@dataclass(frozen=True)
+class RoadPlacingContextMessage(Message):
+    """RIGHT panel: road placing progress message.
+
+    Shows the start point while awaiting the road's end point.
+    """
+
+    start_node_id: Optional[str] = None
+    start_lat: Optional[float] = None
+    start_lon: Optional[float] = None
+    start_elevation_m: float = 0.0
+
+    @property
+    def level(self) -> MessageLevel:
+        return MessageLevel.INFO
+
+    @property
+    def message(self) -> str:
+        from skiresort_planner.constants import StyleConfig
+
+        if self.start_node_id:
+            location = f"Node **{self.start_node_id}**"
+        elif self.start_lat is not None and self.start_lon is not None:
+            location = f"({self.start_lat:.4f}, {self.start_lon:.4f})"
+        else:
+            raise ValueError("RoadPlacingContextMessage requires start_node_id or start_lat/lon")
+        return (
+            f"{StyleConfig.ROAD_ICON} **Road** — Placing\n\n"
+            f"- 🚏 Start: {location}\n"
+            f"- 📍 Elevation: {self.start_elevation_m:.0f}m"
+        )
+
+
+@dataclass(frozen=True)
+class RoadActionMessage(Message):
+    """RIGHT panel: action instruction while placing a road (awaiting end point)."""
+
+    @property
+    def level(self) -> MessageLevel:
+        return MessageLevel.WARNING
+
+    @property
+    def message(self) -> str:
+        from skiresort_planner.constants import StyleConfig
+
+        return (
+            f"{StyleConfig.ROAD_ICON} **Select Road End**\n\n"
+            "- 👆 Click terrain to end the road\n"
+            "- ⚪ Or click an existing **node**"
+        )
+
+
 # =============================================================================
 # STATS PANELS - Segment warnings
 # =============================================================================

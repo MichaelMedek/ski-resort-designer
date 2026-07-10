@@ -5,21 +5,17 @@ keeping the gradient within a gentle band (PathConfig.ROAD_MAX_GRADIENT_PCT),
 so vehicles can climb, descend, or run flat but never traverse steep ground.
 
 Shared segment-chain geometry lives in SegmentPath; this class adds only
-road-specific naming and the elevation-gain (uphill climb) metric that
-matters for vehicle access.
+road-specific naming.
 
 Reference: DETAILS.md
 """
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar
+from typing import ClassVar
 
 from skiresort_planner.constants import EntityPrefixes, NameConfig
 from skiresort_planner.model.segment_path import SegmentPath
-
-if TYPE_CHECKING:
-    from skiresort_planner.model.path_segment import PathSegment
 
 logger = logging.getLogger(__name__)
 
@@ -57,17 +53,3 @@ class Road(SegmentPath):
         road_number = Road.number_from_id(road_id)
         direction = NameConfig.get_compass_direction(bearing_deg=avg_bearing)
         return f"{road_number} ({direction} Access)"
-
-    def get_elevation_gain(self, segments: dict[str, "PathSegment"]) -> float:
-        """Total uphill climb in meters across the road.
-
-        Sums the positive elevation change of each ascending segment
-        (segments descend when total_drop_m > 0, so a climb is a negative
-        drop). Cars care about how much they have to climb.
-        """
-        gain = 0.0
-        for seg_id in self.segment_ids:
-            seg = segments.get(seg_id)
-            if seg and seg.total_drop_m < 0:
-                gain += -seg.total_drop_m
-        return gain

@@ -34,7 +34,8 @@ from skiresort_planner.constants import ClickConfig, LiftConfig, MapConfig, Path
 
 if TYPE_CHECKING:
     from skiresort_planner.core import TerrainOrientation
-    from skiresort_planner.model import PathPoint, ProposedPathSegment
+    from skiresort_planner.model.path_point import PathPoint
+    from skiresort_planner.model.proposed_path import ProposedPathSegment
 
 
 # Coordinate type aliases for clarity

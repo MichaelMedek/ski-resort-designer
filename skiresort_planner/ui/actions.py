@@ -31,12 +31,14 @@ from skiresort_planner.model.resort_graph import (
     FinishSlopeAction,
     ResortGraph,
 )
-from skiresort_planner.model.slope import Slope
 from skiresort_planner.ui.infra import bump_map_version, reload_map, trigger_rerun
 from skiresort_planner.ui.state_machine import PlannerContext, PlannerStateMachine
 
 if TYPE_CHECKING:
     from skiresort_planner.model.proposed_path import ProposedPathSegment
+    from skiresort_planner.model.road import Road
+    from skiresort_planner.model.segment_path import SegmentPath
+    from skiresort_planner.model.slope import Slope
 
 logger = logging.getLogger(__name__)
 
@@ -46,17 +48,17 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 
-def center_on_slope(
+def center_on_segment_path(
     ctx: PlannerContext,
     graph: ResortGraph,
-    slope: Slope,
+    path: "SegmentPath",
     zoom: int,
     pitch: float = MapConfig.VIEWING_PITCH,
 ) -> None:
-    """Center map on slope midpoint with specified zoom and pitch."""
-    slope_segments = [graph.segments.get(sid) for sid in slope.segment_ids]
-    if slope_segments and slope_segments[0] and slope_segments[-1]:
-        first_seg, last_seg = slope_segments[0], slope_segments[-1]
+    """Center map on a segment-group entity's midpoint (shared by slopes and roads)."""
+    segments = [graph.segments.get(sid) for sid in path.segment_ids]
+    if segments and segments[0] and segments[-1]:
+        first_seg, last_seg = segments[0], segments[-1]
         if first_seg.points and last_seg.points:
             start_pt, end_pt = first_seg.points[0], last_seg.points[-1]
             ctx.map.set_center(
@@ -65,6 +67,28 @@ def center_on_slope(
             )
             ctx.map.zoom = zoom
             ctx.map.pitch = pitch
+
+
+def center_on_slope(
+    ctx: PlannerContext,
+    graph: ResortGraph,
+    slope: "Slope",
+    zoom: int,
+    pitch: float = MapConfig.VIEWING_PITCH,
+) -> None:
+    """Center map on slope midpoint with specified zoom and pitch."""
+    center_on_segment_path(ctx=ctx, graph=graph, path=slope, zoom=zoom, pitch=pitch)
+
+
+def center_on_road(
+    ctx: PlannerContext,
+    graph: ResortGraph,
+    road: "Road",
+    zoom: int,
+    pitch: float = MapConfig.VIEWING_PITCH,
+) -> None:
+    """Center map on road midpoint with specified zoom and pitch."""
+    center_on_segment_path(ctx=ctx, graph=graph, path=road, zoom=zoom, pitch=pitch)
 
 
 def center_on_lift(
@@ -829,6 +853,37 @@ def delete_lift_action(lift_id: str) -> bool:
 
     # If viewing the deleted lift, return to idle
     if sm.is_idle_viewing_lift and ctx.viewing.lift_id == lift_id:
+        sm.close_panel()
+
+    bump_map_version()
+    return True
+
+
+def delete_road_action(road_id: str) -> bool:
+    """Delete a road and trigger UI updates.
+
+    Handles graph deletion (with undo support), a state transition if the
+    deleted road is being viewed, and a map refresh.
+
+    Args:
+        road_id: ID of road to delete
+
+    Returns:
+        True if deleted, False if not found.
+    """
+    sm: PlannerStateMachine = st.session_state.state_machine
+    ctx: PlannerContext = st.session_state.context
+    graph: ResortGraph = st.session_state.graph
+
+    result = graph.delete_road(road_id=road_id)
+    if not result:
+        logger.warning(f"[ACTION] delete_road_action: road {road_id} not found")
+        return False
+
+    logger.info(f"[ACTION] Deleted road {road_id}")
+
+    # If viewing the deleted road, return to idle
+    if sm.is_idle_viewing_road and ctx.viewing.road_id == road_id:
         sm.close_panel()
 
     bump_map_version()

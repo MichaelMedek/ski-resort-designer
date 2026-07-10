@@ -316,6 +316,10 @@ def _render_map_fragment_inner() -> None:
             view_lat, view_lon, view_bearing, view_zoom, view_pitch = MapRenderer.calculate_3d_view_for_lift(
                 graph=graph, lift_id=ctx.viewing.lift_id
             )
+        elif sm.is_idle_viewing_road and ctx.viewing.road_id:
+            view_lat, view_lon, view_bearing, view_zoom, view_pitch = MapRenderer.calculate_3d_view_for_road(
+                graph=graph, road_id=ctx.viewing.road_id
+            )
         else:
             # 3D enabled but not viewing - shouldn't happen, disable 3D
             ctx.viewing.disable_3d()
@@ -529,6 +533,15 @@ def _run_app_ui() -> None:
         chart = ProfileChart(height=ChartConfig.LIFT_PROFILE_HEIGHT, width=ChartConfig.WIDE_WIDTH)
         fig = chart.render_lift(lift=lift, graph=graph)
         st.plotly_chart(fig, key="lift_full_profile")
+
+    # Full-width profile for viewing road
+    if sm.is_idle_viewing_road and ctx.viewing.road_id:
+        road = graph.roads.get(ctx.viewing.road_id)
+        if road is None:
+            raise ValueError(f"Road {ctx.viewing.road_id} must exist when panel shows road")
+        chart = ProfileChart(height=ChartConfig.PROFILE_HEIGHT_MEDIUM, width=ChartConfig.WIDE_WIDTH)
+        fig = chart.render_road(road=road, graph=graph)
+        st.plotly_chart(fig, key="road_full_profile")
 
 
 if __name__ == "__main__":

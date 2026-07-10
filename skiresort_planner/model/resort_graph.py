@@ -805,6 +805,7 @@ class ResortGraph:
 
     def get_slope_by_segment_id(self, segment_id: str) -> Optional[Slope]:
         """Find the slope containing a given segment.
+        Not applicabale for roads, as they have no segements.
 
         Args:
             segment_id: ID of segment to find
@@ -815,13 +816,6 @@ class ResortGraph:
         for slope in self.slopes.values():
             if segment_id in slope.segment_ids:
                 return slope
-        return None
-
-    def get_road_by_segment_id(self, segment_id: str) -> Optional[Road]:
-        """Find the road containing a given segment, or None if not in any road."""
-        for road in self.roads.values():
-            if segment_id in road.segment_ids:
-                return road
         return None
 
     def get_segment_stats(self, segment_ids: list[str]) -> dict[str, Any]:

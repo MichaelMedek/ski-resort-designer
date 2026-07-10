@@ -56,6 +56,129 @@ def mock_infra_rerun(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyP
     return mock
 
 
+# =============================================================================
+# FAKE STREAMLIT (for exercising panel render() logic without a browser)
+# =============================================================================
+
+
+class _FakeSessionState(dict):
+    """Supports both st.session_state.foo and st.session_state['foo']."""
+
+    def __getattr__(self, name: str) -> object:
+        try:
+            return self[name]
+        except KeyError as e:
+            raise AttributeError(name) from e
+
+    def __setattr__(self, name: str, value: object) -> None:
+        self[name] = value
+
+    def __delattr__(self, name: str) -> None:
+        del self[name]
+
+
+class _Ctx:
+    """No-op context manager usable as a column/expander/sidebar/spinner target."""
+
+    def __enter__(self) -> "_Ctx":
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+
+class FakeStreamlit:
+    """Lightweight fake `st` so panel render() runs end-to-end without a browser.
+
+    Every display call is a no-op, every interactive widget returns a falsy
+    default (so click/if branches don't fire), and every container is a context
+    manager. `st.dialog` is an identity decorator, so a decorated function stays
+    directly callable in a test.
+    """
+
+    def __init__(self) -> None:
+        self.session_state = _FakeSessionState()
+        self.sidebar = _Ctx()
+        self.query_params: dict[str, str] = {}
+        # Keys of buttons that should register as "clicked" this render, so the
+        # branch body under `if st.button(..., key=k):` actually executes.
+        self.clicked_keys: set[str] = set()
+
+    # --- containers (context managers) ---
+    def columns(self, spec: "int | list[float]", **kwargs: object) -> list[_Ctx]:
+        n = spec if isinstance(spec, int) else len(spec)
+        return [_Ctx() for _ in range(n)]
+
+    def tabs(self, labels: "list[str]", **kwargs: object) -> list[_Ctx]:
+        return [_Ctx() for _ in labels]
+
+    def expander(self, *args: object, **kwargs: object) -> _Ctx:
+        return _Ctx()
+
+    def container(self, *args: object, **kwargs: object) -> _Ctx:
+        return _Ctx()
+
+    def spinner(self, *args: object, **kwargs: object) -> _Ctx:
+        return _Ctx()
+
+    # --- dialog: decorator factory -> identity decorator ---
+    def dialog(self, *dargs: object, **dkwargs: object):  # type: ignore[no-untyped-def]
+        def decorator(func):  # type: ignore[no-untyped-def]
+            return func
+
+        return decorator
+
+    # --- interactive widgets: falsy defaults so branches don't fire ---
+    def button(self, *args: object, **kwargs: object) -> bool:
+        # A button "fires" only if its key was pre-registered in clicked_keys,
+        # so a test can drive a specific button-click branch deterministically.
+        return kwargs.get("key") in self.clicked_keys
+
+    def download_button(self, *args: object, **kwargs: object) -> bool:
+        return False
+
+    def checkbox(self, *args: object, **kwargs: object) -> bool:
+        return False
+
+    def file_uploader(self, *args: object, **kwargs: object) -> None:
+        return None
+
+    def slider(self, label: str, min_value: object = 0, value: object = None, **kwargs: object) -> object:
+        return value if value is not None else min_value
+
+    def selectbox(self, label: str, options: "tuple[object, ...]" = (), index: int = 0, **kwargs: object) -> object:
+        opts = list(options)
+        return opts[index] if opts else None
+
+    # --- everything else (metric/markdown/write/success/warning/caption/... ) is a no-op ---
+    def __getattr__(self, name: str):  # type: ignore[no-untyped-def]
+        def _noop(*args: object, **kwargs: object) -> None:
+            return None
+
+        return _noop
+
+
+@pytest.fixture
+def fake_st(monkeypatch: pytest.MonkeyPatch) -> FakeStreamlit:
+    """Install a fake `st` into every skiresort_planner.ui module.
+
+    UI modules do `import streamlit as st`, so we patch each module's `st`
+    attribute. Panel render() calls then exercise all widget code paths without
+    a browser — tests assert the function returned (didn't raise).
+    """
+    import importlib
+    import pkgutil
+
+    import skiresort_planner.ui as ui_pkg
+
+    fake = FakeStreamlit()
+    for mod_info in pkgutil.iter_modules(ui_pkg.__path__, ui_pkg.__name__ + "."):
+        module = importlib.import_module(mod_info.name)
+        if hasattr(module, "st"):
+            monkeypatch.setattr(module, "st", fake, raising=False)
+    return fake
+
+
 class MockDEMService(DEMService):
     """Mock DEM returning synthetic elevation based on simple linear formula.
 

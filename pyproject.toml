@@ -50,7 +50,7 @@ convention = "google"
 
 [tool.pytest.ini_options]
 testpaths = ["tests_workflow"]
-addopts = "--mypy --cov=skiresort_planner --cov-report=term-missing --cov-fail-under=50"
+addopts = "--mypy --cov=skiresort_planner --cov-report=term-missing --cov-fail-under=70"
 
 [tool.coverage.run]
 source = ["skiresort_planner"]

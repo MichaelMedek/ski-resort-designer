@@ -386,6 +386,13 @@ Where:
 - Smooth output: spline interpolation removes grid artifacts
 - Robust: soft uphill penalty handles DEM noise without hard cutoffs
 
+### 7.3 Roads (for cars)
+
+A **Road** is a vehicle road between two clicked points. It reuses the exact same grid-Dijkstra planner as custom slope connections (§7.2) — the only change is the edge cost, selected by passing a signed **gradient band** to the planner:
+
+$$\text{cost}_{\text{road}} = d \times \exp\left(\frac{\max(0,\; \text{slope}_{\text{actual}} - g_{\max},\; g_{\min} - \text{slope}_{\text{actual}})}{\sigma}\right)$$
+
+with the band $[g_{\min}, g_{\max}] = [-12\%, +12\%]$ (`ROAD_MAX_GRADIENT_PCT`). The cost is **flat inside the band** (the max term is 0 → $\exp(0)=1$) and rises exponentially outside it. Because the band is a *soft* penalty (not a hard cutoff), a road may still exceed ±12% where terrain forces it — the road panel flags such sections. Road mode applies **no uphill penalty**: a car road may climb, descend, or run flat with equal preference inside the band. Slope mode (no band passed) is unchanged.
 
 ---
 

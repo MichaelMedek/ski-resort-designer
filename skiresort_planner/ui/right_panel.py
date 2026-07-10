@@ -17,11 +17,13 @@ from typing import TYPE_CHECKING, Callable
 
 import streamlit as st
 
-from skiresort_planner.constants import MapConfig, SlopeConfig, StyleConfig
+from skiresort_planner.constants import MapConfig, PathConfig, SlopeConfig, StyleConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.model.message import (
     LiftActionMessage,
     LiftPlacingContextMessage,
+    RoadActionMessage,
+    RoadPlacingContextMessage,
     SegmentWarningMessage,
     SlopeActionMessage,
     SlopeBuildingContextMessage,
@@ -31,6 +33,7 @@ from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.actions import (
     bump_map_version,
     delete_lift_action,
+    delete_road_action,
     delete_slope_action,
     reload_map,
     trigger_rerun,
@@ -38,7 +41,9 @@ from skiresort_planner.ui.actions import (
 from skiresort_planner.ui.state_machine import PlannerContext, PlannerStateMachine
 
 if TYPE_CHECKING:
-    from skiresort_planner.model import Lift, Slope
+    from skiresort_planner.model.lift import Lift
+    from skiresort_planner.model.road import Road
+    from skiresort_planner.model.slope import Slope
 
 logger = logging.getLogger(__name__)
 
@@ -86,28 +91,33 @@ def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, entity_typ
             ctx.map.pitch = MapConfig.DEFAULT_PITCH
             ctx.map.bearing = MapConfig.DEFAULT_BEARING
             ctx.map.zoom = MapConfig.DEFAULT_ZOOM
-            # Update map center to entity center so we don't jump to stale position
-            if entity_type == "slope" and entity_id in graph.slopes:
-                slope = graph.slopes[entity_id]
-                # Compute center from segment endpoints
+            # Update map center to entity center so we don't jump to stale position.
+            # The viewed entity is guaranteed to exist (caller validated it).
+            if entity_type in ("slope", "road"):
+                # Both are segment groups → center on their segment endpoints.
+                if entity_type == "slope":
+                    owner = graph.slopes[entity_id]
+                elif entity_type == "road":
+                    owner = graph.roads[entity_id]
+                else:
+                    raise ValueError(f"Unknown {entity_type=}")
                 lats, lons = [], []
-                for seg_id in slope.segment_ids:
-                    seg = graph.segments.get(seg_id)
-                    if seg and seg.points:
-                        lats.append(seg.points[0].lat)
-                        lons.append(seg.points[0].lon)
-                        lats.append(seg.points[-1].lat)
-                        lons.append(seg.points[-1].lon)
-                if lats and lons:
-                    ctx.map.lat = sum(lats) / len(lats)
-                    ctx.map.lon = sum(lons) / len(lons)
-            elif entity_type == "lift" and entity_id in graph.lifts:
+                for seg_id in owner.segment_ids:
+                    seg = graph.segments[seg_id]
+                    lats.append(seg.points[0].lat)
+                    lons.append(seg.points[0].lon)
+                    lats.append(seg.points[-1].lat)
+                    lons.append(seg.points[-1].lon)
+                ctx.map.lat = sum(lats) / len(lats)
+                ctx.map.lon = sum(lons) / len(lons)
+            elif entity_type == "lift":
                 lift = graph.lifts[entity_id]
-                start_node = graph.nodes.get(lift.start_node_id)
-                end_node = graph.nodes.get(lift.end_node_id)
-                if start_node and end_node:
-                    ctx.map.lat = (start_node.lat + end_node.lat) / 2
-                    ctx.map.lon = (start_node.lon + end_node.lon) / 2
+                start_node = graph.nodes[lift.start_node_id]
+                end_node = graph.nodes[lift.end_node_id]
+                ctx.map.lat = (start_node.lat + end_node.lat) / 2
+                ctx.map.lon = (start_node.lon + end_node.lon) / 2
+            else:
+                raise ValueError(f"Unknown {entity_type=}")
             reload_map()  # Never returns - raises StopExecution
     else:
         if st.button(
@@ -127,7 +137,7 @@ def _render_close_delete_buttons(
     graph: ResortGraph,
     entity_type: str,
     entity_id: str,
-    entity: "Slope | Lift",
+    entity: "Slope | Lift | Road",
     delete_fn: Callable[[str], bool],
 ) -> None:
     """Render close and delete buttons. Triggers state transition or opens dialog."""
@@ -191,10 +201,12 @@ def render_control_panel(
         renderer = _render_slope_building_panel
     elif sm.is_lift_placing:
         renderer = _render_lift_placing_panel
+    elif sm.is_road_placing:
+        renderer = _render_road_placing_panel
     else:
         raise RuntimeError(
             f"No control panel renderer for state '{sm.get_state_name()}'. "
-            f"Expected idle, slope building, or lift placing state."
+            f"Expected idle, slope building, lift placing, or road placing state."
         )
 
     renderer(
@@ -226,6 +238,8 @@ def _render_idle_panel(
         _render_slope_info_panel(sm=sm, ctx=ctx, graph=graph)
     elif sm.is_idle_viewing_lift:
         _render_lift_info_panel(sm=sm, ctx=ctx, graph=graph)
+    elif sm.is_idle_viewing_road:
+        _render_road_info_panel(sm=sm, ctx=ctx, graph=graph)
 
 
 def _render_slope_building_panel(
@@ -324,6 +338,37 @@ def _render_lift_placing_panel(
     LiftActionMessage(is_awaiting_top=True, bottom_elevation_m=start_elev).display()
 
 
+def _render_road_placing_panel(
+    sm: PlannerStateMachine,
+    ctx: PlannerContext,
+    graph: ResortGraph,
+    on_commit: Callable[[int], None],
+    on_custom_direction: Callable[[], None],
+    on_cancel_custom: Callable[[], None],
+    on_cancel_connection: Callable[[], None],
+) -> None:
+    """Render control panel for ROAD_PLACING state - progress + action."""
+    # Render progress context message (blue) first, mirroring lift placing.
+    if ctx.road.start_node_id:
+        node = graph.nodes.get(ctx.road.start_node_id)
+        RoadPlacingContextMessage(
+            start_node_id=ctx.road.start_node_id,
+            start_elevation_m=node.elevation if node else 0.0,
+        ).display()
+    elif ctx.road.start_location:
+        loc = ctx.road.start_location
+        RoadPlacingContextMessage(
+            start_lat=loc.lat,
+            start_lon=loc.lon,
+            start_elevation_m=loc.elevation,
+        ).display()
+    else:
+        raise RuntimeError("RoadPlacing state requires start_node_id or start_location to be set")
+
+    # Then render action instruction (yellow)
+    RoadActionMessage().display()
+
+
 def _render_slope_info_panel(
     sm: PlannerStateMachine,
     ctx: PlannerContext,
@@ -379,6 +424,35 @@ def _render_lift_info_panel(
         entity_id=lift_id,
         entity=lift,
         delete_fn=delete_lift_action,
+    )
+
+
+def _render_road_info_panel(
+    sm: PlannerStateMachine,
+    ctx: PlannerContext,
+    graph: ResortGraph,
+) -> None:
+    """Render road info panel with stats and actions (close/delete/3D view)."""
+    road_id = ctx.viewing.road_id
+    if road_id is None:
+        raise ValueError("viewing.road_id must be set when showing road panel")
+
+    road = graph.roads.get(road_id)
+    if road is None:
+        raise ValueError(f"Road {road_id} must exist when panel shows it")
+
+    RoadStatsPanel(graph=graph).render(road_id=road_id)
+
+    _render_3d_toggle_button(ctx=ctx, graph=graph, entity_type="road", entity_id=road_id)
+
+    _render_close_delete_buttons(
+        sm=sm,
+        ctx=ctx,
+        graph=graph,
+        entity_type="road",
+        entity_id=road_id,
+        entity=road,
+        delete_fn=delete_road_action,
     )
 
 
@@ -634,3 +708,56 @@ class LiftStatsPanel:
                     f"{max_cable_gradient:.0f}%",
                     help="Steepest gradient between any two adjacent pylons",
                 )
+
+
+class RoadStatsPanel:
+    """Renders statistics panel for a vehicle road."""
+
+    def __init__(self, graph: ResortGraph) -> None:
+        self.graph = graph
+
+    def render(self, road_id: str) -> None:
+        """Render statistics panel for the given road."""
+        road = self.graph.roads.get(road_id)
+
+        if not road:
+            raise RuntimeError(
+                f"Road '{road_id}' not found in graph.roads - "
+                "state machine transitioned to viewing but road was deleted"
+            )
+
+        st.subheader(f"{StyleConfig.ROAD_ICON} {road.name}")
+
+        total_length = road.get_total_length(segments=self.graph.segments)
+        total_drop = road.get_total_drop(segments=self.graph.segments)
+        max_gradient = road.get_max_gradient(segments=self.graph.segments)
+        avg_gradient = (abs(total_drop) / total_length * 100) if total_length > 0 else 0
+
+        # Road always has segments (validated on creation); index directly.
+        first_seg = self.graph.segments[road.segment_ids[0]]
+        last_seg = self.graph.segments[road.segment_ids[-1]]
+        start_elev = first_seg.points[0].elevation
+        end_elev = last_seg.points[-1].elevation
+
+        # Gradient badge vs the ±12% car-road limit. get_max_gradient returns
+        # the steepest rolling-window section as a magnitude, so it flags steep
+        # climbs and steep descents alike.
+        limit = PathConfig.ROAD_MAX_GRADIENT_PCT
+        if max_gradient <= limit:
+            st.success(f"✅ Gradient within ±{limit}% car-road limit")
+        else:
+            st.warning(f"⚠️ Steepest section {max_gradient:.0f}% exceeds the ±{limit}% limit")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Start Elevation", f"{start_elev:.0f}m")
+            st.metric("Length", f"{total_length:.0f}m")
+            st.metric("Average Gradient", f"{avg_gradient:.0f}%")
+        with col2:
+            st.metric("End Elevation", f"{end_elev:.0f}m")
+            st.metric("Elevation Change", f"{end_elev - start_elev:+.0f}m")
+            st.metric(
+                "Steepest Section",
+                f"{max_gradient:.0f}%",
+                help="Steepest gradient in any 300m section of the road",
+            )

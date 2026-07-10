@@ -252,12 +252,48 @@ Click **"🏔️ View in 3D"** to see pylons and cable from an angled perspectiv
 
 ---
 
+## Building Roads
+
+Roads are **vehicle roads** — access roads and connectors between areas of the resort. Unlike a ski slope, a road may climb, descend, or run flat, but it always stays within a gentle **±12% gradient** so cars can drive it. Roads are drawn as a distinct **brown-orange** ribbon.
+
+### Step 1: Select Road mode
+
+Click the **🛣️ Road** button in the sidebar.
+
+### Step 2: Click two points
+
+1. Click the **start** point (terrain or an existing junction node).
+2. Click the **end** point.
+
+The planner traces the gentlest route between them that stays within the ±12% band, following the terrain. If no gentle route exists, a direct line is used. The road is created immediately and its details panel opens.
+
+### Parking places
+
+Wherever a road **shares a junction with a slope or a lift**, a **🅿️ parking marker** appears automatically.
+
+### Viewing Road Details
+
+Click any road (its brown line or icon) to open its panel:
+
+| Metric | Description |
+|--------|-------------|
+| **Start/End Elevation** | Endpoint heights |
+| **Length** | Total road length |
+| **Average Gradient** | Overall steepness |
+| **Elevation Change** | Net rise/fall (signed) |
+| **Steepest Section** | Steepest 300m section (magnitude) |
+
+A badge confirms the road is within the ±12% car-road limit (✅) or flags any section that exceeds it (⚠️). As with slopes and lifts, you can view the road's elevation profile, switch to **🏔️ 3D**, **🗑️ Delete** it, or **↩️ Undo**.
+
+---
+
 ## Sidebar Controls
 
 ### Build Mode Selector
 
 - **⛷️ Slope** — Click terrain to start a new ski slope
 - **🪑🚡🎿🚠 Lift buttons** — Click terrain to place a lift
+- **🛣️ Road** — Click two points to connect them with a gentle car road
 
 The currently active mode is highlighted.
 
@@ -274,6 +310,12 @@ The currently active mode is highlighted.
 | Control | Action |
 |---------|--------|
 | **✖️ Cancel Lift Placement** | Discard start point, return to idle |
+
+### During Road Placement
+
+| Control | Action |
+|---------|--------|
+| **✖️ Cancel Road Placement** | Discard the start point, return to idle |
 
 ### Always Available
 
