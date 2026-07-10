@@ -141,6 +141,29 @@ class TestSelectCustomTarget:
         assert ctx.custom_connect.target_location[0] == 0.0  # lon
         assert abs(ctx.custom_connect.target_location[1] - target_lat) < 0.0001  # lat
 
+    def test_target_node_captured_for_identity_reuse(self, workflow_setup: WorkflowSetup) -> None:
+        """When the target is an existing node, its id is captured so commit reuses it
+        by identity (not an 80m proximity guess that a drifted end could miss). A
+        terrain target leaves it None (proximity fallback).
+        """
+        from skiresort_planner.constants import MapConfig
+        from skiresort_planner.ui.context import CustomConnectContext
+
+        sm, ctx, graph, factory, dem = workflow_setup
+
+        start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
+        sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
+        sm.enable_custom()
+
+        # Node target → its id is captured for exact reuse on commit.
+        sm.select_custom_target(
+            target_location=(0.0, -600 / MapConfig.METERS_PER_DEGREE_EQUATOR, 1880.0), target_node="N7"
+        )
+        assert ctx.custom_connect.target_node == "N7", "clicked node's identity is captured"
+
+        # Default (terrain target, no node kwarg) leaves it None → proximity fallback.
+        assert CustomConnectContext().target_node is None
+
 
 class TestCommitCustomContinue:
     """Tests for commit_custom_continue transition (slope_custom_path → slope_building)."""

@@ -1001,9 +1001,14 @@ class PlannerStateMachine(StateMachine):
         if self.context.slope_build.endpoints:
             self.context.custom_connect.start_node = self.context.slope_build.endpoints[0]
 
-    def before_select_custom_target(self, target_location: LonLatElev) -> None:
-        """Action before selecting custom target."""
+    def before_select_custom_target(self, target_location: LonLatElev, target_node: str | None = None) -> None:
+        """Action before selecting custom target.
+
+        target_node is the clicked node's id when the target is an EXISTING node, so
+        commit reuses it exactly (identity, not proximity); None for a terrain target.
+        """
         self.context.custom_connect.target_location = target_location
+        self.context.custom_connect.target_node = target_node
         self.context.custom_connect.enabled = False
         self.context.custom_connect.force_mode = True
 

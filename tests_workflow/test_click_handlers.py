@@ -272,6 +272,22 @@ class TestSlopeBuildingClick:
         )
         assert ctx.proposals.selected_idx == 1
 
+    def test_body_click_on_already_selected_slope_proposal_commits(
+        self, fake_st, path_factory, mock_dem_red_slope_diagonal, path_points_blue
+    ) -> None:
+        """Re-clicking the already-selected slope proposal body commits it (panel-free)."""
+        from skiresort_planner.ui.click_handlers import handle_slope_building_click
+
+        _sm, ctx, graph = self._building(fake_st, mock_dem_red_slope_diagonal, path_factory)
+        ctx.proposals.paths = [ProposedPathSegment(points=path_points_blue, target_difficulty="blue")]
+        ctx.proposals.selected_idx = 0  # already selected
+
+        handle_slope_building_click(
+            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_BODY, proposal_index=0),
+            elevation=None,
+        )
+        assert len(graph.segments) == 1, "body click on the selected proposal commits it"
+
     def test_proposal_endpoint_click_commits_path(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal, path_points_blue
     ) -> None:
@@ -448,33 +464,60 @@ class TestRoadBuildingClick:
             "generating road proposals must bump map_version to force a redraw"
         )
 
-    def test_proposal_marker_click_selects_but_does_not_commit(
+    def test_clicking_already_selected_proposal_commits(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
     ) -> None:
-        """A PROPOSAL_ENDPOINT/BODY click only SELECTS (roads = custom-connect); commit is button-only."""
+        """Clicking the ALREADY-selected proposal commits it (panel button not needed).
+
+        Road generates a single proposal auto-selected at idx 0, so the first
+        marker click lands on the selected one → commit. Mirrors the user rule:
+        "IF proposal IS selected AND is clicked → commit."
+        """
         from skiresort_planner.ui.click_handlers import handle_road_building_click
 
         dem = mock_dem_red_slope_diagonal
-        sm, ctx, graph = self._building(fake_st, path_factory, dem)
+        sm, ctx, _graph = self._building(fake_st, path_factory, dem)
         handle_road_building_click(
             ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=300 / M),
             elevation=dem.get_elevation_or_raise(lon=300 / M, lat=0.0),
         )
+        assert ctx.proposals.selected_idx == 0, "the sole proposal is auto-selected"
 
-        # Endpoint-marker click → select only, NO commit.
-        handle_road_building_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_ENDPOINT, proposal_index=0),
-            elevation=None,
-        )
-        assert ctx.road_build.segments == [], "endpoint click must NOT commit a road segment"
-        assert sm.is_road_starting, "still starting — no commit happened"
-        assert graph.segments == {}, "no segment committed on a select-only marker click"
-        # Body-marker click → also select only.
+        # Click the already-selected proposal body → commits (no panel button).
         handle_road_building_click(
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_BODY, proposal_index=0),
             elevation=None,
         )
-        assert ctx.road_build.segments == [], "body click must NOT commit either"
+        assert len(ctx.road_build.segments) == 1, "clicking the selected proposal commits it"
+        assert sm.is_road_building_only, "committed segment keeps building"
+
+    def test_clicking_unselected_proposal_only_selects(
+        self, fake_st, path_factory, mock_dem_red_slope_diagonal
+    ) -> None:
+        """Clicking a NOT-yet-selected proposal only highlights it — no commit.
+
+        Force a two-proposal state and select idx 1, then click idx 0: it must
+        select (not commit), because idx 0 was not the selected one.
+        """
+        from skiresort_planner.ui.click_handlers import handle_road_building_click
+
+        dem = mock_dem_red_slope_diagonal
+        sm, ctx, _graph = self._building(fake_st, path_factory, dem)
+        handle_road_building_click(
+            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=300 / M),
+            elevation=dem.get_elevation_or_raise(lon=300 / M, lat=0.0),
+        )
+        # Simulate a multi-proposal browse state with a different one selected.
+        ctx.proposals.paths = ctx.proposals.paths + ctx.proposals.paths[:1]  # 2 entries
+        ctx.proposals.selected_idx = 1
+
+        handle_road_building_click(
+            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_BODY, proposal_index=0),
+            elevation=None,
+        )
+        assert ctx.proposals.selected_idx == 0, "clicking an unselected proposal selects it"
+        assert ctx.road_build.segments == [], "selecting an unselected proposal must NOT commit"
+        assert sm.is_road_starting
 
     def test_proposal_commit_via_button_stays_building(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal

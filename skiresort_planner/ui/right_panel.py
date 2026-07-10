@@ -668,7 +668,7 @@ class SlopeStatsPanel:
             st.metric(
                 "Steepest Section",
                 f"{max_segment_gradient:.0f}%",
-                help=f"Steepest {SlopeConfig.ROLLING_WINDOW_M}m section within any segment - determines difficulty rating",
+                help=f"Steepest {SlopeConfig.ROLLING_WINDOW_M}m section across the full path - determines difficulty rating",
             )
 
         with st.expander("📋 Segment Details", expanded=False):

@@ -143,7 +143,7 @@ class SlopeConfig:
     assert set(DIFFICULTY_TARGETS.keys()) == set(DIFFICULTIES)
 
     # Rolling window for steepness calculation
-    # Used to find the steepest section within a segment
+    # Used to find the steepest section within a segment or across the full path
     ROLLING_WINDOW_M = 300  # Window length in meters (few ski turns)
 
 
@@ -250,6 +250,14 @@ class PlannerConfig:
     # Cost function parameters
     # Cost = distance × exp(slope_deviation / COST_SIGMA) × uphill_penalty
     COST_SIGMA = 8.0  # Slope deviation sensitivity (lower = stricter matching)
+
+    # Momentum: when extending a path from a node, a distance-decaying turn penalty
+    # biases the first stretch to leave the node roughly in-line with the incoming
+    # heading (no sharp kink at junctions). DECAY is the dominant lever: it must be a
+    # meaningful fraction of a segment or the path just absorbs the penalty;
+    # keep WEIGHT modest so it never routes around a cliff (high weight over-detours).
+    MOMENTUM_TURN_WEIGHT = 0.6  # Turn-penalty strength near the start node (0 = off)
+    MOMENTUM_DECAY_M = 300.0  # Turn penalty fades linearly to 0 over this distance from start
 
     # Path deduplication for overlapping path removal
     # ~0.0001 degrees ≈ ~10 meters at mid-latitudes

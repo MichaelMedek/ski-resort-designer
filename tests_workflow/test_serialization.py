@@ -71,6 +71,7 @@ class TestResortGraphSerialization:
             sector_name="Test",
         )
         graph.commit_paths(paths=[proposal])
+        graph.finish_slope(segment_ids=list(graph.segments.keys()))  # own the segment (orphans are discarded on load)
 
         orig_segment = list(graph.segments.values())[0]
         orig_point_count = len(orig_segment.points)
@@ -293,6 +294,39 @@ class TestRoadSerialization:
 
         with pytest.raises(AssertionError, match="expected ROAD"):
             ResortGraph.from_dict(data=data)
+
+    def test_orphan_segment_discarded_on_load(self, empty_graph, path_points_blue) -> None:
+        """A segment owned by no slope/road (interrupted-build leftover) is discarded on
+        load — it can never be re-associated (build context isn't persisted) and would
+        otherwise render as an unopenable, undeletable 'Building …' ghost.
+        """
+        from skiresort_planner.model.path_point import PathPoint
+        from skiresort_planner.model.path_segment import SegmentKind
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
+        from skiresort_planner.model.resort_graph import ResortGraph
+
+        # One finished road (kept) + one committed-but-unfinished road segment (orphan).
+        empty_graph.commit_paths(
+            paths=[ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)],
+            record_undo=False,
+        )
+        road = empty_graph.finish_road(segment_ids=[list(empty_graph.segments.keys())[-1]])
+        M = 111320.0
+        orphan_pts = [
+            PathPoint(lon=500 / M, lat=0.0, elevation=2000.0),
+            PathPoint(lon=800 / M, lat=0.0, elevation=1990.0),
+        ]
+        empty_graph.commit_paths(
+            paths=[ProposedPathSegment(points=orphan_pts, is_connector=True, kind=SegmentKind.ROAD)],
+            record_undo=False,
+        )
+        orphan_id = list(empty_graph.segments.keys())[-1]
+        assert orphan_id not in road.segment_ids
+
+        restored = ResortGraph.from_dict(data=empty_graph.to_dict())
+        assert orphan_id not in restored.segments, "orphan segment must be discarded on load"
+        assert set(restored.roads[road.id].segment_ids) <= set(restored.segments), "owned road segments kept"
+        assert len(restored.roads) == 1, "the finished road survives"
 
     def test_pre_roads_backup_loads(self, empty_graph, path_points_blue) -> None:
         """A backup written before roads existed (no 'roads' key, no 'road' counter)

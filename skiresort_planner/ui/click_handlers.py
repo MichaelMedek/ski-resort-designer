@@ -25,6 +25,7 @@ from skiresort_planner.ui.actions import (
     center_on_road,
     center_on_slope,
     commit_selected_path,
+    incoming_bearing_from_segments,
     reload_map,
 )
 from skiresort_planner.ui.validators import (
@@ -112,6 +113,22 @@ def dispatch_click(click_info: ClickInfo) -> None:
 # =============================================================================
 # STATE-SPECIFIC HANDLERS
 # =============================================================================
+
+
+def _select_or_commit_proposal(ctx: "PlannerContext", idx: int) -> None:
+    """Body-click behavior shared by road + slope proposals: select, or commit if
+    already selected.
+
+    Rule: clicking a proposal you have NOT selected only highlights it; clicking
+    the one that is ALREADY selected commits it.
+    """
+    if not (0 <= idx < len(ctx.proposals.paths)):
+        return
+    if ctx.proposals.selected_idx == idx:
+        commit_selected_path(path_idx=idx)  # re-click the selected one → commit
+    else:
+        ctx.proposals.selected_idx = idx
+        reload_map()  # first click just selects + redraws
 
 
 def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
@@ -337,14 +354,11 @@ def handle_slope_building_click(click_info: ClickInfo, elevation: float | None) 
                     commit_selected_path(path_idx=idx)
             return
 
-        # PROPOSAL_BODY → Select path variant
+        # PROPOSAL_BODY → select the variant, or commit it if already selected.
         if marker_type == MarkerType.PROPOSAL_BODY:
             assert click_info.proposal_number is not None  # Validated in ClickInfo
-            idx = click_info.proposal_number - 1  # Convert 1-indexed to 0-indexed
-            if 0 <= idx < len(ctx.proposals.paths):
-                logger.info(f"[BUILDING] Proposal body click: selecting path {click_info.proposal_number}")
-                ctx.proposals.selected_idx = idx
-                reload_map()  # Refresh map with new selection
+            logger.info(f"[BUILDING] Proposal body click: select-or-commit path {click_info.proposal_number}")
+            _select_or_commit_proposal(ctx=ctx, idx=click_info.proposal_number - 1)
             return
 
         # NODE without custom connect = user error
@@ -397,6 +411,7 @@ def _handle_custom_connect_click(click_info: ClickInfo, elevation: float | None)
     target_lon: float
     target_lat: float
     target_elevation: float | None
+    target_node_id: str | None = None  # set only when the target IS an existing node
 
     if click_info.click_type == MapClickType.TERRAIN:
         assert click_info.lon is not None and click_info.lat is not None  # Validated in ClickInfo
@@ -411,6 +426,7 @@ def _handle_custom_connect_click(click_info: ClickInfo, elevation: float | None)
             raise RuntimeError(f"Node {click_info.node_id} not found in graph")
         target_lon, target_lat = node.lon, node.lat
         target_elevation = node.elevation
+        target_node_id = node.id  # reuse this exact node on commit (identity, not proximity)
         logger.info(f"Custom connect snapped to existing node {node.id}")
     else:
         # Other marker types during custom connect = user error
@@ -459,7 +475,7 @@ def _handle_custom_connect_click(click_info: ClickInfo, elevation: float | None)
     )
 
     # Trigger state transition - hooks will set context and deferred flag
-    sm.select_custom_target(target_location=(target_lon, target_lat, target_elevation))
+    sm.select_custom_target(target_location=(target_lon, target_lat, target_elevation), target_node=target_node_id)
 
 
 def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) -> None:
@@ -628,18 +644,15 @@ def handle_road_building_click(click_info: ClickInfo, elevation: float | None) -
     graph: "ResortGraph" = st.session_state.graph
     factory: "PathFactory" = st.session_state.path_factory
 
-    # A proposal click only SELECTS the variant (browse) — never commits. Road
-    # proposals overlap at the same target, so endpoint and body clicks are
-    # equivalent here; the commit button is the sole commit path (custom-connect).
+    # A proposal click SELECTS the variant; re-clicking the already-selected onen COMMITS it.
+    # Road proposals overlap at the same target, so endpoint and body clicks are
+    # equivalent here — both route through the same select-or-commit rule.
     if click_info.click_type == MapClickType.MARKER and click_info.marker_type in {
         MarkerType.PROPOSAL_ENDPOINT,
         MarkerType.PROPOSAL_BODY,
     }:
         assert click_info.proposal_number is not None
-        idx = click_info.proposal_number - 1
-        if 0 <= idx < len(ctx.proposals.paths):
-            ctx.proposals.selected_idx = idx
-            reload_map()  # select + refresh; commit is button-only
+        _select_or_commit_proposal(ctx=ctx, idx=click_info.proposal_number - 1)
         return
 
     # Reject other stray marker clicks except joining an existing NODE.
@@ -660,14 +673,17 @@ def handle_road_building_click(click_info: ClickInfo, elevation: float | None) -
         if from_node is None:
             raise RuntimeError(f"Road endpoint {ctx.road_build.endpoints[-1]} must exist but was not found")
         start_lon, start_lat, start_elevation = from_node.lon, from_node.lat, from_node.elevation
+        start_node_id: str | None = from_node.id
     elif ctx.road_build.start_node_id is not None:
         origin = graph.nodes.get(ctx.road_build.start_node_id)
         if origin is None:
             raise RuntimeError(f"Road start node {ctx.road_build.start_node_id} must exist but was not found")
         start_lon, start_lat, start_elevation = origin.lon, origin.lat, origin.elevation
+        start_node_id = origin.id
     elif ctx.road_build.start_location is not None:
         loc = ctx.road_build.start_location
         start_lon, start_lat, start_elevation = loc.lon, loc.lat, loc.elevation
+        start_node_id = None  # brand-new origin point → a node is created on first commit
     else:
         raise RuntimeError("Road context has no endpoint, start node, or start location")
 
@@ -715,6 +731,7 @@ def handle_road_building_click(click_info: ClickInfo, elevation: float | None) -
             target_lat=end_lat,
             target_elevation=end_elevation,
             gradient_band=(-band_max, band_max),
+            incoming_bearing=incoming_bearing_from_segments(graph=graph, segment_ids=ctx.road_build.segments),
         )
         if p.max_slope_pct <= band_max
     ]
@@ -729,6 +746,11 @@ def handle_road_building_click(click_info: ClickInfo, elevation: float | None) -
     if target_node_id is not None:
         for p in proposals:
             p.target_node_id = target_node_id
+
+    # Extending from an existing node: reuse it exactly on commit (never duplicate it).
+    if start_node_id is not None:
+        for p in proposals:
+            p.start_node_id = start_node_id
 
     ctx.proposals.paths = proposals
     ctx.proposals.selected_idx = 0

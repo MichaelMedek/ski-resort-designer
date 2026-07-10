@@ -473,7 +473,7 @@ class MapRenderer:
                     "polygon": list(polygon_coords),
                     "center_line": center_line,
                     "color": color,
-                    "name": f"Segment {seg_id}",
+                    "name": f"{StyleConfig.SLOPE_ICON} {slope.name}" if slope is not None else f"Segment {seg_id}",
                     "icon_type": ClickConfig.TYPE_SLOPE if slope is not None else ClickConfig.TYPE_SEGMENT,
                     "icon_id": slope_id if slope is not None else seg_id,
                     "icon_position": icon_position,

@@ -184,6 +184,82 @@ class TestEdgeCostFunction:
         assert math.isinf(cost), "Zero distance should return infinity"
 
 
+class TestMomentumTurnPenalty:
+    """Momentum: a light, distance-decaying turn penalty biases edges near the start
+    node to continue in-line with the incoming heading, then fades to nothing so
+    mid-segment routing is untouched. incoming_bearing=None reproduces the old cost.
+    """
+
+    def _cost(self, planner, from_lon, from_lat, to_lon, to_lat, **momentum):
+        return planner._calc_edge_cost(
+            from_elev=2100.0,
+            to_elev=2080.0,  # 20% down over ~100m — same slope term for all calls here
+            from_lon=from_lon,
+            from_lat=from_lat,
+            to_lon=to_lon,
+            to_lat=to_lat,
+            target_slope_pct=20.0,
+            side="left",
+            target_lon=10.01,
+            target_lat=47.0,
+            **momentum,
+        )
+
+    def test_none_incoming_bearing_reproduces_base_cost_exactly(self, planner: LeastCostPathPlanner) -> None:
+        """incoming_bearing=None (slope fan / first segment) → cost unchanged (multiplier 1.0)."""
+        base = self._cost(planner, 10.0, 47.0, 10.0009, 47.0)
+        with_none = self._cost(
+            planner, 10.0, 47.0, 10.0009, 47.0, incoming_bearing=None, start_lon=10.0, start_lat=47.0
+        )
+        assert with_none == pytest.approx(base, rel=1e-12)
+
+    def test_straight_continuation_cheaper_than_sharp_turn_near_start(self, planner: LeastCostPathPlanner) -> None:
+        """At the start node, the momentum multiplier is 1.0 for an edge continuing the
+        incoming heading and > 1.0 for one turning away — so straight is cheaper.
+        """
+        # from == start node (full weight), incoming heading due east (90°).
+        straight = planner._momentum_multiplier(
+            from_lon=10.0,
+            from_lat=47.0,
+            to_lon=10.0009,
+            to_lat=47.0,  # heads ~east
+            incoming_bearing=90.0,
+            start_lon=10.0,
+            start_lat=47.0,
+        )
+        turned = planner._momentum_multiplier(
+            from_lon=10.0,
+            from_lat=47.0,
+            to_lon=10.0,
+            to_lat=47.0009,  # heads north (90° off)
+            incoming_bearing=90.0,
+            start_lon=10.0,
+            start_lat=47.0,
+        )
+        assert straight == pytest.approx(1.0, abs=1e-4), "continuing the heading has ~no penalty"
+        assert turned > straight, "a 90°-off edge at the start node is penalized"
+
+    def test_penalty_decays_to_nothing_beyond_decay_distance(self, planner: LeastCostPathPlanner) -> None:
+        """An edge farther than MOMENTUM_DECAY_M from the start is unaffected (multiplier 1.0)."""
+        from skiresort_planner.constants import PlannerConfig
+
+        # Place the edge's from-point well beyond the decay radius NORTH of the start.
+        # Offset in latitude (1° ≈ 111320 m holds; longitude would shrink by cos(lat)).
+        far_deg = (PlannerConfig.MOMENTUM_DECAY_M + 50.0) / 111320.0
+        base = self._cost(planner, 10.0, 47.0 + far_deg, 10.0009, 47.0 + far_deg)  # east edge, no momentum
+        with_momentum = self._cost(
+            planner,
+            10.0,
+            47.0 + far_deg,
+            10.0009,
+            47.0 + far_deg,
+            incoming_bearing=0.0,  # 90° off the east edge — would be penalized if in range
+            start_lon=10.0,
+            start_lat=47.0,
+        )
+        assert with_momentum == pytest.approx(base, rel=1e-12), "beyond MOMENTUM_DECAY_M momentum has no effect"
+
+
 class TestGridNode:
     """Unit tests for GridNode dataclass."""
 

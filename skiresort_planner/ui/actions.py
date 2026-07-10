@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, cast
 import streamlit as st
 
 from skiresort_planner.constants import MapConfig
+from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.generators.path_factory import PathFactory
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.resort_graph import (
@@ -269,6 +270,7 @@ def _generate_custom_connect_paths() -> None:
             target_lon=target_lon,
             target_lat=target_lat,
             target_elevation=target_elevation,
+            incoming_bearing=incoming_bearing_from_segments(graph=graph, segment_ids=ctx.slope_build.segments),
         )
     )
 
@@ -276,9 +278,18 @@ def _generate_custom_connect_paths() -> None:
         raise ValueError("generate_manual_paths should always return at least one path (fallback straight line)")
 
     # Always have at least one path (fallback straight line is created if needed)
-    target_node = graph.find_nearest_node(
-        lon=target_lon, lat=target_lat, threshold_m=MapConfig.LIFT_END_NODE_THRESHOLD_M
-    )
+    # The path extends from an existing node → reuse it exactly on commit (no duplicate).
+    for p in paths:
+        p.start_node_id = start_node.id
+
+    # Target node: prefer the clicked node's identity (drift-proof); fall back to a
+    # proximity lookup only for a terrain target that happens to sit on a node.
+    if ctx.custom_connect.target_node and ctx.custom_connect.target_node in graph.nodes:
+        target_node = graph.nodes[ctx.custom_connect.target_node]
+    else:
+        target_node = graph.find_nearest_node(
+            lon=target_lon, lat=target_lat, threshold_m=MapConfig.LIFT_END_NODE_THRESHOLD_M
+        )
     if target_node:
         for p in paths:
             p.is_connector = True
@@ -422,6 +433,23 @@ def commit_selected_path(path_idx: int) -> None:
     )
 
 
+def incoming_bearing_from_segments(graph: ResortGraph, segment_ids: list[str]) -> float | None:
+    """Heading (deg) the path arrives with at its current endpoint, or None.
+
+    Reads the last committed segment's final two points and returns their bearing,
+    so the planner can continue the next segment roughly in-line (momentum across a
+    node). Returns None when there is no committed segment yet (first segment) or
+    the last segment lacks two distinct points — i.e. no momentum to preserve.
+    """
+    if not segment_ids:
+        return None
+    last_seg = graph.segments.get(segment_ids[-1])
+    if last_seg is None or len(last_seg.points) < 2:
+        return None
+    p_prev, p_last = last_seg.points[-2], last_seg.points[-1]
+    return GeoCalculator.initial_bearing_deg(lon1=p_prev.lon, lat1=p_prev.lat, lon2=p_last.lon, lat2=p_last.lat)
+
+
 def recompute_paths() -> None:
     """Regenerate path proposals from current position."""
     ctx: PlannerContext = st.session_state.context
@@ -445,9 +473,24 @@ def recompute_paths() -> None:
                     target_lon=target_lon,
                     target_lat=target_lat,
                     target_elevation=target_elevation,
+                    incoming_bearing=incoming_bearing_from_segments(graph=graph, segment_ids=ctx.slope_build.segments),
                 )
             )
             if paths:
+                # Reuse start + target nodes by identity (drift-proof), same as the
+                # initial custom-connect generation; keep them connectors.
+                for p in paths:
+                    p.start_node_id = start_node.id
+                if ctx.custom_connect.target_node and ctx.custom_connect.target_node in graph.nodes:
+                    target_node = graph.nodes[ctx.custom_connect.target_node]
+                else:
+                    target_node = graph.find_nearest_node(
+                        lon=target_lon, lat=target_lat, threshold_m=MapConfig.LIFT_END_NODE_THRESHOLD_M
+                    )
+                if target_node:
+                    for p in paths:
+                        p.is_connector = True
+                        p.target_node_id = target_node.id
                 ctx.proposals.paths = paths
                 ctx.proposals.selected_idx = 0
                 logger.info(

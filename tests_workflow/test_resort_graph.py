@@ -171,6 +171,38 @@ class TestConnectorGeometrySnapping:
         assert len(graph.nodes) == 3, "Should have 3 nodes (2 from first + 1 new start), not 4"
         assert committed_segment.end_node_id == target_node_id, "Segment should connect to target node"
 
+    def test_start_node_id_reuses_node_and_never_duplicates(self, empty_graph, mock_dem_blue_slope) -> None:
+        """A path carrying start_node_id reuses that exact node — even when the traced
+        start point has drifted well past the snap threshold (momentum/smoothing can do
+        this). Regression: extending from an existing node must NEVER spawn a duplicate.
+        """
+        graph = empty_graph
+        dem = mock_dem_blue_slope
+
+        path1 = [
+            PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
+            PathPoint(lon=0.0, lat=-500 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / M)),
+        ]
+        graph.commit_paths(paths=[ProposedPathSegment(points=path1, sector_name="P1")])
+        first_segment = list(graph.segments.values())[0]
+        start_node_id = first_segment.end_node_id
+        start_node = graph.nodes[start_node_id]
+        nodes_before = len(graph.nodes)
+
+        # Next segment's traced start is 200m off the real node — far beyond STEP_SIZE_M
+        # snapping — but start_node_id forces exact reuse.
+        drifted = [
+            PathPoint(lon=200 / M, lat=start_node.lat, elevation=start_node.elevation),
+            PathPoint(lon=200 / M, lat=start_node.lat - 500 / M, elevation=start_node.elevation - 40),
+        ]
+        graph.commit_paths(paths=[ProposedPathSegment(points=drifted, start_node_id=start_node_id)])
+
+        new_segment = list(graph.segments.values())[-1]
+        assert new_segment.start_node_id == start_node_id, "must reuse the existing start node"
+        assert len(graph.nodes) == nodes_before + 1, "only the END node is new — no duplicate start node"
+        assert new_segment.points[0].lon == start_node.lon, "start geometry snapped to the exact node"
+        assert new_segment.points[0].lat == start_node.lat
+
 
 # =============================================================================
 # Undo — per entity add/delete + stack semantics (authoritative home)

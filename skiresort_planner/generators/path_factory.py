@@ -338,6 +338,7 @@ class PathFactory:
         target_lat: float,
         target_elevation: Optional[float] = None,
         gradient_band: Optional[tuple[float, float]] = None,
+        incoming_bearing: Optional[float] = None,
     ) -> Iterator[ProposedPathSegment]:
         """Generate paths connecting the start to a user-clicked target.
 
@@ -358,6 +359,10 @@ class PathFactory:
             target_lon, target_lat: Target coordinates (user click)
             target_elevation: Target elevation (queries DEM if None)
             gradient_band: Optional signed (min, max) gradient band → road mode.
+            incoming_bearing: Optional heading (deg) the path arrives at the start
+                with, from the previous committed segment. Forwarded to the planner
+                for momentum (segments continue in-line across a node). None on the
+                first segment / slope fan → unchanged behavior.
 
         Yields:
             ProposedPathSegment for each unique path, sorted by avg_slope_pct.
@@ -403,6 +408,7 @@ class PathFactory:
                 target_slope_pct=config.target_slope_pct,
                 side=config.side.value,
                 gradient_band=gradient_band,
+                incoming_bearing=incoming_bearing,
             )
             if path is None:
                 continue

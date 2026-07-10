@@ -30,6 +30,9 @@ class ProposedPathSegment(Path):
         sector_name: Name of sector (for multi-sector generation)
         is_connector: Whether this is a connection path
         target_node_id: Target node ID for connections
+        start_node_id: Start node ID when extending from an existing node — commit
+            reuses it exactly (never creates a near-duplicate). Empty when the start
+            is a brand-new point.
         kind: Whether this proposal becomes a ski slope or a vehicle road
     """
 
@@ -38,4 +41,5 @@ class ProposedPathSegment(Path):
     sector_name: str = ""
     is_connector: bool = False
     target_node_id: str = ""
+    start_node_id: str = ""
     kind: SegmentKind = SegmentKind.SLOPE

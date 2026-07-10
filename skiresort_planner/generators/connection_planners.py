@@ -87,6 +87,7 @@ class LeastCostPathPlanner:
         target_slope_pct: float,
         side: str,
         gradient_band: Optional[tuple[float, float]] = None,
+        incoming_bearing: Optional[float] = None,
     ) -> Optional[ProposedPathSegment]:
         """Plan path using grid-based Dijkstra search.
 
@@ -99,6 +100,11 @@ class LeastCostPathPlanner:
                 given (road mode), the cost stays flat inside the band and only
                 penalizes leaving it, with no uphill penalty — cars may climb.
                 When None (slope mode), behavior is unchanged.
+            incoming_bearing: Optional heading (deg) the path arrives at the start
+                node with, from the previous committed segment. When given, a light
+                distance-decaying turn penalty biases the first edges to continue
+                roughly in-line (momentum, no kink at the junction). None → no
+                momentum (first segment / slope fan — unchanged behavior).
 
         Returns:
             ProposedPathSegment if path found, None otherwise.
@@ -138,6 +144,7 @@ class LeastCostPathPlanner:
             lons=lons,
             lats=lats,
             gradient_band=gradient_band,
+            incoming_bearing=incoming_bearing,
         )
 
         if path_nodes is None:
@@ -155,6 +162,7 @@ class LeastCostPathPlanner:
         points = self._smooth_path_spline(
             points=raw_points,
             target_slope_pct=target_slope_pct,
+            incoming_bearing=incoming_bearing,
         )
 
         return ProposedPathSegment(
@@ -288,6 +296,7 @@ class LeastCostPathPlanner:
         lons: list[list[float]],
         lats: list[list[float]],
         gradient_band: Optional[tuple[float, float]] = None,
+        incoming_bearing: Optional[float] = None,
     ) -> tuple[Optional[list[GridNode]], int, int]:
         """Least-cost path using SciPy's C-optimized Dijkstra.
 
@@ -301,6 +310,10 @@ class LeastCostPathPlanner:
         # Target coords (used for side preference in edge cost)
         t_lon = lons[target.row][target.col]
         t_lat = lats[target.row][target.col]
+
+        # Start coords: momentum's turn penalty decays with distance from here.
+        s_lon = lons[start.row][start.col]
+        s_lat = lats[start.row][start.col]
 
         # Build sparse graph (row, col, data) for CSR matrix
         row_list: list[int] = []
@@ -341,6 +354,9 @@ class LeastCostPathPlanner:
                         target_lon=t_lon,
                         target_lat=t_lat,
                         gradient_band=gradient_band,
+                        incoming_bearing=incoming_bearing,
+                        start_lon=s_lon,
+                        start_lat=s_lat,
                     )
 
                     if edge_cost < float("inf"):
@@ -402,6 +418,9 @@ class LeastCostPathPlanner:
         target_lon: float,
         target_lat: float,
         gradient_band: Optional[tuple[float, float]] = None,
+        incoming_bearing: Optional[float] = None,
+        start_lon: Optional[float] = None,
+        start_lat: Optional[float] = None,
     ) -> float:
         """Cost function: distance weighted by a slope penalty.
 
@@ -415,14 +434,20 @@ class LeastCostPathPlanner:
 
         No hard cutoffs - allows occasional band excursions due to DEM noise.
 
-        FIXME(side-bias): `side` ("left"/"right") is currently DEAD — this cost is
-        purely position/slope-based and never reads it, so a left and a right plan
-        trace the IDENTICAL least-cost route. It is kept in the signature (and
-        threaded from plan()/_graph_dijkstra) for the planned side-aware upgrade: a
-        signed cross-track bias term (mirror PathTracer.trace_downhill's
-        `side_sign`) or an any-angle/heading-aware planner would make left/right
-        diverge into a real choice. Until then, callers generate a single side
-        (see PathFactory.generate_manual_paths road config).
+        Momentum (incoming_bearing set): a light, distance-decaying turn penalty
+        multiplies the base cost so edges leaving the start node roughly in-line
+        with the incoming heading are cheaper. Decays to 1.0 (no effect) by MOMENTUM_DECAY_M
+        from the start, so mid-segment routing is untouched. Needs start_lon/lat.
+
+        FIXME(side-bias): `side` ("left"/"right") AND `target_lon`/`target_lat` are
+        currently DEAD — this cost is purely position/slope-based and never reads
+        them, so a left and a right plan trace the IDENTICAL least-cost route. All
+        three are kept in the signature (and threaded from plan()/_graph_dijkstra)
+        for the planned side-aware upgrade: a signed cross-track bias term needs the
+        direct start→target line (target_lon/lat) and which side to prefer (side) —
+        mirror PathTracer.trace_downhill's `side_sign` — or an any-angle/heading-aware
+        planner would make left/right diverge into a real choice. Until then, callers
+        generate a single side (see PathFactory.generate_manual_paths road config).
         """
         # Horizontal distance
         horiz_dist = GeoCalculator.haversine_distance_m(lat1=from_lat, lon1=from_lon, lat2=to_lat, lon2=to_lon)
@@ -455,17 +480,62 @@ class LeastCostPathPlanner:
             #       lays fixed-grade zig-zag legs (mirror PathTracer.trace_downhill /
             #       DETAILS.md §3 traverse-angle math).
             # Deferred intentionally — see plan. Keep the soft form for now.
-            return horiz_dist * exp(over / PlannerConfig.COST_SIGMA)
+            base_cost = horiz_dist * exp(over / PlannerConfig.COST_SIGMA)
+        else:
+            # Slope mode: deviation-from-target penalty + uphill penalty.
+            slope_diff = abs(actual_slope - target_slope_pct)
+            slope_cost = exp(slope_diff / PlannerConfig.COST_SIGMA)
 
-        # Slope mode: deviation-from-target penalty + uphill penalty.
-        slope_diff = abs(actual_slope - target_slope_pct)
-        slope_cost = exp(slope_diff / PlannerConfig.COST_SIGMA)
+            uphill_penalty = 1.0
+            if actual_slope < 0:
+                uphill_penalty = exp(abs(actual_slope) / PlannerConfig.COST_SIGMA)
 
-        uphill_penalty = 1.0
-        if actual_slope < 0:
-            uphill_penalty = exp(abs(actual_slope) / PlannerConfig.COST_SIGMA)
+            base_cost = horiz_dist * slope_cost * uphill_penalty
 
-        return horiz_dist * slope_cost * uphill_penalty
+        return base_cost * self._momentum_multiplier(
+            from_lon=from_lon,
+            from_lat=from_lat,
+            to_lon=to_lon,
+            to_lat=to_lat,
+            incoming_bearing=incoming_bearing,
+            start_lon=start_lon,
+            start_lat=start_lat,
+        )
+
+    def _momentum_multiplier(
+        self,
+        from_lon: float,
+        from_lat: float,
+        to_lon: float,
+        to_lat: float,
+        incoming_bearing: Optional[float],
+        start_lon: Optional[float],
+        start_lat: Optional[float],
+    ) -> float:
+        """Light, distance-decaying turn penalty for heading continuity at a node.
+
+        Returns 1.0 (no effect) when there is no incoming heading, or once the edge
+        is farther than MOMENTUM_DECAY_M from the start node — so only the join
+        region is biased, never mid-segment. Near the start, an edge that turns
+        sharply away from `incoming_bearing` costs exp(w · decay · turn/90) more,
+        with w = MOMENTUM_TURN_WEIGHT. Kept light so slope/band penalties dominate.
+        """
+        if incoming_bearing is None or start_lon is None or start_lat is None:
+            return 1.0
+
+        dist_from_start = GeoCalculator.haversine_distance_m(
+            lat1=start_lat, lon1=start_lon, lat2=from_lat, lon2=from_lon
+        )
+        if dist_from_start >= PlannerConfig.MOMENTUM_DECAY_M:
+            return 1.0
+
+        edge_bearing = GeoCalculator.initial_bearing_deg(lon1=from_lon, lat1=from_lat, lon2=to_lon, lat2=to_lat)
+        turn = abs(edge_bearing - incoming_bearing) % 360
+        if turn > 180:
+            turn = 360 - turn  # normalize to [0, 180]
+
+        decay = 1.0 - dist_from_start / PlannerConfig.MOMENTUM_DECAY_M  # 1 at start → 0 at MOMENTUM_DECAY_M
+        return exp(PlannerConfig.MOMENTUM_TURN_WEIGHT * decay * (turn / 90.0))
 
     def _path_to_points(
         self,
@@ -486,11 +556,44 @@ class LeastCostPathPlanner:
             )
         return points
 
+    def _nudge_join_toward_bearing(self, points: list[PathPoint], incoming_bearing: Optional[float]) -> list[PathPoint]:
+        """Gently rotate the first join-region points toward the incoming heading.
+
+        Keeps the anchor (points[0]) fixed and, for each early point within
+        MOMENTUM_DECAY_M of it, blends the point's bearing-from-anchor toward
+        `incoming_bearing` by a factor that decays to zero across the region. The
+        per-point rotation is clamped to MAX_TURN_PER_STEP_DEG so the join can never
+        swing wildly (no cliff dives / reversed turns). Distance-from-anchor and
+        elevation are preserved; the caller re-samples elevation from the DEM after.
+        Returns points unchanged when there is no incoming heading.
+        """
+        if incoming_bearing is None or len(points) < 3:
+            return points
+
+        anchor = points[0]
+        nudged: list[PathPoint] = [anchor]
+        for pt in points[1:]:
+            dist = GeoCalculator.haversine_distance_m(lat1=anchor.lat, lon1=anchor.lon, lat2=pt.lat, lon2=pt.lon)
+            if dist >= PlannerConfig.MOMENTUM_DECAY_M or dist < 0.1:
+                nudged.append(pt)
+                continue
+
+            bearing = GeoCalculator.initial_bearing_deg(lon1=anchor.lon, lat1=anchor.lat, lon2=pt.lon, lat2=pt.lat)
+            diff = (incoming_bearing - bearing + 180) % 360 - 180  # signed shortest turn to incoming
+            weight = 1.0 - dist / PlannerConfig.MOMENTUM_DECAY_M  # full at anchor → 0 at decay distance
+            rotate = max(-PathConfig.MAX_TURN_PER_STEP_DEG, min(PathConfig.MAX_TURN_PER_STEP_DEG, diff * weight))
+            new_lon, new_lat = GeoCalculator.destination(
+                lon=anchor.lon, lat=anchor.lat, bearing_deg=(bearing + rotate) % 360, distance_m=dist
+            )
+            nudged.append(PathPoint(lon=new_lon, lat=new_lat, elevation=pt.elevation))
+        return nudged
+
     def _smooth_path_spline(
         self,
         points: list[PathPoint],
         target_slope_pct: float,
         step_m: float = 7.0,
+        incoming_bearing: Optional[float] = None,
     ) -> list[PathPoint]:
         """Smooth grid path using cubic spline interpolation and resample at fixed intervals.
 
@@ -502,12 +605,20 @@ class LeastCostPathPlanner:
             points: Raw grid path points
             target_slope_pct: Target slope - controls smoothing aggressiveness
             step_m: Output point spacing in meters (default 7m)
+            incoming_bearing: Optional heading (deg) the path arrives with. When set,
+                the join region (first MOMENTUM_DECAY_M) is gently nudged toward that
+                heading BEFORE the spline pass, so the road leaves the node in-line
+                instead of kinking. The nudge is bounded (MAX_TURN_PER_STEP_DEG),
+                decays to zero over the region, and never moves the anchor point;
+                elevations are still DEM-sourced below, so it cannot invent terrain.
 
         Returns:
             Smoothed path with regular point spacing and DEM-sampled elevations.
         """
         if len(points) < 4:
             return points
+
+        points = self._nudge_join_toward_bearing(points=points, incoming_bearing=incoming_bearing)
 
         lons = np.array([p.lon for p in points])
         lats = np.array([p.lat for p in points])

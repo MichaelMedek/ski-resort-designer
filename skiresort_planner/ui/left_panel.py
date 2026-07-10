@@ -406,7 +406,7 @@ class SidebarRenderer:
         else:
             # All Idle* states without viewing panel
             st.markdown(
-                "- 🔘 Select **Slope** or **Lift** type below\n"
+                "- 🔘 Select **Slope**, **Road** or **Lift** type below\n"
                 "- 🗺️ Click terrain/node → start building\n"
                 "- 👁️ Click existing slope/lift → view stats"
             )

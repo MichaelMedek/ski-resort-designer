@@ -330,14 +330,27 @@ class ResortGraph:
             if not path.points:
                 continue
 
-            # Get or create start node
+            # Get start node.
+            # If the proposal extends from an existing node, reuse it EXACTLY.
+            # Spline smoothing + momentum could drift the traced start point.
+            # Same fix the end uses via target_node_id.
             start_pt = path.start
             assert start_pt is not None  # Guaranteed by `if not path.points: continue` check
-            start_node, start_created = self.get_or_create_node(
-                lon=start_pt.lon,
-                lat=start_pt.lat,
-                elevation=start_pt.elevation,
-            )
+            if path.start_node_id and path.start_node_id in self.nodes:
+                start_node = self.nodes[path.start_node_id]
+                start_created = False
+                # Snap path geometry to the exact node coordinates.
+                path.points[0] = PathPoint(
+                    lon=start_node.lon,
+                    lat=start_node.lat,
+                    elevation=start_node.elevation,
+                )
+            else:
+                start_node, start_created = self.get_or_create_node(
+                    lon=start_pt.lon,
+                    lat=start_pt.lat,
+                    elevation=start_pt.elevation,
+                )
             if start_created:
                 new_node_ids.append(start_node.id)
 
@@ -1003,6 +1016,20 @@ class ResortGraph:
                     f"road {road.id} owns segment {seg_id} with kind "
                     f"{seg.kind if seg else 'MISSING'} — expected ROAD (corrupt/stale save)"
                 )
+
+        # Discard orphan segments: any segment owned by no slope or road.
+        # Drop them (and any nodes they orphan) rather than keep undeletable data in the graph.
+        owned_segment_ids = {sid for slope in graph.slopes.values() for sid in slope.segment_ids}
+        owned_segment_ids |= {sid for road in graph.roads.values() for sid in road.segment_ids}
+        orphan_segment_ids = [sid for sid in graph.segments if sid not in owned_segment_ids]
+        if orphan_segment_ids:
+            logger.warning(
+                f"Discarding {len(orphan_segment_ids)} orphan segment(s) owned by no slope/road "
+                f"(interrupted-build leftovers): {orphan_segment_ids}"
+            )
+            for sid in orphan_segment_ids:
+                del graph.segments[sid]
+            graph.cleanup_isolated_nodes()
 
         counters = data["counters"]
         graph._node_counter = counters["node"]
