@@ -252,11 +252,10 @@ Both start and end nodes are only created AFTER validation passes.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable
+from typing import Callable
 
 import streamlit as st
 from statemachine import State, StateMachine
-from statemachine.exceptions import TransitionNotAllowed
 
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.resort_graph import ResortGraph
@@ -1174,23 +1173,6 @@ class PlannerStateMachine(StateMachine):
     def __repr__(self) -> str:
         """Return string representation of state machine."""
         return f"PlannerStateMachine(state={self.get_state_name()}, model={self.context!r})"
-
-    def try_transition(self, event: str, **kwargs: Any) -> bool:
-        """Attempt a transition, returning success/failure.
-
-        Args:
-            event: Transition event name
-            **kwargs: Arguments for transition
-
-        Returns:
-            True if transition succeeded, False otherwise.
-        """
-        try:
-            self.send(event=event, **kwargs)
-            return True
-        except (TransitionNotAllowed, ValueError):
-            logger.warning(f"Transition '{event}' not allowed from {self.get_state_name()}")
-            return False
 
     # ==========================================================================
     # Convenience Methods for Common Transitions

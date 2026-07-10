@@ -580,12 +580,10 @@ class SidebarRenderer:
         if lift.lift_type == new_type:
             return  # No actual type change needed
 
-        # Get nodes for the update
+        # A lift in the graph always has valid endpoint nodes — a miss is corrupted state.
         start_node = self.graph.nodes.get(lift.start_node_id)
         end_node = self.graph.nodes.get(lift.end_node_id)
-        if not start_node or not end_node:
-            logger.warning(f"Cannot update lift {lift_id}: nodes not found")
-            return
+        assert start_node and end_node, f"lift {lift_id} references missing nodes (data integrity bug)"
 
         # Use centralized method to update all type-dependent fields
         lift.update_type(new_type=new_type, start_node=start_node, end_node=end_node)
