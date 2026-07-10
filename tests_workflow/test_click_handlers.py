@@ -426,6 +426,7 @@ class TestRoadBuildingClick:
 
         dem = mock_dem_red_slope_diagonal
         sm, ctx, graph = self._building(fake_st, path_factory, dem)
+        version_before = fake_st.session_state["map_version"]
 
         # A target click proposes route(s) to browse — like slope custom-connect,
         # minus the fan-out. It commits NOTHING until a proposal is clicked.
@@ -440,6 +441,12 @@ class TestRoadBuildingClick:
         assert ctx.proposals.selected_idx == 0
         assert ctx.road_build.segments == [], "a target click proposes, it does not commit"
         assert sm.is_road_starting, "still starting until a proposal is committed"
+        # The handler MUST bump the map version so the fragment reruns and redraws
+        # WITH the new proposals — the deck was already built before this click
+        # dispatched. Regression for invisible road proposals.
+        assert fake_st.session_state["map_version"] > version_before, (
+            "generating road proposals must bump map_version to force a redraw"
+        )
 
     def test_proposal_marker_click_selects_but_does_not_commit(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal

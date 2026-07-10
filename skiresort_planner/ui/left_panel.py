@@ -66,9 +66,11 @@ def _describe_undo_action(action: UndoAction, graph: ResortGraph) -> str:
         first_seg = graph.segments.get(act.segment_ids[0]) if act.segment_ids else None
         if first_seg is None:
             raise RuntimeError(f"AddSegmentsAction references missing segment {act.segment_ids}")
-        if first_seg.kind is SegmentKind.ROAD:
+        # Compare by == not `is`: Streamlit module reloads make identity checks
+        # unreliable across a fresh SegmentKind class (str-Enum equality is by value).
+        if first_seg.kind == SegmentKind.ROAD:
             what = "road"
-        elif first_seg.kind is SegmentKind.SLOPE:
+        elif first_seg.kind == SegmentKind.SLOPE:
             what = "slope"
         else:
             raise RuntimeError(f"Unknown segment kind {first_seg.kind} for {first_seg.id}")

@@ -731,4 +731,8 @@ def handle_road_building_click(click_info: ClickInfo, elevation: float | None) -
 
     ctx.proposals.paths = proposals
     ctx.proposals.selected_idx = 0
-    bump_map_version()  # Clear stale click state so proposal 1 can be clicked
+    # reload_map (not bare bump): the deck was already built earlier in this fragment
+    # run, BEFORE this click dispatched — a rerun is required to redraw it WITH the new
+    # proposals (bump alone only changes the key, it doesn't re-render). This mirrors
+    # how the slope flow reruns via its deferred path-generation step.
+    reload_map()

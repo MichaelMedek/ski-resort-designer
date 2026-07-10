@@ -768,7 +768,11 @@ def render_building_profile(
     chart = ProfileChart(width=ChartConfig.DEFAULT_WIDTH, height=ChartConfig.PROFILE_HEIGHT_SMALL)
 
     first_seg = graph.segments[building_segments[0]]
-    if first_seg.kind is SegmentKind.ROAD:
+    # Compare by == not `is`: Streamlit module reloads create a fresh SegmentKind
+    # class, so `is` (identity) fails on segments built under the old class. Because
+    # SegmentKind is a str-Enum, == compares the underlying string value and is
+    # reload-safe. (Plain enums like ActionType lack this and must dispatch by .name.)
+    if first_seg.kind == SegmentKind.ROAD:
         combined_road = Road(
             id="combined",
             name=building_name or "Current Road",
@@ -777,7 +781,7 @@ def render_building_profile(
             end_node_id="",
         )
         return chart.render_road(road=combined_road, graph=graph, title="Current committed Road Progress")
-    elif first_seg.kind is SegmentKind.SLOPE:
+    elif first_seg.kind == SegmentKind.SLOPE:
         # Slope: color by the steepest segment's difficulty.
         max_difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=max_avg_slope)
         combined = PathSegment(id="combined", name=building_name or "Current Slope", points=all_points)

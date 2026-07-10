@@ -633,18 +633,23 @@ class ResortGraph:
 
         action = self.undo_stack.pop()
 
-        if action.action_type == ActionType.ADD_SEGMENTS:
+        # Compare by .name (both sides): ActionType is a plain Enum, and the
+        # undo_stack lives in st.session_state holding OLD-class references after a
+        # Streamlit reload — plain-enum `==` is identity-based and would fail.
+        action_name = action.action_type.name
+
+        if action_name == ActionType.ADD_SEGMENTS.name:
             add_seg = cast(AddSegmentsAction, action)
             for seg_id in add_seg.segment_ids:
                 self.segments.pop(seg_id, None)
             self.cleanup_isolated_nodes()  # Remove orphaned nodes from segment removal
 
-        elif action.action_type == ActionType.ADD_LIFT:
+        elif action_name == ActionType.ADD_LIFT.name:
             add_lift = cast(AddLiftAction, action)
             self.lifts.pop(add_lift.lift_id, None)
             self.cleanup_isolated_nodes()  # Remove orphaned station nodes
 
-        elif action.action_type == ActionType.FINISH_SLOPE:
+        elif action_name == ActionType.FINISH_SLOPE.name:
             # Ungroup the slope but keep its segments; their own AddSegmentsAction
             # entries handle per-segment removal on further undo.
             finish = cast(FinishSlopeAction, action)
@@ -652,14 +657,14 @@ class ResortGraph:
             for seg_id in finish.segment_ids:
                 self.segments[seg_id].name = f"Segment {seg_id[1:]}"
 
-        elif action.action_type == ActionType.FINISH_ROAD:
+        elif action_name == ActionType.FINISH_ROAD.name:
             # Mirror FINISH_SLOPE: ungroup the road, keep its segments.
             finish_road = cast(FinishRoadAction, action)
             self.roads.pop(finish_road.road_id, None)
             for seg_id in finish_road.segment_ids:
                 self.segments[seg_id].name = f"Segment {seg_id[1:]}"
 
-        elif action.action_type == ActionType.DELETE_SLOPE:
+        elif action_name == ActionType.DELETE_SLOPE.name:
             del_slope = cast(DeleteSlopeAction, action)
             # Restore orphaned nodes first (they're needed by segments)
             for node in del_slope.deleted_nodes:
@@ -673,7 +678,7 @@ class ResortGraph:
                 f"and {len(del_slope.deleted_nodes)} nodes"
             )
 
-        elif action.action_type == ActionType.DELETE_LIFT:
+        elif action_name == ActionType.DELETE_LIFT.name:
             del_lift = cast(DeleteLiftAction, action)
             # Restore orphaned nodes first (they're needed by lift)
             for node in del_lift.deleted_nodes:
@@ -682,7 +687,7 @@ class ResortGraph:
             self.lifts[del_lift.lift_id] = del_lift.deleted_lift
             logger.info(f"Restored lift {del_lift.lift_id} with {len(del_lift.deleted_nodes)} nodes")
 
-        elif action.action_type == ActionType.DELETE_ROAD:
+        elif action_name == ActionType.DELETE_ROAD.name:
             del_road = cast(DeleteRoadAction, action)
             # Restore orphaned nodes first (they're needed by segments)
             for node in del_road.deleted_nodes:
@@ -694,6 +699,9 @@ class ResortGraph:
                 f"Restored road {del_road.road_id} with {len(del_road.deleted_segments)} segments "
                 f"and {len(del_road.deleted_nodes)} nodes"
             )
+
+        else:
+            raise RuntimeError(f"Unknown action type in undo_last: {action_name}")
 
         return action
 
@@ -991,7 +999,7 @@ class ResortGraph:
         for road in graph.roads.values():
             for seg_id in road.segment_ids:
                 seg = graph.segments.get(seg_id)
-                assert seg is not None and seg.kind is SegmentKind.ROAD, (
+                assert seg is not None and seg.kind == SegmentKind.ROAD, (
                     f"road {road.id} owns segment {seg_id} with kind "
                     f"{seg.kind if seg else 'MISSING'} — expected ROAD (corrupt/stale save)"
                 )

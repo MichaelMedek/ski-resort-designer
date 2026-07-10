@@ -129,6 +129,30 @@ class TestProfileChartRendering:
         line_colors = [tr.line.color for tr in fig.data if tr.line and tr.line.color]
         assert StyleConfig.ROAD_COLOR in line_colors
 
+    def test_building_profile_kind_compared_by_value_not_identity(self, empty_graph, path_points_blue) -> None:
+        """A segment whose kind is a DISTINCT SegmentKind class (Streamlit module reload)
+        must still be recognized as a road — regression for the `is` vs `==` crash.
+        """
+        from enum import Enum
+
+        from skiresort_planner.model.path_segment import SegmentKind
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
+        from skiresort_planner.ui.bottom_chart import render_building_profile
+
+        empty_graph.commit_paths(
+            paths=[ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)]
+        )
+        seg_id = list(empty_graph.segments.keys())[-1]
+
+        # Simulate a module reload: a fresh SegmentKind class with the same values.
+        reloaded_kind = Enum("SegmentKind", {"SLOPE": "slope", "ROAD": "road"}, type=str)
+        empty_graph.segments[seg_id].kind = reloaded_kind.ROAD  # type: ignore[assignment]
+        assert empty_graph.segments[seg_id].kind is not SegmentKind.ROAD, "must be a different class instance"
+
+        # Must not raise 'Unknown segment kind' and must still render the road.
+        fig = render_building_profile(building_segments=[seg_id], building_name="Reloaded Road", graph=empty_graph)
+        assert len(fig.data) > 0
+
     def test_proposal_preview_convenience(self, path_points_blue) -> None:
         """render_proposal_preview renders the selected proposal."""
         from skiresort_planner.model.proposed_path import ProposedPathSegment
