@@ -41,7 +41,7 @@ BACKUP_DIR = PROJECT_ROOT / "backups"
 class AppConfig:
     """UI application settings."""
 
-    TITLE = "Ski Resort Planner - Design Your Dream Resort"
+    TITLE = "Ski Resort Planner"
     ICON = "⛷️"
     LAYOUT: Literal["centered", "wide"] = "wide"
 
@@ -218,6 +218,9 @@ class EarthworkConfig:
         "red": (25, 40),  # Wide advanced runs for carving
         "black": (20, 35),  # Narrower expert terrain
     }
+
+    # Roads are a fixed-width vehicle ribbon — unlike ski pistes
+    ROAD_WIDTH_M = 12
 
 
 assert set(EarthworkConfig.BELT_WIDTH_LIMITS.keys()) == set(SlopeConfig.DIFFICULTIES)
@@ -617,18 +620,16 @@ class NameConfig:
 class ChartConfig:
     """Chart rendering dimensions and settings."""
 
-    # Profile chart heights for different contexts
-    PROFILE_HEIGHT_LARGE = 550  # Full-width main panel
-    PROFILE_HEIGHT_MEDIUM = 320  # Side panel
-    PROFILE_HEIGHT_SMALL = 250  # Compact view
-    PROFILE_HEIGHT_MINI = 200  # Minimal view
+    # The one elevation-profile chart below the map — same height whether building or
+    # viewing a slope/road/lift (it is the same chart in the same place).
+    PROFILE_HEIGHT_PX = 260
 
-    # Lift profile specific
-    LIFT_PROFILE_HEIGHT = 320
+    # Map viewport sizing: subtract chrome (and any reserved profile space) from browser height
+    MAP_CHROME_OFFSET_PX = 50  # Collapsed top padding + deck iframe inset (no header/title)
+    MAP_MIN_HEIGHT_PX = 400  # Never shrink the map below this, even on short windows
 
-    # Chart widths
-    DEFAULT_WIDTH = 800  # Default chart width
-    WIDE_WIDTH = 1000  # Wide layout width
+    # Space reserved BELOW the map for the profile so it stays visible without scrolling.
+    MAP_PROFILE_RESERVE_PX = PROFILE_HEIGHT_PX + 60
 
     # Y-axis padding settings
     ELEVATION_PADDING_FACTOR = 0.1  # 10% padding above/below

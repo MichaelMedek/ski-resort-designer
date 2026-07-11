@@ -69,13 +69,6 @@ class TestSidebarRuns:
         sm.start_building(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
         SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
 
-    def test_sidebar_while_viewing_slope(self, fake_st, empty_graph, path_points_blue) -> None:
-        # Viewing state renders the close-panel button path.
-        slope_id = _build_slope(empty_graph, path_points_blue)
-        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        sm.show_slope_info_panel(slope_id=slope_id)
-        SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
-
     def test_sidebar_during_road_building(self, fake_st, empty_graph) -> None:
         # Road building state renders the Finish Road / Cancel Road controls.
         from skiresort_planner.model.path_point import PathPoint
@@ -86,12 +79,32 @@ class TestSidebarRuns:
         actions = SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
         assert "finish_road" in actions and "cancel_road" in actions
 
-    def test_sidebar_while_viewing_road(self, fake_st, empty_graph, path_points_blue) -> None:
-        # Viewing a road renders the close-panel button path and road summary.
-        road_id = _build_road(empty_graph, path_points_blue)
+    @pytest.mark.parametrize("kind", ["slope", "road", "lift"])
+    def test_sidebar_viewing_header_and_body_match_kind(
+        self, fake_st, empty_graph, path_points_blue, mock_dem_blue_slope, kind: str
+    ) -> None:
+        # Every viewed kind gets its OWN header + body — no kind falls through to the
+        # generic idle text (the drift that once left the road body wrong).
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        sm.show_road_info_panel(road_id=road_id)
+        if kind == "slope":
+            sm.show_slope_info_panel(slope_id=_build_slope(empty_graph, path_points_blue))
+        elif kind == "road":
+            sm.show_road_info_panel(road_id=_build_road(empty_graph, path_points_blue))
+        elif kind == "lift":
+            sm.show_lift_info_panel(lift_id=_build_lift(empty_graph, mock_dem_blue_slope))
+        else:
+            raise ValueError
+
+        captured: list[str] = []
+        fake_st.markdown = lambda text, *a, **k: captured.append(text)
         SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
+        joined = "\n".join(captured)
+
+        assert f"Viewing {kind.capitalize()}" in joined  # kind-specific header
+        assert f"new {kind}" in joined  # kind-specific body, not "start building"
+        assert "Select **Slope**" not in joined  # generic idle body must NOT appear
+        # Only lifts show the change-type hint.
+        assert ("Use lift buttons to change type" in joined) is (kind == "lift")
 
 
 class TestModeSelectorButton:

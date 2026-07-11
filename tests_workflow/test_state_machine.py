@@ -253,3 +253,31 @@ class TestCancelCustomGuards:
 
         # Assert: Should transition to slope_building
         assert sm.current_state == sm.slope_building
+
+
+class TestViewingEntity:
+    """viewing_entity is the single (EntityKind, id) source for kind-dispatch."""
+
+    def test_none_when_not_viewing(self) -> None:
+        from skiresort_planner.model.resort_graph import ResortGraph
+
+        sm, _ = PlannerStateMachine.create(graph=ResortGraph(), add_ui_listener=False)
+        assert sm.viewing_entity is None  # idle_ready
+
+    def test_returns_kind_and_id_per_viewed_entity(self) -> None:
+        from skiresort_planner.model.resort_graph import ResortGraph
+        from skiresort_planner.ui.context import EntityKind
+
+        sm, ctx = PlannerStateMachine.create(graph=ResortGraph(), add_ui_listener=False)
+
+        _force_state(sm=sm, state_name="idle_viewing_slope")
+        ctx.viewing.set_slope_id(slope_id="SL1")
+        assert sm.viewing_entity == (EntityKind.SLOPE, "SL1")
+
+        _force_state(sm=sm, state_name="idle_viewing_road")
+        ctx.viewing.set_road_id(road_id="R2")
+        assert sm.viewing_entity == (EntityKind.ROAD, "R2")
+
+        _force_state(sm=sm, state_name="idle_viewing_lift")
+        ctx.viewing.set_lift_id(lift_id="L3")
+        assert sm.viewing_entity == (EntityKind.LIFT, "L3")

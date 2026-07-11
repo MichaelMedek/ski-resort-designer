@@ -119,6 +119,38 @@ class TestSegmentKind:
         assert PathSegment.from_dict(data=data).kind is SegmentKind.ROAD
 
 
+class TestBeltWidth:
+    """PathSegment.width_m: constant for roads, side-slope-adaptive for slopes."""
+
+    @staticmethod
+    def _segment(kind: SegmentKind, side_slope_pct: float) -> "PathSegment":
+        from skiresort_planner.model.path_segment import PathSegment
+
+        return PathSegment(
+            points=[
+                PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
+                PathPoint(lon=0.0, lat=-0.005, elevation=1900.0),
+            ],
+            id="S1",
+            kind=kind,
+            side_slope_pct=side_slope_pct,
+        )
+
+    def test_road_width_is_constant_regardless_of_side_slope(self) -> None:
+        from skiresort_planner.constants import EarthworkConfig
+
+        gentle = self._segment(kind=SegmentKind.ROAD, side_slope_pct=2.0)
+        steep = self._segment(kind=SegmentKind.ROAD, side_slope_pct=45.0)
+        assert gentle.width_m == float(EarthworkConfig.ROAD_WIDTH_M)
+        assert steep.width_m == gentle.width_m  # roads never vary with terrain
+
+    def test_slope_width_narrows_on_steeper_side_slope(self) -> None:
+        # Slopes stay adaptive: steeper cross-slope → narrower belt (excavation limit).
+        gentle = self._segment(kind=SegmentKind.SLOPE, side_slope_pct=2.0)
+        steep = self._segment(kind=SegmentKind.SLOPE, side_slope_pct=45.0)
+        assert steep.width_m < gentle.width_m
+
+
 class TestNaming:
     """Deterministic naming threshold branches (drop/rise bands from NameConfig)."""
 

@@ -24,6 +24,18 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T", bound="SegmentPath")
 
 
+def steepest_section_pct(segments: list["PathSegment"]) -> float:
+    """Steepest-section gradient magnitude across a chain of segments.
+
+    Max of each segment's own rolling-window steepest section (`max_slope_pct`).
+    Only segments at least ROLLING_WINDOW_M long are counted; if none rech that,
+    fall back to all so the value is never empty.
+    """
+    long_enough = [s for s in segments if s.length_m >= SlopeConfig.ROLLING_WINDOW_M]
+    counted = long_enough or segments
+    return max((s.max_slope_pct for s in counted), default=0.0)
+
+
 @dataclass
 class SegmentPath:
     """A named chain of segments between two nodes.
@@ -79,9 +91,7 @@ class SegmentPath:
         back to the max over all segments so the value is never empty.
         """
         present = [segments[sid] for sid in self.segment_ids if sid in segments]
-        long_enough = [s for s in present if s.length_m >= SlopeConfig.ROLLING_WINDOW_M]
-        counted = long_enough or present  # fall back to all when none reach a full window
-        return max((s.max_slope_pct for s in counted), default=0.0)
+        return steepest_section_pct(segments=present)
 
     def get_all_points(self, segments: dict[str, "PathSegment"]) -> list["PathPoint"]:
         """All points across segments, deduplicated at shared junction nodes."""

@@ -261,6 +261,7 @@ from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.context import (
     BuildMode,
+    EntityKind,
     LonLatElev,
     PlannerContext,
 )
@@ -727,6 +728,18 @@ class PlannerStateMachine(StateMachine):
     def is_info_panel_visible(self) -> bool:
         """Check if info panel is visible (viewing slope, lift, or road)."""
         return self.is_idle_viewing_slope or self.is_idle_viewing_lift or self.is_idle_viewing_road
+
+    @property
+    def viewing_entity(self) -> tuple[EntityKind, str] | None:
+        """The (kind, id) of the slope/road/lift being viewed, or None if not viewing."""
+        v = self.context.viewing
+        if self.is_idle_viewing_slope and v.slope_id:
+            return EntityKind.SLOPE, v.slope_id
+        if self.is_idle_viewing_road and v.road_id:
+            return EntityKind.ROAD, v.road_id
+        if self.is_idle_viewing_lift and v.lift_id:
+            return EntityKind.LIFT, v.lift_id
+        return None
 
     def is_slope_mode(self) -> bool:
         """Check if build mode is set to slope."""

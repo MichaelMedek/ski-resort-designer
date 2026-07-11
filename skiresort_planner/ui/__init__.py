@@ -40,11 +40,12 @@ from skiresort_planner.ui.actions import (
 from skiresort_planner.ui.bottom_chart import (
     ProfileChart,
     render_building_profile,
-    render_proposal_preview,
+    render_viewing_profile,
 )
 from skiresort_planner.ui.center_map import MapRenderer
 from skiresort_planner.ui.click_detector import ClickDetector
 from skiresort_planner.ui.click_handlers import dispatch_click
+from skiresort_planner.ui.infra import viewport_map_height
 from skiresort_planner.ui.left_panel import SidebarRenderer
 from skiresort_planner.ui.pydeck_click_handler import PydeckClickResult, render_pydeck_map
 from skiresort_planner.ui.right_panel import (
@@ -66,7 +67,7 @@ __all__ = [
     "MapRenderer",
     "ProfileChart",
     "render_building_profile",
-    "render_proposal_preview",
+    "render_viewing_profile",
     "SidebarRenderer",
     "PathSelectionPanel",
     "SlopeStatsPanel",
@@ -93,6 +94,7 @@ __all__ = [
     "reload_map",
     "trigger_rerun",
     "undo_last_action",
+    "viewport_map_height",
     "PydeckClickResult",
     "render_pydeck_map",
 ]

@@ -67,17 +67,33 @@ def _dispatch(sm, ctx, graph) -> None:
 
 
 class TestStatsPanelsRun:
-    def test_slope_stats_panel_runs(self, fake_st, empty_graph, path_points_blue) -> None:
-        slope_id = _build_slope(empty_graph, path_points_blue)
-        SlopeStatsPanel(graph=empty_graph).render(slope_id=slope_id)
+    """Each stats panel renders its OWN metric labels — no kind shares another's
+    layout by accident (the per-kind drift that hit the sidebar). Metric labels are
+    captured to assert the distinguishing fields actually render."""
 
-    def test_road_stats_panel_runs(self, fake_st, empty_graph, path_points_blue) -> None:
-        road_id = _build_road(empty_graph, path_points_blue)
-        RoadStatsPanel(graph=empty_graph).render(road_id=road_id)
+    @staticmethod
+    def _capture_labels(fake_st) -> list[str]:
+        labels: list[str] = []
+        fake_st.metric = lambda label, *a, **k: labels.append(label)
+        fake_st.subheader = lambda text, *a, **k: labels.append(text)
+        return labels
 
-    def test_lift_stats_panel_runs(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
-        lift_id = _build_lift(empty_graph, mock_dem_blue_slope)
-        LiftStatsPanel(graph=empty_graph).render(lift_id=lift_id)
+    def test_slope_stats_panel_shows_slope_metrics(self, fake_st, empty_graph, path_points_blue) -> None:
+        labels = self._capture_labels(fake_st)
+        SlopeStatsPanel(graph=empty_graph).render(slope_id=_build_slope(empty_graph, path_points_blue))
+        assert {"Top Elevation", "Drop", "Overall Gradient", "Steepest Section"} <= set(labels)
+
+    def test_road_stats_panel_shows_road_metrics(self, fake_st, empty_graph, path_points_blue) -> None:
+        labels = self._capture_labels(fake_st)
+        RoadStatsPanel(graph=empty_graph).render(road_id=_build_road(empty_graph, path_points_blue))
+        # Roads report signed elevation change + average gradient, not slope "Drop".
+        assert {"Start Elevation", "Elevation Change", "Average Gradient", "Steepest Section"} <= set(labels)
+        assert "Drop" not in labels
+
+    def test_lift_stats_panel_shows_lift_metrics(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
+        labels = self._capture_labels(fake_st)
+        LiftStatsPanel(graph=empty_graph).render(lift_id=_build_lift(empty_graph, mock_dem_blue_slope))
+        assert {"Vertical Rise", "Pylons", "Inclined Length", "Steepest Section"} <= set(labels)
 
 
 # =============================================================================

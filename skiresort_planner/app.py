@@ -29,7 +29,6 @@ from skiresort_planner.ui import (
     MapRenderer,
     PlannerContext,
     PlannerStateMachine,
-    ProfileChart,
     SidebarRenderer,
     bump_map_version,
     cancel_current_road,
@@ -47,8 +46,9 @@ from skiresort_planner.ui import (
     recompute_paths,
     render_building_profile,
     render_control_panel,
-    render_proposal_preview,
+    render_viewing_profile,
     trigger_rerun,
+    viewport_map_height,
 )
 from skiresort_planner.ui.pydeck_click_handler import render_pydeck_map
 from skiresort_planner.ui.terrain_layer import create_aws_terrain_layer
@@ -421,36 +421,48 @@ def _render_map_fragment_inner() -> None:
             use_3d=use_3d,
         )
 
+    # One elevation profile renders directly below the map: the in-build profile while
+    # building a slope/road, or the finished entity's profile while viewing it. Reserve
+    # room for it so it stays visible without scrolling; idle mode lets the map fill all.
+    show_slope_profile = sm.is_any_slope_state and bool(ctx.slope_build.segments)
+    show_road_profile = sm.is_any_road_state and bool(ctx.road_build.segments)
+    viewing = sm.viewing_entity  # (EntityKind, id) or None
+    reserved = ChartConfig.MAP_PROFILE_RESERVE_PX if (show_slope_profile or show_road_profile or viewing) else 0
+
+    # Map height that fills the browser window. None only on first load, before the
+    # js-eval round-trip resolves (cached thereafter, so reruns keep the size).
+    height = viewport_map_height(reserved_below_px=reserved)
+    if height is None:
+        st.info("📐 Sizing map to your window…")
+        return
+
     # Render with click handling
-    # Include force_remount_key in key to force component hard remount on view changes
+    # Include force_remount_key AND height in key: st_deckgl only applies height on
+    # first mount, so height must change the key to force a remount when it changes.
     force_key = st.session_state.get("force_remount_key", "init")
-    map_key = f"main_map_{st.session_state.map_version}_{force_key}_{'3d' if use_3d else '2d'}"
+    map_key = f"main_map_{st.session_state.map_version}_{force_key}_{'3d' if use_3d else '2d'}_h{height}"
     click_result = render_pydeck_map(
         deck=deck,
-        height=ChartConfig.PROFILE_HEIGHT_LARGE,
+        height=height,
         key=map_key,
     )
 
-    # Elevation profiles below map — one function, kind-driven (slope or road).
-    if sm.is_any_slope_state and ctx.slope_build.segments:
+    # The single profile below the map — building (kind-driven) or viewing (kind-driven).
+    # No else: idle-ready has no profile (matches `reserved == 0`); the map fills the viewport.
+    if show_slope_profile:
         fig = render_building_profile(
-            building_segments=ctx.slope_build.segments,
-            building_name=ctx.slope_build.name,
-            graph=graph,
+            building_segments=ctx.slope_build.segments, building_name=ctx.slope_build.name, graph=graph
         )
         st.plotly_chart(fig, width="stretch", key="combined_profile")
-
-    if sm.is_any_road_state and ctx.road_build.segments:
+    elif show_road_profile:
         fig = render_building_profile(
-            building_segments=ctx.road_build.segments,
-            building_name=ctx.road_build.name,
-            graph=graph,
+            building_segments=ctx.road_build.segments, building_name=ctx.road_build.name, graph=graph
         )
         st.plotly_chart(fig, width="stretch", key="combined_road_profile")
-
-    if ctx.proposals.paths and ctx.proposals.selected_idx is not None:
-        fig = render_proposal_preview(proposals=ctx.proposals.paths, selected_idx=ctx.proposals.selected_idx)
-        st.plotly_chart(fig, width="stretch", key="preview_profile")
+    elif viewing is not None:
+        kind, entity_id = viewing
+        fig = render_viewing_profile(kind=kind, entity_id=entity_id, graph=graph)
+        st.plotly_chart(fig, width="stretch", key="viewing_profile")
 
     # Detect clicks from Pydeck result - disabled in 3D mode
     if use_3d:
@@ -477,7 +489,7 @@ def main() -> None:
     st.set_page_config(page_title=AppConfig.TITLE, page_icon=AppConfig.ICON, layout=AppConfig.LAYOUT)
     init_session_state()
 
-    st.title(AppConfig.TITLE)
+    # No in-page title: the map gets that vertical space (title lives in the browser tab).
 
     # Block until DEM is loaded - shows loading message and prevents map interaction
     if not load_dem_data():
@@ -556,33 +568,6 @@ def _run_app_ui() -> None:
             on_cancel_custom=cancel_custom_direction_mode,
             on_cancel_connection=cancel_custom_path,
         )
-
-    # Full-width profile for viewing slope
-    if sm.is_idle_viewing_slope and ctx.viewing.slope_id:
-        chart = ProfileChart(height=ChartConfig.PROFILE_HEIGHT_MEDIUM, width=ChartConfig.WIDE_WIDTH)
-        slope = graph.slopes.get(ctx.viewing.slope_id)
-        if slope is None:
-            raise ValueError(f"Slope {ctx.viewing.slope_id} must exist when panel shows slope")
-        fig = chart.render_slope(slope=slope, graph=graph)
-        st.plotly_chart(fig, key="slope_full_profile")
-
-    # Full-width profile for viewing lift
-    if sm.is_idle_viewing_lift and ctx.viewing.lift_id:
-        lift = graph.lifts.get(ctx.viewing.lift_id)
-        if lift is None:
-            raise ValueError(f"Lift {ctx.viewing.lift_id} must exist when panel shows lift")
-        chart = ProfileChart(height=ChartConfig.LIFT_PROFILE_HEIGHT, width=ChartConfig.WIDE_WIDTH)
-        fig = chart.render_lift(lift=lift, graph=graph)
-        st.plotly_chart(fig, key="lift_full_profile")
-
-    # Full-width profile for viewing road
-    if sm.is_idle_viewing_road and ctx.viewing.road_id:
-        road = graph.roads.get(ctx.viewing.road_id)
-        if road is None:
-            raise ValueError(f"Road {ctx.viewing.road_id} must exist when panel shows road")
-        chart = ProfileChart(height=ChartConfig.PROFILE_HEIGHT_MEDIUM, width=ChartConfig.WIDE_WIDTH)
-        fig = chart.render_road(road=road, graph=graph)
-        st.plotly_chart(fig, key="road_full_profile")
 
 
 if __name__ == "__main__":

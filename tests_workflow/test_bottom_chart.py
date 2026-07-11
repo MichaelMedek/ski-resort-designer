@@ -6,23 +6,30 @@ M = 111320.0
 class TestProfileChartRendering:
     """Tests for elevation profile chart rendering."""
 
-    def test_proposal_chart_renders(self, path_points_blue) -> None:
-        """ProfileChart can render a proposal."""
+    def test_building_profile_uses_steepest_section_metric(self, empty_graph) -> None:
+        """Regression: the in-build profile colors by the SAME steepest-section metric
+        as the finished slope / map marker — not by average slope (which read gentler
+        and showed the wrong color). steepest_section_pct is the single source.
+        """
+        from skiresort_planner.constants import StyleConfig
+        from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
+        from skiresort_planner.model.path_point import PathPoint
         from skiresort_planner.model.proposed_path import ProposedPathSegment
-        from skiresort_planner.ui.bottom_chart import ProfileChart
+        from skiresort_planner.model.segment_path import steepest_section_pct
+        from skiresort_planner.ui.bottom_chart import render_building_profile
 
-        proposal = ProposedPathSegment(
-            points=path_points_blue,
-            target_slope_pct=20.0,
-            target_difficulty="blue",
-            sector_name="Test",
-        )
+        # A long segment whose steepest 300m section is markedly steeper than its average.
+        pts = [PathPoint(lon=0.0, lat=-d / M, elevation=2000.0 - e) for d, e in [(0, 0), (300, 120), (700, 150)]]
+        empty_graph.commit_paths(paths=[ProposedPathSegment(points=pts, target_difficulty="red")])
+        seg_ids = list(empty_graph.segments.keys())
+        segs = [empty_graph.segments[s] for s in seg_ids]
 
-        chart = ProfileChart(width=800, height=300)
-        fig = chart.render_proposal(proposal=proposal, proposed_segment_title="Test Segment")
+        expected = TerrainAnalyzer.classify_difficulty(slope_pct=steepest_section_pct(segments=segs))
+        expected_color = StyleConfig.SLOPE_COLORS[expected]
 
-        assert fig is not None, "Should produce a figure"
-        assert len(fig.data) > 0, "Figure should have data traces"
+        fig = render_building_profile(building_segments=seg_ids, building_name="WIP", graph=empty_graph)
+        line_colors = [tr.line.color for tr in fig.data if tr.line and tr.line.color]
+        assert expected_color in line_colors, f"building profile must color by steepest section ({expected})"
 
     def test_segment_chart_renders(self, empty_graph, path_points_blue) -> None:
         """ProfileChart can render a committed segment."""
@@ -39,7 +46,7 @@ class TestProfileChartRendering:
         graph.commit_paths(paths=[proposal])
         segment = list(graph.segments.values())[0]
 
-        chart = ProfileChart(width=800, height=300)
+        chart = ProfileChart(height=300)
         fig = chart.render_segment(segment=segment, difficulty="blue", title="Test Segment")
 
         assert fig is not None, "Should produce a figure"
@@ -53,7 +60,7 @@ class TestProfileChartRendering:
         empty_graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         slope = empty_graph.finish_slope(segment_ids=list(empty_graph.segments.keys()))
 
-        fig = ProfileChart(width=800, height=300).render_slope(slope=slope, graph=empty_graph)
+        fig = ProfileChart(height=300).render_slope(slope=slope, graph=empty_graph)
         assert len(fig.data) > 0
 
     def test_road_chart_renders_brown_with_climb_stats(self, empty_graph) -> None:
@@ -69,7 +76,7 @@ class TestProfileChartRendering:
         )
         road = empty_graph.finish_road(segment_ids=[list(empty_graph.segments.keys())[-1]])
 
-        fig = ProfileChart(width=800, height=300).render_road(road=road, graph=empty_graph)
+        fig = ProfileChart(height=300).render_road(road=road, graph=empty_graph)
         assert len(fig.data) > 0
 
     def test_comparison_chart_overlays_all_proposals(self, path_points_blue) -> None:
@@ -81,7 +88,7 @@ class TestProfileChartRendering:
             ProposedPathSegment(points=path_points_blue, target_difficulty="blue"),
             ProposedPathSegment(points=path_points_blue, target_difficulty="blue"),
         ]
-        fig = ProfileChart(width=800, height=300).render_comparison(proposals=proposals)
+        fig = ProfileChart(height=300).render_comparison(proposals=proposals)
         assert len(fig.data) == len(proposals)
 
     def test_lift_chart_renders_terrain_cable_pylons(self, empty_graph, mock_dem_blue_slope) -> None:
@@ -97,7 +104,7 @@ class TestProfileChartRendering:
         )
         lift = empty_graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
 
-        fig = ProfileChart(width=800, height=300).render_lift(lift=lift, graph=empty_graph)
+        fig = ProfileChart(height=300).render_lift(lift=lift, graph=empty_graph)
         assert len(fig.data) > 0
 
     def test_building_profile_slope(self, empty_graph, path_points_blue) -> None:
@@ -153,11 +160,44 @@ class TestProfileChartRendering:
         fig = render_building_profile(building_segments=[seg_id], building_name="Reloaded Road", graph=empty_graph)
         assert len(fig.data) > 0
 
-    def test_proposal_preview_convenience(self, path_points_blue) -> None:
-        """render_proposal_preview renders the selected proposal."""
+    def test_viewing_profile_slope(self, empty_graph, path_points_blue) -> None:
+        """render_viewing_profile renders a finished slope's profile (kind-driven)."""
         from skiresort_planner.model.proposed_path import ProposedPathSegment
-        from skiresort_planner.ui.bottom_chart import render_proposal_preview
+        from skiresort_planner.ui.bottom_chart import render_viewing_profile
+        from skiresort_planner.ui.context import EntityKind
 
-        proposals = [ProposedPathSegment(points=path_points_blue, target_difficulty="blue")]
-        fig = render_proposal_preview(proposals=proposals, selected_idx=0)
+        empty_graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        slope = empty_graph.finish_slope(segment_ids=list(empty_graph.segments.keys()))
+        fig = render_viewing_profile(kind=EntityKind.SLOPE, entity_id=slope.id, graph=empty_graph)
+        assert len(fig.data) > 0
+
+    def test_viewing_profile_road(self, empty_graph, path_points_blue) -> None:
+        """render_viewing_profile renders a finished road's profile."""
+        from skiresort_planner.model.path_segment import SegmentKind
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
+        from skiresort_planner.ui.bottom_chart import render_viewing_profile
+        from skiresort_planner.ui.context import EntityKind
+
+        empty_graph.commit_paths(
+            paths=[ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)],
+            record_undo=False,
+        )
+        road = empty_graph.finish_road(segment_ids=[list(empty_graph.segments.keys())[-1]])
+        fig = render_viewing_profile(kind=EntityKind.ROAD, entity_id=road.id, graph=empty_graph)
+        assert len(fig.data) > 0
+
+    def test_viewing_profile_lift(self, empty_graph, mock_dem_blue_slope) -> None:
+        """render_viewing_profile renders a lift's profile."""
+        from skiresort_planner.ui.bottom_chart import render_viewing_profile
+        from skiresort_planner.ui.context import EntityKind
+
+        dem = mock_dem_blue_slope
+        bottom, _ = empty_graph.get_or_create_node(
+            lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M)
+        )
+        top, _ = empty_graph.get_or_create_node(
+            lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)
+        )
+        lift = empty_graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
+        fig = render_viewing_profile(kind=EntityKind.LIFT, entity_id=lift.id, graph=empty_graph)
         assert len(fig.data) > 0

@@ -26,7 +26,6 @@ from skiresort_planner.constants import (
 from skiresort_planner.model.message import (
     FileLoadErrorMessage,
 )
-from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.resort_graph import (
     ActionType,
     AddLiftAction,
@@ -41,6 +40,7 @@ from skiresort_planner.model.resort_graph import (
 )
 from skiresort_planner.persistence import backup_store
 from skiresort_planner.ui.actions import bump_map_version, reload_map, trigger_rerun, undo_last_action
+from skiresort_planner.ui.context import EntityKind
 from skiresort_planner.ui.state_machine import (
     BuildMode,
     PlannerContext,
@@ -62,19 +62,12 @@ def _describe_undo_action(action: UndoAction, graph: ResortGraph) -> str:
     if action.action_type.name == ActionType.ADD_SEGMENTS.name:
         act = cast(AddSegmentsAction, action)
         n_segments = len(act.segment_ids)
-        # Roads commit via the same AddSegmentsAction path — say slope/road by kind.
+        # Roads commit via the same AddSegmentsAction path — name slope/road by kind.
         first_seg = graph.segments.get(act.segment_ids[0]) if act.segment_ids else None
         if first_seg is None:
             raise RuntimeError(f"AddSegmentsAction references missing segment {act.segment_ids}")
-        # Compare by == not `is`: Streamlit module reloads make identity checks
-        # unreliable across a fresh SegmentKind class (str-Enum equality is by value).
-        if first_seg.kind == SegmentKind.ROAD:
-            what = "road"
-        elif first_seg.kind == SegmentKind.SLOPE:
-            what = "slope"
-        else:
-            raise RuntimeError(f"Unknown segment kind {first_seg.kind} for {first_seg.id}")
-        return f"Remove {n_segments} segment(s) from current {what}"
+        # SegmentKind is a str-Enum, so .value ("slope"/"road") is reload-safe.
+        return f"Remove {n_segments} segment(s) from current {first_seg.kind.value}"
 
     elif action.action_type.name == ActionType.FINISH_SLOPE.name:
         act = cast(FinishSlopeAction, action)
@@ -372,12 +365,12 @@ class SidebarRenderer:
         viewing_lift = self.sm.is_idle_viewing_lift
         viewing_road = self.sm.is_idle_viewing_road
 
-        if viewing_slope:
-            st.markdown("### 👁️ Viewing Slope")
-        elif viewing_lift:
-            st.markdown("### 👁️ Viewing Lift")
-        elif viewing_road:
-            st.markdown("### 👁️ Viewing Road")
+        # Header + body both derive from this one entity so a viewed kind can't drift.
+        viewing = self.sm.viewing_entity  # (EntityKind, id) or None
+        viewing_kind = viewing[0] if viewing is not None else None
+
+        if viewing_kind is not None:
+            st.markdown(f"### 👁️ Viewing {viewing_kind.value.capitalize()}")
         elif self.sm.is_any_slope_state:
             st.markdown("### 🏗️ Building Slope...")
         elif self.sm.is_lift_placing:
@@ -386,29 +379,28 @@ class SidebarRenderer:
             st.markdown("### 🏗️ Building Road...")
         else:
             # All Idle* states (IdleReady, IdleViewing*)
-            st.markdown("### ⛷️🚡 Ready to Build")
+            st.markdown(
+                f"### {StyleConfig.SLOPE_ICON}{StyleConfig.ROAD_ICON}{StyleConfig.LIFT_ICONS['gondola']} Ready to Build"
+            )
 
         # Buttons disabled during building/placing
         buttons_disabled = self.sm.is_any_slope_state or self.sm.is_lift_placing or self.sm.is_any_road_state
         current_mode = self.ctx.build_mode.mode
 
-        # Note: viewing_slope and viewing_lift already computed above for header
         if buttons_disabled:
             st.caption("⏳ Complete or cancel current build to change type")
-        elif viewing_slope:
-            st.markdown("- ✖️ **Close** the right panel to return\n- 🗺️ Click terrain/node → new slope")
-        elif viewing_lift:
-            st.markdown(
-                "- 🔄 Use lift buttons to change type\n"
-                "- ✖️ **Close** the right panel to return\n"
-                "- 🗺️ Click terrain/node → new lift"
-            )
+        elif viewing_kind is not None:
+            # Same body for every viewed kind; only lifts add a change-type line.
+            lines = ["- 🔄 Use lift buttons to change type"] if viewing_kind is EntityKind.LIFT else []
+            lines.append("- ✖️ **Close** the right panel to return")
+            lines.append(f"- 🗺️ Click terrain/node → new {viewing_kind.value}")
+            st.markdown("\n".join(lines))
         else:
             # All Idle* states without viewing panel
             st.markdown(
                 "- 🔘 Select **Slope**, **Road** or **Lift** type below\n"
                 "- 🗺️ Click terrain/node → start building\n"
-                "- 👁️ Click existing slope/lift → view stats"
+                "- 👁️ Click existing slope/road/lift → view stats"
             )
 
         # Build type options for lifts (2x2 grid)

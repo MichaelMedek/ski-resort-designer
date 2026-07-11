@@ -38,6 +38,7 @@ from skiresort_planner.ui.actions import (
     reload_map,
     trigger_rerun,
 )
+from skiresort_planner.ui.context import EntityKind
 from skiresort_planner.ui.state_machine import PlannerContext, PlannerStateMachine
 
 if TYPE_CHECKING:
@@ -55,12 +56,12 @@ logger = logging.getLogger(__name__)
 
 @st.dialog("Confirm Delete")
 def _confirm_delete_dialog(
-    entity_type: str,
+    kind: EntityKind,
     entity_name: str,
     entity_id: str,
     delete_fn: Callable[[str], bool],
 ) -> None:
-    """Show confirmation dialog before deleting a slope or lift."""
+    """Show confirmation dialog before deleting a slope, road, or lift."""
     st.write(f"Are you sure you want to delete **{entity_name}**?")
     st.caption("This action can be undone using the Undo button.")
 
@@ -68,7 +69,7 @@ def _confirm_delete_dialog(
     with col_yes:
         if st.button("🗑️ Yes, Delete", type="primary", use_container_width=True):
             if delete_fn(entity_id):
-                logger.info(f"Deleted {entity_type} {entity_name} (id={entity_id})")
+                logger.info(f"Deleted {kind.value} {entity_name} (id={entity_id})")
             # Action functions handle state transition and map version bump
             trigger_rerun()
     with col_no:
@@ -81,11 +82,12 @@ def _confirm_delete_dialog(
 # =============================================================================
 
 
-def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, entity_type: str, entity_id: str) -> None:
+def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, kind: EntityKind, entity_id: str) -> None:
     """Render 3D/2D view toggle button. Calls reload_map() if button is clicked."""
+    noun = kind.value
     if ctx.viewing.view_3d:
-        if st.button("🗺️ Return to 2D View", key=f"{entity_type}_2d_view", use_container_width=True):
-            logger.info(f"Switching to 2D view from {entity_type} {entity_id}")
+        if st.button("🗺️ Return to 2D View", key=f"{noun}_2d_view", use_container_width=True):
+            logger.info(f"Switching to 2D view from {noun} {entity_id}")
             ctx.viewing.disable_3d()
             # Reset pitch, bearing, and zoom to top-down 2D view
             ctx.map.pitch = MapConfig.DEFAULT_PITCH
@@ -93,14 +95,9 @@ def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, entity_typ
             ctx.map.zoom = MapConfig.DEFAULT_ZOOM
             # Update map center to entity center so we don't jump to stale position.
             # The viewed entity is guaranteed to exist (caller validated it).
-            if entity_type in ("slope", "road"):
+            if kind is EntityKind.SLOPE or kind is EntityKind.ROAD:
                 # Both are segment groups → center on their segment endpoints.
-                if entity_type == "slope":
-                    owner = graph.slopes[entity_id]
-                elif entity_type == "road":
-                    owner = graph.roads[entity_id]
-                else:
-                    raise ValueError(f"Unknown {entity_type=}")
+                owner = graph.slopes[entity_id] if kind is EntityKind.SLOPE else graph.roads[entity_id]
                 lats, lons = [], []
                 for seg_id in owner.segment_ids:
                     seg = graph.segments[seg_id]
@@ -110,23 +107,23 @@ def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, entity_typ
                     lons.append(seg.points[-1].lon)
                 ctx.map.lat = sum(lats) / len(lats)
                 ctx.map.lon = sum(lons) / len(lons)
-            elif entity_type == "lift":
+            elif kind is EntityKind.LIFT:
                 lift = graph.lifts[entity_id]
                 start_node = graph.nodes[lift.start_node_id]
                 end_node = graph.nodes[lift.end_node_id]
                 ctx.map.lat = (start_node.lat + end_node.lat) / 2
                 ctx.map.lon = (start_node.lon + end_node.lon) / 2
             else:
-                raise ValueError(f"Unknown {entity_type=}")
+                raise ValueError(f"Unknown {kind=}")
             reload_map()  # Never returns - raises StopExecution
     else:
         if st.button(
             "🏔️ View in 3D",
-            key=f"{entity_type}_3d_view",
+            key=f"{noun}_3d_view",
             use_container_width=True,
-            help=f"View {entity_type} from the side with terrain",
+            help=f"View {noun} from the side with terrain",
         ):
-            logger.info(f"Switching to 3D view for {entity_type} {entity_id}")
+            logger.info(f"Switching to 3D view for {noun} {entity_id}")
             ctx.viewing.enable_3d()
             reload_map()  # Never returns - raises StopExecution
 
@@ -135,20 +132,21 @@ def _render_close_delete_buttons(
     sm: PlannerStateMachine,
     ctx: PlannerContext,
     graph: ResortGraph,
-    entity_type: str,
+    kind: EntityKind,
     entity_id: str,
     entity: "Slope | Lift | Road",
     delete_fn: Callable[[str], bool],
 ) -> None:
     """Render close and delete buttons. Triggers state transition or opens dialog."""
+    noun = kind.value
     col_close, col_delete = st.columns(2)
     with col_close:
         if st.button(
             "✖️ Close",
-            key=f"close_{entity_type}",
+            key=f"close_{noun}",
             help="Close this panel to start building new slopes and lifts",
         ):
-            logger.info(f"Closing {entity_type} panel for {entity_id}")
+            logger.info(f"Closing {noun} panel for {entity_id}")
             ctx.viewing.disable_3d()
             # Reset pitch and bearing to top-down view (preserve zoom level)
             ctx.map.pitch = MapConfig.DEFAULT_PITCH
@@ -161,11 +159,11 @@ def _render_close_delete_buttons(
         if st.button(
             "🗑️ Delete",
             type="secondary",
-            key=f"delete_{entity_type}",
-            help=f"Permanently remove this {entity_type}",
+            key=f"delete_{noun}",
+            help=f"Permanently remove this {noun}",
         ):
             _confirm_delete_dialog(
-                entity_type=entity_type,
+                kind=kind,
                 entity_name=entity.name,
                 entity_id=entity_id,
                 delete_fn=delete_fn,
@@ -427,13 +425,13 @@ def _render_slope_info_panel(
 
     SlopeStatsPanel(graph=graph).render(slope_id=slope_id)
 
-    _render_3d_toggle_button(ctx=ctx, graph=graph, entity_type="slope", entity_id=slope_id)
+    _render_3d_toggle_button(ctx=ctx, graph=graph, kind=EntityKind.SLOPE, entity_id=slope_id)
 
     _render_close_delete_buttons(
         sm=sm,
         ctx=ctx,
         graph=graph,
-        entity_type="slope",
+        kind=EntityKind.SLOPE,
         entity_id=slope_id,
         entity=slope,
         delete_fn=delete_slope_action,
@@ -456,13 +454,13 @@ def _render_lift_info_panel(
 
     LiftStatsPanel(graph=graph).render(lift_id=lift_id)
 
-    _render_3d_toggle_button(ctx=ctx, graph=graph, entity_type="lift", entity_id=lift_id)
+    _render_3d_toggle_button(ctx=ctx, graph=graph, kind=EntityKind.LIFT, entity_id=lift_id)
 
     _render_close_delete_buttons(
         sm=sm,
         ctx=ctx,
         graph=graph,
-        entity_type="lift",
+        kind=EntityKind.LIFT,
         entity_id=lift_id,
         entity=lift,
         delete_fn=delete_lift_action,
@@ -485,13 +483,13 @@ def _render_road_info_panel(
 
     RoadStatsPanel(graph=graph).render(road_id=road_id)
 
-    _render_3d_toggle_button(ctx=ctx, graph=graph, entity_type="road", entity_id=road_id)
+    _render_3d_toggle_button(ctx=ctx, graph=graph, kind=EntityKind.ROAD, entity_id=road_id)
 
     _render_close_delete_buttons(
         sm=sm,
         ctx=ctx,
         graph=graph,
-        entity_type="road",
+        kind=EntityKind.ROAD,
         entity_id=road_id,
         entity=road,
         delete_fn=delete_road_action,

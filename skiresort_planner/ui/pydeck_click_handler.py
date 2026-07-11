@@ -16,8 +16,6 @@ import pydeck as pdk
 import streamlit as st
 from streamlit_deckgl import st_deckgl  # type: ignore[import-untyped]
 
-from skiresort_planner.constants import ChartConfig
-
 logger = logging.getLogger(__name__)
 
 
@@ -54,7 +52,7 @@ class PydeckClickResult:
 def render_pydeck_map(
     deck: pdk.Deck,
     key: str,
-    height: int = ChartConfig.PROFILE_HEIGHT_LARGE,
+    height: int,
 ) -> PydeckClickResult:
     """Render Pydeck map with full click support including terrain clicks.
 

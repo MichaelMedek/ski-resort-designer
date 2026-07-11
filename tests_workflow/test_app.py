@@ -7,7 +7,9 @@ stubbed st_deckgl so the deck.gl component call returns no event.
 """
 
 import skiresort_planner.app as app
+import skiresort_planner.ui.infra as infra
 import skiresort_planner.ui.pydeck_click_handler as pch
+from skiresort_planner.constants import ChartConfig
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
@@ -37,9 +39,10 @@ def _seed_full_session(fake_st, dem):
 
 
 def _stub_deckgl(monkeypatch, event=None):
-    """Stub st_deckgl + terrain layer so the map render loop needs no browser."""
+    """Stub st_deckgl + terrain layer + window-height JS so the map render loop needs no browser."""
     monkeypatch.setattr(pch, "st_deckgl", lambda *a, **k: event)
     monkeypatch.setattr(app, "create_aws_terrain_layer", lambda *a, **k: object())
+    monkeypatch.setattr(infra, "streamlit_js_eval", lambda *a, **k: 1080)  # browser height resolved
 
 
 class TestSessionHelpers:
@@ -76,6 +79,49 @@ class TestSessionHelpers:
         assert app.load_dem_data() is True
 
 
+class TestMapHeight:
+    """viewport_map_height: js-eval read + session_state cache + chrome/floor math."""
+
+    def test_none_before_first_resolve(self, fake_st, monkeypatch) -> None:
+        # js-eval returns None and nothing cached yet → None (caller shows placeholder).
+        monkeypatch.setattr(infra, "streamlit_js_eval", lambda *a, **k: None)
+        assert infra.viewport_map_height() is None
+
+    def test_resolves_caches_and_subtracts_chrome(self, fake_st, monkeypatch) -> None:
+        monkeypatch.setattr(infra, "streamlit_js_eval", lambda *a, **k: 1080.0)
+        assert infra.viewport_map_height() == 1080 - ChartConfig.MAP_CHROME_OFFSET_PX
+        assert fake_st.session_state["window_height_px"] == 1080
+
+    def test_uses_cache_when_js_returns_none(self, fake_st, monkeypatch) -> None:
+        # After a real value is cached, a later None-returning rerun keeps the map sized.
+        fake_st.session_state["window_height_px"] = 900
+        monkeypatch.setattr(infra, "streamlit_js_eval", lambda *a, **k: None)
+        assert infra.viewport_map_height() == 900 - ChartConfig.MAP_CHROME_OFFSET_PX
+
+    def test_short_window_clamped_to_min(self, fake_st, monkeypatch) -> None:
+        monkeypatch.setattr(infra, "streamlit_js_eval", lambda *a, **k: 300)
+        assert infra.viewport_map_height() == ChartConfig.MAP_MIN_HEIGHT_PX
+
+    def test_reserved_space_shrinks_map(self, fake_st, monkeypatch) -> None:
+        # Reserving room for a profile below the map subtracts from its height.
+        monkeypatch.setattr(infra, "streamlit_js_eval", lambda *a, **k: 1080.0)
+        full = infra.viewport_map_height(reserved_below_px=0)
+        reserved = infra.viewport_map_height(reserved_below_px=ChartConfig.MAP_PROFILE_RESERVE_PX)
+        assert reserved == full - ChartConfig.MAP_PROFILE_RESERVE_PX
+
+    def test_first_render_shows_message_and_skips_map(self, fake_st, monkeypatch, mock_dem_blue_slope) -> None:
+        # window height None and nothing cached → return early, never call st_deckgl.
+        _stub_deckgl(monkeypatch)
+        monkeypatch.setattr(infra, "streamlit_js_eval", lambda *a, **k: None)
+        _seed_full_session(fake_st, mock_dem_blue_slope)
+        called = {"deck": False}
+        monkeypatch.setattr(pch, "st_deckgl", lambda *a, **k: called.__setitem__("deck", True))
+
+        app._render_map_fragment_inner()
+
+        assert called["deck"] is False  # map render skipped until height known
+
+
 class TestRenderLoop:
     """Drive the full UI render loop for each build state (no raise, real path)."""
 
@@ -89,9 +135,14 @@ class TestRenderLoop:
         graph, sm, ctx = _seed_full_session(fake_st, mock_dem_blue_slope)
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
-        sm.show_slope_info_panel(slope_id=slope.id)  # exercises full-width slope profile
+        sm.show_slope_info_panel(slope_id=slope.id)
+        keys: list[str] = []
+        fake_st.plotly_chart = lambda *a, **k: keys.append(k.get("key"))
 
         app._run_app_ui()
+
+        # The viewing profile renders below the map (same slot as the in-build profile).
+        assert "viewing_profile" in keys
 
     def test_run_app_ui_viewing_road(self, fake_st, monkeypatch, mock_dem_blue_slope, path_points_blue) -> None:
         _stub_deckgl(monkeypatch)
