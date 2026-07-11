@@ -1,9 +1,9 @@
 """Connection Path Planner - Grid-based Dijkstra for generating paths to specific target points.
 
-This module provides an algorithm for generating ski paths that connect
-a start point to a user-specified target point. Unlike fan generation which
-radiates paths in natural directions, connection paths must reach a specific
-destination while maintaining a target effective slope.
+This module provides a domain-agnostic algorithm for generating a path that connects
+a start point to a user-specified target point while holding a target grade. Callers
+supply the target grade and whether climbing is allowed; the planner knows nothing
+about pistes or roads.
 
 Uses SciPy's optimized sparse graph Dijkstra for performance, followed by
 cubic spline smoothing to eliminate grid artifacts.
@@ -55,14 +55,16 @@ class LeastCostPathPlanner:
     5. Resample at regular intervals with DEM elevation lookups
 
     Cost Function:
-        cost(edge) = distance × exp(|actual_slope - target_slope| / σ) × uphill_penalty
+        cost(edge) = distance × exp(|actual_grade - target_grade| / σ) × uphill_penalty
 
     Where:
-    - σ (COST_SIGMA) controls sensitivity (smaller = stricter slope matching)
-    - uphill_penalty = 1.0 if downhill, exp(|slope|/σ) if uphill
+    - σ (COST_SIGMA) controls sensitivity (smaller = stricter grade matching)
+    - uphill_penalty = 1.0 if downhill, exp(|grade|/σ) if uphill (only when
+      allow_uphill is False)
 
-    This exponential cost heavily penalizes slope deviations, causing the
-    algorithm to prefer longer traverses over steep shortcuts.
+    This exponential cost heavily penalizes grade deviations, causing the algorithm to
+    prefer longer traverses over steep shortcuts — so a gentle target grade serpentines
+    on steep ground instead of exceeding it.
 
     Configuration: See PlannerConfig in constants.py for tunable parameters.
     """
@@ -84,38 +86,30 @@ class LeastCostPathPlanner:
         target_lon: float,
         target_lat: float,
         target_elevation: float,
-        target_slope_pct: float,
+        target_grade_pct: float,
         side: str,
-        gradient_band: Optional[tuple[float, float]] = None,
+        allow_uphill: bool = False,
         incoming_bearing: Optional[float] = None,
         earthwork_tolerance_m: float = 0.0,
     ) -> Optional[ProposedPathSegment]:
-        """Plan path using grid-based Dijkstra search.
+        """Plan a least-cost path that holds a target grade from start to target.
 
         Args:
-            start_lon, start_lat, start_elevation: Starting point
-            target_lon, target_lat, target_elevation: Target point
-            target_slope_pct: Target effective slope percentage (slope mode)
-            side: "left" or "right" - preferred side of direct line
-            gradient_band: Optional (min_pct, max_pct) signed gradient band. When
-                given (road mode), the cost stays flat inside the band and only
-                penalizes leaving it, with no uphill penalty — cars may climb.
-                When None (slope mode), behavior is unchanged.
-            incoming_bearing: Optional heading (deg) the path arrives at the start
-                node with, from the previous committed segment. When given, a light
-                distance-decaying turn penalty biases the first edges to continue
-                roughly in-line (momentum, no kink at the junction). None → no
-                momentum (first segment / slope fan — unchanged behavior).
-            earthwork_tolerance_m: Max metres a ROAD may cut below / fill above the
-                natural ground to hold a gentler grade (cut-and-fill). 0 for slopes
-                (they lie on the snow surface — unchanged). Endpoints stay on the
-                ground; only the interior deviates, tapering to 0 at both ends.
+            start_lon/lat/elevation, target_lon/lat/elevation: the two endpoints.
+            target_grade_pct: signed grade the path aims to hold (+ = descending).
+            side: "left" or "right" preference (currently a no-op, see _calc_edge_cost).
+            allow_uphill: if False the path must net-descend and climbing is penalized
+                (skiable pistes); if True it may climb or descend freely (vehicle roads).
+            incoming_bearing: heading (deg) inherited from a prior segment; adds a
+                decaying turn penalty so the path leaves in-line (no kink). None → off.
+            earthwork_tolerance_m: max cut/fill (m) the interior may use to gentle the
+                grade; 0 keeps every point on the ground. Endpoints always stay on ground.
 
         Returns:
             ProposedPathSegment if path found, None otherwise.
         """
-        # Slope mode requires net descent; road mode may climb or descend.
-        if gradient_band is None and start_elevation - target_elevation <= 0:
+        # Descent-only paths need a net drop; climb-capable paths may go either way.
+        if (not allow_uphill) and (start_elevation - target_elevation <= 0):
             return None
 
         direct_distance_m = GeoCalculator.haversine_distance_m(
@@ -144,11 +138,11 @@ class LeastCostPathPlanner:
             elevations=elevations,
             start=start_node,
             target=target_node,
-            target_slope_pct=target_slope_pct,
+            target_grade_pct=target_grade_pct,
             side=side,
             lons=lons,
             lats=lats,
-            gradient_band=gradient_band,
+            allow_uphill=allow_uphill,
             incoming_bearing=incoming_bearing,
         )
 
@@ -166,17 +160,17 @@ class LeastCostPathPlanner:
         # Smooth the grid path using spline interpolation
         points = self._smooth_path_spline(
             points=raw_points,
-            target_slope_pct=target_slope_pct,
+            target_grade_pct=target_grade_pct,
             incoming_bearing=incoming_bearing,
         )
 
-        # Road earthwork: let the interior cut/fill within tolerance to gentle the
-        # grade (endpoints stay on the ground). No-op when tolerance is 0 (slopes).
+        # Let the interior cut/fill within tolerance to gentle the grade (endpoints stay
+        # on the ground). No-op when tolerance is 0.
         points = self._apply_earthwork_allowance(points=points, tolerance_m=earthwork_tolerance_m)
 
         return ProposedPathSegment(
             points=points,
-            target_slope_pct=target_slope_pct,
+            target_slope_pct=target_grade_pct,
             is_connector=True,
         )
 
@@ -190,10 +184,10 @@ class LeastCostPathPlanner:
     ) -> Optional[tuple[list[list[float]], list[list[float]], list[list[float]], GridNode, GridNode]]:
         """Build elevation grid covering the search area."""
         # Calculate grid bounds with buffer
-        # TODO(serpentine): this buffer (0.5×direct) is too tight for road
-        # switchbacks — a zig-zag needs much more lateral room than a slope.
-        # A serpentine road redesign (see _calc_edge_cost FIXME) should widen this
-        # for road mode so in-band switchbacks physically fit in the search grid.
+        # TODO(serpentine): this buffer (0.5×direct) is too tight for switchbacks — a
+        # zig-zag needs much more lateral room than a near-straight line. When a gentle
+        # target grade forces serpentining on steep ground, widen this buffer so those
+        # switchbacks physically fit in the search grid instead of being clipped.
         buffer_m = direct_distance * PlannerConfig.GRID_BUFFER_FACTOR
         total_extent = direct_distance + 2 * buffer_m
 
@@ -301,11 +295,11 @@ class LeastCostPathPlanner:
         elevations: list[list[float]],
         start: GridNode,
         target: GridNode,
-        target_slope_pct: float,
+        target_grade_pct: float,
         side: str,
         lons: list[list[float]],
         lats: list[list[float]],
-        gradient_band: Optional[tuple[float, float]] = None,
+        allow_uphill: bool = False,
         incoming_bearing: Optional[float] = None,
     ) -> tuple[Optional[list[GridNode]], int, int]:
         """Least-cost path using SciPy's C-optimized Dijkstra.
@@ -359,11 +353,11 @@ class LeastCostPathPlanner:
                         from_lat=from_lat,
                         to_lon=to_lon,
                         to_lat=to_lat,
-                        target_slope_pct=target_slope_pct,
+                        target_grade_pct=target_grade_pct,
                         side=side,
                         target_lon=t_lon,
                         target_lat=t_lat,
-                        gradient_band=gradient_band,
+                        allow_uphill=allow_uphill,
                         incoming_bearing=incoming_bearing,
                         start_lon=s_lon,
                         start_lat=s_lat,
@@ -423,41 +417,29 @@ class LeastCostPathPlanner:
         from_lat: float,
         to_lon: float,
         to_lat: float,
-        target_slope_pct: float,
+        target_grade_pct: float,
         side: str,
         target_lon: float,
         target_lat: float,
-        gradient_band: Optional[tuple[float, float]] = None,
+        allow_uphill: bool = False,
         incoming_bearing: Optional[float] = None,
         start_lon: Optional[float] = None,
         start_lat: Optional[float] = None,
     ) -> float:
-        """Cost function: distance weighted by a slope penalty.
+        """Edge cost = distance × exp(|actual_grade − target_grade| / σ) × uphill.
 
-        Slope mode (gradient_band is None): two soft constraints —
-        exponential penalty for deviation from target_slope_pct, plus an
-        exponential uphill penalty (zero downhill, grows uphill).
+        The exponential attractor pulls the path toward target_grade_pct; on steep
+        ground a gentle target can't be held straight, so the path serpentines. When
+        allow_uphill is False an extra penalty discourages climbing (descent-only
+        pistes); when True climbing is free (the signed target already sets direction).
+        It's a soft preference — any hard cap is enforced by the caller.
 
-        Road mode (gradient_band = (min_pct, max_pct)): cost is flat inside
-        the band and grows exponentially with the signed distance *outside*
-        it, with NO uphill penalty — cars may climb within the band.
+        Momentum (incoming_bearing set): a decaying turn penalty near the start node
+        keeps the path leaving in-line (no kink), fading to nothing by MOMENTUM_DECAY_M.
 
-        No hard cutoffs - allows occasional band excursions due to DEM noise.
-
-        Momentum (incoming_bearing set): a light, distance-decaying turn penalty
-        multiplies the base cost so edges leaving the start node roughly in-line
-        with the incoming heading are cheaper. Decays to 1.0 (no effect) by MOMENTUM_DECAY_M
-        from the start, so mid-segment routing is untouched. Needs start_lon/lat.
-
-        FIXME(side-bias): `side` ("left"/"right") AND `target_lon`/`target_lat` are
-        currently DEAD — this cost is purely position/slope-based and never reads
-        them, so a left and a right plan trace the IDENTICAL least-cost route. All
-        three are kept in the signature (and threaded from plan()/_graph_dijkstra)
-        for the planned side-aware upgrade: a signed cross-track bias term needs the
-        direct start→target line (target_lon/lat) and which side to prefer (side) —
-        mirror PathTracer.trace_downhill's `side_sign` — or an any-angle/heading-aware
-        planner would make left/right diverge into a real choice. Until then, callers
-        generate a single side (see PathFactory.generate_manual_paths road config).
+        FIXME(side-bias): `side`, `target_lon`, `target_lat` are DEAD — cost is
+        grade/position only, so left and right trace the same route. Kept for a future
+        side-aware (cross-track) or heading-aware planner; until then callers emit one side.
         """
         # Horizontal distance
         horiz_dist = GeoCalculator.haversine_distance_m(lat1=from_lat, lon1=from_lon, lat2=to_lat, lon2=to_lon)
@@ -465,42 +447,20 @@ class LeastCostPathPlanner:
         if horiz_dist < 0.1:
             return float("inf")
 
-        # Actual slope (positive = downhill, negative = uphill)
+        # Actual grade (positive = downhill, negative = uphill)
         drop = from_elev - to_elev
-        actual_slope = (drop / horiz_dist) * 100
+        actual_grade = (drop / horiz_dist) * 100
 
-        if gradient_band is not None:
-            # Road mode: soft penalty ramps from the COMFORT threshold (12%), NOT
-            # the hard cap (15%) — so Dijkstra prefers gentler lines and fewer
-            # near-limit routes get traced only to be hard-capped-and-refused by
-            # the caller. The hard cap stays the true validity limit.
-            soft = PathConfig.ROAD_SOFT_GRADIENT_PCT
-            over = max(0.0, abs(actual_slope) - soft)
-            # FIXME(serpentine): this SOFT penalty (now knee'd at the 12% comfort
-            # threshold) still lets Dijkstra prefer a short out-of-band route over a
-            # long in-band switchback — so on steep terrain roads still exceed the
-            # band instead of zig-zagging (the caller then hard-caps and refuses).
-            # To make roads serpentine "like a green slope always works", redesign
-            # to EITHER:
-            #   (a) hard cutoff: return inf when the slope exceeds the hard cap so
-            #       Dijkstra only routes through in-band cells, AND widen the grid
-            #       buffer (see _build_grid) so switchbacks fit; expose ONE
-            #       user-tunable "max detour" knob; OR
-            #   (b) replace grid-Dijkstra for roads with an angle-based tracer that
-            #       lays fixed-grade zig-zag legs (mirror PathTracer.trace_downhill /
-            #       DETAILS.md §3 traverse-angle math).
-            # Deferred intentionally — see plan. Keep the soft form for now.
-            base_cost = horiz_dist * exp(over / PlannerConfig.COST_SIGMA)
-        else:
-            # Slope mode: deviation-from-target penalty + uphill penalty.
-            slope_diff = abs(actual_slope - target_slope_pct)
-            slope_cost = exp(slope_diff / PlannerConfig.COST_SIGMA)
+        # Attractor: exponential penalty for deviating from the target grade.
+        grade_cost = exp(abs(actual_grade - target_grade_pct) / PlannerConfig.COST_SIGMA)
 
-            uphill_penalty = 1.0
-            if actual_slope < 0:
-                uphill_penalty = exp(abs(actual_slope) / PlannerConfig.COST_SIGMA)
+        # Penalize climbing unless the caller allows it (target grade already carries
+        # the intended direction when uphill is permitted).
+        uphill_penalty = 1.0
+        if not allow_uphill and actual_grade < 0:
+            uphill_penalty = exp(abs(actual_grade) / PlannerConfig.COST_SIGMA)
 
-            base_cost = horiz_dist * slope_cost * uphill_penalty
+        base_cost = horiz_dist * grade_cost * uphill_penalty
 
         return base_cost * self._momentum_multiplier(
             from_lon=from_lon,
@@ -664,7 +624,7 @@ class LeastCostPathPlanner:
     def _smooth_path_spline(
         self,
         points: list[PathPoint],
-        target_slope_pct: float,
+        target_grade_pct: float,
         step_m: float = 7.0,
         incoming_bearing: Optional[float] = None,
     ) -> list[PathPoint]:
@@ -676,11 +636,11 @@ class LeastCostPathPlanner:
 
         Args:
             points: Raw grid path points
-            target_slope_pct: Target slope - controls smoothing aggressiveness
+            target_grade_pct: Target grade - gentler targets get more aggressive smoothing
             step_m: Output point spacing in meters (default 7m)
             incoming_bearing: Optional heading (deg) the path arrives with. When set,
                 the join region (first MOMENTUM_DECAY_M) is gently nudged toward that
-                heading BEFORE the spline pass, so the road leaves the node in-line
+                heading BEFORE the spline pass, so the path leaves the node in-line
                 instead of kinking. The nudge is bounded (MAX_TURN_PER_STEP_DEG),
                 decays to zero over the region, and never moves the anchor point;
                 elevations are still DEM-sourced below, so it cannot invent terrain.
@@ -712,7 +672,7 @@ class LeastCostPathPlanner:
         # Green: 4.0 for flowing traverses
         # Blue: 3.0 for moderate smoothing
         # Red/Black: 2.0 for nearly straight paths
-        difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=target_slope_pct)
+        difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=target_grade_pct)
         if difficulty == "green":
             smoothing_factor = 4.0
         elif difficulty == "blue":
