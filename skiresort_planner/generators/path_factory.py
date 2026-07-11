@@ -42,7 +42,7 @@ from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.path_tracer import PathTracer
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
-from skiresort_planner.generators.connection_planners import LeastCostPathPlanner
+from skiresort_planner.generators.connection_planners import GradientMode, LeastCostPathPlanner
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 
@@ -396,7 +396,8 @@ class PathFactory:
         # restore a second RIGHT config here so roads offer a real left/right choice.
         if road_mode:
             # A road holds the direct endpoint grade, clamped to the comfort knee — so on
-            # steep ground it serpentines to hold that gentle grade (§7.3).
+            # steep ground it serpentines to hold that gentle grade (§7.3). Its direction
+            # (up/down) is fixed by the endpoints; the planner keeps the segment monotonic.
             road_grade = self._road_target_grade(
                 start_elevation=start_elevation,
                 target_elevation=target_elevation,
@@ -404,11 +405,13 @@ class PathFactory:
                     lat1=start_lat, lon1=start_lon, lat2=target_lat, lon2=target_lon
                 ),
             )
+            gradient_mode = GradientMode.DOWNHILL if start_elevation >= target_elevation else GradientMode.UPHILL
             configs: list[GradeConfig] = [
                 GradeConfig(difficulty="", grade="road", target_slope_pct=road_grade, side=Side.LEFT),
                 GradeConfig(difficulty="", grade="road", target_slope_pct=road_grade, side=Side.RIGHT),
             ]
         else:
+            gradient_mode = GradientMode.DOWNHILL  # slopes always descend
             configs = [
                 GradeConfig(difficulty=difficulty, grade=grade_name, target_slope_pct=target_slope, side=side_enum)
                 for difficulty in SlopeConfig.DIFFICULTIES
@@ -427,7 +430,7 @@ class PathFactory:
                 target_elevation=target_elevation,
                 target_grade_pct=config.target_slope_pct,
                 side=config.side.value,
-                allow_uphill=road_mode,
+                gradient_mode=gradient_mode,
                 incoming_bearing=incoming_bearing,
             )
             if path is None:

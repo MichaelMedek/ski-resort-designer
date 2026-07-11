@@ -15,8 +15,10 @@ from typing import Optional
 
 import pytest
 
+from skiresort_planner.constants import PlannerConfig
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.generators.connection_planners import (
+    GradientMode,
     GridNode,
     LeastCostPathPlanner,
 )
@@ -430,8 +432,8 @@ class TestPlannerIntegration:
 
 class TestEdgeCostGradeAttractor:
     """The edge cost pulls the path toward target_grade_pct via one exponential
-    attractor. allow_uphill toggles whether climbing is penalized (False = descent-only
-    pistes, True = vehicle roads). The planner is domain-agnostic — no road/slope modes.
+    attractor. gradient_mode sets which way the segment runs: DOWNHILL penalizes
+    climbing, UPHILL penalizes descending. The planner is domain-agnostic.
     """
 
     def _planner(self, mock_dem_blue_slope) -> LeastCostPathPlanner:
@@ -439,7 +441,7 @@ class TestEdgeCostGradeAttractor:
             dem_service=mock_dem_blue_slope, terrain_analyzer=TerrainAnalyzer(dem=mock_dem_blue_slope)
         )
 
-    def _cost(self, planner, from_elev, to_elev, target_grade_pct, allow_uphill):
+    def _cost(self, planner, from_elev, to_elev, target_grade_pct, gradient_mode):
         # 30m east step; deterministic horizontal distance.
         return planner._calc_edge_cost(
             from_elev=from_elev,
@@ -452,51 +454,49 @@ class TestEdgeCostGradeAttractor:
             side="left",
             target_lon=1.0,
             target_lat=0.0,
-            allow_uphill=allow_uphill,
+            gradient_mode=gradient_mode,
         )
 
     def test_cost_minimal_when_edge_matches_target_grade(self, mock_dem_blue_slope) -> None:
         """An edge whose grade equals the target grade has ~no penalty → cost ≈ distance."""
         planner = self._planner(mock_dem_blue_slope)
         # Target 10% descent; a 10% edge (3m drop over 30m) deviates 0.
-        cost = self._cost(planner, 2000.0, 1997.0, target_grade_pct=10.0, allow_uphill=True)
+        cost = self._cost(planner, 2000.0, 1997.0, target_grade_pct=10.0, gradient_mode=GradientMode.DOWNHILL)
         assert cost == pytest.approx(30.0, rel=0.05)
 
     def test_cost_grows_with_deviation_from_target(self, mock_dem_blue_slope) -> None:
         """Deviating from the target grade costs strictly more (the attractor)."""
         planner = self._planner(mock_dem_blue_slope)
-        on_target = self._cost(planner, 2000.0, 1997.0, target_grade_pct=10.0, allow_uphill=True)  # 10% edge
-        off_target = self._cost(planner, 2000.0, 1988.0, target_grade_pct=10.0, allow_uphill=True)  # 40% edge
-        assert off_target > on_target * 2, "large deviation is exponentially penalized"
+        on = self._cost(planner, 2000.0, 1997.0, target_grade_pct=10.0, gradient_mode=GradientMode.DOWNHILL)  # 10%
+        off = self._cost(planner, 2000.0, 1988.0, target_grade_pct=10.0, gradient_mode=GradientMode.DOWNHILL)  # 40%
+        assert off > on * 2, "large deviation is exponentially penalized"
 
-    def test_allow_uphill_drops_the_climb_penalty(self, mock_dem_blue_slope) -> None:
-        """With allow_uphill=True, for the same |deviation| a climbing edge costs the
-        SAME as a descending one — climbing is free (vehicle roads).
-        """
-        planner = self._planner(mock_dem_blue_slope)
-        # Target 0%. A +10% edge and a −10% edge both deviate 10% → equal cost.
-        descend = self._cost(planner, 2000.0, 1997.0, target_grade_pct=0.0, allow_uphill=True)  # 10% down
-        climb = self._cost(planner, 2000.0, 2003.0, target_grade_pct=0.0, allow_uphill=True)  # 10% up
-        assert climb == pytest.approx(descend, rel=1e-9), "no climb penalty when allow_uphill"
-
-    def test_descent_only_reproduces_documented_formula(self, mock_dem_blue_slope) -> None:
-        """allow_uphill=False, downhill edge: cost = dist × exp(|actual−target| / σ)."""
+    def test_downhill_mode_reproduces_documented_formula(self, mock_dem_blue_slope) -> None:
+        """DOWNHILL, downhill edge (with the grade): cost = dist × exp(|actual−target| / σ)."""
         from math import exp
 
         from skiresort_planner.constants import PlannerConfig
         from skiresort_planner.core.geo_calculator import GeoCalculator
 
         planner = self._planner(mock_dem_blue_slope)
-        cost = self._cost(planner, 2000.0, 1994.0, target_grade_pct=0.0, allow_uphill=False)  # 6m drop, target 0
+        cost = self._cost(planner, 2000.0, 1994.0, target_grade_pct=0.0, gradient_mode=GradientMode.DOWNHILL)
         horiz = GeoCalculator.haversine_distance_m(lat1=0.0, lon1=0.0, lat2=0.0, lon2=30.0 / 111320.0)
         actual_grade = (6.0 / horiz) * 100
         expected = horiz * exp(abs(actual_grade - 0.0) / PlannerConfig.COST_SIGMA)
         assert cost == pytest.approx(expected, rel=1e-6)
 
-    def test_descent_only_penalizes_uphill(self, mock_dem_blue_slope) -> None:
-        """allow_uphill=False keeps the climb penalty (skiers descend)."""
+    def test_downhill_mode_penalizes_climbing(self, mock_dem_blue_slope) -> None:
+        """DOWNHILL penalizes going against the mode (uphill edge costs far more)."""
         planner = self._planner(mock_dem_blue_slope)
-        # Target 20%. A 20% descent matches; a 20% climb both deviates AND is uphill.
-        descend = self._cost(planner, 2000.0, 1994.0, target_grade_pct=20.0, allow_uphill=False)  # 20% down
-        climb = self._cost(planner, 2000.0, 2006.0, target_grade_pct=20.0, allow_uphill=False)  # 20% up
-        assert climb > descend * 5, "descent-only mode still penalizes climbing steeply"
+        # Target 20%. A 20% descent matches; a 20% climb both deviates AND runs against mode.
+        descend = self._cost(planner, 2000.0, 1994.0, target_grade_pct=20.0, gradient_mode=GradientMode.DOWNHILL)
+        climb = self._cost(planner, 2000.0, 2006.0, target_grade_pct=20.0, gradient_mode=GradientMode.DOWNHILL)
+        assert climb > descend * 5, "DOWNHILL mode penalizes climbing steeply"
+
+    def test_uphill_mode_penalizes_descending(self, mock_dem_blue_slope) -> None:
+        """UPHILL is the mirror image: a descending edge runs against the mode and is penalized."""
+        planner = self._planner(mock_dem_blue_slope)
+        # Target -20% (climbing). A 20% climb matches; a 20% descent runs against mode.
+        climb = self._cost(planner, 2000.0, 2006.0, target_grade_pct=-20.0, gradient_mode=GradientMode.UPHILL)
+        descend = self._cost(planner, 2000.0, 1994.0, target_grade_pct=-20.0, gradient_mode=GradientMode.UPHILL)
+        assert descend > climb * 5, "UPHILL mode penalizes descending steeply"

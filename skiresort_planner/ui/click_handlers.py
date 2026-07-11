@@ -17,7 +17,7 @@ import streamlit as st
 
 from skiresort_planner.constants import MapConfig, PathConfig
 from skiresort_planner.model.click_info import ClickInfo, MapClickType, MarkerType
-from skiresort_planner.model.message import InvalidClickMessage, OutsideTerrainMessage
+from skiresort_planner.model.message import InvalidClickMessage, OutsideTerrainMessage, RoadTooSteepMessage
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.ui.actions import (
     bump_map_version,
@@ -721,9 +721,8 @@ def handle_road_building_click(click_info: ClickInfo, elevation: float | None) -
     # max_slope_pct is a MAGNITUDE, so this cap catches steep climbs AND descents.
     # ─────────────────────────────────────────────────────────────────────────
     band_max = float(PathConfig.ROAD_MAX_GRADIENT_PCT)
-    proposals = [
-        p
-        for p in factory.generate_manual_paths(
+    candidates = list(
+        factory.generate_manual_paths(
             start_lon=start_lon,
             start_lat=start_lat,
             start_elevation=start_elevation,
@@ -733,13 +732,12 @@ def handle_road_building_click(click_info: ClickInfo, elevation: float | None) -
             road_mode=True,
             incoming_bearing=incoming_bearing_from_segments(graph=graph, segment_ids=ctx.road_build.segments),
         )
-        if p.max_slope_pct <= band_max
-    ]
+    )
+    proposals = [p for p in candidates if p.max_slope_pct <= band_max]
     if not proposals:
-        InvalidClickMessage(
-            action="extend road",
-            reason=f"No car road within ±{PathConfig.ROAD_MAX_GRADIENT_PCT}% is possible to that point.",
-        ).display()
+        # Report the gentlest route found so the user sees how far over the limit it is.
+        gentlest = min((p.max_slope_pct for p in candidates), default=None)
+        RoadTooSteepMessage(gentlest_pct=gentlest, max_grade_pct=band_max).display()
         return
 
     # Joining an existing node: snap proposal ends onto it on commit.

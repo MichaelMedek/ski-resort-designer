@@ -14,6 +14,7 @@ Reference: DETAILS.md Section 7 for algorithm details.
 import logging
 import math
 from dataclasses import dataclass
+from enum import Enum
 from math import exp, radians, sin
 from typing import Optional
 
@@ -30,6 +31,13 @@ from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 
 logger = logging.getLogger(__name__)
+
+
+class GradientMode(str, Enum):
+    """Which way a single segment is allowed to run along its length."""
+
+    DOWNHILL = "downhill"  # net-descends; climbing is penalized (skiable pistes + descending roads)
+    UPHILL = "uphill"  # net-climbs; descending is penalized (climbing roads)
 
 
 @dataclass(frozen=True)
@@ -55,12 +63,13 @@ class LeastCostPathPlanner:
     5. Resample at regular intervals with DEM elevation lookups
 
     Cost Function:
-        cost(edge) = distance × exp(|actual_grade - target_grade| / σ) × uphill_penalty
+        cost(edge) = distance × exp(|actual_grade - target_grade| / σ) × against_penalty
 
     Where:
     - σ (COST_SIGMA) controls sensitivity (smaller = stricter grade matching)
-    - uphill_penalty = 1.0 if downhill, exp(|grade|/σ) if uphill (only when
-      allow_uphill is False)
+    - against_penalty = 1.0 when the edge runs the segment's way, else exp(|grade|/σ):
+      DOWNHILL mode penalizes climbing, UPHILL mode penalizes descending. That one-way
+      monotonicity keeps the path from looping.
 
     This exponential cost heavily penalizes grade deviations, causing the algorithm to
     prefer longer traverses over steep shortcuts — so a gentle target grade serpentines
@@ -88,7 +97,7 @@ class LeastCostPathPlanner:
         target_elevation: float,
         target_grade_pct: float,
         side: str,
-        allow_uphill: bool = False,
+        gradient_mode: GradientMode = GradientMode.DOWNHILL,
         incoming_bearing: Optional[float] = None,
     ) -> Optional[ProposedPathSegment]:
         """Plan a least-cost path that holds a target grade from start to target.
@@ -97,16 +106,20 @@ class LeastCostPathPlanner:
             start_lon/lat/elevation, target_lon/lat/elevation: the two endpoints.
             target_grade_pct: signed grade the path aims to hold (+ = descending).
             side: "left" or "right" preference (currently a no-op, see _calc_edge_cost).
-            allow_uphill: if False the path must net-descend and climbing is penalized
-                (skiable pistes); if True it may climb or descend freely (vehicle roads).
+            gradient_mode: DOWNHILL (default) forces net-descent and penalizes climbing
+                (skiable pistes); UPHILL forces net-ascent and penalizes descending. The
+                monotonicity is what prevents the path from looping.
             incoming_bearing: heading (deg) inherited from a prior segment; adds a
                 decaying turn penalty so the path leaves in-line (no kink). None → off.
 
         Returns:
             ProposedPathSegment if path found, None otherwise.
         """
-        # Descent-only paths need a net drop; climb-capable paths may go either way.
-        if (not allow_uphill) and (start_elevation - target_elevation <= 0):
+        # The segment must actually run in its mode's direction (net drop / net climb).
+        net_drop = start_elevation - target_elevation
+        if gradient_mode is GradientMode.DOWNHILL and net_drop <= 0:
+            return None
+        if gradient_mode is GradientMode.UPHILL and net_drop >= 0:
             return None
 
         direct_distance_m = GeoCalculator.haversine_distance_m(
@@ -139,7 +152,7 @@ class LeastCostPathPlanner:
             side=side,
             lons=lons,
             lats=lats,
-            allow_uphill=allow_uphill,
+            gradient_mode=gradient_mode,
             incoming_bearing=incoming_bearing,
         )
 
@@ -292,7 +305,7 @@ class LeastCostPathPlanner:
         side: str,
         lons: list[list[float]],
         lats: list[list[float]],
-        allow_uphill: bool = False,
+        gradient_mode: GradientMode = GradientMode.DOWNHILL,
         incoming_bearing: Optional[float] = None,
     ) -> tuple[Optional[list[GridNode]], int, int]:
         """Least-cost path using SciPy's C-optimized Dijkstra.
@@ -350,7 +363,7 @@ class LeastCostPathPlanner:
                         side=side,
                         target_lon=t_lon,
                         target_lat=t_lat,
-                        allow_uphill=allow_uphill,
+                        gradient_mode=gradient_mode,
                         incoming_bearing=incoming_bearing,
                         start_lon=s_lon,
                         start_lat=s_lat,
@@ -414,18 +427,18 @@ class LeastCostPathPlanner:
         side: str,
         target_lon: float,
         target_lat: float,
-        allow_uphill: bool = False,
+        gradient_mode: GradientMode = GradientMode.DOWNHILL,
         incoming_bearing: Optional[float] = None,
         start_lon: Optional[float] = None,
         start_lat: Optional[float] = None,
     ) -> float:
-        """Edge cost = distance × exp(|actual_grade − target_grade| / σ) × uphill.
+        """Edge cost = distance × exp(|actual_grade − target_grade| / σ) × against-mode.
 
         The exponential attractor pulls the path toward target_grade_pct; on steep
-        ground a gentle target can't be held straight, so the path serpentines. When
-        allow_uphill is False an extra penalty discourages climbing (descent-only
-        pistes); when True climbing is free (the signed target already sets direction).
-        It's a soft preference — any hard cap is enforced by the caller.
+        ground a gentle target can't be held straight, so the path serpentines. An edge
+        that runs AGAINST the gradient_mode (climbing in DOWNHILL mode, or descending in
+        UPHILL mode) is exponentially penalized — that one-way monotonicity is what stops
+        the path from looping. It's a soft preference; any hard cap is enforced by the caller.
 
         Momentum (incoming_bearing set): a decaying turn penalty near the start node
         keeps the path leaving in-line (no kink), fading to nothing by MOMENTUM_DECAY_M.
@@ -447,13 +460,15 @@ class LeastCostPathPlanner:
         # Attractor: exponential penalty for deviating from the target grade.
         grade_cost = exp(abs(actual_grade - target_grade_pct) / PlannerConfig.COST_SIGMA)
 
-        # Penalize climbing unless the caller allows it (target grade already carries
-        # the intended direction when uphill is permitted).
-        uphill_penalty = 1.0
-        if not allow_uphill and actual_grade < 0:
-            uphill_penalty = exp(abs(actual_grade) / PlannerConfig.COST_SIGMA)
+        # Penalize running against the segment's direction: DOWNHILL penalizes climbing
+        # (actual_grade < 0), UPHILL penalizes descending (actual_grade > 0). This
+        # one-way monotonicity is what makes loops impossible.
+        against_penalty = 1.0
+        wrong_way = actual_grade < 0 if gradient_mode is GradientMode.DOWNHILL else actual_grade > 0
+        if wrong_way:
+            against_penalty = exp(abs(actual_grade) / PlannerConfig.COST_SIGMA)
 
-        base_cost = horiz_dist * grade_cost * uphill_penalty
+        base_cost = horiz_dist * grade_cost * against_penalty
 
         return base_cost * self._momentum_multiplier(
             from_lon=from_lon,

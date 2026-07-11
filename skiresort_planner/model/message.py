@@ -116,6 +116,30 @@ class InvalidClickMessage(ToastMessage):
 
 
 @dataclass(frozen=True)
+class RoadTooSteepMessage(ToastMessage):
+    """No road proposal fits within the ±max-grade band to the clicked point.
+
+    Reports the gentlest gradient that COULD be found.
+    """
+
+    gentlest_pct: float | None  # magnitude of the gentlest route found, or None if no route
+    max_grade_pct: float
+
+    @property
+    def icon(self) -> str:
+        return "⚠️"
+
+    @property
+    def message(self) -> str:
+        if self.gentlest_pct is None:
+            return f"Too steep for a car road — no route to that point within ±{self.max_grade_pct:.0f}%."
+        return (
+            f"Too steep for a car road — gentlest possible is {self.gentlest_pct:.0f}%, "
+            f"over the ±{self.max_grade_pct:.0f}% limit."
+        )
+
+
+@dataclass(frozen=True)
 class OutsideTerrainMessage(ToastMessage):
     """User clicked outside DEM/terrain coverage."""
 
