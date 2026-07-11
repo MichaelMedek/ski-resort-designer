@@ -355,7 +355,6 @@ class PathFactory:
         target_elevation: Optional[float] = None,
         road_mode: bool = False,
         incoming_bearing: Optional[float] = None,
-        earthwork_tolerance_m: float = 0.0,
     ) -> Iterator[ProposedPathSegment]:
         """Generate paths connecting the start to a user-clicked target.
 
@@ -376,8 +375,6 @@ class PathFactory:
                 for a ski path (descent-only, difficulty-grade fan).
             incoming_bearing: Heading (deg) inherited from the previous segment for
                 momentum (continue in-line across a node). None on the first segment.
-            earthwork_tolerance_m: Max cut/fill (m) the interior may use to gentle its
-                grade; 0 stays on the ground. See EarthworkConfig.ROAD_EARTHWORK_TOLERANCE_M.
 
         Yields:
             ProposedPathSegment for each unique path, sorted by avg_slope_pct.
@@ -432,7 +429,6 @@ class PathFactory:
                 side=config.side.value,
                 allow_uphill=road_mode,
                 incoming_bearing=incoming_bearing,
-                earthwork_tolerance_m=earthwork_tolerance_m,
             )
             if path is None:
                 continue

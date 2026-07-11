@@ -90,7 +90,6 @@ class LeastCostPathPlanner:
         side: str,
         allow_uphill: bool = False,
         incoming_bearing: Optional[float] = None,
-        earthwork_tolerance_m: float = 0.0,
     ) -> Optional[ProposedPathSegment]:
         """Plan a least-cost path that holds a target grade from start to target.
 
@@ -102,8 +101,6 @@ class LeastCostPathPlanner:
                 (skiable pistes); if True it may climb or descend freely (vehicle roads).
             incoming_bearing: heading (deg) inherited from a prior segment; adds a
                 decaying turn penalty so the path leaves in-line (no kink). None → off.
-            earthwork_tolerance_m: max cut/fill (m) the interior may use to gentle the
-                grade; 0 keeps every point on the ground. Endpoints always stay on ground.
 
         Returns:
             ProposedPathSegment if path found, None otherwise.
@@ -163,10 +160,6 @@ class LeastCostPathPlanner:
             target_grade_pct=target_grade_pct,
             incoming_bearing=incoming_bearing,
         )
-
-        # Let the interior cut/fill within tolerance to gentle the grade (endpoints stay
-        # on the ground). No-op when tolerance is 0.
-        points = self._apply_earthwork_allowance(points=points, tolerance_m=earthwork_tolerance_m)
 
         return ProposedPathSegment(
             points=points,
@@ -533,42 +526,6 @@ class LeastCostPathPlanner:
         if turn_penalty == 0.0 and pos_penalty == 0.0:
             return 1.0
         return exp(turn_penalty + pos_penalty)
-
-    def _apply_earthwork_allowance(self, points: list[PathPoint], tolerance_m: float) -> list[PathPoint]:
-        """Let the path's INTERIOR cut below / fill above the ground to gentle its grade.
-
-        The traced elevations sit on the natural ground, so the grade is whatever the
-        terrain does. We pull each interior point toward the STRAIGHT line between the
-        two endpoints (the gentlest possible profile) but never move it more than the
-        earthwork budget from the real ground — the classic cut-and-fill trade. The
-        budget is ``min(tolerance_m, dist_from_nearest_end / EARTHWORK_TAPER_RATIO)`` so
-        the START and END stay exactly on the ground. Iterative Laplacian smoothing.
-
-        Only elevation is touched; the horizontal route (lon/lat) is preserved.
-        """
-        # tolerance_m == 0 → returned unchanged
-        if tolerance_m <= 0.0 or len(points) < 3:
-            return points
-
-        # Cumulative along-path distance at each point (drives the straight-line lerp + taper).
-        cum = [0.0]
-        for i in range(1, len(points)):
-            cum.append(cum[-1] + points[i - 1].distance_to(other=points[i]))
-        total = cum[-1]
-        if total <= 0.0:
-            return points
-
-        start_elev, end_elev = points[0].elevation, points[-1].elevation
-        adjusted = [points[0]]  # first point kept exactly (endpoint stays on ground)
-        for i in range(1, len(points) - 1):
-            ground = points[i].elevation
-            straight = start_elev + (end_elev - start_elev) * (cum[i] / total)  # gentlest profile
-            # Budget tapers to 0 at both ends (min-distance-to-either-end / ratio), capped at tolerance.
-            budget = min(tolerance_m, min(cum[i], total - cum[i]) / PlannerConfig.EARTHWORK_TAPER_RATIO)
-            elev = min(ground + budget, max(ground - budget, straight))  # move toward line, clamp to ±budget
-            adjusted.append(PathPoint(lon=points[i].lon, lat=points[i].lat, elevation=elev))
-        adjusted.append(points[-1])  # last point kept exactly (endpoint stays on ground)
-        return adjusted
 
     def _path_to_points(
         self,

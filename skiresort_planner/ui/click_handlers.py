@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Callable
 
 import streamlit as st
 
-from skiresort_planner.constants import EarthworkConfig, MapConfig, PathConfig
+from skiresort_planner.constants import MapConfig, PathConfig
 from skiresort_planner.model.click_info import ClickInfo, MapClickType, MarkerType
 from skiresort_planner.model.message import InvalidClickMessage, OutsideTerrainMessage
 from skiresort_planner.model.path_point import PathPoint
@@ -732,7 +732,6 @@ def handle_road_building_click(click_info: ClickInfo, elevation: float | None) -
             target_elevation=end_elevation,
             road_mode=True,
             incoming_bearing=incoming_bearing_from_segments(graph=graph, segment_ids=ctx.road_build.segments),
-            earthwork_tolerance_m=EarthworkConfig.ROAD_EARTHWORK_TOLERANCE_M,
         )
         if p.max_slope_pct <= band_max
     ]

@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from math import radians, sin
 from typing import Callable, Optional
 
-from skiresort_planner.constants import BACKUP_DIR, PROJECT_ROOT, EarthworkConfig, PathConfig, PlannerConfig
+from skiresort_planner.constants import BACKUP_DIR, PROJECT_ROOT, PathConfig, PlannerConfig
 from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.generators.path_factory import PathFactory
@@ -194,7 +194,6 @@ def run_scenario(factory: PathFactory, sc: Scenario, dem: DEMService) -> Metrics
     )
     if sc.is_road:
         kwargs["gradient_band"] = ROAD_BAND
-        kwargs["earthwork_tolerance_m"] = EarthworkConfig.ROAD_EARTHWORK_TOLERANCE_M
     paths = list(factory.generate_manual_paths(**kwargs))
     # Pick the gentlest proposal (what the user is most likely to commit).
     best = min(paths, key=lambda p: p.max_slope_pct) if paths else None
