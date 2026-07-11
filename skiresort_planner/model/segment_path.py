@@ -13,7 +13,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 
-from skiresort_planner.model.path_geometry import Path
+from skiresort_planner.constants import SlopeConfig
 
 if TYPE_CHECKING:
     from skiresort_planner.model.path_point import PathPoint
@@ -64,16 +64,24 @@ class SegmentPath:
         return sum(segments[sid].total_drop_m for sid in self.segment_ids if sid in segments)
 
     def get_max_gradient(self, segments: dict[str, "PathSegment"]) -> float:
-        """Steepest-section gradient magnitude across the whole path.
+        """Steepest-section gradient magnitude, measured PER SEGMENT.
 
-        Rolls the ROLLING_WINDOW_M steepest-section window over the ENTIRE point
-        chain (across segment boundaries), not per-segment — so a steep stretch
-        spanning two segments is measured as one window, and short segments do not
-        each fall back to their own average. `max_slope_pct` is already a
-        magnitude (climb or descent), so this reflects steepness in either
-        direction. This is the authoritative value for difficulty and the road cap.
+        Returns the max of each segment's own rolling-window steepest section
+        (`max_slope_pct`, already a magnitude), NOT a window rolled across the whole
+        chain. A window spanning a junction would fold several independently-validated
+        segments into one figure that can exceed the per-segment cap even though every
+        segment is legal and the junctions are continuous — deliberately avoided here to
+        keep the metric simple and consistent with how segments are validated at commit.
+
+        Only segments at least ROLLING_WINDOW_M long are counted: a shorter segment has
+        no full window, so its `max_slope_pct` degrades to its average and would report a
+        misleadingly local figure. If NO segment is that long (a short road/slope), fall
+        back to the max over all segments so the value is never empty.
         """
-        return Path(points=self.get_all_points(segments=segments)).max_slope_pct
+        present = [segments[sid] for sid in self.segment_ids if sid in segments]
+        long_enough = [s for s in present if s.length_m >= SlopeConfig.ROLLING_WINDOW_M]
+        counted = long_enough or present  # fall back to all when none reach a full window
+        return max((s.max_slope_pct for s in counted), default=0.0)
 
     def get_all_points(self, segments: dict[str, "PathSegment"]) -> list["PathPoint"]:
         """All points across segments, deduplicated at shared junction nodes."""

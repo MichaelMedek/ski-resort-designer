@@ -75,21 +75,23 @@ class TestRoadMaxGradient:
         assert climb.avg_slope_pct < 0.0, "climb has a negative signed average"
         assert climb.max_slope_pct == pytest.approx(20.0, abs=1.0), "steepest section is a positive magnitude"
 
-    def test_max_gradient_spans_segment_boundary(self, empty_graph) -> None:
-        """Steepest section is measured over the WHOLE path, across segment joins.
+    def test_max_gradient_is_per_segment_not_across_joins(self, empty_graph) -> None:
+        """Steepest section is the max of each segment's own window, NOT a window rolled
+        across a junction.
 
-        Two consecutive ~200m segments that are each ~13% form a sustained
-        steeper-than-either stretch over the 300m window. Per-segment measurement
-        would hide it; whole-path measurement surfaces it.
+        Two continuous ~350m segments each ~13% form a sustained stretch across their
+        join, but because the junction is continuous (no jump) and each segment is
+        individually valid, we report the per-segment steepest (~13%), not an inflated
+        cross-join figure. Keeps the metric simple and consistent with commit validation.
         """
-        # Segment A: 200m at ~13% climb; Segment B: continues 200m at ~15% climb.
+        # Each segment ≥ ROLLING_WINDOW_M (300m) so it has a real window and is counted.
         a = [
             PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
-            PathPoint(lon=0.0, lat=200 / M, elevation=2026.0),  # +26m/200m = 13%
+            PathPoint(lon=0.0, lat=350 / M, elevation=2045.5),  # +45.5m/350m = 13%
         ]
         b = [
-            PathPoint(lon=0.0, lat=200 / M, elevation=2026.0),
-            PathPoint(lon=0.0, lat=400 / M, elevation=2056.0),  # +30m/200m = 15%
+            PathPoint(lon=0.0, lat=350 / M, elevation=2045.5),
+            PathPoint(lon=0.0, lat=700 / M, elevation=2091.0),  # +45.5m/350m = 13%
         ]
         empty_graph.commit_paths(
             paths=[ProposedPathSegment(points=a, is_connector=True, kind=SegmentKind.ROAD)], record_undo=False
@@ -99,5 +101,28 @@ class TestRoadMaxGradient:
         )
         seg_ids = list(empty_graph.segments.keys())[-2:]
         road = empty_graph.finish_road(segment_ids=seg_ids)
-        # The 300m window straddling the join is steeper than segment A's 13% alone.
-        assert road.get_max_gradient(segments=empty_graph.segments) > 13.0
+        # Reports each segment's own ~13%, not a cross-join figure > 13%.
+        assert road.get_max_gradient(segments=empty_graph.segments) == pytest.approx(13.0, abs=1.5)
+
+    def test_max_gradient_ignores_sub_window_segments(self, empty_graph) -> None:
+        """A short (< ROLLING_WINDOW_M) steep segment is NOT counted when a full-window
+        segment exists — its max_slope_pct degrades to its average and would mislead.
+        """
+        # Long gentle segment (counts) + short steep segment (ignored while a long one exists).
+        long_gentle = [
+            PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
+            PathPoint(lon=0.0, lat=400 / M, elevation=2020.0),  # 400m @ 5%
+        ]
+        short_steep = [
+            PathPoint(lon=0.0, lat=400 / M, elevation=2020.0),
+            PathPoint(lon=0.0, lat=450 / M, elevation=2027.0),  # 50m @ 14% (sub-window)
+        ]
+        empty_graph.commit_paths(
+            paths=[ProposedPathSegment(points=long_gentle, is_connector=True, kind=SegmentKind.ROAD)], record_undo=False
+        )
+        empty_graph.commit_paths(
+            paths=[ProposedPathSegment(points=short_steep, is_connector=True, kind=SegmentKind.ROAD)], record_undo=False
+        )
+        road = empty_graph.finish_road(segment_ids=list(empty_graph.segments.keys())[-2:])
+        # Only the long 5% segment counts; the 50m spur is below the window and excluded.
+        assert road.get_max_gradient(segments=empty_graph.segments) == pytest.approx(5.0, abs=1.5)

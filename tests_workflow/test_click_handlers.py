@@ -560,12 +560,21 @@ class TestRoadBuildingClick:
         assert sm.is_road_building_only
         assert len(ctx.road_build.segments) == 2, "each committed proposal adds one segment"
 
-    def test_too_steep_target_is_refused(self, fake_st, path_factory, mock_dem_black_slope) -> None:
+    def test_too_steep_target_is_refused(self, fake_st, mock_dem_black_slope) -> None:
+        from skiresort_planner.core.path_tracer import PathTracer
+        from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
+        from skiresort_planner.generators.path_factory import PathFactory
         from skiresort_planner.ui.click_handlers import handle_road_building_click
 
-        # 45% south DEM: a target straight downhill can't be reached within ±15%.
+        # 45% south DEM: a target straight downhill can't be reached within ±15%, even
+        # with earthwork. Build the factory on THIS DEM (the shared path_factory fixture
+        # is bound to a gentler diagonal DEM, which wouldn't exercise the refusal).
         dem = mock_dem_black_slope
-        sm, ctx, graph = self._building(fake_st, path_factory, dem)
+        analyzer = TerrainAnalyzer(dem=dem)
+        factory = PathFactory(
+            dem_service=dem, path_tracer=PathTracer(dem=dem, analyzer=analyzer), terrain_analyzer=analyzer
+        )
+        sm, ctx, graph = self._building(fake_st, factory, dem)
 
         handle_road_building_click(
             ClickInfo(click_type=MapClickType.TERRAIN, lat=-300 / M, lon=0.0),

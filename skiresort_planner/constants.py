@@ -204,6 +204,11 @@ class EarthworkConfig:
     # H_edge = (S_side × W_belt) / 200 > threshold triggers warning
     EXCAVATOR_THRESHOLD_M = 2.5
 
+    # Road earthwork allowance: a road may sit up to this many metres above (fill)
+    # or below (cut) the natural ground, so it can hold a gentler grade than the raw
+    # terrain allows. Slopes pass 0 (they lie on the snow surface).
+    ROAD_EARTHWORK_TOLERANCE_M = 15.0
+
     # Belt width limits per difficulty (min_m, max_m)
     # Varies by difficulty to match typical ski run widths
     BELT_WIDTH_LIMITS = {
@@ -249,23 +254,29 @@ class PlannerConfig:
 
     # Cost function parameters
     # Cost = distance × exp(slope_deviation / COST_SIGMA) × uphill_penalty
-    COST_SIGMA = 8.0  # Slope deviation sensitivity (lower = stricter matching)
+    COST_SIGMA = 12.0  # Slope deviation sensitivity (lower = stricter matching)
 
     # Momentum: when extending a path from a node, a distance-decaying turn penalty
     # biases the first stretch to leave the node roughly in-line with the incoming
     # heading (no sharp kink at junctions). DECAY is the dominant lever: it must be a
     # meaningful fraction of a segment or the path just absorbs the penalty;
     # keep WEIGHT modest so it never routes around a cliff (high weight over-detours).
-    MOMENTUM_TURN_WEIGHT = 0.6  # Turn-penalty strength near the start node (0 = off)
-    MOMENTUM_DECAY_M = 300.0  # Turn penalty fades linearly to 0 over this distance from start
+    MOMENTUM_TURN_WEIGHT = 2.0  # Turn-penalty strength near the start node (0 = off)
+    MOMENTUM_DECAY_M = 450.0  # Turn penalty fades linearly to 0 over this distance from start
 
     # Momentum — POSITION pin: on top of the bearing (turn) penalty above, penalize
     # lateral drift away from the incoming line right at the node. Stronger
     # weight but a MUCH faster fade than the turn term — it must nail the first few
     # metres then release to terrain-following.
-    MOMENTUM_POS_WEIGHT = 2.0  # Cross-track (position) penalty strength at the node
-    MOMENTUM_POS_DECAY_M = 60.0  # Position pin fades linearly to 0 over this (≪ turn decay)
+    MOMENTUM_POS_WEIGHT = 4.0  # Cross-track (position) penalty strength at the node
+    MOMENTUM_POS_DECAY_M = 120.0  # Position pin fades linearly to 0 over this (≪ turn decay)
     MOMENTUM_POS_SCALE_M = 15.0  # Lateral offset (m) that costs one unit of weight (~1 grid cell)
+
+    # Road earthwork profile smoothing (see ROAD_EARTHWORK_TOLERANCE_M).
+    # The interior road elevation is pulled toward the straight line between the endpoints,
+    # clamped to ±tolerance of the real ground; the budget tapers to 0 at each end (over
+    # dist_from_end / EARTHWORK_TAPER_RATIO) so the endpoints stay exactly on the ground.
+    EARTHWORK_TAPER_RATIO = 3.0  # Larger = cut/fill eases in/out over a longer stretch
 
     # Path deduplication for overlapping path removal
     # ~0.0001 degrees ≈ ~10 meters at mid-latitudes
