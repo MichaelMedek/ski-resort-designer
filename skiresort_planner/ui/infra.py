@@ -123,7 +123,7 @@ def viewport_map_height(reserved_below_px: int = 0) -> int | None:
             profile chart) so it stays visible without scrolling. 0 = map fills all.
 
     Returns None only before the very first successful read (caller shows a placeholder);
-    thereafter the cached viewport height minus header chrome and reserved space, floored.
+    thereafter the cached viewport height minus reserved space, floored at a minimum.
     """
     value = streamlit_js_eval(js_expressions="parent.innerHeight", key="window_inner_height")
     if isinstance(value, (int, float)):
@@ -131,5 +131,5 @@ def viewport_map_height(reserved_below_px: int = 0) -> int | None:
     window_height = st.session_state.get("window_height_px")
     if window_height is None:
         return None
-    available = window_height - ChartConfig.MAP_CHROME_OFFSET_PX - reserved_below_px
+    available = window_height - ChartConfig.MAP_TOP_OFFSET_PX - reserved_below_px
     return max(available, ChartConfig.MAP_MIN_HEIGHT_PX)

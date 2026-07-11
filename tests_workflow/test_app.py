@@ -80,23 +80,23 @@ class TestSessionHelpers:
 
 
 class TestMapHeight:
-    """viewport_map_height: js-eval read + session_state cache + chrome/floor math."""
+    """viewport_map_height: js-eval read + session_state cache + reserve/floor math."""
 
     def test_none_before_first_resolve(self, fake_st, monkeypatch) -> None:
         # js-eval returns None and nothing cached yet → None (caller shows placeholder).
         monkeypatch.setattr(infra, "streamlit_js_eval", lambda *a, **k: None)
         assert infra.viewport_map_height() is None
 
-    def test_resolves_caches_and_subtracts_chrome(self, fake_st, monkeypatch) -> None:
+    def test_resolves_and_caches_window_height(self, fake_st, monkeypatch) -> None:
         monkeypatch.setattr(infra, "streamlit_js_eval", lambda *a, **k: 1080.0)
-        assert infra.viewport_map_height() == 1080 - ChartConfig.MAP_CHROME_OFFSET_PX
+        assert infra.viewport_map_height() == 1080 - ChartConfig.MAP_TOP_OFFSET_PX
         assert fake_st.session_state["window_height_px"] == 1080
 
     def test_uses_cache_when_js_returns_none(self, fake_st, monkeypatch) -> None:
         # After a real value is cached, a later None-returning rerun keeps the map sized.
         fake_st.session_state["window_height_px"] = 900
         monkeypatch.setattr(infra, "streamlit_js_eval", lambda *a, **k: None)
-        assert infra.viewport_map_height() == 900 - ChartConfig.MAP_CHROME_OFFSET_PX
+        assert infra.viewport_map_height() == 900 - ChartConfig.MAP_TOP_OFFSET_PX
 
     def test_short_window_clamped_to_min(self, fake_st, monkeypatch) -> None:
         monkeypatch.setattr(infra, "streamlit_js_eval", lambda *a, **k: 300)
@@ -106,8 +106,8 @@ class TestMapHeight:
         # Reserving room for a profile below the map subtracts from its height.
         monkeypatch.setattr(infra, "streamlit_js_eval", lambda *a, **k: 1080.0)
         full = infra.viewport_map_height(reserved_below_px=0)
-        reserved = infra.viewport_map_height(reserved_below_px=ChartConfig.MAP_PROFILE_RESERVE_PX)
-        assert reserved == full - ChartConfig.MAP_PROFILE_RESERVE_PX
+        reserved = infra.viewport_map_height(reserved_below_px=ChartConfig.PROFILE_HEIGHT_PX)
+        assert reserved == full - ChartConfig.PROFILE_HEIGHT_PX
 
     def test_first_render_shows_message_and_skips_map(self, fake_st, monkeypatch, mock_dem_blue_slope) -> None:
         # window height None and nothing cached → return early, never call st_deckgl.

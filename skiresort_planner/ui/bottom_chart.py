@@ -20,7 +20,6 @@ from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.path_segment import PathSegment, SegmentKind
-from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.model.road import Road
 from skiresort_planner.model.segment_path import SegmentPath, steepest_section_pct
@@ -115,7 +114,7 @@ class ProfileChart:
             ),
             showlegend=False,
             height=self.height,
-            margin=dict(l=50, r=30, t=50, b=50),
+            margin=ChartConfig.PROFILE_MARGIN,
             plot_bgcolor="white",
         )
 
@@ -255,7 +254,7 @@ class ProfileChart:
             ),
             showlegend=False,
             height=self.height,
-            margin=dict(l=50, r=30, t=50, b=50),
+            margin=ChartConfig.PROFILE_MARGIN,
             plot_bgcolor="white",
         )
 
@@ -267,83 +266,6 @@ class ProfileChart:
             text=stats_text,
             showarrow=False,
             font=dict(size=11),
-        )
-
-        return fig
-
-    def render_comparison(
-        self,
-        proposals: list[ProposedPathSegment],
-        title: str = "Path Comparison",
-    ) -> go.Figure:
-        """Render multiple proposals overlaid for comparison.
-
-        Args:
-            proposals: List of proposals to compare
-            title: Chart title
-
-        Returns:
-            Plotly Figure object.
-        """
-        if not proposals:
-            raise ValueError("Proposals list must not be empty for render_combined")
-
-        fig = go.Figure()
-
-        for i, proposal in enumerate(proposals):
-            if not proposal.points:
-                raise ValueError(f"Proposal {i} must have points to render")
-
-            distances = [0.0]
-            for j in range(1, len(proposal.points)):
-                dist = GeoCalculator.haversine_distance_m(
-                    lat1=proposal.points[j - 1].lat,
-                    lon1=proposal.points[j - 1].lon,
-                    lat2=proposal.points[j].lat,
-                    lon2=proposal.points[j].lon,
-                )
-                distances.append(distances[-1] + dist)
-
-            elevations = [p.elevation for p in proposal.points]
-            # Use FINAL difficulty for color, not target
-            difficulty = proposal.difficulty
-            color = StyleConfig.SLOPE_COLORS[difficulty]
-            name = f"{proposal.difficulty.capitalize()} ({proposal.avg_slope_pct:.0f}%)"
-
-            fig.add_trace(
-                go.Scatter(
-                    x=distances,
-                    y=elevations,
-                    mode="lines",
-                    line=dict(color=color, width=2),
-                    name=name,
-                    hovertemplate=f"{name}<br>Distance: %{{x:.0f}}m<br>Elevation: %{{y:.0f}}m<extra></extra>",
-                )
-            )
-
-        fig.update_layout(
-            title=dict(text=title, x=0.5),
-            xaxis=dict(
-                title="Distance (m)",
-                showgrid=True,
-                gridcolor="rgba(200, 200, 200, 0.3)",
-            ),
-            yaxis=dict(
-                title="Elevation (m)",
-                showgrid=True,
-                gridcolor="rgba(200, 200, 200, 0.3)",
-            ),
-            showlegend=True,
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.02,
-                xanchor="center",
-                x=0.5,
-            ),
-            height=self.height,
-            margin=dict(l=50, r=30, t=80, b=50),
-            plot_bgcolor="white",
         )
 
         return fig
@@ -561,7 +483,7 @@ class ProfileChart:
 
         fig.update_layout(
             height=self.height,
-            margin=dict(l=50, r=20, t=40, b=40),
+            margin=ChartConfig.PROFILE_MARGIN,
             xaxis_title="Distance (m)",
             yaxis_title="Elevation (m)",
             yaxis=dict(range=[min_elev - padding, max_elev + padding]),

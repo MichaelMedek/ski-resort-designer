@@ -79,18 +79,6 @@ class TestProfileChartRendering:
         fig = ProfileChart(height=300).render_road(road=road, graph=empty_graph)
         assert len(fig.data) > 0
 
-    def test_comparison_chart_overlays_all_proposals(self, path_points_blue) -> None:
-        """render_comparison overlays one trace per proposal."""
-        from skiresort_planner.model.proposed_path import ProposedPathSegment
-        from skiresort_planner.ui.bottom_chart import ProfileChart
-
-        proposals = [
-            ProposedPathSegment(points=path_points_blue, target_difficulty="blue"),
-            ProposedPathSegment(points=path_points_blue, target_difficulty="blue"),
-        ]
-        fig = ProfileChart(height=300).render_comparison(proposals=proposals)
-        assert len(fig.data) == len(proposals)
-
     def test_lift_chart_renders_terrain_cable_pylons(self, empty_graph, mock_dem_blue_slope) -> None:
         """render_lift produces a figure with terrain + cable + pylon traces."""
         from skiresort_planner.ui.bottom_chart import ProfileChart

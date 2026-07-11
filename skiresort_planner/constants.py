@@ -624,12 +624,13 @@ class ChartConfig:
     # viewing a slope/road/lift (it is the same chart in the same place).
     PROFILE_HEIGHT_PX = 260
 
-    # Map viewport sizing: subtract chrome (and any reserved profile space) from browser height
-    MAP_CHROME_OFFSET_PX = 50  # Collapsed top padding + deck iframe inset (no header/title)
-    MAP_MIN_HEIGHT_PX = 400  # Never shrink the map below this, even on short windows
+    # Plot margin shared by every profile figure (slope/road/lift) — one look for all.
+    PROFILE_MARGIN = dict(l=50, r=30, t=50, b=50)
 
-    # Space reserved BELOW the map for the profile so it stays visible without scrolling.
-    MAP_PROFILE_RESERVE_PX = PROFILE_HEIGHT_PX + 60
+    # Map height = browser window (parent.innerHeight) minus the chrome above the map,
+    # minus the profile's own height when a profile is shown below it.
+    MAP_TOP_OFFSET_PX = 40  # Where the map starts: Streamlit block padding + column gap
+    MAP_MIN_HEIGHT_PX = 400  # Never shrink the map below this, even on short windows
 
     # Y-axis padding settings
     ELEVATION_PADDING_FACTOR = 0.1  # 10% padding above/below

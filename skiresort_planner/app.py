@@ -60,6 +60,21 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+# CSS to give the map the full window height. Streamlit exposes no API for any of these,
+# so injection is the only option (the standard community pattern). Each rule is load-bearing:
+_FULLSCREEN_CSS = """
+<style>
+/* Hide the top toolbar (Deploy/menu strip) — reclaims its height for the map. */
+header[data-testid="stHeader"] { display: none; }
+/* Collapse the default ~6rem top padding so the map starts near the top. */
+.block-container { padding-top: 1rem; padding-bottom: 0; }
+/* Hide the streamlit-js-eval helper iframe: it only reads the window height and should
+   occupy no space (this is the "blue bar"). Most version-fragile rule — keyed on its title. */
+div[data-testid="stElementContainer"]:has(iframe[title="streamlit_js_eval.streamlit_js_eval"]) { display: none; }
+</style>
+"""
+
+
 # =============================================================================
 # SESSION STATE
 # =============================================================================
@@ -427,7 +442,7 @@ def _render_map_fragment_inner() -> None:
     show_slope_profile = sm.is_any_slope_state and bool(ctx.slope_build.segments)
     show_road_profile = sm.is_any_road_state and bool(ctx.road_build.segments)
     viewing = sm.viewing_entity  # (EntityKind, id) or None
-    reserved = ChartConfig.MAP_PROFILE_RESERVE_PX if (show_slope_profile or show_road_profile or viewing) else 0
+    reserved = ChartConfig.PROFILE_HEIGHT_PX if (show_slope_profile or show_road_profile or viewing) else 0
 
     # Map height that fills the browser window. None only on first load, before the
     # js-eval round-trip resolves (cached thereafter, so reruns keep the size).
@@ -489,7 +504,8 @@ def main() -> None:
     st.set_page_config(page_title=AppConfig.TITLE, page_icon=AppConfig.ICON, layout=AppConfig.LAYOUT)
     init_session_state()
 
-    # No in-page title: the map gets that vertical space (title lives in the browser tab).
+    # Streamlit has no API to reclaim vertical chrome, so a full-height map needs CSS.
+    st.markdown(_FULLSCREEN_CSS, unsafe_allow_html=True)
 
     # Block until DEM is loaded - shows loading message and prevents map interaction
     if not load_dem_data():
