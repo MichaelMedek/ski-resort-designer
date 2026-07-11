@@ -77,7 +77,7 @@ class TestEdgeCostFunction:
             from_lat=47.0,
             to_lon=10.0009,  # ~100m east at 47°N
             to_lat=47.0,
-            target_slope_pct=20.0,
+            target_grade_pct=20.0,
             side="left",
             target_lon=10.001,
             target_lat=46.999,
@@ -102,7 +102,7 @@ class TestEdgeCostFunction:
             from_lat=47.0,
             to_lon=10.0009,
             to_lat=47.0,
-            target_slope_pct=20.0,
+            target_grade_pct=20.0,
             side="left",
             target_lon=10.001,
             target_lat=46.999,
@@ -115,7 +115,7 @@ class TestEdgeCostFunction:
             from_lat=47.0,
             to_lon=10.0009,
             to_lat=47.0,
-            target_slope_pct=20.0,
+            target_grade_pct=20.0,
             side="left",
             target_lon=10.001,
             target_lat=46.999,
@@ -138,7 +138,7 @@ class TestEdgeCostFunction:
             from_lat=47.0,
             to_lon=10.0009,
             to_lat=47.0,
-            target_slope_pct=20.0,
+            target_grade_pct=20.0,
             side="left",
             target_lon=10.001,
             target_lat=46.999,
@@ -152,7 +152,7 @@ class TestEdgeCostFunction:
             from_lat=47.0,
             to_lon=10.0009,
             to_lat=47.0,
-            target_slope_pct=20.0,
+            target_grade_pct=20.0,
             side="left",
             target_lon=10.001,
             target_lat=46.999,
@@ -174,7 +174,7 @@ class TestEdgeCostFunction:
             from_lat=47.0,
             to_lon=10.0,  # Same position
             to_lat=47.0,
-            target_slope_pct=20.0,
+            target_grade_pct=20.0,
             side="left",
             target_lon=10.001,
             target_lat=46.999,
@@ -197,7 +197,7 @@ class TestMomentumTurnPenalty:
             from_lat=from_lat,
             to_lon=to_lon,
             to_lat=to_lat,
-            target_slope_pct=20.0,
+            target_grade_pct=20.0,
             side="left",
             target_lon=10.01,
             target_lat=47.0,
@@ -406,7 +406,7 @@ class TestPlannerIntegration:
             target_lon=10.0,
             target_lat=47.001,
             target_elevation=2100.0,  # Higher than start
-            target_slope_pct=20.0,
+            target_grade_pct=20.0,
             side="left",
         )
 
@@ -421,16 +421,17 @@ class TestPlannerIntegration:
             target_lon=10.0,
             target_lat=47.0,
             target_elevation=1900.0,
-            target_slope_pct=20.0,
+            target_grade_pct=20.0,
             side="left",
         )
 
         assert result is None, "Zero distance path should return None"
 
 
-class TestPlannerGradientBand:
-    """Road-mode cost: soft penalty ramps from the COMFORT knee (ROAD_SOFT_GRADIENT_PCT,
-    12%), NOT the hard cap — no uphill penalty. Passing gradient_band selects road mode.
+class TestEdgeCostGradeAttractor:
+    """The edge cost pulls the path toward target_grade_pct via one exponential
+    attractor. allow_uphill toggles whether climbing is penalized (False = descent-only
+    pistes, True = vehicle roads). The planner is domain-agnostic — no road/slope modes.
     """
 
     def _planner(self, mock_dem_blue_slope) -> LeastCostPathPlanner:
@@ -438,7 +439,7 @@ class TestPlannerGradientBand:
             dem_service=mock_dem_blue_slope, terrain_analyzer=TerrainAnalyzer(dem=mock_dem_blue_slope)
         )
 
-    def _cost(self, planner, from_elev, to_elev, band):
+    def _cost(self, planner, from_elev, to_elev, target_grade_pct, allow_uphill):
         # 30m east step; deterministic horizontal distance.
         return planner._calc_edge_cost(
             from_elev=from_elev,
@@ -447,63 +448,58 @@ class TestPlannerGradientBand:
             from_lat=0.0,
             to_lon=30.0 / 111320.0,
             to_lat=0.0,
-            target_slope_pct=0.0,
+            target_grade_pct=target_grade_pct,
             side="left",
             target_lon=1.0,
             target_lat=0.0,
-            gradient_band=band,
+            allow_uphill=allow_uphill,
         )
 
-    def test_in_band_flat_has_no_extra_penalty(self, mock_dem_blue_slope) -> None:
+    def test_cost_minimal_when_edge_matches_target_grade(self, mock_dem_blue_slope) -> None:
+        """An edge whose grade equals the target grade has ~no penalty → cost ≈ distance."""
         planner = self._planner(mock_dem_blue_slope)
-        # Flat edge inside band → cost == horizontal distance (exp(0) == 1).
-        flat_cost = self._cost(planner, 2000.0, 2000.0, (-12.0, 12.0))
-        assert flat_cost == pytest.approx(30.0, rel=0.05)
+        # Target 10% descent; a 10% edge (3m drop over 30m) deviates 0.
+        cost = self._cost(planner, 2000.0, 1997.0, target_grade_pct=10.0, allow_uphill=True)
+        assert cost == pytest.approx(30.0, rel=0.05)
 
-    def test_uphill_in_band_not_penalized_in_road_mode(self, mock_dem_blue_slope) -> None:
+    def test_cost_grows_with_deviation_from_target(self, mock_dem_blue_slope) -> None:
+        """Deviating from the target grade costs strictly more (the attractor)."""
         planner = self._planner(mock_dem_blue_slope)
-        band = (-12.0, 12.0)
-        # +10% uphill (climb 3m over 30m) is within band → same as flat.
-        uphill = self._cost(planner, 2000.0, 2003.0, band)
-        flat = self._cost(planner, 2000.0, 2000.0, band)
-        assert uphill == pytest.approx(flat, rel=0.05)
+        on_target = self._cost(planner, 2000.0, 1997.0, target_grade_pct=10.0, allow_uphill=True)  # 10% edge
+        off_target = self._cost(planner, 2000.0, 1988.0, target_grade_pct=10.0, allow_uphill=True)  # 40% edge
+        assert off_target > on_target * 2, "large deviation is exponentially penalized"
 
-    def test_out_of_band_costs_more(self, mock_dem_blue_slope) -> None:
-        planner = self._planner(mock_dem_blue_slope)
-        band = (-12.0, 12.0)
-        in_band = self._cost(planner, 2000.0, 2000.0, band)
-        # 40% descent (12m over 30m) is well outside the band → strictly costlier.
-        out_of_band = self._cost(planner, 2000.0, 1988.0, band)
-        assert out_of_band > in_band
-
-    def test_soft_penalty_ramps_from_comfort_knee_below_hard_cap(self, mock_dem_blue_slope) -> None:
-        """A ~13% grade (below the 15% hard cap, above the 12% soft knee) is already penalized.
-
-        Regression for the soft-band tightening: cost must NOT stay flat up to 15%.
+    def test_allow_uphill_drops_the_climb_penalty(self, mock_dem_blue_slope) -> None:
+        """With allow_uphill=True, for the same |deviation| a climbing edge costs the
+        SAME as a descending one — climbing is free (vehicle roads).
         """
         planner = self._planner(mock_dem_blue_slope)
-        band = (-15.0, 15.0)  # road mode; the knee comes from ROAD_SOFT_GRADIENT_PCT
-        # ≤12% comfort → flat (x1.0).
-        comfort = self._cost(planner, 2000.0, 2000.0 - 0.12 * 30.0, band)  # exactly 12%
-        # ~13% (below 15% hard cap) → already ramped above flat.
-        near_limit = self._cost(planner, 2000.0, 2000.0 - 0.13 * 30.0, band)  # ~13%
-        assert near_limit > comfort, "soft penalty must start below the 15% hard cap (at the 12% knee)"
+        # Target 0%. A +10% edge and a −10% edge both deviate 10% → equal cost.
+        descend = self._cost(planner, 2000.0, 1997.0, target_grade_pct=0.0, allow_uphill=True)  # 10% down
+        climb = self._cost(planner, 2000.0, 2003.0, target_grade_pct=0.0, allow_uphill=True)  # 10% up
+        assert climb == pytest.approx(descend, rel=1e-9), "no climb penalty when allow_uphill"
 
-    def test_slope_mode_unchanged_by_band_param(self, mock_dem_blue_slope) -> None:
-        """gradient_band=None must reproduce the original slope cost exactly."""
+    def test_descent_only_reproduces_documented_formula(self, mock_dem_blue_slope) -> None:
+        """allow_uphill=False, downhill edge: cost = dist × exp(|actual−target| / σ)."""
         from math import exp
 
         from skiresort_planner.constants import PlannerConfig
         from skiresort_planner.core.geo_calculator import GeoCalculator
 
         planner = self._planner(mock_dem_blue_slope)
-        cost = self._cost(planner, 2000.0, 1994.0, None)  # 6m drop over one east step, target 0
-        # Recompute expected via the documented slope formula, using the exact
-        # horizontal distance the cost function itself would measure.
+        cost = self._cost(planner, 2000.0, 1994.0, target_grade_pct=0.0, allow_uphill=False)  # 6m drop, target 0
         horiz = GeoCalculator.haversine_distance_m(lat1=0.0, lon1=0.0, lat2=0.0, lon2=30.0 / 111320.0)
-        actual_slope = (6.0 / horiz) * 100
-        expected = horiz * exp(abs(actual_slope - 0.0) / PlannerConfig.COST_SIGMA)
+        actual_grade = (6.0 / horiz) * 100
+        expected = horiz * exp(abs(actual_grade - 0.0) / PlannerConfig.COST_SIGMA)
         assert cost == pytest.approx(expected, rel=1e-6)
+
+    def test_descent_only_penalizes_uphill(self, mock_dem_blue_slope) -> None:
+        """allow_uphill=False keeps the climb penalty (skiers descend)."""
+        planner = self._planner(mock_dem_blue_slope)
+        # Target 20%. A 20% descent matches; a 20% climb both deviates AND is uphill.
+        descend = self._cost(planner, 2000.0, 1994.0, target_grade_pct=20.0, allow_uphill=False)  # 20% down
+        climb = self._cost(planner, 2000.0, 2006.0, target_grade_pct=20.0, allow_uphill=False)  # 20% up
+        assert climb > descend * 5, "descent-only mode still penalizes climbing steeply"
 
 
 class TestEarthworkAllowance:

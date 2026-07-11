@@ -390,13 +390,24 @@ Where:
 
 A **Road** is a vehicle road built **segment-by-segment**, exactly like a custom-connect slope minus the fan-out (roads are "always custom-connect").
 
-Road tracing reuses the exact same grid-Dijkstra planner as custom slope connections (§7.2) — the only change is the edge cost, selected by passing a signed **gradient band** to the planner:
+A road is traced by the same grid-Dijkstra algorithm and the same cost function as §7.2. A road holds a **target grade** exactly the way a slope holds its difficulty target; the two behavioral differences are how that target grade is chosen and that a road may climb.
 
-$$\text{cost}_{\text{road}} = d \times \exp\left(\frac{\max(0,\; |\text{slope}_{\text{actual}}| - g_{\text{soft}})}{\sigma}\right)$$
+**Target grade.** A road's target grade is the direct grade between the endpoints, clamped in **magnitude** to a comfort knee $g_{\text{soft}}$ (`ROAD_SOFT_GRADIENT_PCT`). With $H = z_{\text{start}} - z_{\text{target}}$ the signed drop (positive = descent) and $L$ the direct horizontal distance:
 
-with a **soft comfort knee** $g_{\text{soft}} = 12\%$ (`ROAD_SOFT_GRADIENT_PCT`) and a **hard cap** $g_{\max} = 15\%$ (`ROAD_MAX_GRADIENT_PCT`) — both single-sourced, no hardcoded percentages in code or UI. The cost is **flat up to the 12% comfort knee** ($\exp(0)=1$) and ramps exponentially between 12% and the hard cap, so the planner *prefers* gentler lines and fewer near-limit routes get traced only to be refused. Road mode applies **no uphill penalty**: a car road may climb, descend, or run flat with equal preference. Slope mode (no band passed) is unchanged.
+$$g_{\text{target}} = \operatorname{sign}(H) \cdot \min\!\left(\frac{|H|}{L},\; g_{\text{soft}}\right)$$
 
-**±15% is a HARD cap at build time.** The exponential term above is only a *soft* Dijkstra preference (ramping from 12%); the click handler additionally **hard-caps** every proposal at `ROAD_MAX_GRADIENT_PCT` and refuses to propose anything steeper ("No car road within ±15% is possible to that point"). A committed road therefore never exceeds the hard cap.
+- **Gentle terrain** ($|H|/L \le g_{\text{soft}}$): a straight constant-grade line already achieves the target, so the route is drawn **straight**.
+- **Steep terrain** ($|H|/L > g_{\text{soft}}$): the target is the gentler knee, unreachable by a straight line, so the route **lengthens into a serpentine** to hold it — the same mechanism that lets a green slope traverse steep terrain (§5).
+
+Clamping the *magnitude* is correct because rerouting only ever lengthens the path, which can lower the effective grade below $|H|/L$ but never raise it: $g_{\text{soft}}$ is a ceiling approached from above, $|H|/L$ the floor on gentle ground.
+
+**Cost function.** Every edge is scored by the identical grade-deviation penalty as §7.2, against $g_{\text{target}}$:
+
+$$\text{cost}_{\text{road}} = d \times \exp\left(\frac{|\text{slope}_{\text{actual}} - g_{\text{target}}|}{\sigma}\right)$$
+
+The one difference from the slope cost is the **uphill penalty is dropped** ($P_{\text{uphill}} = 1$): a car road may climb, descend, or run flat with equal preference, because the signed target grade already encodes the intended direction. A ski slope keeps the uphill penalty (skiers descend).
+
+**±15% is a HARD cap at build time.** The exponential term is only a *soft* preference; every finished proposal is additionally **hard-capped** at $g_{\max} = 15\%$ (`ROAD_MAX_GRADIENT_PCT`) and a steeper route is refused ("No car road within ±15% is possible to that point"). A committed road therefore never exceeds the hard cap. Both $g_{\text{soft}}$ and $g_{\max}$ are single-sourced constants — no hardcoded percentages.
 
 ---
 

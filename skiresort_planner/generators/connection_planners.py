@@ -535,7 +535,7 @@ class LeastCostPathPlanner:
         return exp(turn_penalty + pos_penalty)
 
     def _apply_earthwork_allowance(self, points: list[PathPoint], tolerance_m: float) -> list[PathPoint]:
-        """Let a road's INTERIOR cut below / fill above the ground to gentle its grade.
+        """Let the path's INTERIOR cut below / fill above the ground to gentle its grade.
 
         The traced elevations sit on the natural ground, so the grade is whatever the
         terrain does. We pull each interior point toward the STRAIGHT line between the

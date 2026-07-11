@@ -250,8 +250,49 @@ class TestPathDeduplication:
         assert slopes == [15.0, 20.0]
 
 
+class TestRoadTargetGrade:
+    """PathFactory._road_target_grade derives the grade a road aims to hold: the signed
+    direct grade H/L, clamped in MAGNITUDE to ROAD_SOFT_GRADIENT_PCT. This is what lets a
+    road reuse the same grade attractor and serpentine on steep ground (§7.3).
+    """
+
+    def test_gentle_terrain_aims_direct_grade(self) -> None:
+        """Below the knee, the target IS the direct grade (60m / 1000m = 6%)."""
+        grade = PathFactory._road_target_grade(
+            start_elevation=1060.0, target_elevation=1000.0, direct_distance_m=1000.0
+        )
+        assert grade == pytest.approx(6.0)
+
+    def test_steep_descent_clamped_to_knee(self) -> None:
+        """A steep descent is clamped DOWN to the comfort knee (forces a serpentine)."""
+        from skiresort_planner.constants import PathConfig
+
+        # 300m drop over 1000m = 30% → clamp down to the comfort knee.
+        grade = PathFactory._road_target_grade(
+            start_elevation=1300.0, target_elevation=1000.0, direct_distance_m=1000.0
+        )
+        assert grade == pytest.approx(PathConfig.ROAD_SOFT_GRADIENT_PCT)
+
+    def test_steep_climb_clamped_to_negative_knee(self) -> None:
+        """A net CLIMB yields a negative target, clamped to −knee. Sign preserved."""
+        from skiresort_planner.constants import PathConfig
+
+        # Target 300m ABOVE start over 1000m = −30% → clamp to −knee.
+        grade = PathFactory._road_target_grade(
+            start_elevation=1000.0, target_elevation=1300.0, direct_distance_m=1000.0
+        )
+        assert grade == pytest.approx(-PathConfig.ROAD_SOFT_GRADIENT_PCT)
+
+    def test_gentle_climb_aims_negative_direct_grade(self) -> None:
+        """A gentle climb below the knee aims the (negative) direct grade (−5%)."""
+        grade = PathFactory._road_target_grade(
+            start_elevation=1000.0, target_elevation=1050.0, direct_distance_m=1000.0
+        )
+        assert grade == pytest.approx(-5.0)
+
+
 class TestRoadModeNoStraightLineFallback:
-    """Road mode (gradient_band set) must NOT fabricate a straight-line fallback.
+    """Road mode (road_mode=True) must NOT fabricate a straight-line fallback.
 
     Slope mode always creates a straight-line result when Dijkstra finds nothing,
     so two points always connect. Road mode does not fabricate one.
@@ -275,7 +316,7 @@ class TestRoadModeNoStraightLineFallback:
                 target_lon=300 / M,
                 target_lat=0.0,
                 target_elevation=path_factory.dem_service.get_elevation_or_raise(lon=300 / M, lat=0.0),
-                gradient_band=(-12.0, 12.0),
+                road_mode=True,
             )
         )
         assert paths, "a gentle reachable target should yield a road path"
@@ -300,7 +341,7 @@ class TestRoadModeNoStraightLineFallback:
                 target_lon=0.0,
                 target_lat=-250 / M,
                 target_elevation=path_factory.dem_service.get_elevation_or_raise(lon=0.0, lat=-250 / M),
-                gradient_band=None,
+                road_mode=False,
             )
         )
         assert len(paths) >= 1, "slope mode always connects (straight-line fallback)"

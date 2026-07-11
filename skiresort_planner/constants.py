@@ -185,13 +185,14 @@ class PathConfig:
     FLAT_TERRAIN_THRESHOLD_PCT = 15.0  # Below this slope %, use momentum-based bearing smoothing
     MOMENTUM_WEIGHT_FACTOR = 0.8  # Weight factor for momentum bearing on flat terrain
 
-    # Roads for cars: gentle gradient band the routing must stay within.
+    # Roads for cars: the gentle gradient that limits routing.
     # Cars may climb, descend, or run flat, but never exceed this steepness.
     ROAD_MAX_GRADIENT_PCT = 15
-    # Soft comfort threshold (< hard cap): the Dijkstra cost stays flat up to this
-    # gradient and ramps gently between here and the hard cap, so the planner
-    # prefers gentler routes. The hard cap (above) is what actually refuses a road.
-    ROAD_SOFT_GRADIENT_PCT = 12
+    # Comfort knee (< hard cap): the target grade a road AIMS to hold is the direct
+    # endpoint grade clamped to this magnitude (PathFactory._road_target_grade).
+    # On steep ground the road can't hold it straight, so the planner serpentines to
+    # reach it — same attractor that lets green slopes traverse any terrain.
+    ROAD_SOFT_GRADIENT_PCT = 10
 
 
 assert PathConfig.ROAD_SOFT_GRADIENT_PCT < PathConfig.ROAD_MAX_GRADIENT_PCT

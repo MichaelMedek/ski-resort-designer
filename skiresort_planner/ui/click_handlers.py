@@ -730,7 +730,7 @@ def handle_road_building_click(click_info: ClickInfo, elevation: float | None) -
             target_lon=end_lon,
             target_lat=end_lat,
             target_elevation=end_elevation,
-            gradient_band=(-band_max, band_max),
+            road_mode=True,
             incoming_bearing=incoming_bearing_from_segments(graph=graph, segment_ids=ctx.road_build.segments),
             earthwork_tolerance_m=EarthworkConfig.ROAD_EARTHWORK_TOLERANCE_M,
         )
