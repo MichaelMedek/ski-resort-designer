@@ -32,18 +32,20 @@ from skiresort_planner.ui import (
     ProfileChart,
     SidebarRenderer,
     bump_map_version,
+    cancel_current_road,
     cancel_current_slope,
     cancel_custom_direction_mode,
     cancel_custom_path,
     commit_selected_path,
     dispatch_click,
     enter_custom_direction_mode,
+    finish_current_road,
     finish_current_slope,
     handle_fast_deferred_actions,
     process_custom_connect_deferred,
     process_path_generation_deferred,
     recompute_paths,
-    render_building_profiles,
+    render_building_profile,
     render_control_panel,
     render_proposal_preview,
     trigger_rerun,
@@ -299,6 +301,33 @@ def _render_map_fragment_inner() -> None:
                 use_3d=use_3d,
             )
             extra_layers.extend(lift_layers)
+
+    # Add road origin marker in RoadStarting state (no segments committed yet, so
+    # the click point needs a visible dot — like the lift bottom station, minus the
+    # direction arrow since a road has no fall-line orientation).
+    if sm.is_road_starting and (ctx.road_build.start_node_id or ctx.road_build.start_location):
+        if ctx.road_build.start_node_id:
+            road_start_node = graph.nodes.get(ctx.road_build.start_node_id)
+            if road_start_node is None:
+                raise ValueError(f"Road start node {ctx.road_build.start_node_id} not found in graph")
+            extra_layers.extend(
+                renderer.create_pending_road_marker_layers(
+                    lat=road_start_node.lat,
+                    lon=road_start_node.lon,
+                    elevation=road_start_node.elevation,
+                    use_3d=use_3d,
+                )
+            )
+        elif ctx.road_build.start_location:
+            loc = ctx.road_build.start_location
+            extra_layers.extend(
+                renderer.create_pending_road_marker_layers(
+                    lat=loc.lat,
+                    lon=loc.lon,
+                    elevation=loc.elevation,
+                    use_3d=use_3d,
+                )
+            )
     # 3D mode: TerrainLayer with AWS tiles + OpenTopoMap texture
     # 2D mode: No terrain_layer needed - render() uses OPENTOPOMAP_STYLE map_style dict
     #          (TileLayer doesn't work because pydeck doesn't expose renderSubLayers)
@@ -315,6 +344,10 @@ def _render_map_fragment_inner() -> None:
         elif sm.is_idle_viewing_lift and ctx.viewing.lift_id:
             view_lat, view_lon, view_bearing, view_zoom, view_pitch = MapRenderer.calculate_3d_view_for_lift(
                 graph=graph, lift_id=ctx.viewing.lift_id
+            )
+        elif sm.is_idle_viewing_road and ctx.viewing.road_id:
+            view_lat, view_lon, view_bearing, view_zoom, view_pitch = MapRenderer.calculate_3d_view_for_road(
+                graph=graph, road_id=ctx.viewing.road_id
             )
         else:
             # 3D enabled but not viewing - shouldn't happen, disable 3D
@@ -371,8 +404,8 @@ def _render_map_fragment_inner() -> None:
             deck = renderer.render(
                 proposals=ctx.proposals.paths,
                 selected_proposal_idx=ctx.proposals.selected_idx,
-                highlight_segment_ids=ctx.building.segments,
-                is_custom_path=ctx.custom_connect.force_mode,
+                highlight_segment_ids=ctx.slope_build.segments,
+                is_custom_path=ctx.custom_connect.force_mode or sm.is_any_road_state,
                 extra_layers=extra_layers,
                 terrain_layer=basemap_layer,
                 use_3d=use_3d,
@@ -381,8 +414,8 @@ def _render_map_fragment_inner() -> None:
         deck = renderer.render(
             proposals=ctx.proposals.paths,
             selected_proposal_idx=ctx.proposals.selected_idx,
-            highlight_segment_ids=ctx.building.segments,
-            is_custom_path=ctx.custom_connect.force_mode,
+            highlight_segment_ids=ctx.slope_build.segments,
+            is_custom_path=ctx.custom_connect.force_mode or sm.is_any_road_state,
             extra_layers=extra_layers,
             terrain_layer=basemap_layer,
             use_3d=use_3d,
@@ -398,14 +431,22 @@ def _render_map_fragment_inner() -> None:
         key=map_key,
     )
 
-    # Elevation profiles below map
-    if sm.is_any_slope_state and ctx.building.segments:
-        fig = render_building_profiles(
-            building_segments=ctx.building.segments,
-            building_name=ctx.building.name,
+    # Elevation profiles below map — one function, kind-driven (slope or road).
+    if sm.is_any_slope_state and ctx.slope_build.segments:
+        fig = render_building_profile(
+            building_segments=ctx.slope_build.segments,
+            building_name=ctx.slope_build.name,
             graph=graph,
         )
         st.plotly_chart(fig, width="stretch", key="combined_profile")
+
+    if sm.is_any_road_state and ctx.road_build.segments:
+        fig = render_building_profile(
+            building_segments=ctx.road_build.segments,
+            building_name=ctx.road_build.name,
+            graph=graph,
+        )
+        st.plotly_chart(fig, width="stretch", key="combined_road_profile")
 
     if ctx.proposals.paths and ctx.proposals.selected_idx is not None:
         fig = render_proposal_preview(proposals=ctx.proposals.paths, selected_idx=ctx.proposals.selected_idx)
@@ -492,6 +533,10 @@ def _run_app_ui() -> None:
         finish_current_slope()
     if actions.get("cancel_slope"):
         cancel_current_slope()
+    if actions.get("finish_road"):
+        finish_current_road()
+    if actions.get("cancel_road"):
+        cancel_current_road()
     if actions.get("recompute") or ctx.click_dedup.pending_recompute:
         recompute_paths()
 
@@ -529,6 +574,15 @@ def _run_app_ui() -> None:
         chart = ProfileChart(height=ChartConfig.LIFT_PROFILE_HEIGHT, width=ChartConfig.WIDE_WIDTH)
         fig = chart.render_lift(lift=lift, graph=graph)
         st.plotly_chart(fig, key="lift_full_profile")
+
+    # Full-width profile for viewing road
+    if sm.is_idle_viewing_road and ctx.viewing.road_id:
+        road = graph.roads.get(ctx.viewing.road_id)
+        if road is None:
+            raise ValueError(f"Road {ctx.viewing.road_id} must exist when panel shows road")
+        chart = ProfileChart(height=ChartConfig.PROFILE_HEIGHT_MEDIUM, width=ChartConfig.WIDE_WIDTH)
+        fig = chart.render_road(road=road, graph=graph)
+        st.plotly_chart(fig, key="road_full_profile")
 
 
 if __name__ == "__main__":

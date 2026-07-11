@@ -64,6 +64,11 @@ class TestClickInfoValidation:
                 id="lift_missing_id",
             ),
             pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.ROAD},
+                "ROAD marker must have road_id",
+                id="road_missing_id",
+            ),
+            pytest.param(
                 {"click_type": MapClickType.MARKER, "marker_type": MarkerType.PYLON},
                 "PYLON marker must have lift_id and pylon_index",
                 id="pylon_missing_both",
@@ -124,6 +129,12 @@ class TestClickInfoValidation:
                 id="lift",
             ),
             pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.ROAD, "road_id": "R2"},
+                "road_id",
+                "R2",
+                id="road",
+            ),
+            pytest.param(
                 {"click_type": MapClickType.MARKER, "marker_type": MarkerType.PYLON, "lift_id": "L1", "pylon_index": 3},
                 "pylon_index",
                 3,
@@ -181,6 +192,11 @@ class TestClickInfoDisplayName:
                 id="lift",
             ),
             pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.ROAD, "road_id": "R1"},
+                "Road R1",
+                id="road",
+            ),
+            pytest.param(
                 {"click_type": MapClickType.MARKER, "marker_type": MarkerType.PYLON, "lift_id": "L1", "pylon_index": 2},
                 "Pylon 3 on Lift L1",
                 id="pylon_1indexed",
@@ -201,47 +217,6 @@ class TestClickInfoDisplayName:
         """display_name property formats correctly for all click types."""
         click = ClickInfo(**kwargs)
         assert click.display_name == expected_name
-
-
-class TestClickInfoDedupKey:
-    """Parametrized tests for make_dedup_key method."""
-
-    @pytest.mark.parametrize(
-        "kwargs,expected_key",
-        [
-            pytest.param(
-                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.NODE, "node_id": "N42"},
-                "marker_node_N42",
-                id="node",
-            ),
-            pytest.param(
-                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.SLOPE, "slope_id": "SL5"},
-                "marker_slope_SL5",
-                id="slope",
-            ),
-            pytest.param(
-                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.PYLON, "lift_id": "L1", "pylon_index": 2},
-                "marker_pylon_2_L1",
-                id="pylon",
-            ),
-            pytest.param(
-                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.PROPOSAL_ENDPOINT, "proposal_index": 4},
-                "marker_proposal_end_4",
-                id="proposal_end",
-            ),
-        ],
-    )
-    def test_dedup_key_format(self, kwargs: dict, expected_key: str) -> None:
-        """make_dedup_key returns expected format for marker clicks."""
-        click = ClickInfo(**kwargs)
-        assert click.make_dedup_key() == expected_key
-
-    def test_terrain_dedup_key_contains_coordinates(self) -> None:
-        """Terrain dedup key includes coordinates."""
-        click = ClickInfo(click_type=MapClickType.TERRAIN, lat=46.512345, lon=10.987654)
-        key = click.make_dedup_key()
-        assert key.startswith("terrain_")
-        assert "46.512345" in key and "10.987654" in key
 
 
 class TestClickInfoConvenienceProperties:

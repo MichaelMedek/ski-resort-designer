@@ -53,6 +53,7 @@ class EntityPrefixes:
     SEGMENT = "S"
     SLOPE = "SL"
     LIFT = "L"
+    ROAD = "R"
 
 
 class MapConfig:
@@ -117,8 +118,12 @@ class SlopeConfig:
     MIN_SKIABLE_PCT = 5  # Below this: need to push poles
     MAX_SKIABLE_PCT = 70  # Above this: dangerously steep
 
-    # European slope difficulty thresholds (by average gradient percentage)
-    # Classification: avg_slope = total_drop / total_length * 100
+    # Side-slope classification thresholds (compute_side_slope)
+    FLAT_GRADIENT_EPS_PCT = 0.5  # Terrain gradient below this → no meaningful side slope
+    SIDE_SLOPE_FLAT_PCT = 2  # |side slope| below this → "flat" direction (not left/right)
+
+    # European slope difficulty thresholds, classified by the steepest ROLLING_WINDOW_M
+    # (300m) section (max_slope_pct) — see DETAILS.md §6.
     DIFFICULTY_THRESHOLDS = {
         "green": (0, 15),  # Beginner: 0-15%
         "blue": (15, 25),  # Intermediate: 15-25%
@@ -138,7 +143,7 @@ class SlopeConfig:
     assert set(DIFFICULTY_TARGETS.keys()) == set(DIFFICULTIES)
 
     # Rolling window for steepness calculation
-    # Used to find the steepest section within a segment
+    # Used to find the steepest section within a segment or across the full path
     ROLLING_WINDOW_M = 300  # Window length in meters (few ski turns)
 
 
@@ -180,6 +185,17 @@ class PathConfig:
     FLAT_TERRAIN_THRESHOLD_PCT = 15.0  # Below this slope %, use momentum-based bearing smoothing
     MOMENTUM_WEIGHT_FACTOR = 0.8  # Weight factor for momentum bearing on flat terrain
 
+    # Roads for cars: gentle gradient band the routing must stay within.
+    # Cars may climb, descend, or run flat, but never exceed this steepness.
+    ROAD_MAX_GRADIENT_PCT = 15
+    # Soft comfort threshold (< hard cap): the Dijkstra cost stays flat up to this
+    # gradient and ramps gently between here and the hard cap, so the planner
+    # prefers gentler routes. The hard cap (above) is what actually refuses a road.
+    ROAD_SOFT_GRADIENT_PCT = 12
+
+
+assert PathConfig.ROAD_SOFT_GRADIENT_PCT < PathConfig.ROAD_MAX_GRADIENT_PCT
+
 
 class EarthworkConfig:
     """Earthwork warning thresholds and belt width limits (DETAILS.md Section 4)."""
@@ -187,6 +203,11 @@ class EarthworkConfig:
     # Side cut excavation threshold (meters of vertical cut)
     # H_edge = (S_side × W_belt) / 200 > threshold triggers warning
     EXCAVATOR_THRESHOLD_M = 2.5
+
+    # Road earthwork allowance: a road may sit up to this many metres above (fill)
+    # or below (cut) the natural ground, so it can hold a gentler grade than the raw
+    # terrain allows. Slopes pass 0 (they lie on the snow surface).
+    ROAD_EARTHWORK_TOLERANCE_M = 15.0
 
     # Belt width limits per difficulty (min_m, max_m)
     # Varies by difficulty to match typical ski run widths
@@ -233,7 +254,29 @@ class PlannerConfig:
 
     # Cost function parameters
     # Cost = distance × exp(slope_deviation / COST_SIGMA) × uphill_penalty
-    COST_SIGMA = 8.0  # Slope deviation sensitivity (lower = stricter matching)
+    COST_SIGMA = 12.0  # Slope deviation sensitivity (lower = stricter matching)
+
+    # Momentum: when extending a path from a node, a distance-decaying turn penalty
+    # biases the first stretch to leave the node roughly in-line with the incoming
+    # heading (no sharp kink at junctions). DECAY is the dominant lever: it must be a
+    # meaningful fraction of a segment or the path just absorbs the penalty;
+    # keep WEIGHT modest so it never routes around a cliff (high weight over-detours).
+    MOMENTUM_TURN_WEIGHT = 2.0  # Turn-penalty strength near the start node (0 = off)
+    MOMENTUM_DECAY_M = 450.0  # Turn penalty fades linearly to 0 over this distance from start
+
+    # Momentum — POSITION pin: on top of the bearing (turn) penalty above, penalize
+    # lateral drift away from the incoming line right at the node. Stronger
+    # weight but a MUCH faster fade than the turn term — it must nail the first few
+    # metres then release to terrain-following.
+    MOMENTUM_POS_WEIGHT = 4.0  # Cross-track (position) penalty strength at the node
+    MOMENTUM_POS_DECAY_M = 120.0  # Position pin fades linearly to 0 over this (≪ turn decay)
+    MOMENTUM_POS_SCALE_M = 15.0  # Lateral offset (m) that costs one unit of weight (~1 grid cell)
+
+    # Road earthwork profile smoothing (see ROAD_EARTHWORK_TOLERANCE_M).
+    # The interior road elevation is pulled toward the straight line between the endpoints,
+    # clamped to ±tolerance of the real ground; the budget tapers to 0 at each end (over
+    # dist_from_end / EARTHWORK_TAPER_RATIO) so the endpoints stay exactly on the ground.
+    EARTHWORK_TAPER_RATIO = 3.0  # Larger = cut/fill eases in/out over a longer stretch
 
     # Path deduplication for overlapping path removal
     # ~0.0001 degrees ≈ ~10 meters at mid-latitudes
@@ -301,14 +344,18 @@ class ClickConfig:
     TYPE_NODE = "node"
     TYPE_SEGMENT = "segment"
     TYPE_SLOPE = "slope"
+    TYPE_ROAD = "road"
     TYPE_LIFT = "lift"
     TYPE_PYLON = "pylon"
     TYPE_PROPOSAL_ENDPOINT = "proposal_endpoint"
     TYPE_PROPOSAL_BODY = "proposal_body"
+    TYPE_START_MARKER = "start_marker"  # non-interactive origin dot on a proposal
 
     # Clickable marker radii (meters for Pydeck ScatterplotLayer)
     NODE_MARKER_RADIUS = 35
+    PARKING_MARKER_RADIUS = 50  # Parking nodes render bigger than plain nodes
     SLOPE_ICON_MARKER_RADIUS = 30
+    ROAD_ICON_MARKER_RADIUS = 30
     LIFT_ICON_MARKER_RADIUS = 30
     PYLON_MARKER_RADIUS = 15
     PROPOSAL_BODY_RADIUS = 20
@@ -374,6 +421,7 @@ class StyleConfig:
         "black": "#1F2937",  # gray-800
     }
     assert set(SLOPE_COLORS.keys()) == set(SlopeConfig.DIFFICULTIES)
+    SLOPE_ICON = "⛷️"
 
     # Slope colors - RGBA lists for Pydeck (GPU-compatible format)
     SLOPE_COLORS_RGBA = {
@@ -392,6 +440,9 @@ class StyleConfig:
         "black": "⚫",
     }
     assert set(DIFFICULTY_EMOJIS.keys()) == set(SlopeConfig.DIFFICULTIES)
+
+    # Slope icon for map display and build-mode selector
+    SLOPE_ICON = "⛷️"
 
     # Lift colors - Hex for Plotly
     LIFT_COLORS = {
@@ -419,6 +470,19 @@ class StyleConfig:
         "aerial_tram": "🚠",
     }
     assert set(LIFT_ICONS.keys()) == set(LiftConfig.TYPES)
+
+    # Road (for cars): warm brown-orange, clearly visible against terrain and
+    # distinct from difficulty-colored slopes and purple lifts.
+    ROAD_COLOR = "#B45309"  # amber-700, for Plotly charts
+    ROAD_COLOR_RGBA = [180, 83, 9, 230]  # amber-700 for Pydeck
+    # Road PROPOSAL (dashed browse path before commit): lighter, translucent amber-600
+    # so "proposed" reads as distinct from a committed solid amber-700 road.
+    ROAD_PROPOSAL_COLOR_RGBA = [217, 119, 6, 150]
+    ROAD_ICON = "🛣️"
+
+    # Parking place (auto-shown where a road meets a slope or lift)
+    PARKING_ICON = "🅿️"
+    PARKING_COLOR_RGBA = [96, 165, 250, 180]  # soft blue, gently shown
 
     # Human-friendly lift display names (includes "slope" for unified build type selector)
     LIFT_DISPLAY_NAMES = {
@@ -462,6 +526,31 @@ class NameConfig:
         "Section",
     ]
 
+    # Road name components (roads have no difficulty — creative geography words)
+    ROAD_PREFIXES = [
+        "Alpine",
+        "Valley",
+        "Ridgeline",
+        "Serpentine",
+        "Highland",
+        "Forest",
+        "Mountain",
+        "Meadow",
+        "Glacier",
+        "Summit",
+    ]
+
+    ROAD_SUFFIXES = [
+        "Road",
+        "Route",
+        "Way",
+        "Drive",
+        "Pass",
+        "Trail",
+        "Access",
+        "Lane",
+    ]
+
     # Lift name prefixes by type
     LIFT_PREFIXES = {
         "surface_lift": ["Bunny", "Beginner's", "Practice", "Easy", "Learner's", "First"],
@@ -481,10 +570,15 @@ class NameConfig:
 
     # Length descriptors for lift naming
     LENGTH_DESCRIPTORS = {
-        "short": ["Little", "Mini", "Short"],  # < 500m
-        "medium": ["Classic", "Standard", "Regular"],  # 500-1500m
-        "long": ["Grand", "Big", "Giant"],  # > 1500m
+        "short": ["Little", "Mini", "Short"],  # < LENGTH_SHORT_MAX_M
+        "medium": ["Classic", "Standard", "Regular"],  # between short and long
+        "long": ["Grand", "Big", "Giant"],  # > LENGTH_LONG_MIN_M
     }
+    # Length/rise bands for entity naming (single source for lift + slope generate_name).
+    LENGTH_SHORT_MAX_M = 500  # below → "short" descriptor
+    LENGTH_LONG_MIN_M = 1500  # above → "long" descriptor
+    SUMMIT_RISE_M = 500  # lift rise / slope drop above this → "Summit" name
+    BIG_DROP_M = 300  # slope drop above this → "big" descriptor
 
     # 8-point compass directions for naming
     COMPASS_DIRECTIONS = {
@@ -548,14 +642,3 @@ class UndoConfig:
     # Maximum number of actions to keep in undo stack
     # Older actions are discarded when limit is reached
     MAX_UNDO_STACK_SIZE = 50
-
-
-class CoordinateConfig:
-    """Configuration for coordinate handling and comparison.
-
-    STRICT: All coordinate comparisons must use these methods,
-    NEVER use == for lat/lon floats directly!
-    """
-
-    # Decimal places for dedup key generation (6 decimals ≈ 10cm precision)
-    DEDUP_KEY_DECIMALS: int = 6

@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, cast
 import streamlit as st
 
 from skiresort_planner.constants import MapConfig
+from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.generators.path_factory import PathFactory
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.resort_graph import (
@@ -25,16 +26,21 @@ from skiresort_planner.model.resort_graph import (
     AddLiftAction,
     AddSegmentsAction,
     DeleteLiftAction,
+    DeleteRoadAction,
     DeleteSlopeAction,
+    FinishRoadAction,
     FinishSlopeAction,
     ResortGraph,
 )
-from skiresort_planner.model.slope import Slope
 from skiresort_planner.ui.infra import bump_map_version, reload_map, trigger_rerun
 from skiresort_planner.ui.state_machine import PlannerContext, PlannerStateMachine
 
 if TYPE_CHECKING:
-    from skiresort_planner.model.proposed_path import ProposedSlopeSegment
+    from skiresort_planner.model.proposed_path import ProposedPathSegment
+    from skiresort_planner.model.road import Road
+    from skiresort_planner.model.segment_path import SegmentPath
+    from skiresort_planner.model.slope import Slope
+    from skiresort_planner.ui.context import SegmentBuildContext
 
 logger = logging.getLogger(__name__)
 
@@ -44,17 +50,17 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 
-def center_on_slope(
+def center_on_segment_path(
     ctx: PlannerContext,
     graph: ResortGraph,
-    slope: Slope,
+    path: "SegmentPath",
     zoom: int,
     pitch: float = MapConfig.VIEWING_PITCH,
 ) -> None:
-    """Center map on slope midpoint with specified zoom and pitch."""
-    slope_segments = [graph.segments.get(sid) for sid in slope.segment_ids]
-    if slope_segments and slope_segments[0] and slope_segments[-1]:
-        first_seg, last_seg = slope_segments[0], slope_segments[-1]
+    """Center map on a segment-group entity's midpoint (shared by slopes and roads)."""
+    segments = [graph.segments.get(sid) for sid in path.segment_ids]
+    if segments and segments[0] and segments[-1]:
+        first_seg, last_seg = segments[0], segments[-1]
         if first_seg.points and last_seg.points:
             start_pt, end_pt = first_seg.points[0], last_seg.points[-1]
             ctx.map.set_center(
@@ -63,6 +69,28 @@ def center_on_slope(
             )
             ctx.map.zoom = zoom
             ctx.map.pitch = pitch
+
+
+def center_on_slope(
+    ctx: PlannerContext,
+    graph: ResortGraph,
+    slope: "Slope",
+    zoom: int,
+    pitch: float = MapConfig.VIEWING_PITCH,
+) -> None:
+    """Center map on slope midpoint with specified zoom and pitch."""
+    center_on_segment_path(ctx=ctx, graph=graph, path=slope, zoom=zoom, pitch=pitch)
+
+
+def center_on_road(
+    ctx: PlannerContext,
+    graph: ResortGraph,
+    road: "Road",
+    zoom: int,
+    pitch: float = MapConfig.VIEWING_PITCH,
+) -> None:
+    """Center map on road midpoint with specified zoom and pitch."""
+    center_on_segment_path(ctx=ctx, graph=graph, path=road, zoom=zoom, pitch=pitch)
 
 
 def center_on_lift(
@@ -224,8 +252,8 @@ def _generate_custom_connect_paths() -> None:
     target_lon, target_lat, target_elevation = ctx.custom_connect.target_location
 
     start_node = None
-    if ctx.building.endpoints:
-        start_node = graph.nodes.get(ctx.building.endpoints[0])
+    if ctx.slope_build.endpoints:
+        start_node = graph.nodes.get(ctx.slope_build.endpoints[0])
     elif ctx.custom_connect.start_node:
         start_node = graph.nodes.get(ctx.custom_connect.start_node)
 
@@ -242,6 +270,7 @@ def _generate_custom_connect_paths() -> None:
             target_lon=target_lon,
             target_lat=target_lat,
             target_elevation=target_elevation,
+            incoming_bearing=incoming_bearing_from_segments(graph=graph, segment_ids=ctx.slope_build.segments),
         )
     )
 
@@ -249,9 +278,18 @@ def _generate_custom_connect_paths() -> None:
         raise ValueError("generate_manual_paths should always return at least one path (fallback straight line)")
 
     # Always have at least one path (fallback straight line is created if needed)
-    target_node = graph.find_nearest_node(
-        lon=target_lon, lat=target_lat, threshold_m=MapConfig.LIFT_END_NODE_THRESHOLD_M
-    )
+    # The path extends from an existing node → reuse it exactly on commit (no duplicate).
+    for p in paths:
+        p.start_node_id = start_node.id
+
+    # Target node: prefer the clicked node's identity (drift-proof); fall back to a
+    # proximity lookup only for a terrain target that happens to sit on a node.
+    if ctx.custom_connect.target_node and ctx.custom_connect.target_node in graph.nodes:
+        target_node = graph.nodes[ctx.custom_connect.target_node]
+    else:
+        target_node = graph.find_nearest_node(
+            lon=target_lon, lat=target_lat, threshold_m=MapConfig.LIFT_END_NODE_THRESHOLD_M
+        )
     if target_node:
         for p in paths:
             p.is_connector = True
@@ -265,7 +303,7 @@ def _generate_custom_connect_paths() -> None:
     logger.info(f"Generated {len(paths)} custom paths from {start_node.id} to ({target_lat:.6f}, {target_lon:.6f})")
 
 
-def _find_closest_gradient_path(paths: "list[ProposedSlopeSegment]", target_gradient: float) -> int:
+def _find_closest_gradient_path(paths: "list[ProposedPathSegment]", target_gradient: float) -> int:
     """Find index of path with gradient closest to target."""
     if not paths:
         return 0
@@ -352,16 +390,28 @@ def commit_selected_path(path_idx: int) -> None:
         f"{path.length_m:.0f}m, {path.avg_slope_pct:.1f}%, endpoint={endpoint_node_id}"
     )
 
+    # Road building: roads commit through this same function (no fan, no connector
+    # auto-finish) and stay in road_building via the commit_road event (SM resolves
+    # to commit_road_first / commit_road_continue), mirroring the slope commit_path.
+    if sm.is_any_road_state:
+        ctx.clear_proposals()
+        end_node = graph.nodes.get(endpoint_node_id)
+        if end_node is not None:
+            ctx.map.set_building_view(lon=end_node.lon, lat=end_node.lat)
+        bump_map_version()
+        sm.commit_road(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
+        return
+
     if is_connector:
         logger.info(f"Connector to {path.target_node_id}")
         # For connectors from SlopeCustomPath, finish the slope and transition to viewing
         if sm.is_slope_custom_path:
             # Add segment to building context before finishing
-            ctx.building.segments.append(segment_id)
+            ctx.slope_build.segments.append(segment_id)
             # Finish the slope
-            slope = graph.finish_slope(segment_ids=ctx.building.segments)
+            slope = graph.finish_slope(segment_ids=ctx.slope_build.segments)
             if not slope:
-                raise RuntimeError(f"graph.finish_slope() failed for connector: {ctx.building.segments}")
+                raise RuntimeError(f"graph.finish_slope() failed for connector: {ctx.slope_build.segments}")
             logger.info(f"Slope {slope.name} (id={slope.id}) auto-finished from connector")
             center_on_slope(ctx=ctx, graph=graph, slope=slope, zoom=MapConfig.VIEWING_ZOOM)
             bump_map_version()
@@ -381,6 +431,23 @@ def commit_selected_path(path_idx: int) -> None:
     _commit_path_transition(
         sm=sm, segment_id=segment_id, endpoint_node_id=endpoint_node_id, is_connector=False, slope=None
     )
+
+
+def incoming_bearing_from_segments(graph: ResortGraph, segment_ids: list[str]) -> float | None:
+    """Heading (deg) the path arrives with at its current endpoint, or None.
+
+    Reads the last committed segment's final two points and returns their bearing,
+    so the planner can continue the next segment roughly in-line (momentum across a
+    node). Returns None when there is no committed segment yet (first segment) or
+    the last segment lacks two distinct points — i.e. no momentum to preserve.
+    """
+    if not segment_ids:
+        return None
+    last_seg = graph.segments.get(segment_ids[-1])
+    if last_seg is None or len(last_seg.points) < 2:
+        return None
+    p_prev, p_last = last_seg.points[-2], last_seg.points[-1]
+    return GeoCalculator.initial_bearing_deg(lon1=p_prev.lon, lat1=p_prev.lat, lon2=p_last.lon, lat2=p_last.lat)
 
 
 def recompute_paths() -> None:
@@ -406,9 +473,24 @@ def recompute_paths() -> None:
                     target_lon=target_lon,
                     target_lat=target_lat,
                     target_elevation=target_elevation,
+                    incoming_bearing=incoming_bearing_from_segments(graph=graph, segment_ids=ctx.slope_build.segments),
                 )
             )
             if paths:
+                # Reuse start + target nodes by identity (drift-proof), same as the
+                # initial custom-connect generation; keep them connectors.
+                for p in paths:
+                    p.start_node_id = start_node.id
+                if ctx.custom_connect.target_node and ctx.custom_connect.target_node in graph.nodes:
+                    target_node = graph.nodes[ctx.custom_connect.target_node]
+                else:
+                    target_node = graph.find_nearest_node(
+                        lon=target_lon, lat=target_lat, threshold_m=MapConfig.LIFT_END_NODE_THRESHOLD_M
+                    )
+                if target_node:
+                    for p in paths:
+                        p.is_connector = True
+                        p.target_node_id = target_node.id
                 ctx.proposals.paths = paths
                 ctx.proposals.selected_idx = 0
                 logger.info(
@@ -421,8 +503,8 @@ def recompute_paths() -> None:
     if ctx.custom_connect.enabled or ctx.custom_connect.force_mode:
         ctx.clear_custom_connect()
 
-    if ctx.building.endpoints:
-        node = graph.nodes.get(ctx.building.endpoints[0])
+    if ctx.slope_build.endpoints:
+        node = graph.nodes.get(ctx.slope_build.endpoints[0])
         if node:
             ctx.proposals.paths = list(
                 factory.generate_fan(
@@ -454,40 +536,41 @@ def recompute_paths() -> None:
 
 
 def finish_current_slope() -> None:
-    """Finish building and create finalized slope."""
+    """Finish building and create the finalized slope."""
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
 
-    if not ctx.building.segments:
+    if not ctx.slope_build.segments:
         raise RuntimeError("finish_current_slope called with no segments")
 
-    logger.info(f"Finishing slope {ctx.building.name} with {len(ctx.building.segments)} segments")
-    slope = graph.finish_slope(segment_ids=ctx.building.segments)
-
+    slope = graph.finish_slope(segment_ids=ctx.slope_build.segments)
     if not slope:
-        raise RuntimeError(f"graph.finish_slope() failed for segments: {ctx.building.segments}")
+        raise RuntimeError(f"graph.finish_slope() failed for segments: {ctx.slope_build.segments}")
 
     logger.info(f"Slope {slope.name} (id={slope.id}) created successfully")
-    center_on_slope(ctx=ctx, graph=graph, slope=slope, zoom=MapConfig.VIEWING_ZOOM)
+    center_on_segment_path(ctx=ctx, graph=graph, path=slope, zoom=MapConfig.VIEWING_ZOOM)
     bump_map_version()  # Clear stale click state
     sm.finish_slope(slope_id=slope.id)
 
 
-def cancel_current_slope() -> None:
-    """Cancel slope building and discard segments."""
-    sm: PlannerStateMachine = st.session_state.state_machine
+def _discard_build(build_ctx: "SegmentBuildContext") -> None:
+    """Discard an in-progress slope/road build: strip its undo entries, delete segments, clean up.
+
+    Shared by cancel_current_slope / cancel_current_road (the SM cancel event is fired
+    by each caller). Recenters on the origin so the map doesn't jump.
+    """
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
 
-    logger.info(f"Canceling slope {ctx.building.name}, discarding {len(ctx.building.segments)} segments")
+    logger.info(f"Canceling build, discarding {len(build_ctx.segments)} segments")
 
-    start_node = graph.nodes.get(ctx.building.start_node) if ctx.building.start_node else None
-    if start_node:
-        ctx.map.set_building_view(lon=start_node.lon, lat=start_node.lat)
+    origin = graph.nodes.get(build_ctx.start_node_id) if build_ctx.start_node_id else None
+    if origin:
+        ctx.map.set_building_view(lon=origin.lon, lat=origin.lat)
 
-    # Clear undo entries for segments being canceled (they become invalid)
-    canceled_segment_ids = set(ctx.building.segments)
+    # Clear undo entries for the segments being canceled (they become invalid).
+    canceled_segment_ids = set(build_ctx.segments)
     graph.undo_stack = [
         action
         for action in graph.undo_stack
@@ -497,13 +580,47 @@ def cancel_current_slope() -> None:
         )
     ]
 
-    for seg_id in ctx.building.segments:
+    for seg_id in build_ctx.segments:
         if seg_id in graph.segments:
             del graph.segments[seg_id]
 
-    graph.cleanup_isolated_nodes()  # Remove orphaned nodes from canceled building
+    graph.cleanup_isolated_nodes()  # Remove orphaned nodes from the canceled build
     bump_map_version()  # Clear stale click state
+
+
+def cancel_current_slope() -> None:
+    """Cancel slope building and discard segments."""
+    sm: PlannerStateMachine = st.session_state.state_machine
+    ctx: PlannerContext = st.session_state.context
+    _discard_build(build_ctx=ctx.slope_build)
     sm.cancel_slope()
+
+
+def finish_current_road() -> None:
+    """Finish building and create the finalized road (mirrors finish_current_slope)."""
+    sm: PlannerStateMachine = st.session_state.state_machine
+    ctx: PlannerContext = st.session_state.context
+    graph: ResortGraph = st.session_state.graph
+
+    if not ctx.road_build.segments:
+        raise RuntimeError("finish_current_road called with no segments")
+
+    road = graph.finish_road(segment_ids=ctx.road_build.segments)
+    if not road:
+        raise RuntimeError(f"graph.finish_road() failed for segments: {ctx.road_build.segments}")
+
+    logger.info(f"Road {road.name} (id={road.id}) created successfully")
+    center_on_segment_path(ctx=ctx, graph=graph, path=road, zoom=MapConfig.VIEWING_ZOOM)
+    bump_map_version()  # Clear stale click state
+    sm.finish_road(road_id=road.id)
+
+
+def cancel_current_road() -> None:
+    """Cancel road building and discard its segments (mirrors cancel_current_slope)."""
+    sm: PlannerStateMachine = st.session_state.state_machine
+    ctx: PlannerContext = st.session_state.context
+    _discard_build(build_ctx=ctx.road_build)
+    sm.cancel_road()
 
 
 def _undo_add_segments(undone: AddSegmentsAction) -> None:
@@ -518,20 +635,40 @@ def _undo_add_segments(undone: AddSegmentsAction) -> None:
     graph: ResortGraph = st.session_state.graph
     factory: PathFactory = st.session_state.path_factory
 
+    # Road building: mirror the slope path but on ctx.road_build, with no fan regen
+    # (roads have no fan) and forcing the road states.
+    if sm.is_any_road_state:
+        remaining = [s for s in ctx.road_build.segments if s not in undone.segment_ids]
+        ctx.road_build.segments = remaining
+        ctx.clear_proposals()
+        if remaining:
+            last_seg = graph.segments.get(remaining[-1])
+            ctx.road_build.endpoints = [last_seg.end_node_id] if last_seg else []
+            logger.info(f"[ACTION] Road undo leaves {len(remaining)} segments, forcing RoadBuilding")
+            sm.force_road_building()
+        else:
+            # No segments left, but the origin remains → back to RoadStarting.
+            ctx.road_build.endpoints = []
+            logger.info("[ACTION] Road undo leaves 0 segments, forcing RoadStarting")
+            sm.force_road_starting()
+        bump_map_version()
+        trigger_rerun()
+        return
+
     removed_segment_id = undone.segment_ids[-1] if undone.segment_ids else ""
 
     # Calculate remaining segments after undo
-    remaining_segments = [s for s in ctx.building.segments if s not in undone.segment_ids]
+    remaining_segments = [s for s in ctx.slope_build.segments if s not in undone.segment_ids]
 
     # Step 3: Update context and force appropriate state
     if remaining_segments:
         # Update building context
-        ctx.building.segments = remaining_segments
+        ctx.slope_build.segments = remaining_segments
 
         # Get the new endpoint from the last remaining segment
         last_seg = graph.segments.get(remaining_segments[-1])
         if last_seg:
-            ctx.building.endpoints = [last_seg.end_node_id]
+            ctx.slope_build.endpoints = [last_seg.end_node_id]
 
             # Regenerate paths from new endpoint
             if last_seg.points:
@@ -560,43 +697,50 @@ def _undo_add_segments(undone: AddSegmentsAction) -> None:
     trigger_rerun()
 
 
-def _undo_finish_slope(undone: FinishSlopeAction) -> None:
-    """Handle undo of FINISH_SLOPE action.
+def _restore_build_context(
+    build_ctx: "SegmentBuildContext",
+    segment_ids: tuple[str, ...],
+    name: str | None,
+    start_node_id: str | None,
+) -> str:
+    """Restore a build context from a finish-undo action; return the last endpoint node id.
 
-    Uses force_building instead of restore_building event.
-    This allows undo from any state (including LiftPlacing).
+    A finish action always references ≥1 committed segment (finish_slope/finish_road
+    return None otherwise) and those segments are kept on undo — so the context is always re-enterable.
     """
-    sm: PlannerStateMachine = st.session_state.state_machine
+    graph: ResortGraph = st.session_state.graph
+    logger.info(f"Undone finish, restoring {len(segment_ids)} segments")
+
+    build_ctx.segments = list(segment_ids)
+    build_ctx.name = name
+    build_ctx.start_node_id = start_node_id
+
+    assert build_ctx.segments, "finish-undo must have ≥1 segment (finish_* never records an empty finish)"
+    last_seg = graph.segments.get(build_ctx.segments[-1])
+    assert last_seg and last_seg.points, f"restored segment {build_ctx.segments[-1]} must exist with points"
+
+    build_ctx.endpoints = [last_seg.end_node_id]
+    return last_seg.end_node_id
+
+
+def _undo_finish_slope(undone: FinishSlopeAction) -> None:
+    """Handle undo of FINISH_SLOPE: restore building + regenerate the fan."""
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
     factory: PathFactory = st.session_state.path_factory
+    sm: PlannerStateMachine = st.session_state.state_machine
 
-    logger.info(f"Undone slope finish, restoring {len(undone.segment_ids)} segments")
+    _restore_build_context(
+        build_ctx=ctx.slope_build,
+        segment_ids=undone.segment_ids,
+        name=undone.slope_name,
+        start_node_id=undone.start_node_id,
+    )
 
-    # Restore building context
-    ctx.building.segments = list(undone.segment_ids)
-    ctx.building.name = undone.slope_name
-    ctx.building.start_node = undone.start_node_id
-
-    if not ctx.building.segments:
-        # Edge case: finished slope had no segments (shouldn't happen)
-        sm.force_idle()
-        bump_map_version()
-        trigger_rerun()
-        return
-
-    last_seg = graph.segments.get(ctx.building.segments[-1])
-    if not last_seg or not last_seg.points:
-        # Segment data missing - go to idle
-        sm.force_idle()
-        bump_map_version()
-        trigger_rerun()
-        return
-
-    # Set selection and regenerate paths
+    # Regenerate the fan from the restored endpoint.
+    last_seg = graph.segments[ctx.slope_build.segments[-1]]
     last_pt = last_seg.points[-1]
     ctx.set_selection(lon=last_pt.lon, lat=last_pt.lat, elevation=last_pt.elevation)
-    ctx.building.endpoints = [last_seg.end_node_id]
     ctx.proposals.paths = list(
         factory.generate_fan(
             lon=last_pt.lon,
@@ -608,7 +752,6 @@ def _undo_finish_slope(undone: FinishSlopeAction) -> None:
     ctx.proposals.selected_idx = 0 if ctx.proposals.paths else None
     logger.info(f"Regenerated {len(ctx.proposals.paths)} paths for restored slope")
 
-    # Force to building state (exit hooks handle cleanup automatically)
     sm.force_building()
     bump_map_version()
     trigger_rerun()
@@ -648,6 +791,34 @@ def _undo_delete_lift(undone: DeleteLiftAction) -> None:
     reload_map()
 
 
+def _undo_finish_road(undone: FinishRoadAction) -> None:
+    """Handle undo of FINISH_ROAD (mirrors _undo_finish_slope, minus the fan).
+
+    The graph already ungrouped the Road (segments kept). Restore the road build
+    context and force RoadBuilding so further undos peel segments.
+    """
+    ctx: PlannerContext = st.session_state.context
+    sm: PlannerStateMachine = st.session_state.state_machine
+
+    _restore_build_context(
+        build_ctx=ctx.road_build,
+        segment_ids=undone.segment_ids,
+        name=undone.road_name,
+        start_node_id=undone.start_node_id,
+    )
+
+    ctx.clear_proposals()  # roads have no fan to regenerate
+    sm.force_road_building()
+    bump_map_version()
+    trigger_rerun()
+
+
+def _undo_delete_road(undone: DeleteRoadAction) -> None:
+    """Handle undo of DELETE_ROAD action."""
+    logger.info(f"Restored deleted road {undone.road_id}")
+    reload_map()
+
+
 def undo_last_action() -> None:
     """Undo the most recent action.
 
@@ -669,10 +840,15 @@ def undo_last_action() -> None:
 
     logger.info(f"[ACTION] Undo requested, state={sm.get_state_name()}, undo_stack_size={len(graph.undo_stack)}")
 
-    # Special case: in slope state with no segments → cancel slope
-    if sm.is_any_slope_state and not ctx.building.segments:
-        logger.info("[ACTION] No segments in building state, canceling slope via undo")
+    # Special case: in a build state with no committed segments → cancel that
+    # build instead of popping an unrelated undo entry. Slopes and roads mirror.
+    if sm.is_any_slope_state and not ctx.slope_build.segments:
+        logger.info("[ACTION] No segments in slope building state, canceling slope via undo")
         sm.cancel_slope()
+        return
+    if sm.is_any_road_state and not ctx.road_build.segments:
+        logger.info("[ACTION] No segments in road building state, canceling road via undo")
+        sm.cancel_road()
         return
 
     undone = graph.undo_last()
@@ -691,10 +867,14 @@ def undo_last_action() -> None:
         _undo_finish_slope(undone=cast(FinishSlopeAction, undone))
     elif action_type.name == ActionType.ADD_LIFT.name:
         _undo_add_lift(undone=cast(AddLiftAction, undone))
+    elif action_type.name == ActionType.FINISH_ROAD.name:
+        _undo_finish_road(undone=cast(FinishRoadAction, undone))
     elif action_type.name == ActionType.DELETE_SLOPE.name:
         _undo_delete_slope(undone=cast(DeleteSlopeAction, undone))
     elif action_type.name == ActionType.DELETE_LIFT.name:
         _undo_delete_lift(undone=cast(DeleteLiftAction, undone))
+    elif action_type.name == ActionType.DELETE_ROAD.name:
+        _undo_delete_road(undone=cast(DeleteRoadAction, undone))
     else:
         raise RuntimeError(f"Unknown action type: {action_type}")
 
@@ -742,67 +922,48 @@ def cancel_custom_path() -> None:
 # =============================================================================
 
 
-def delete_slope_action(slope_id: str) -> bool:
-    """Delete a slope and trigger UI updates.
+def _close_panel_and_refresh(deleted: bool, *, is_viewing_deleted: bool) -> bool:
+    """Shared delete tail: close the panel if the deleted entity was being viewed, refresh.
 
-    This is the canonical function to delete a slope. It handles:
-    - Graph deletion (with undo support)
-    - State machine transition if viewing the deleted slope
-    - Map version bump for UI refresh
-
-    Args:
-        slope_id: ID of slope to delete
-
-    Returns:
-        True if deleted, False if not found.
+    `deleted` is the graph.delete_* result; returns it unchanged.
     """
+    if not deleted:
+        return False
+    sm: PlannerStateMachine = st.session_state.state_machine
+    if is_viewing_deleted:
+        sm.close_panel()
+    bump_map_version()
+    return True
+
+
+def delete_slope_action(slope_id: str) -> bool:
+    """Delete a slope and trigger UI updates."""
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
-
-    result = graph.delete_slope(slope_id=slope_id)
-    if not result:
-        logger.warning(f"[ACTION] delete_slope_action: slope {slope_id} not found")
-        return False
-
-    logger.info(f"[ACTION] Deleted slope {slope_id}")
-
-    # If viewing the deleted slope, return to idle
-    if sm.is_idle_viewing_slope and ctx.viewing.slope_id == slope_id:
-        sm.close_panel()
-
-    bump_map_version()
-    return True
+    deleted = graph.delete_slope(slope_id=slope_id)
+    return _close_panel_and_refresh(
+        deleted=deleted, is_viewing_deleted=sm.is_idle_viewing_slope and ctx.viewing.slope_id == slope_id
+    )
 
 
 def delete_lift_action(lift_id: str) -> bool:
-    """Delete a lift and trigger UI updates.
-
-    This is the canonical function to delete a lift. It handles:
-    - Graph deletion (with undo support)
-    - State machine transition if viewing the deleted lift
-    - Map version bump for UI refresh
-
-    Args:
-        lift_id: ID of lift to delete
-
-    Returns:
-        True if deleted, False if not found.
-    """
+    """Delete a lift and trigger UI updates."""
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
+    deleted = graph.delete_lift(lift_id=lift_id)
+    return _close_panel_and_refresh(
+        deleted=deleted, is_viewing_deleted=sm.is_idle_viewing_lift and ctx.viewing.lift_id == lift_id
+    )
 
-    result = graph.delete_lift(lift_id=lift_id)
-    if not result:
-        logger.warning(f"[ACTION] delete_lift_action: lift {lift_id} not found")
-        return False
 
-    logger.info(f"[ACTION] Deleted lift {lift_id}")
-
-    # If viewing the deleted lift, return to idle
-    if sm.is_idle_viewing_lift and ctx.viewing.lift_id == lift_id:
-        sm.close_panel()
-
-    bump_map_version()
-    return True
+def delete_road_action(road_id: str) -> bool:
+    """Delete a road and trigger UI updates."""
+    sm: PlannerStateMachine = st.session_state.state_machine
+    ctx: PlannerContext = st.session_state.context
+    graph: ResortGraph = st.session_state.graph
+    deleted = graph.delete_road(road_id=road_id)
+    return _close_panel_and_refresh(
+        deleted=deleted, is_viewing_deleted=sm.is_idle_viewing_road and ctx.viewing.road_id == road_id
+    )

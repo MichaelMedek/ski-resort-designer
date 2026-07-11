@@ -1,7 +1,7 @@
 [tool.ruff]
 indent-width = 4
 line-length = 120
-target-version = "py39"
+target-version = "py311"
 exclude = [
     "scripts/databricks_notebooks",
 ]
@@ -50,7 +50,7 @@ convention = "google"
 
 [tool.pytest.ini_options]
 testpaths = ["tests_workflow"]
-addopts = "--mypy --cov=skiresort_planner --cov-report=term-missing --cov-fail-under=50"
+addopts = "--mypy --cov=skiresort_planner --cov-report=term-missing --cov-fail-under=80"
 
 [tool.coverage.run]
 source = ["skiresort_planner"]
@@ -62,7 +62,6 @@ omit = [
 
 [tool.coverage.report]
 exclude_lines = [
-    "pragma: no cover",
     "if __name__ == .__main__.:",
     "raise NotImplementedError",
     "if TYPE_CHECKING:",

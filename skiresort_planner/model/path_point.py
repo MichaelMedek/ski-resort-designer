@@ -5,8 +5,8 @@ It is the single source of truth for location throughout the system.
 
 Used by:
 - Node (wraps a PathPoint for its location)
-- SlopeSegment (contains list of PathPoints for geometry)
-- ProposedSlopeSegment (path proposals before committing)
+- PathSegment (contains list of PathPoints for geometry)
+- ProposedPathSegment (path proposals before committing)
 
 Reference: DETAILS.md
 """

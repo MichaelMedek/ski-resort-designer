@@ -1,13 +1,13 @@
 """State Lifecycle Functions - Entry and exit handlers for each state.
 
-This module provides 16 lifecycle functions (8 states × 2 = enter + exit) that
+This module provides all lifecycle functions (all states × 2 = enter + exit) that
 define exactly what happens when transitioning into or out of each state.
 
 Architecture:
 - Each function is called by the state machine's on_enter_* / on_exit_* hooks
 - Functions receive the PlannerContext to modify UI state
 - Functions are idempotent and safe to call multiple times
-- All 16 functions are implemented even if they do nothing (pass)
+- All functions are implemented even if they do nothing (pass)
 
 Usage in state machine:
     def on_enter_idle_ready(self) -> None:
@@ -20,11 +20,14 @@ State Definitions:
     1. IDLE_READY: No panel visible, ready to start building
     2. IDLE_VIEWING_SLOPE: Panel showing slope details, profile visible, 3D available
     3. IDLE_VIEWING_LIFT: Panel showing lift details, profile visible, 3D available
-    4. SLOPE_STARTING: 0 segments committed, picking first fan direction
-    5. SLOPE_BUILDING: 1+ segments committed, continuing slope picking next fan direction
-    6. SLOPE_CUSTOM_PICKING: Waiting for custom target click or cancel to return to building/starting
-    7. SLOPE_CUSTOM_PATH: Showing custom path options
-    8. LIFT_PLACING: Start selected, waiting for end station
+    4. IDLE_VIEWING_ROAD: Panel showing road details, profile visible, 3D available
+    5. SLOPE_STARTING: 0 segments committed, picking first fan direction
+    6. SLOPE_BUILDING: 1+ segments committed, continuing slope picking next fan direction
+    7. SLOPE_CUSTOM_PICKING: Waiting for custom target click or cancel to return to building/starting
+    8. SLOPE_CUSTOM_PATH: Showing custom path options
+    9. LIFT_PLACING: Start selected, waiting for end station
+    10. ROAD_STARTING: 0 road segments committed, picking first target
+    11. ROAD_BUILDING: 1+ road segments committed, extending the road
 
 Design Philosophy:
     → NO workflow mutations here (force_mode, target_location, proposals, etc.)
@@ -72,6 +75,7 @@ def enter_idle_ready(ctx: PlannerContext) -> None:
     ctx.clear_building()
     ctx.clear_custom_connect()
     ctx.clear_lift()
+    ctx.clear_road()
     ctx.selection.node_id = None
     ctx.click_dedup.clear_marker()
     ctx.viewing.clear()
@@ -124,6 +128,7 @@ def enter_idle_viewing_slope(ctx: PlannerContext) -> None:
     ctx.clear_building()
     ctx.clear_custom_connect()
     ctx.clear_lift()
+    ctx.clear_road()
     ctx.selection.node_id = None
     ctx.click_dedup.clear_marker()
 
@@ -175,6 +180,7 @@ def enter_idle_viewing_lift(ctx: PlannerContext) -> None:
     ctx.clear_building()
     ctx.clear_custom_connect()
     ctx.clear_lift()
+    ctx.clear_road()
     ctx.selection.node_id = None
     ctx.click_dedup.clear_marker()
 
@@ -320,6 +326,9 @@ def enter_slope_custom_picking(ctx: PlannerContext) -> None:
     """
     logger.debug("ENTER: slope_custom_picking - clearing proposals")
     ctx.clear_proposals()
+    # Clear the click-dedup marker so the first target click always registers
+    # (matches enter_slope_starting / enter_lift_placing / enter_road_starting).
+    ctx.click_dedup.clear_marker()
 
 
 def exit_slope_custom_picking(ctx: PlannerContext) -> None:
@@ -420,3 +429,83 @@ def exit_lift_placing(ctx: PlannerContext) -> None:
     """
     logger.debug("EXIT: lift_placing - clearing lift context")
     ctx.lift.clear()
+
+
+# =============================================================================
+# 9. IDLE_VIEWING_ROAD - Panel showing road details
+# =============================================================================
+
+
+def enter_idle_viewing_road(ctx: PlannerContext) -> None:
+    """Enter IDLE_VIEWING_ROAD: Make road panel visible (Single Point of Truth).
+
+    Mirrors enter_idle_viewing_lift: the road_id was set by a before_* hook;
+    this guarantees the panel is visible and clears any stale building state.
+    """
+    logger.debug("ENTER: idle_viewing_road - showing panel, clearing building state")
+    ctx.viewing.show_panel()
+    ctx.clear_proposals()
+    ctx.clear_building()
+    ctx.clear_custom_connect()
+    ctx.clear_lift()
+    ctx.clear_road()
+    ctx.selection.node_id = None
+    ctx.click_dedup.clear_marker()
+
+
+def exit_idle_viewing_road(ctx: PlannerContext) -> None:
+    """Exit IDLE_VIEWING_ROAD: No cleanup needed.
+
+    The destination state's enter function handles all necessary changes
+    (same Single Point of Truth pattern as exit_idle_viewing_lift).
+    """
+    logger.debug("EXIT: idle_viewing_road - no cleanup needed")
+    pass
+
+
+# =============================================================================
+# 10. ROAD_STARTING / ROAD_BUILDING - segment-by-segment, like a slope
+# =============================================================================
+
+
+def enter_road_starting(ctx: PlannerContext) -> None:
+    """Enter ROAD_STARTING: begin road building (Single Point of Truth).
+
+    Mirrors enter_slope_starting. The origin point was stored by
+    before_start_road. Guarantees the panel is hidden and the click dedup
+    marker is fresh, regardless of which transition brought us here.
+    """
+    logger.debug("ENTER: road_starting - hiding panel, clearing marker dedup")
+    ctx.viewing.hide_panel()
+    ctx.click_dedup.clear_marker()
+
+
+def exit_road_starting(ctx: PlannerContext) -> None:
+    """Exit ROAD_STARTING: minimal cleanup.
+
+    Destinations handle their own cleanup:
+    - ROAD_BUILDING: before_commit_road_first clears proposals
+    - IDLE_READY: before_cancel_road / enter_idle_ready clears road state
+    """
+    logger.debug("EXIT: road_starting - no cleanup needed")
+
+
+def enter_road_building(ctx: PlannerContext) -> None:
+    """Enter ROAD_BUILDING: continue building road (Single Point of Truth).
+
+    Mirrors enter_slope_building. Sources: first segment committed
+    (commit_road_first), self-loop (commit_road_continue). Preserves the road
+    context (it holds the committed segments!) and only hides the panel.
+    """
+    logger.debug("ENTER: road_building - hiding panel, preserving road context")
+    ctx.viewing.hide_panel()
+
+
+def exit_road_building(ctx: PlannerContext) -> None:
+    """Exit ROAD_BUILDING: no cleanup here.
+
+    Destinations own their cleanup (self-loop clears proposals via
+    before_commit_road_continue; finish_road/cancel clear road context). Clearing
+    road state here would erase the committed segments on the self-loop.
+    """
+    logger.debug("EXIT: road_building - no cleanup needed")

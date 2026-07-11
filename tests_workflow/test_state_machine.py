@@ -8,9 +8,9 @@ Test Categories:
     2. Invalid transitions: Event raises TransitionNotAllowed from forbidden states
 
 Matrix Reference (from state_machine.py docstring):
-    8 states × 12 events = 96 combinations
-    32 valid transitions (28 + 4 self-loops)
-    64 invalid transitions
+    all states, covering slope / lift / road build flows plus viewing states.
+    Valid transitions are enumerated in VALID_TRANSITIONS; forbidden ones in
+    INVALID_TRANSITIONS. Both are exercised by TestTransitionMatrix.
 """
 
 import pytest
@@ -59,6 +59,14 @@ VALID_TRANSITIONS: list[tuple[str, list[str], str | None]] = [
     ("cancel_custom", ["slope_custom_path"], None),
     # From LIFT_PLACING
     ("cancel_lift", ["lift_placing"], None),
+    # From IDLE (road build entry) — road mirrors slope
+    ("start_road", ["idle_ready", "idle_viewing_slope", "idle_viewing_lift", "idle_viewing_road"], "setup_road_start"),
+    ("view_road", ["idle_ready"], "setup_viewed_road"),
+    # From ROAD_STARTING / ROAD_BUILDING
+    ("cancel_road", ["road_starting"], None),
+    ("commit_road", ["road_starting"], "setup_commit_road_first"),
+    ("cancel_road", ["road_building"], None),
+    ("commit_road", ["road_building"], "setup_commit_road_continue"),  # self-loop
 ]
 
 
@@ -125,6 +133,16 @@ INVALID_TRANSITIONS: list[tuple[str, list[str]]] = [
             "slope_custom_path",
         ],
     ),
+    # Cannot cancel road from non-road states
+    (
+        "cancel_road",
+        ["idle_ready", "idle_viewing_slope", "idle_viewing_lift", "slope_starting", "slope_building", "lift_placing"],
+    ),
+    # Cannot commit road from non-road-build states
+    (
+        "commit_road",
+        ["idle_ready", "idle_viewing_slope", "slope_starting", "slope_building", "lift_placing"],
+    ),
 ]
 
 
@@ -135,6 +153,29 @@ class TestTransitionMatrix:
     def sm_ctx(self, sm_and_ctx: tuple) -> tuple:
         """Get state machine and context from conftest fixture."""
         return sm_and_ctx
+
+    @pytest.mark.parametrize("event,valid_states,_setup", VALID_TRANSITIONS)
+    def test_valid_transitions_are_allowed_from_source(
+        self,
+        sm_ctx: tuple,
+        event: str,
+        valid_states: list[str],
+        _setup: str | None,
+    ) -> None:
+        """Each VALID_TRANSITIONS event is defined on the SM and allowed from its source states.
+
+        Asserts the transition graph (not context-guarded firing): every listed
+        (event, source) pair must appear among that state's outgoing transitions,
+        so the table is live data — not the dead reference it was before.
+        """
+        sm, _ctx = sm_ctx
+        assert hasattr(sm, event), f"event {event} must be defined on the state machine"
+
+        for state_name in valid_states:
+            state = getattr(sm, state_name)
+            # A transition's `event` may bundle multiple aliases separated by spaces.
+            outgoing_events = {name for t in state.transitions for name in t.event.split()}
+            assert event in outgoing_events, f"{event} must be an allowed transition from {state_name}"
 
     @pytest.mark.parametrize("event,invalid_states", INVALID_TRANSITIONS)
     def test_invalid_transitions_raise_error(
@@ -191,7 +232,7 @@ class TestCancelCustomGuards:
 
         # Setup: Force to slope_custom_picking with no committed segments
         _force_state(sm=sm, state_name="slope_custom_picking")
-        ctx.building.segments = []  # No segments committed
+        ctx.slope_build.segments = []  # No segments committed
 
         # Act: Call cancel_custom event
         sm.cancel_custom()
@@ -205,7 +246,7 @@ class TestCancelCustomGuards:
 
         # Setup: Force to slope_custom_picking with committed segments
         _force_state(sm=sm, state_name="slope_custom_picking")
-        ctx.building.segments = ["S1"]  # Has committed segments
+        ctx.slope_build.segments = ["S1"]  # Has committed segments
 
         # Act: Call cancel_custom event
         sm.cancel_custom()

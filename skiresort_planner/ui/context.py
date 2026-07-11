@@ -13,7 +13,7 @@ Architecture:
 Sub-contexts:
     SelectionContext: Current click/selection data
     ProposalContext: Generated path proposals
-    BuildingContext: Slope building progress
+    SegmentBuildContext: Segment-by-segment build progress (slopes and roads)
     LiftContext: Lift placement state
     BuildModeContext: What type of element to build
     ViewingContext: Which slope/lift is being viewed
@@ -33,8 +33,8 @@ from typing import TYPE_CHECKING
 from skiresort_planner.constants import ClickConfig, LiftConfig, MapConfig, PathConfig
 
 if TYPE_CHECKING:
-    from skiresort_planner.core import TerrainOrientation
-    from skiresort_planner.model import PathPoint, ProposedSlopeSegment
+    from skiresort_planner.model.path_point import PathPoint
+    from skiresort_planner.model.proposed_path import ProposedPathSegment
 
 
 # Coordinate type aliases for clarity
@@ -108,30 +108,37 @@ class SelectionContext(BaseContext):
 class ProposalContext(BaseContext):
     """Path proposals state."""
 
-    paths: list[ProposedSlopeSegment] = field(default_factory=list)
+    paths: list[ProposedPathSegment] = field(default_factory=list)
     selected_idx: int | None = None
-    terrain_orientation: TerrainOrientation | None = None
 
     def clear(self) -> None:
         self.paths = []
         self.selected_idx = None
-        self.terrain_orientation = None
 
 
 @dataclass
-class BuildingContext(BaseContext):
-    """Slope building state."""
+class SegmentBuildContext(BaseContext):
+    """Segment-by-segment build progress, shared by slopes AND roads.
+
+    A slope and a road are both built the same way: each click commits one
+    segment, accumulating `segments`/`endpoints` from an origin (`start_node_id`
+    for an existing junction, or `start_location` for a fresh point). The model
+    layer already unifies these as SegmentPath → Slope/Road; this is the UI-state
+    counterpart, so there is no reason to duplicate it per build type.
+    """
 
     name: str | None = None
     segments: list[str] = field(default_factory=list)
-    start_node: str | None = None
     endpoints: list[str] = field(default_factory=list)
+    start_node_id: str | None = None
+    start_location: PathPoint | None = None  # For new node creation
 
     def clear(self) -> None:
         self.name = None
         self.segments = []
-        self.start_node = None
         self.endpoints = []
+        self.start_node_id = None
+        self.start_location = None
 
     def has_committed_segments(self) -> bool:
         return len(self.segments) > 0
@@ -161,6 +168,7 @@ class BuildMode:
     GONDOLA = "gondola"
     SURFACE_LIFT = "surface_lift"
     AERIAL_TRAM = "aerial_tram"
+    ROAD = "road"
 
     assert CHAIRLIFT in LiftConfig.TYPES, f"Invalid lift type '{CHAIRLIFT}'."
     assert GONDOLA in LiftConfig.TYPES, f"Invalid lift type '{GONDOLA}'."
@@ -181,21 +189,39 @@ class BuildMode:
         return mode in BuildMode.LIFT_TYPES
 
     @staticmethod
+    def is_road(mode: str) -> bool:
+        """Check if mode is road building."""
+        return mode == BuildMode.ROAD
+
+    @staticmethod
     def display_name(mode: str) -> str:
         """Human-friendly name for display."""
         from skiresort_planner.constants import StyleConfig
 
-        return StyleConfig.LIFT_DISPLAY_NAMES[mode]
+        match mode:
+            case BuildMode.SLOPE:
+                return "Slope"
+            case BuildMode.ROAD:
+                return "Road"
+            case BuildMode.CHAIRLIFT | BuildMode.GONDOLA | BuildMode.SURFACE_LIFT | BuildMode.AERIAL_TRAM:
+                return StyleConfig.LIFT_DISPLAY_NAMES[mode]
+            case _:
+                raise ValueError(f"Unknown build mode: {mode!r}")
 
     @staticmethod
     def icon(mode: str) -> str:
         """Emoji icon for mode."""
         from skiresort_planner.constants import StyleConfig
 
-        if mode == BuildMode.SLOPE:
-            return "⛷️"
-        # Lift icons are defined in StyleConfig.LIFT_ICONS with keys matching mode
-        return StyleConfig.LIFT_ICONS[mode]
+        match mode:
+            case BuildMode.SLOPE:
+                return StyleConfig.SLOPE_ICON
+            case BuildMode.ROAD:
+                return StyleConfig.ROAD_ICON
+            case BuildMode.CHAIRLIFT | BuildMode.GONDOLA | BuildMode.SURFACE_LIFT | BuildMode.AERIAL_TRAM:
+                return StyleConfig.LIFT_ICONS[mode]
+            case _:
+                raise ValueError(f"Unknown build mode: {mode!r}")
 
 
 @dataclass
@@ -219,6 +245,10 @@ class BuildModeContext(BaseContext):
     def is_lift(self) -> bool:
         """Check if mode is any lift type."""
         return BuildMode.is_lift(self.mode)
+
+    def is_road(self) -> bool:
+        """Check if mode is road building."""
+        return self.mode == BuildMode.ROAD
 
 
 @dataclass
@@ -244,6 +274,7 @@ class ViewingContext(BaseContext):
 
     slope_id: str | None = None
     lift_id: str | None = None
+    road_id: str | None = None
     panel_visible: bool = False
     view_3d: bool = False
 
@@ -254,7 +285,7 @@ class ViewingContext(BaseContext):
     def set_slope_id(self, slope_id: str) -> None:
         """Set the slope to view. Called by before_* hooks.
 
-        Sets slope_id and clears lift_id. Does NOT change panel_visible.
+        Sets slope_id and clears lift_id/road_id. Does NOT change panel_visible.
         The enter_* function will call show_panel() to make it visible.
 
         Args:
@@ -262,11 +293,12 @@ class ViewingContext(BaseContext):
         """
         self.slope_id = slope_id
         self.lift_id = None
+        self.road_id = None
 
     def set_lift_id(self, lift_id: str) -> None:
         """Set the lift to view. Called by before_* hooks.
 
-        Sets lift_id and clears slope_id. Does NOT change panel_visible.
+        Sets lift_id and clears slope_id/road_id. Does NOT change panel_visible.
         The enter_* function will call show_panel() to make it visible.
 
         Args:
@@ -274,6 +306,19 @@ class ViewingContext(BaseContext):
         """
         self.lift_id = lift_id
         self.slope_id = None
+        self.road_id = None
+
+    def set_road_id(self, road_id: str) -> None:
+        """Set the road to view. Called by before_* hooks.
+
+        Sets road_id and clears slope_id/lift_id. Does NOT change panel_visible.
+
+        Args:
+            road_id: ID of road to view (e.g., "R1")
+        """
+        self.road_id = road_id
+        self.slope_id = None
+        self.lift_id = None
 
     # =========================================================================
     # STATE CONTROL METHODS (called by enter_*/exit_* lifecycle functions)
@@ -320,10 +365,15 @@ class ViewingContext(BaseContext):
         """Check if currently viewing a lift (panel visible with lift_id set)."""
         return self.panel_visible and self.lift_id is not None
 
+    def is_viewing_road(self) -> bool:
+        """Check if currently viewing a road (panel visible with road_id set)."""
+        return self.panel_visible and self.road_id is not None
+
     def clear(self) -> None:
         """Clear all viewing state. Called when entering IDLE_READY."""
         self.slope_id = None
         self.lift_id = None
+        self.road_id = None
         self.panel_visible = False
         self.view_3d = False
 
@@ -336,12 +386,14 @@ class CustomConnectContext(BaseContext):
     start_node: str | None = None
     force_mode: bool = False
     target_location: LonLatElev | None = None  # (lon, lat, elev)
+    target_node: str | None = None  # Set when the target is an EXISTING node → reuse it by id (no proximity guess)
 
     def clear(self) -> None:
         self.enabled = False
         self.start_node = None
         self.force_mode = False
         self.target_location = None
+        self.target_node = None
 
 
 @dataclass
@@ -350,8 +402,7 @@ class MapContext(BaseContext):
 
     State Machine Integration:
     - Use set_building_view() when entering building states (zoomed in, top-down)
-    - Use set_viewing_view() when entering viewing states (zoomed out, overview)
-    - Use set_3d_view() for 3D terrain viewing
+    - Viewing/3D camera is set by center_on_* + calculate_3d_view_for_* in actions/center_map
 
     Note: center is [lon, lat] order (GeoJSON/Pydeck standard).
     """
@@ -409,35 +460,6 @@ class MapContext(BaseContext):
         self.lat = lat
         self.zoom = MapConfig.BUILDING_ZOOM
         self.pitch = MapConfig.BUILDING_PITCH
-
-    def set_viewing_view(self, lon: float, lat: float) -> None:
-        """Set map to viewing mode: centered, zoomed out, top-down overview.
-
-        Use when viewing completed slopes/lifts.
-        Provides good overview of the entire element.
-
-        Args:
-            lon: Center longitude
-            lat: Center latitude
-        """
-        self.lon = lon
-        self.lat = lat
-        self.zoom = MapConfig.VIEWING_ZOOM
-        self.pitch = MapConfig.VIEWING_PITCH
-
-    def set_3d_view(self, lon: float, lat: float, pitch: float, zoom: int) -> None:
-        """Set map to 3D terrain view with specified camera angle.
-
-        Args:
-            lon: Center longitude
-            lat: Center latitude
-            pitch: Camera tilt angle in degrees (0=top-down, higher=more tilted)
-            zoom: Zoom level (adjusted for elevation to prevent camera clipping)
-        """
-        self.lon = lon
-        self.lat = lat
-        self.pitch = pitch
-        self.zoom = zoom
 
     def reset_view(self) -> None:
         """Reset zoom, pitch, and bearing to defaults for 2D viewing."""
@@ -587,8 +609,9 @@ class PlannerContext:
     Sub-contexts:
         selection: Current click/selection data
         proposals: Generated path proposals
-        building: Slope building progress
+        slope_build: Slope building progress (SegmentBuildContext)
         lift: Lift placement state
+        road_build: Road building progress (SegmentBuildContext)
         viewing: Which slope/lift is being viewed
         custom_connect: Custom target connection mode
         map: Map center and zoom
@@ -606,8 +629,9 @@ class PlannerContext:
     # Organized sub-contexts
     selection: SelectionContext = field(default_factory=SelectionContext)
     proposals: ProposalContext = field(default_factory=ProposalContext)
-    building: BuildingContext = field(default_factory=BuildingContext)
+    slope_build: SegmentBuildContext = field(default_factory=SegmentBuildContext)
     lift: LiftContext = field(default_factory=LiftContext)
+    road_build: SegmentBuildContext = field(default_factory=SegmentBuildContext)
     viewing: ViewingContext = field(default_factory=ViewingContext)
     custom_connect: CustomConnectContext = field(default_factory=CustomConnectContext)
     map: MapContext = field(default_factory=MapContext)
@@ -623,26 +647,21 @@ class PlannerContext:
     # HELPER METHODS
     # =========================================================================
 
-    def clear_selection(self) -> None:
-        """Clear current selection state."""
-        self.selection.clear()
-        self.messages.clear()
-
     def clear_proposals(self) -> None:
         """Clear path proposals."""
         self.proposals.clear()
 
     def clear_building(self) -> None:
         """Clear slope building state."""
-        self.building.clear()
+        self.slope_build.clear()
 
     def clear_lift(self) -> None:
         """Clear lift placement state."""
         self.lift.clear()
 
-    def clear_viewing(self) -> None:
-        """Clear viewing state."""
-        self.viewing.clear()
+    def clear_road(self) -> None:
+        """Clear road building state."""
+        self.road_build.clear()
 
     def clear_custom_connect(self) -> None:
         """Clear custom connect mode."""
@@ -663,8 +682,8 @@ class PlannerContext:
         return (
             f"PlannerContext(state={self.state}, "
             f"coordinate={self.selection.coordinate}, "
-            f"slope={self.building.name}, "
-            f"segments={len(self.building.segments)}, "
+            f"slope={self.slope_build.name}, "
+            f"segments={len(self.slope_build.segments)}, "
             f"lift_start={self.lift.start_node_id})"
         )
 
@@ -674,4 +693,4 @@ class PlannerContext:
 
     def has_committed_segments(self) -> bool:
         """Check if there are committed segments in current slope."""
-        return self.building.has_committed_segments()
+        return self.slope_build.has_committed_segments()

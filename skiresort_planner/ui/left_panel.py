@@ -18,18 +18,23 @@ from typing import Any, Literal, cast
 import streamlit as st
 
 from skiresort_planner.constants import (
+    LiftConfig,
     PathConfig,
+    SlopeConfig,
     StyleConfig,
 )
 from skiresort_planner.model.message import (
     FileLoadErrorMessage,
 )
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.resort_graph import (
     ActionType,
     AddLiftAction,
     AddSegmentsAction,
     DeleteLiftAction,
+    DeleteRoadAction,
     DeleteSlopeAction,
+    FinishRoadAction,
     FinishSlopeAction,
     ResortGraph,
     UndoAction,
@@ -57,7 +62,19 @@ def _describe_undo_action(action: UndoAction, graph: ResortGraph) -> str:
     if action.action_type.name == ActionType.ADD_SEGMENTS.name:
         act = cast(AddSegmentsAction, action)
         n_segments = len(act.segment_ids)
-        return f"Remove {n_segments} segment(s) from current slope"
+        # Roads commit via the same AddSegmentsAction path — say slope/road by kind.
+        first_seg = graph.segments.get(act.segment_ids[0]) if act.segment_ids else None
+        if first_seg is None:
+            raise RuntimeError(f"AddSegmentsAction references missing segment {act.segment_ids}")
+        # Compare by == not `is`: Streamlit module reloads make identity checks
+        # unreliable across a fresh SegmentKind class (str-Enum equality is by value).
+        if first_seg.kind == SegmentKind.ROAD:
+            what = "road"
+        elif first_seg.kind == SegmentKind.SLOPE:
+            what = "slope"
+        else:
+            raise RuntimeError(f"Unknown segment kind {first_seg.kind} for {first_seg.id}")
+        return f"Remove {n_segments} segment(s) from current {what}"
 
     elif action.action_type.name == ActionType.FINISH_SLOPE.name:
         act = cast(FinishSlopeAction, action)
@@ -69,6 +86,10 @@ def _describe_undo_action(action: UndoAction, graph: ResortGraph) -> str:
         name = lift.name if lift else act.lift_id
         return f"Delete lift **{name}**"
 
+    elif action.action_type.name == ActionType.FINISH_ROAD.name:
+        act = cast(FinishRoadAction, action)
+        return f"Restore road **{act.road_name}** to building mode"
+
     elif action.action_type.name == ActionType.DELETE_SLOPE.name:
         act = cast(DeleteSlopeAction, action)
         return f"Restore deleted slope **{act.deleted_slope.name}**"
@@ -77,8 +98,17 @@ def _describe_undo_action(action: UndoAction, graph: ResortGraph) -> str:
         act = cast(DeleteLiftAction, action)
         return f"Restore deleted lift **{act.deleted_lift.name}**"
 
+    elif action.action_type.name == ActionType.DELETE_ROAD.name:
+        act = cast(DeleteRoadAction, action)
+        return f"Restore deleted road **{act.deleted_road.name}**"
+
     else:
         raise RuntimeError(f"Unknown action type: {action.action_type}")
+
+
+def _request_pending_undo() -> None:
+    """Flag the main render loop to execute the undo after the dialog closes."""
+    st.session_state._pending_undo = True
 
 
 @st.dialog("Confirm Undo")
@@ -91,12 +121,25 @@ def _confirm_undo_dialog(action: UndoAction, graph: ResortGraph) -> None:
     col_yes, col_no = st.columns(2)
     with col_yes:
         if st.button("↩️ Yes, Undo", type="primary", use_container_width=True):
-            # Set flag for main render loop to execute undo after dialog closes
-            st.session_state._pending_undo = True
+            _request_pending_undo()
             trigger_rerun()
     with col_no:
         if st.button("✖️ Cancel", use_container_width=True):
             trigger_rerun()
+
+
+def _perform_reset_resort() -> None:
+    """Delete the current resort's backup and prime a fresh empty one.
+
+    Drops all session data so init_session_state rebuilds from scratch.
+    """
+    current = st.session_state.get("resort_id")
+    if current:
+        backup_store.delete(resort_id=current)
+    st.query_params["resort"] = backup_store.new_resort_id()
+    # Drop all session data so init_session_state rebuilds fresh.
+    for key in ("resort_id", "graph", "state_machine", "context", "map_renderer", "_saved_token"):
+        st.session_state.pop(key, None)
 
 
 @st.dialog("🆕 Reset to Empty")
@@ -111,13 +154,7 @@ def _confirm_reset_resort_dialog() -> None:
     col_yes, col_no = st.columns(2)
     with col_yes:
         if st.button("🆕 Yes, Start Empty", type="primary", use_container_width=True):
-            current = st.session_state.get("resort_id")
-            if current:
-                backup_store.delete(resort_id=current)
-            st.query_params["resort"] = backup_store.new_resort_id()
-            # Drop all session data so init_session_state rebuilds fresh
-            for key in ("resort_id", "graph", "state_machine", "context", "map_renderer", "_saved_token"):
-                st.session_state.pop(key, None)
+            _perform_reset_resort()
             trigger_rerun()
     with col_no:
         if st.button("✖️ Cancel", use_container_width=True):
@@ -154,16 +191,18 @@ class SidebarRenderer:
         is_building_or_placing: bool,
         viewing_slope: bool,
         viewing_lift: bool,
+        viewing_road: bool,
     ) -> str:
         """Generate contextual help text for build mode buttons.
 
         Args:
-            mode: The BuildMode (slope or lift type)
+            mode: The BuildMode (slope, road, or lift type)
             label: Display label for the button
             is_disabled: Whether button is currently disabled
-            is_building_or_placing: True if in SlopeBuilding or LiftPlacing state
+            is_building_or_placing: True if in a building/placing state
             viewing_slope: True if viewing a slope panel
             viewing_lift: True if viewing a lift panel
+            viewing_road: True if viewing a road panel
 
         Returns:
             Help text explaining button action or why it's disabled
@@ -173,30 +212,35 @@ class SidebarRenderer:
         """
         is_slope_mode = BuildMode.is_slope(mode)
         is_lift_mode = BuildMode.is_lift(mode)
+        is_road_mode = BuildMode.is_road(mode)
 
         if is_disabled:
             if is_building_or_placing:
                 return "Finish or cancel current action first"
-            elif viewing_slope and is_lift_mode:
-                return "Close slope panel to switch to lift mode"
-            elif viewing_lift and is_slope_mode:
-                return "Close lift panel to switch to slope mode"
+            elif viewing_slope and not is_slope_mode:
+                return "Close slope panel to switch build mode"
+            elif viewing_lift and not is_lift_mode:
+                return "Close lift panel to switch build mode"
+            elif viewing_road and not is_road_mode:
+                return "Close road panel to switch build mode"
             else:
                 raise ValueError(
                     f"Button {mode} is disabled but no known reason: "
                     f"is_building_or_placing={is_building_or_placing}, "
-                    f"viewing_slope={viewing_slope}, viewing_lift={viewing_lift}"
+                    f"viewing_slope={viewing_slope}, viewing_lift={viewing_lift}, viewing_road={viewing_road}"
                 )
         elif viewing_lift and is_lift_mode:
             return f"Change viewed lift to {label}"
         elif is_slope_mode:
             return "Click on map to start building a ski slope"
+        elif is_road_mode:
+            return "Click two points on the map to connect them with a gentle car road"
         elif is_lift_mode:
             return f"Click on map to start placing a {label}"
         else:
             raise ValueError(
                 f"Button {mode} has no help text: is_disabled={is_disabled}, "
-                f"viewing_lift={viewing_lift}, is_slope={is_slope_mode}, is_lift={is_lift_mode}"
+                f"viewing_lift={viewing_lift}, is_slope={is_slope_mode}, is_lift={is_lift_mode}, is_road={is_road_mode}"
             )
 
     def render(self) -> dict[str, Any]:
@@ -217,6 +261,8 @@ class SidebarRenderer:
                 "cancel_slope": False,
                 "finish_slope": False,
                 "recompute": False,
+                "finish_road": False,
+                "cancel_road": False,
                 "lift_type": self.ctx.lift.type,
             }
 
@@ -224,12 +270,14 @@ class SidebarRenderer:
             st.divider()
 
             # Mode-specific controls: close button OR building/placing controls
-            if self.sm.is_idle_viewing_slope or self.sm.is_idle_viewing_lift:
+            if self.sm.is_idle_viewing_slope or self.sm.is_idle_viewing_lift or self.sm.is_idle_viewing_road:
                 self._render_close_panel_button()
             elif self.sm.is_any_slope_state:
-                actions.update(self._render_building_controls())
+                actions.update(self._render_slope_building_controls())
             elif self.sm.is_lift_placing:
                 self._render_lift_cancel_button()
+            elif self.sm.is_any_road_state:
+                actions.update(self._render_road_building_controls())
 
             st.divider()
             self._render_undo_reset_buttons()
@@ -261,6 +309,29 @@ class SidebarRenderer:
         ):
             bump_map_version()  # Clear stale click state
             self.sm.cancel_lift()  # Triggers st.rerun() via listener
+
+    def _render_road_building_controls(self) -> dict[str, Any]:
+        """Render controls during road building (mirrors _render_slope_building_controls).
+
+        Returns a dict with finish_road / cancel_road flags for the render loop.
+        """
+        has_segments = self.ctx.road_build.has_committed_segments()
+
+        finish_road = st.button(
+            "🏁 Finish Road",
+            type="primary",
+            width="stretch",
+            disabled=not has_segments,
+            help="Add at least one segment before finishing" if not has_segments else "Finalize this road",
+        )
+        cancel_road = st.button(
+            "✖️ Cancel Road",
+            width="stretch",
+            help="Discard the current road and return to idle",
+        )
+        st.caption(f"Click terrain or a junction to extend the road within ±{PathConfig.ROAD_MAX_GRADIENT_PCT}%.")
+
+        return {"finish_road": finish_road, "cancel_road": cancel_road}
 
     def _render_undo_reset_buttons(self) -> None:
         """Render undo and reset view buttons."""
@@ -299,21 +370,26 @@ class SidebarRenderer:
         # Use state machine properties for viewing checks
         viewing_slope = self.sm.is_idle_viewing_slope
         viewing_lift = self.sm.is_idle_viewing_lift
+        viewing_road = self.sm.is_idle_viewing_road
 
         if viewing_slope:
             st.markdown("### 👁️ Viewing Slope")
         elif viewing_lift:
             st.markdown("### 👁️ Viewing Lift")
+        elif viewing_road:
+            st.markdown("### 👁️ Viewing Road")
         elif self.sm.is_any_slope_state:
             st.markdown("### 🏗️ Building Slope...")
         elif self.sm.is_lift_placing:
             st.markdown("### 🏗️ Placing Lift...")
+        elif self.sm.is_any_road_state:
+            st.markdown("### 🏗️ Building Road...")
         else:
-            # All Idle* states (IdleReady, IdleViewingSlope, IdleViewingLift)
+            # All Idle* states (IdleReady, IdleViewing*)
             st.markdown("### ⛷️🚡 Ready to Build")
 
         # Buttons disabled during building/placing
-        buttons_disabled = self.sm.is_any_slope_state or self.sm.is_lift_placing
+        buttons_disabled = self.sm.is_any_slope_state or self.sm.is_lift_placing or self.sm.is_any_road_state
         current_mode = self.ctx.build_mode.mode
 
         # Note: viewing_slope and viewing_lift already computed above for header
@@ -330,7 +406,7 @@ class SidebarRenderer:
         else:
             # All Idle* states without viewing panel
             st.markdown(
-                "- 🔘 Select **Slope** or **Lift** type below\n"
+                "- 🔘 Select **Slope**, **Road** or **Lift** type below\n"
                 "- 🗺️ Click terrain/node → start building\n"
                 "- 👁️ Click existing slope/lift → view stats"
             )
@@ -352,10 +428,10 @@ class SidebarRenderer:
         ]
 
         # === SLOPE button (full width) ===
-        slope_disabled = buttons_disabled or viewing_lift
+        slope_disabled = buttons_disabled or viewing_lift or viewing_road
         slope_selected = current_mode == BuildMode.SLOPE
         slope_type: Literal["primary", "secondary"] = "primary" if slope_selected else "secondary"
-        slope_label = "⛷️ **Slope**" if slope_selected else "⛷️ Slope"
+        slope_label = f"{StyleConfig.SLOPE_ICON} **Slope**" if slope_selected else f"{StyleConfig.SLOPE_ICON} Slope"
         slope_help = self._get_button_help(
             mode=BuildMode.SLOPE,
             label="Slope",
@@ -363,6 +439,7 @@ class SidebarRenderer:
             is_building_or_placing=buttons_disabled,
             viewing_slope=viewing_slope,
             viewing_lift=viewing_lift,
+            viewing_road=viewing_road,
         )
         # Build mode changes are context-only → use canonical refresh helper
         if st.button(
@@ -375,6 +452,32 @@ class SidebarRenderer:
         ):
             self.ctx.build_mode.mode = BuildMode.SLOPE
             logger.info("UI: Build mode set to Slope")
+            reload_map()
+
+        # === ROAD button (full width) — vehicle road, brown ===
+        road_disabled = buttons_disabled or viewing_slope or viewing_lift
+        road_selected = current_mode == BuildMode.ROAD
+        road_type: Literal["primary", "secondary"] = "primary" if road_selected else "secondary"
+        road_label = f"{StyleConfig.ROAD_ICON} **Road**" if road_selected else f"{StyleConfig.ROAD_ICON} Road"
+        road_help = self._get_button_help(
+            mode=BuildMode.ROAD,
+            label="Road",
+            is_disabled=road_disabled,
+            is_building_or_placing=buttons_disabled,
+            viewing_slope=viewing_slope,
+            viewing_lift=viewing_lift,
+            viewing_road=viewing_road,
+        )
+        if st.button(
+            road_label,
+            width="stretch",
+            type=road_type,
+            key="build_btn_road",
+            disabled=road_disabled,
+            help=road_help,
+        ):
+            self.ctx.build_mode.mode = BuildMode.ROAD
+            logger.info("UI: Build mode set to Road")
             reload_map()
 
         # === LIFT buttons (2x2 grid) ===
@@ -390,6 +493,7 @@ class SidebarRenderer:
                     buttons_disabled=buttons_disabled,
                     viewing_slope=viewing_slope,
                     viewing_lift=viewing_lift,
+                    viewing_road=viewing_road,
                 )
 
         # Row 2: Surface Lift, Aerial Tram
@@ -404,6 +508,7 @@ class SidebarRenderer:
                     buttons_disabled=buttons_disabled,
                     viewing_slope=viewing_slope,
                     viewing_lift=viewing_lift,
+                    viewing_road=viewing_road,
                 )
 
     def _render_lift_button(
@@ -415,10 +520,11 @@ class SidebarRenderer:
         buttons_disabled: bool,
         viewing_slope: bool,
         viewing_lift: bool,
+        viewing_road: bool,
     ) -> None:
         """Render a single lift type button."""
-        # Lift buttons: disabled when building/placing OR viewing slope
-        mode_disabled = buttons_disabled or viewing_slope
+        # Lift buttons: disabled when building/placing OR viewing a slope/road
+        mode_disabled = buttons_disabled or viewing_slope or viewing_road
         is_selected = current_mode == mode
 
         # When viewing lift, highlight the viewed lift's type
@@ -435,6 +541,7 @@ class SidebarRenderer:
             is_building_or_placing=buttons_disabled,
             viewing_slope=viewing_slope,
             viewing_lift=viewing_lift,
+            viewing_road=viewing_road,
         )
 
         if st.button(
@@ -475,20 +582,18 @@ class SidebarRenderer:
         if lift.lift_type == new_type:
             return  # No actual type change needed
 
-        # Get nodes for the update
+        # A lift in the graph always has valid endpoint nodes — a miss is corrupted state.
         start_node = self.graph.nodes.get(lift.start_node_id)
         end_node = self.graph.nodes.get(lift.end_node_id)
-        if not start_node or not end_node:
-            logger.warning(f"Cannot update lift {lift_id}: nodes not found")
-            return
+        assert start_node and end_node, f"lift {lift_id} references missing nodes (data integrity bug)"
 
         # Use centralized method to update all type-dependent fields
         lift.update_type(new_type=new_type, start_node=start_node, end_node=end_node)
 
         logger.info(f"UI: Changed lift {lift_id} type to {new_type}")
 
-    def _render_building_controls(self) -> dict[str, Any]:
-        """Render controls for slope building state.
+    def _render_slope_building_controls(self) -> dict[str, Any]:
+        """Render controls for slope building state (mirrors _render_road_building_controls).
 
         Returns dict with finish_slope, cancel_slope, recompute flags.
         Note: Undo button is rendered separately in render() for consistency.
@@ -511,7 +616,7 @@ class SidebarRenderer:
             help="Discard current slope and return to IDLE",
         )
         if cancel_slope:
-            logger.info(f"UI: Cancel slope requested for {self.ctx.building.name}")
+            logger.info(f"UI: Cancel slope requested for {self.ctx.slope_build.name}")
 
         # Path generation settings
         st.markdown("**⚙️ Path Settings**")
@@ -548,9 +653,10 @@ class SidebarRenderer:
             stats = self.graph.get_stats()
             total_slopes = stats.get("total_slopes", 0)
             total_lifts = stats.get("total_lifts", 0)
+            total_roads = stats.get("total_roads", 0)
 
             # Header with counts
-            st.markdown(f"**{total_slopes} Slopes • {total_lifts} Lifts**")
+            st.markdown(f"**{total_slopes} Slopes • {total_lifts} Lifts • {total_roads} Roads**")
 
             # Elevation range across all nodes
             elev_range = self.graph.get_elevation_range()
@@ -570,18 +676,18 @@ class SidebarRenderer:
                 )
                 st.markdown(f"↓ {slope_vertical / 1000:.3f}km drop • {slope_length / 1000:.3f}km length")
 
-                # Difficulty breakdown (km)
-                difficulty_lengths: dict[str, float] = {"green": 0, "blue": 0, "red": 0, "black": 0}
+                # Difficulty breakdown (km) — loop the single-source difficulty list.
+                difficulty_lengths: dict[str, float] = {d: 0.0 for d in SlopeConfig.DIFFICULTIES}
                 for slope in self.graph.slopes.values():
                     diff = slope.get_difficulty(segments=self.graph.segments)
                     length = slope.get_total_length(segments=self.graph.segments)
                     difficulty_lengths[diff] += length
 
                 st.markdown(
-                    f"🟢 {difficulty_lengths['green'] / 1000:.3f}km • "
-                    f"🔵 {difficulty_lengths['blue'] / 1000:.3f}km • "
-                    f"🔴 {difficulty_lengths['red'] / 1000:.3f}km • "
-                    f"⚫ {difficulty_lengths['black'] / 1000:.3f}km"
+                    " • ".join(
+                        f"{StyleConfig.DIFFICULTY_EMOJIS[d]} {difficulty_lengths[d] / 1000:.3f}km"
+                        for d in SlopeConfig.DIFFICULTIES
+                    )
                 )
             else:
                 st.caption("No slopes yet")
@@ -597,25 +703,34 @@ class SidebarRenderer:
                 lift_length = sum(lift.get_length_m(nodes=self.graph.nodes) for lift in self.graph.lifts.values())
                 st.markdown(f"↑ {lift_vertical / 1000:.3f}km rise • {lift_length / 1000:.3f}km length")
 
-                # Lift type breakdown (count)
-                lift_counts: dict[str, int] = {"chairlift": 0, "gondola": 0, "surface_lift": 0, "aerial_tram": 0}
+                # Lift type breakdown (count) — loop the single-source lift types.
+                lift_counts: dict[str, int] = {t: 0 for t in LiftConfig.TYPES}
                 for lift in self.graph.lifts.values():
                     lift_counts[lift.lift_type] += 1
 
-                st.markdown(
-                    f"🪑 {lift_counts['chairlift']} • "
-                    f"🚡 {lift_counts['gondola']} • "
-                    f"🎿 {lift_counts['surface_lift']} • "
-                    f"🚠 {lift_counts['aerial_tram']}"
-                )
+                st.markdown(" • ".join(f"{StyleConfig.LIFT_ICONS[t]} {lift_counts[t]}" for t in LiftConfig.TYPES))
             else:
                 st.caption("No lifts yet")
+
+            st.divider()
+
+            # === ROADS SECTION ===
+            st.markdown(f"**{StyleConfig.ROAD_ICON} Roads**")
+            if total_roads > 0:
+                road_length = stats.get("total_road_length_m", 0.0)
+                # Elevation change across all roads (mirrors slope drop / lift rise line).
+                road_elev_change = sum(
+                    abs(road.get_total_drop(segments=self.graph.segments)) for road in self.graph.roads.values()
+                )
+                st.markdown(f"↕ {road_elev_change / 1000:.3f}km elevation change • {road_length / 1000:.3f}km length")
+            else:
+                st.caption("No roads yet")
 
     def _render_save_load(self) -> None:
         """Render save/load resort functionality."""
         with st.expander("💾 Resort Data", expanded=False):
             stats = self.graph.get_stats()
-            can_save = stats["total_slopes"] > 0 or stats["total_lifts"] > 0
+            can_save = stats["total_slopes"] > 0 or stats["total_lifts"] > 0 or stats["total_roads"] > 0
 
             # Load from File
             uploaded_file = st.file_uploader(
@@ -669,7 +784,7 @@ class SidebarRenderer:
                     "💾 Save to File",
                     width="stretch",
                     disabled=True,
-                    help="Build some slopes or lifts first",
+                    help="Build some slopes, lifts or roads first",
                 )
 
             # Export GPX - always show, disable if no data
@@ -689,7 +804,7 @@ class SidebarRenderer:
                     "📥 Export GPX",
                     width="stretch",
                     disabled=True,
-                    help="Build some slopes or lifts first",
+                    help="Build some slopes, lifts or roads first",
                 )
 
             st.divider()

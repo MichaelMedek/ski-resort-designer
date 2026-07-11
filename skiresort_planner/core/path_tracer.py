@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TracedPath:
-    """Result of path tracing (raw path data before conversion to ProposedSlopeSegment).
+    """Result of path tracing (raw path data before conversion to ProposedPathSegment).
 
     Attributes:
         points: List of PathPoint instances

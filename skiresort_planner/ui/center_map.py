@@ -20,7 +20,7 @@ Reference: DETAILS_UI.md for interaction patterns
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pydeck as pdk
 
@@ -31,7 +31,8 @@ from skiresort_planner.constants import (
     StyleConfig,
 )
 from skiresort_planner.core.geo_calculator import GeoCalculator
-from skiresort_planner.model.proposed_path import ProposedSlopeSegment
+from skiresort_planner.model.path_segment import SegmentKind
+from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 
 if TYPE_CHECKING:
@@ -44,11 +45,16 @@ logger = logging.getLogger(__name__)
 class LayerCollection:
     """Manages Pydeck layers with correct z-ordering.
 
-    Z-order (back to front): terrain → pylons → slopes → lifts → nodes → proposals → markers
+    Z-order (back to front): terrain → pylons → slopes → roads → lifts → nodes → proposals → markers
 
-    Nodes are placed AFTER slopes/lifts so they:
+    Slopes and roads render in separate buckets (built by one shared segment
+    loop, kept distinct for z-order and brown-vs-difficulty styling). Nodes are
+    placed AFTER slopes/lifts so they:
     1. Render visually on top of lines (correct for junction display)
     2. Get click priority over slopes/lifts (nodes are small, need priority)
+
+    Parking places are not a separate layer — a parking node renders as its node
+    marker (blue + bigger) inside the nodes layer (see _create_node_layer).
 
     Markers layer includes crosshair for terrain node placement when active.
     """
@@ -56,6 +62,7 @@ class LayerCollection:
     terrain: list[pdk.Layer] = field(default_factory=list)
     pylons: list[pdk.Layer] = field(default_factory=list)
     slopes: list[pdk.Layer] = field(default_factory=list)
+    roads: list[pdk.Layer] = field(default_factory=list)
     lifts: list[pdk.Layer] = field(default_factory=list)
     nodes: list[pdk.Layer] = field(default_factory=list)
     proposals: list[pdk.Layer] = field(default_factory=list)
@@ -63,7 +70,16 @@ class LayerCollection:
 
     def get_ordered_layers(self) -> list[pdk.Layer]:
         """Return all layers in correct z-order (back to front)."""
-        return self.terrain + self.pylons + self.slopes + self.lifts + self.nodes + self.proposals + self.markers
+        return (
+            self.terrain
+            + self.pylons
+            + self.slopes
+            + self.roads
+            + self.lifts
+            + self.nodes
+            + self.proposals
+            + self.markers
+        )
 
 
 class MapRenderer:
@@ -133,7 +149,7 @@ class MapRenderer:
 
     def render(
         self,
-        proposals: list[ProposedSlopeSegment] | None = None,
+        proposals: list[ProposedPathSegment] | None = None,
         selected_proposal_idx: int | None = None,
         show_nodes: bool = True,
         show_segments: bool = True,
@@ -179,9 +195,11 @@ class MapRenderer:
                 layer_collection.nodes.append(self._create_node_layer(use_3d=use_3d))
 
             if show_segments:
-                layer_collection.slopes.extend(
-                    self._create_segment_layers(highlight_ids=highlight_segment_ids, use_3d=use_3d)
-                )
+                # One shared loop builds slope + road layers, returned in
+                # separate buckets so each keeps its z-order and styling.
+                segment_layers = self._create_segment_layers(highlight_ids=highlight_segment_ids, use_3d=use_3d)
+                layer_collection.slopes.extend(segment_layers["slopes"])
+                layer_collection.roads.extend(segment_layers["roads"])
 
         if proposals:
             layer_collection.proposals.extend(
@@ -288,32 +306,29 @@ class MapRenderer:
         return (center_lat, center_lon, camera_bearing, int(adjusted_zoom), MapConfig.VIEW_3D_PITCH)
 
     @staticmethod
-    def calculate_3d_view_for_slope(
+    def _calculate_3d_view_for_entity(
         graph: ResortGraph,
-        slope_id: str,
+        entity: Any,
+        label: str,
     ) -> tuple[float, float, float, int, float]:
-        """Calculate optimal camera position to view a slope in 3D.
+        """Side-view camera for any start/end-node entity (slope, road, or lift).
 
-        Positions camera perpendicular to slope direction so it's viewed from the side.
-        Slope appears from left-up to right-down (start_node on left, end_node on right).
+        All three expose start_node_id/end_node_id; the -90 camera offset puts
+        start_node on the LEFT and end_node on the RIGHT.
 
         Args:
-            graph: Resort graph containing the slope.
-            slope_id: ID of the slope to view.
+            graph: Resort graph (for node lookup).
+            entity: A Slope/Road/Lift with start_node_id/end_node_id.
+            label: Entity label for the error message.
 
         Returns:
             Tuple (lat, lon, bearing, zoom, pitch) for camera settings.
         """
-        slope = graph.slopes.get(slope_id)
-        if not slope:
-            raise ValueError(f"Slope {slope_id} not found")
-
-        start_node = graph.nodes.get(slope.start_node_id)
-        end_node = graph.nodes.get(slope.end_node_id)
+        start_node = graph.nodes.get(entity.start_node_id)
+        end_node = graph.nodes.get(entity.end_node_id)
         if not start_node or not end_node:
-            raise ValueError(f"Slope {slope_id} has missing nodes")
+            raise ValueError(f"{label} {entity.id} has missing nodes")
 
-        # Camera offset -90: positions start_node on LEFT, end_node on RIGHT
         return MapRenderer._calculate_3d_view_for_endpoints(
             start_lat=start_node.lat,
             start_lon=start_node.lon,
@@ -325,145 +340,177 @@ class MapRenderer:
         )
 
     @staticmethod
+    def calculate_3d_view_for_slope(
+        graph: ResortGraph,
+        slope_id: str,
+    ) -> tuple[float, float, float, int, float]:
+        """Calculate optimal side-view camera to view a slope in 3D."""
+        slope = graph.slopes.get(slope_id)
+        if not slope:
+            raise ValueError(f"Slope {slope_id} not found")
+        return MapRenderer._calculate_3d_view_for_entity(graph=graph, entity=slope, label="Slope")
+
+    @staticmethod
+    def calculate_3d_view_for_road(
+        graph: ResortGraph,
+        road_id: str,
+    ) -> tuple[float, float, float, int, float]:
+        """Calculate optimal side-view camera to view a road in 3D."""
+        road = graph.roads.get(road_id)
+        if not road:
+            raise ValueError(f"Road {road_id} not found")
+        return MapRenderer._calculate_3d_view_for_entity(graph=graph, entity=road, label="Road")
+
+    @staticmethod
     def calculate_3d_view_for_lift(
         graph: ResortGraph,
         lift_id: str,
     ) -> tuple[float, float, float, int, float]:
-        """Calculate optimal camera position to view a lift in 3D.
-
-        Positions camera perpendicular to lift direction so it's viewed from the side.
-        Lift appears from left-down to right-up (start_node on left, end_node on right).
-
-        Args:
-            graph: Resort graph containing the lift.
-            lift_id: ID of the lift to view.
-
-        Returns:
-            Tuple (lat, lon, bearing, zoom, pitch) for camera settings.
-        """
+        """Calculate optimal side-view camera to view a lift in 3D."""
         lift = graph.lifts.get(lift_id)
         if not lift:
             raise ValueError(f"Lift {lift_id} not found")
-
-        start_node = graph.nodes.get(lift.start_node_id)
-        end_node = graph.nodes.get(lift.end_node_id)
-        if not start_node or not end_node:
-            raise ValueError(f"Lift {lift_id} has missing nodes")
-
-        # Camera offset -90: positions start_node on LEFT, end_node on RIGHT
-        return MapRenderer._calculate_3d_view_for_endpoints(
-            start_lat=start_node.lat,
-            start_lon=start_node.lon,
-            start_elev=start_node.elevation,
-            end_lat=end_node.lat,
-            end_lon=end_node.lon,
-            end_elev=end_node.elevation,
-            camera_bearing_offset=-90,
-        )
+        return MapRenderer._calculate_3d_view_for_entity(graph=graph, entity=lift, label="Lift")
 
     # =========================================================================
     # SEGMENT LAYERS
     # =========================================================================
 
-    def _create_segment_layers(self, highlight_ids: list[str] | None = None, use_3d: bool = False) -> list[pdk.Layer]:
-        """Create layers for segment belt polygons and center lines."""
+    def _create_segment_layers(
+        self, highlight_ids: list[str] | None = None, use_3d: bool = False
+    ) -> dict[str, list[pdk.Layer]]:
+        """Create belt/center-line/icon layers for slopes AND roads in one pass.
+
+        Each committed segment carries its own kind (SegmentKind.SLOPE/ROAD), so
+        road-vs-slope is read straight off the segment — never reconstructed from
+        which entity happens to own it (a Road entity doesn't exist yet while its
+        segments are being built). road_of/slope_of are used ONLY to find the
+        owning entity for panel-click routing, not to classify color. Road data
+        goes to a SEPARATE bucket so roads keep their own z-order and brown
+        styling, distinct from difficulty slopes.
+
+        Returns:
+            Dict with 'slopes' and 'roads' keys, each a list of pdk layers.
+        """
         if not self.graph:
-            return []
+            return {"slopes": [], "roads": []}
 
         highlight_ids = highlight_ids or []
-        segment_data = []
-        icon_data = []
+        # Segment → owner maps, built once — used only for click/panel routing.
+        road_of = {sid: road for road in self.graph.roads.values() for sid in road.segment_ids}
+        slope_of = {sid: slope for slope in self.graph.slopes.values() for sid in slope.segment_ids}
+
+        # One record per segment, sorted into its owner's bucket by segment.kind.
+        # Roads are flat brown; slopes are difficulty-colored. In-build segments
+        # (no finished Slope/Road yet) stay segment-typed for clicks.
+        slope_records: list[dict] = []
+        road_records: list[dict] = []
 
         for seg_id, segment in self.graph.segments.items():
             polygon_coords = segment.get_belt_polygon()
             if not polygon_coords:
+                # A committed segment always has ≥2 points, so its belt polygon is never empty.
+                raise RuntimeError(f"Segment {seg_id} produced an empty belt polygon")
+
+            # == not `is`: reload-safe (Streamlit rebuilds the SegmentKind class).
+            is_road = segment.kind == SegmentKind.ROAD
+            flat_z = MapConfig.Z_OFFSET_2D_LIFTS if is_road else MapConfig.Z_OFFSET_2D_SLOPES
+            center_line = [
+                [p.lon, p.lat, self._get_z(p.elevation, MarkerConfig.PATH_Z_OFFSET_M, use_3d, flat_z)]
+                for p in segment.points
+            ]
+            mid_pt = segment.points[len(segment.points) // 2]
+            icon_z = self._get_z(mid_pt.elevation, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, MapConfig.Z_OFFSET_2D_ICONS)
+            icon_position = [mid_pt.lon, mid_pt.lat, icon_z]
+
+            if is_road:
+                # Road segment: flat brown. A finished road opens its panel on click;
+                # an in-build road segment (no Road entity yet) stays segment-typed.
+                road = road_of.get(seg_id)
+                road_records.append(
+                    {
+                        "type": ClickConfig.TYPE_ROAD if road is not None else ClickConfig.TYPE_SEGMENT,
+                        "id": road.id if road is not None else seg_id,
+                        "polygon": list(polygon_coords),
+                        "center_line": center_line,
+                        "color": list(StyleConfig.ROAD_COLOR_RGBA),
+                        "name": f"{StyleConfig.ROAD_ICON} {road.name}"
+                        if road is not None
+                        else f"Building road: {seg_id}",
+                        "icon_type": ClickConfig.TYPE_ROAD if road is not None else ClickConfig.TYPE_SEGMENT,
+                        "icon_id": road.id if road is not None else seg_id,
+                        "icon_position": icon_position,
+                        "icon_color": list(StyleConfig.ROAD_COLOR_RGBA),
+                        "icon_name": f"{StyleConfig.ROAD_ICON} {road.name}"
+                        if road is not None
+                        else f"Building road: {seg_id}",
+                    }
+                )
                 continue
 
-            # Get parent slope for consistent coloring
-            parent_slope = self.graph.get_slope_by_segment_id(segment_id=seg_id)
-            if parent_slope:
-                difficulty = parent_slope.get_difficulty(segments=self.graph.segments)
-                slope_id = parent_slope.id
+            # Slope or orphan-in-build segment: difficulty-colored.
+            slope = slope_of.get(seg_id)
+            if slope is not None:
+                difficulty = slope.get_difficulty(segments=self.graph.segments)
+                slope_id: str | None = slope.id
             else:
-                # Orphan segment (being built) - no parent slope yet
                 difficulty = segment.difficulty
                 slope_id = None
 
             color = list(StyleConfig.SLOPE_COLORS_RGBA[difficulty])
-            is_highlighted = seg_id in highlight_ids
 
             # Adjust opacity for highlight
-            if is_highlighted:
+            if seg_id in highlight_ids:
                 color[3] = 180  # More opaque
             else:
                 color[3] = 100  # Semi-transparent
 
-            # Belt polygon data - 2D polygons stay at z=0 (no elevation)
-            segment_data.append(
+            # Finished slope → icon opens slope panel; orphan → segment-typed (in build).
+            slope_records.append(
                 {
                     "type": ClickConfig.TYPE_SEGMENT,
                     "id": seg_id,
-                    "slope_id": slope_id if parent_slope else None,
-                    "polygon": list(polygon_coords),  # [[lon, lat], ...] - 2D for PolygonLayer
-                    "center_line": [
-                        [
-                            p.lon,
-                            p.lat,
-                            self._get_z(
-                                p.elevation, MarkerConfig.PATH_Z_OFFSET_M, use_3d, MapConfig.Z_OFFSET_2D_SLOPES
-                            ),
-                        ]
-                        for p in segment.points
-                    ],
+                    "polygon": list(polygon_coords),
+                    "center_line": center_line,
                     "color": color,
-                    "highlighted": is_highlighted,
-                    "difficulty": difficulty,
-                    "name": f"Segment {seg_id}",
+                    "name": f"{StyleConfig.SLOPE_ICON} {slope.name}" if slope is not None else f"Segment {seg_id}",
+                    "icon_type": ClickConfig.TYPE_SLOPE if slope is not None else ClickConfig.TYPE_SEGMENT,
+                    "icon_id": slope_id if slope is not None else seg_id,
+                    "icon_position": icon_position,
+                    "icon_color": StyleConfig.SLOPE_COLORS_RGBA[difficulty],
+                    "icon_name": f"{StyleConfig.SLOPE_ICON} {slope.name}"
+                    if slope is not None
+                    else f"Building: {seg_id}",
                 }
             )
 
-            # Slope icon at segment midpoint
-            center_line = segment.points
-            if center_line:
-                mid_idx = len(center_line) // 2
-                mid_pt = center_line[mid_idx]
-                icon_z = self._get_z(
-                    mid_pt.elevation, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, MapConfig.Z_OFFSET_2D_ICONS
-                )
-                if parent_slope:
-                    # Finished slope - use slope ID for click handling
-                    icon_data.append(
-                        {
-                            "type": ClickConfig.TYPE_SLOPE,
-                            "id": slope_id,
-                            "position": [mid_pt.lon, mid_pt.lat, icon_z],
-                            "color": StyleConfig.SLOPE_COLORS_RGBA[difficulty],
-                            "name": f"Slope {slope_id}",
-                            "difficulty": difficulty,
-                        }
-                    )
-                else:
-                    # Orphan segment (being built) - show marker but segment click type
-                    icon_data.append(
-                        {
-                            "type": ClickConfig.TYPE_SEGMENT,
-                            "id": seg_id,
-                            "position": [mid_pt.lon, mid_pt.lat, icon_z],
-                            "color": StyleConfig.SLOPE_COLORS_RGBA[difficulty],
-                            "name": f"Building: {seg_id}",
-                            "difficulty": difficulty,
-                        }
-                    )
+        return {
+            "slopes": self._build_path_layers(slope_records, id_prefix="segments", use_3d=use_3d),
+            "roads": self._build_path_layers(road_records, id_prefix="roads", use_3d=use_3d),
+        }
 
-        layers = []
+    def _build_path_layers(self, records: list[dict], id_prefix: str, use_3d: bool) -> list[pdk.Layer]:
+        """Build belt/center-line/icon layers from segment records.
+
+        Shared by slopes and roads so both render identically (belt polygon in
+        2D, center line in 2D+3D, icon marker); only the record data (color,
+        click type/id) differs. `id_prefix` namespaces the pydeck layer ids.
+
+        Each record's `type`/`id` drive belt+center-line clicks; the `icon_*`
+        fields drive the midpoint marker (which may route elsewhere, e.g. a
+        slope icon opens the slope panel while its belt is segment-typed).
+        """
+        if not records:
+            return []
+
+        layers: list[pdk.Layer] = []
 
         # Belt polygons - ONLY in 2D mode (PolygonLayer doesn't support z-coords)
-        # In 3D mode, polygons render at z=0 which looks wrong
-        if segment_data and not use_3d:
+        if not use_3d:
             layers.append(
                 pdk.Layer(
                     "PolygonLayer",
-                    segment_data,
+                    records,
                     get_polygon="polygon",
                     get_fill_color="color",
                     get_line_color=[255, 255, 255, 100],
@@ -471,39 +518,47 @@ class MapRenderer:
                     pickable=True,
                     auto_highlight=True,
                     highlight_color=[255, 255, 255, 80],
-                    id="segments_belt",
+                    id=f"{id_prefix}_belt",
                 )
             )
 
-        # Center lines (colored by difficulty) - render in both 2D and 3D
-        if segment_data:
-            layers.append(
-                pdk.Layer(
-                    "PathLayer",
-                    segment_data,
-                    get_path="center_line",
-                    get_color="color",
-                    get_width=6 if use_3d else 4,  # Thicker in 3D since no belt polygon
-                    width_min_pixels=2,
-                    pickable=True,
-                    id="segments_centerline",
-                )
+        # Center lines - render in both 2D and 3D
+        layers.append(
+            pdk.Layer(
+                "PathLayer",
+                records,
+                get_path="center_line",
+                get_color="color",
+                get_width=6 if use_3d else 4,  # Thicker in 3D since no belt polygon
+                width_min_pixels=2,
+                pickable=True,
+                id=f"{id_prefix}_centerline",
             )
+        )
 
-        # Slope icons
-        if icon_data:
-            layers.append(
-                pdk.Layer(
-                    "ScatterplotLayer",
-                    icon_data,
-                    get_position="position",
-                    get_radius=ClickConfig.SLOPE_ICON_MARKER_RADIUS,
-                    get_fill_color="color",
-                    pickable=True,
-                    auto_highlight=True,
-                    id="slope_icons",
-                )
+        # Icons at segment midpoints (separate records → own click type/id/color)
+        icon_records = [
+            {
+                "type": r["icon_type"],
+                "id": r["icon_id"],
+                "position": r["icon_position"],
+                "color": r["icon_color"],
+                "name": r["icon_name"],
+            }
+            for r in records
+        ]
+        layers.append(
+            pdk.Layer(
+                "ScatterplotLayer",
+                icon_records,
+                get_position="position",
+                get_radius=ClickConfig.SLOPE_ICON_MARKER_RADIUS,
+                get_fill_color="color",
+                pickable=True,
+                auto_highlight=True,
+                id=f"{id_prefix}_icons",
             )
+        )
 
         return layers
 
@@ -532,8 +587,8 @@ class MapRenderer:
             end_node = self.graph.nodes.get(lift.end_node_id)
 
             if start_node is None or end_node is None:
-                logger.warning(f"Lift {lift_id} has missing nodes, skipping")
-                continue
+                # A lift's endpoint nodes always exist in the graph
+                raise RuntimeError(f"Lift {lift_id} has missing nodes")
 
             color = list(StyleConfig.LIFT_COLORS_RGBA[lift.lift_type])
 
@@ -553,7 +608,7 @@ class MapRenderer:
                     "id": lift_id,
                     "path": cable_path,
                     "color": color,
-                    "name": lift.name,
+                    "name": f"{StyleConfig.LIFT_ICONS[lift.lift_type]} {lift.name}",
                     "lift_type": lift.lift_type,
                 }
             )
@@ -585,7 +640,7 @@ class MapRenderer:
                     "id": lift_id,
                     "position": [mid_lon, mid_lat, icon_z],
                     "color": color,
-                    "name": lift.name,
+                    "name": f"{StyleConfig.LIFT_ICONS[lift.lift_type]} {lift.name}",
                     "lift_type": lift.lift_type,
                 }
             )
@@ -649,36 +704,53 @@ class MapRenderer:
     def _create_node_layer(self, use_3d: bool = False) -> pdk.Layer:
         """Create layer for junction nodes.
 
+        A node that is also a **parking node** (a road junction shared with a
+        slope or lift, per graph.get_parking_nodes()) renders bigger and blue
+        with a "Parking place" tooltip — the parking marker IS the node marker,
+        so it's always visible and hoverable (no separate under-layer).
+
         Args:
             use_3d: If True, use terrain elevation. If False, use z-offset.
 
         Returns:
-            ScatterplotLayer with nodes.
+            ScatterplotLayer with nodes; per-point color/radius/name.
         """
         if not self.graph:
             return pdk.Layer("ScatterplotLayer", [], id="nodes")
 
-        node_data = [
-            {
-                "type": ClickConfig.TYPE_NODE,
-                "id": node_id,
-                "position": [
-                    node.lon,
-                    node.lat,
-                    self._get_z(node.elevation, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, MapConfig.Z_OFFSET_2D_NODES),
-                ],
-                "elevation": node.elevation,
-                "name": f"Node {node_id}",
-            }
-            for node_id, node in self.graph.nodes.items()
-        ]
+        parking_ids = {n.id for n in self.graph.get_parking_nodes()}
+
+        node_data = []
+        for node_id, node in self.graph.nodes.items():
+            is_parking = node_id in parking_ids
+            node_data.append(
+                {
+                    "type": ClickConfig.TYPE_NODE,
+                    "id": node_id,
+                    "position": [
+                        node.lon,
+                        node.lat,
+                        self._get_z(
+                            node.elevation, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, MapConfig.Z_OFFSET_2D_NODES
+                        ),
+                    ],
+                    "elevation": node.elevation,
+                    "color": (
+                        list(StyleConfig.PARKING_COLOR_RGBA) if is_parking else list(MarkerConfig.NODE_MARKER_COLOR)
+                    ),
+                    "radius": (ClickConfig.PARKING_MARKER_RADIUS if is_parking else ClickConfig.NODE_MARKER_RADIUS),
+                    "name": (
+                        f"{StyleConfig.PARKING_ICON} Parking place — {node_id}" if is_parking else f"Node {node_id}"
+                    ),
+                }
+            )
 
         return pdk.Layer(
             "ScatterplotLayer",
             node_data,
             get_position="position",
-            get_radius=ClickConfig.NODE_MARKER_RADIUS,
-            get_fill_color=MarkerConfig.NODE_MARKER_COLOR,
+            get_radius="radius",
+            get_fill_color="color",
             get_line_color=MarkerConfig.NODE_MARKER_BORDER,
             stroked=True,
             line_width_min_pixels=2,
@@ -694,7 +766,7 @@ class MapRenderer:
 
     def _create_proposal_layers(
         self,
-        proposals: list[ProposedSlopeSegment],
+        proposals: list[ProposedPathSegment],
         selected_idx: int | None,
         is_custom_path: bool = False,
         use_3d: bool = False,
@@ -719,7 +791,14 @@ class MapRenderer:
                 continue
 
             is_selected = selected_idx is not None and i == selected_idx
-            color = list(StyleConfig.SLOPE_COLORS_RGBA[proposal.difficulty])
+            # Road proposals are brown (translucent → solid when selected); slope
+            # proposals are difficulty-colored. Compare by == not `is` (reload-safe).
+            if proposal.kind == SegmentKind.ROAD:
+                color = list(StyleConfig.ROAD_PROPOSAL_COLOR_RGBA)
+            elif proposal.kind == SegmentKind.SLOPE:
+                color = list(StyleConfig.SLOPE_COLORS_RGBA[proposal.difficulty])
+            else:
+                raise ValueError(f"Unexpected {proposal.kind=}")
 
             # Adjust for selection state
             if is_selected:
@@ -751,7 +830,7 @@ class MapRenderer:
             start_pt = proposal.points[0]
             body_data.append(
                 {
-                    "type": "start_marker",
+                    "type": ClickConfig.TYPE_START_MARKER,
                     "position": [
                         start_pt.lon,
                         start_pt.lat,
@@ -806,6 +885,10 @@ class MapRenderer:
 
         # Proposal paths (NOT pickable - use markers for selection/commit)
         if path_data:
+            logger.info(
+                f"[RENDER] proposal layer: {len(path_data)} path(s), is_custom_path={is_custom_path}, "
+                f"first_color={path_data[0]['color']}, first_path_pts={len(path_data[0]['path'])}"
+            )
             layers.append(
                 pdk.Layer(
                     "PathLayer",
@@ -1061,6 +1144,50 @@ class MapRenderer:
         )
 
         return layers
+
+    # =========================================================================
+    # ROAD PLACEMENT MARKER
+    # =========================================================================
+
+    def create_pending_road_marker_layers(
+        self,
+        lat: float,
+        lon: float,
+        elevation: float,
+        use_3d: bool = False,
+    ) -> list[pdk.Layer]:
+        """Create the origin marker for a road being started (no direction arrow).
+
+        Unlike a lift (which has an uphill fall-line direction) a road has no
+        orientation yet at the origin — this is just a visible brown dot so the
+        user sees where they clicked, mirroring the lift bottom-station marker.
+
+        Args:
+            lat, lon: Road origin location.
+            elevation: Ground elevation.
+            use_3d: If True, render at terrain elevation. If False, render flat.
+        """
+        marker_z = self._get_z(elevation, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, MapConfig.Z_OFFSET_2D_MARKERS)
+        station_data = [
+            {
+                "position": [lon, lat, marker_z],
+                "elevation": elevation,
+                "name": f"{StyleConfig.ROAD_ICON} Road start ({elevation:.0f}m)",
+            }
+        ]
+        return [
+            pdk.Layer(
+                "ScatterplotLayer",
+                station_data,
+                get_position="position",
+                get_radius=MarkerConfig.LIFT_STATION_RADIUS,
+                get_fill_color=list(StyleConfig.ROAD_COLOR_RGBA),
+                get_line_color=[255, 255, 255, 255],
+                stroked=True,
+                line_width_min_pixels=3,
+                id="pending_road_start",
+            )
+        ]
 
     # =========================================================================
     # TOOLTIP CONFIGURATION

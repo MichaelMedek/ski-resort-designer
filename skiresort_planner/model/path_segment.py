@@ -1,15 +1,16 @@
-"""SlopeSegment - A committed path section between two nodes.
+"""PathSegment - A committed path section between two nodes.
 
-A SlopeSegment is created when a proposed path is committed.
+A PathSegment is created when a proposed path is committed.
 It connects two nodes and stores the full path geometry.
 
-Inherits computed metrics from BaseSlopePath. Adds node connections,
+Inherits computed metrics from Path. Adds node connections,
 side slope data, and warnings.
 
 Reference: DETAILS.md
 """
 
 from dataclasses import dataclass
+from enum import Enum
 from math import floor
 from typing import Any
 
@@ -18,7 +19,8 @@ from shapely.geometry import LineString
 from shapely.ops import transform as shapely_transform
 
 from skiresort_planner.constants import EarthworkConfig, SlopeConfig
-from skiresort_planner.model.base_slope_path import BaseSlopePath
+from skiresort_planner.core.terrain_analyzer import SideDirection
+from skiresort_planner.model.path_geometry import Path
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.warning import (
     ExcavatorWarning,
@@ -36,11 +38,18 @@ def _get_utm_zone(lon: float, lat: float) -> str:
     return f"EPSG:327{zone_number:02d}"
 
 
-@dataclass
-class SlopeSegment(BaseSlopePath):
-    """A committed slope segment between two nodes.
+class SegmentKind(str, Enum):
+    """What a committed segment IS — a ski slope or a vehicle road."""
 
-    Inherits points and geometric metrics from BaseSlopePath.
+    SLOPE = "slope"
+    ROAD = "road"
+
+
+@dataclass
+class PathSegment(Path):
+    """A committed slope or road segment between two nodes.
+
+    Inherits points and geometric metrics from Path.
 
     Attributes:
         id: Unique identifier (e.g., "S1", "S2", ...)
@@ -48,7 +57,8 @@ class SlopeSegment(BaseSlopePath):
         start_node_id: ID of the starting node
         end_node_id: ID of the ending node
         side_slope_pct: Cross-slope percentage at start (terrain-dependent)
-        side_slope_dir: "left", "right", or "flat"
+        side_slope_dir: Cross-slope lean direction (SideDirection)
+        kind: Whether this segment is a ski slope or a vehicle road
 
     Properties:
         warnings: List of Warning objects based on slope metrics
@@ -61,7 +71,8 @@ class SlopeSegment(BaseSlopePath):
     start_node_id: str = ""
     end_node_id: str = ""
     side_slope_pct: float = 0.0
-    side_slope_dir: str = "flat"
+    side_slope_dir: SideDirection = SideDirection.FLAT
+    kind: SegmentKind = SegmentKind.SLOPE
 
     @property
     def warnings(self) -> list[Warning]:
@@ -190,8 +201,8 @@ class SlopeSegment(BaseSlopePath):
         return []
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "SlopeSegment":
-        """Create SlopeSegment from dictionary."""
+    def from_dict(cls, data: dict[str, Any]) -> "PathSegment":
+        """Create PathSegment from dictionary."""
         return cls(
             id=data["id"],
             name=data["name"],
@@ -199,8 +210,10 @@ class SlopeSegment(BaseSlopePath):
             start_node_id=data["start_node_id"],
             end_node_id=data["end_node_id"],
             side_slope_pct=data.get("side_slope_pct", 0.0),
-            side_slope_dir=data.get("side_slope_dir", "flat"),
+            side_slope_dir=SideDirection(data.get("side_slope_dir", SideDirection.FLAT.value)),
+            # Pre-enum saves have no "kind" → default to SLOPE.
+            kind=SegmentKind(data.get("kind", SegmentKind.SLOPE.value)),
         )
 
     def __repr__(self) -> str:
-        return f"SlopeSegment({self.id}, {self.difficulty}, {self.avg_slope_pct:.1f}%, {self.length_m:.0f}m)"
+        return f"PathSegment({self.id}, {self.difficulty}, {self.avg_slope_pct:.1f}%, {self.length_m:.0f}m)"

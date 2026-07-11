@@ -42,7 +42,8 @@ from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.path_tracer import PathTracer
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.generators.connection_planners import LeastCostPathPlanner
-from skiresort_planner.model.proposed_path import ProposedSlopeSegment
+from skiresort_planner.model.path_segment import SegmentKind
+from skiresort_planner.model.proposed_path import ProposedPathSegment
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +130,7 @@ class PathFactory:
         lat: float,
         elevation: Optional[float] = None,
         target_length_m: float = PathConfig.SEGMENT_LENGTH_DEFAULT_M,
-    ) -> Iterator[ProposedSlopeSegment]:
+    ) -> Iterator[ProposedPathSegment]:
         """Generate fan of paths iterating through all difficulty-grade-side combinations.
 
         Nested loop structure:
@@ -151,7 +152,7 @@ class PathFactory:
             target_length_m: Target path length in meters (default 500m)
 
         Yields:
-            ProposedSlopeSegment for each successfully traced path.
+            ProposedPathSegment for each successfully traced path.
             Order: Green Left (Gentle), Green Right (Gentle), Green Left (Steep),
                    Green Right (Steep), Blue Left (Gentle), ... etc.
         """
@@ -172,13 +173,13 @@ class PathFactory:
         )
 
         # Track statistics
-        count_by_diff = {"green": 0, "blue": 0, "red": 0, "black": 0}
+        count_by_diff = {d: 0 for d in SlopeConfig.DIFFICULTIES}
         center_count = 0
         paths_generated = 0
         stop_generation = False
 
         # Nested loop: Difficulty → Grade → Side
-        for difficulty in ["green", "blue", "red", "black"]:
+        for difficulty in SlopeConfig.DIFFICULTIES:
             if stop_generation:
                 break
 
@@ -195,8 +196,8 @@ class PathFactory:
 
                 if needs_center:
                     center_count += 1
-                    # Stop if we've generated paths at multiple difficulties AND hit limit
-                    all_diffs_seen = all(count_by_diff[d] > 0 for d in ["green", "blue", "red"])
+                    # Stop if we've generated paths at all but the hardest difficulty AND hit limit
+                    all_diffs_seen = all(count_by_diff[d] > 0 for d in SlopeConfig.DIFFICULTIES[:-1])
                     if center_count > PathConfig.MAX_CENTER_PATHS and all_diffs_seen:
                         stop_generation = True
                     side_variants = [Side.CENTER]
@@ -233,7 +234,7 @@ class PathFactory:
         lat: float,
         config: GradeConfig,
         target_length_m: float,
-    ) -> Optional[ProposedSlopeSegment]:
+    ) -> Optional[ProposedPathSegment]:
         """Trace a single path for a given configuration."""
         traced = self.path_tracer.trace_downhill(
             start_lon=lon,
@@ -246,7 +247,7 @@ class PathFactory:
         if not traced or not traced.points:
             return None
 
-        return ProposedSlopeSegment(
+        return ProposedPathSegment(
             points=traced.points,
             target_slope_pct=config.target_slope_pct,
             target_difficulty=config.difficulty,
@@ -254,7 +255,7 @@ class PathFactory:
             is_connector=False,
         )
 
-    def _are_paths_similar(self, path1: ProposedSlopeSegment, path2: ProposedSlopeSegment) -> bool:
+    def _are_paths_similar(self, path1: ProposedPathSegment, path2: ProposedPathSegment) -> bool:
         """Check if two paths are similar by comparing points at percentile positions.
 
         Since start and end points are always the same, compares intermediate points
@@ -291,7 +292,7 @@ class PathFactory:
         threshold_sq = PlannerConfig.PATH_SIMILARITY_TOLERANCE**2
         return avg_distance < threshold_sq
 
-    def _deduplicate_paths(self, paths: list[ProposedSlopeSegment]) -> list[ProposedSlopeSegment]:
+    def _deduplicate_paths(self, paths: list[ProposedPathSegment]) -> list[ProposedPathSegment]:
         """Remove duplicate/overlapping paths, keeping gentlest slope.
 
         When multiple paths follow nearly the same trajectory, keeps only
@@ -309,7 +310,7 @@ class PathFactory:
         # Sort by actual measured slope (gentlest first)
         sorted_paths = sorted(paths, key=lambda p: p.avg_slope_pct)
 
-        unique: list[ProposedSlopeSegment] = []
+        unique: list[ProposedPathSegment] = []
 
         for path in sorted_paths:
             # Check if this path is similar to any already-kept path
@@ -336,21 +337,39 @@ class PathFactory:
         target_lon: float,
         target_lat: float,
         target_elevation: Optional[float] = None,
-    ) -> Iterator[ProposedSlopeSegment]:
-        """Generate paths to a user-clicked target, trying all difficulty-grade combinations.
+        gradient_band: Optional[tuple[float, float]] = None,
+        incoming_bearing: Optional[float] = None,
+        earthwork_tolerance_m: float = 0.0,
+    ) -> Iterator[ProposedPathSegment]:
+        """Generate paths connecting the start to a user-clicked target.
 
-        When user clicks a target point on the map, this method generates paths
-        using all difficulty-grade combinations to find viable routes. Paths are
-        deduplicated: when multiple paths follow nearly the same trajectory,
-        only the gentlest measured slope is kept.
+        Slope mode (gradient_band is None): tries all difficulty-grade
+        combinations to find viable ski routes, deduplicated to keep the
+        gentlest measured slope per trajectory.
+
+        Road mode (gradient_band = (min_pct, max_pct)): a vehicle road that
+        keeps its gradient inside the band (cars may climb/descend/run flat,
+        never steep). Uses the same grid Dijkstra planner with the signed
+        band passed through — no uphill penalty, no duplicated planner.
+
+        Either way a straight-line result is the planner's honest answer when
+        no viable route exists, so the user can always connect two points.
 
         Args:
             start_lon, start_lat, start_elevation: Starting point
             target_lon, target_lat: Target coordinates (user click)
             target_elevation: Target elevation (queries DEM if None)
+            gradient_band: Optional signed (min, max) gradient band → road mode.
+            incoming_bearing: Optional heading (deg) the path arrives at the start
+                with, from the previous committed segment. Forwarded to the planner
+                for momentum (segments continue in-line across a node). None on the
+                first segment / slope fan → unchanged behavior.
+            earthwork_tolerance_m: Max cut/fill (m) a road may use to gentle its grade;
+                forwarded to the planner. 0 for slopes (on-ground). See
+                EarthworkConfig.ROAD_EARTHWORK_TOLERANCE_M.
 
         Yields:
-            ProposedSlopeSegment for each unique path, sorted by avg_slope_pct.
+            ProposedPathSegment for each unique path, sorted by avg_slope_pct.
         """
         if target_elevation is None:
             target_elevation = self.dem_service.get_elevation(lon=target_lon, lat=target_lat)
@@ -358,63 +377,73 @@ class PathFactory:
             logger.warning(f"No elevation at target ({target_lon}, {target_lat})")
             return
 
-        # Build all 8 grade configs
-        all_grades = []
-        for difficulty in ["green", "blue", "red", "black"]:
-            for grade_name, target_slope in SlopeConfig.DIFFICULTY_TARGETS[difficulty].items():
-                all_grades.append((difficulty, grade_name, target_slope))
+        # Road mode traces one gentle route per side within the band; slope mode
+        # sweeps all difficulty-grade targets. Both feed the same planner + dedup.
 
-        # Collect all valid paths first
-        all_paths: list[ProposedSlopeSegment] = []
+        # FIXME(side-bias): `side` is currently DEAD in the road planner —
+        # LeastCostPathPlanner._calc_edge_cost ignores it in road mode, so LEFT and
+        # RIGHT trace the identical least-cost route and dedup to one. Rather than
+        # emit a fake duplicate, road mode generates a single LEFT proposal. When a
+        # side-aware cost (signed cross-track bias) or an any-angle/heading-aware
+        # planner is added, restore a second RIGHT config here so roads offer a real
+        # left/right choice like the slope fan does.
+        if gradient_band is not None:
+            configs: list[GradeConfig] = [
+                GradeConfig(difficulty="", grade="road", target_slope_pct=0.0, side=Side.LEFT),
+                GradeConfig(difficulty="", grade="road", target_slope_pct=0.0, side=Side.RIGHT),
+            ]
+        else:
+            configs = [
+                GradeConfig(difficulty=difficulty, grade=grade_name, target_slope_pct=target_slope, side=side_enum)
+                for difficulty in SlopeConfig.DIFFICULTIES
+                for grade_name, target_slope in SlopeConfig.DIFFICULTY_TARGETS[difficulty].items()
+                for side_enum in [Side.LEFT, Side.RIGHT]
+            ]
 
-        for difficulty, grade_name, target_slope in all_grades:
-            for side_enum in [Side.LEFT, Side.RIGHT]:
-                config = GradeConfig(
-                    difficulty=difficulty,
-                    grade=grade_name,
-                    target_slope_pct=target_slope,
-                    side=side_enum,
-                )
-
-                path = self._planner.plan(
-                    start_lon=start_lon,
-                    start_lat=start_lat,
-                    start_elevation=start_elevation,
-                    target_lon=target_lon,
-                    target_lat=target_lat,
-                    target_elevation=target_elevation,
-                    target_slope_pct=config.target_slope_pct,
-                    side=config.side.value,
-                )
-
-                if path is None:
-                    continue
-
-                # Add difficulty metadata
+        all_paths: list[ProposedPathSegment] = []
+        for config in configs:
+            path = self._planner.plan(
+                start_lon=start_lon,
+                start_lat=start_lat,
+                start_elevation=start_elevation,
+                target_lon=target_lon,
+                target_lat=target_lat,
+                target_elevation=target_elevation,
+                target_slope_pct=config.target_slope_pct,
+                side=config.side.value,
+                gradient_band=gradient_band,
+                incoming_bearing=incoming_bearing,
+                earthwork_tolerance_m=earthwork_tolerance_m,
+            )
+            if path is None:
+                continue
+            if gradient_band is None:
                 path.target_difficulty = config.difficulty
                 path.sector_name = f"🎯 {config.name}"
-                all_paths.append(path)
+            else:
+                path.sector_name = "🛣️ Road"
+                path.kind = SegmentKind.ROAD
+            all_paths.append(path)
 
         # Deduplicate paths (keep gentlest slope for overlapping paths)
         unique_paths = self._deduplicate_paths(paths=all_paths)
 
         logger.info(f"generate_manual_paths: {len(all_paths)} raw → {len(unique_paths)} unique paths")
 
-        # If no paths found, create a fallback straight-line path
-        # This ensures the user can always connect points in the network
-        if not unique_paths:
-            logger.info("No optimized paths found, creating straight-line fallback")
-            unique_paths = [
-                self._create_straight_line_path(
-                    start_lon=start_lon,
-                    start_lat=start_lat,
-                    start_elevation=start_elevation,
-                    target_lon=target_lon,
-                    target_lat=target_lat,
-                    target_elevation=target_elevation,
-                )
-            ]
-            logger.info(f"Created fallback straight-line path: {unique_paths[0].sector_name}")
+        # No optimized path found. In SLOPE mode, fall back to a straight line so
+        # the user can always connect two points. In ROAD mode there is NO
+        # fallback: a straight line across steep ground is not a valid car road.
+        if not unique_paths and gradient_band is None:
+            logger.info("No optimized path found, creating straight-line result")
+            straight = self._create_straight_line_path(
+                start_lon=start_lon,
+                start_lat=start_lat,
+                start_elevation=start_elevation,
+                target_lon=target_lon,
+                target_lat=target_lat,
+                target_elevation=target_elevation,
+            )
+            unique_paths = [straight]
 
         yield from unique_paths
 
@@ -426,7 +455,7 @@ class PathFactory:
         target_lon: float,
         target_lat: float,
         target_elevation: float,
-    ) -> ProposedSlopeSegment:
+    ) -> ProposedPathSegment:
         """Create a simple straight-line path as fallback when Dijkstra finds nothing.
 
         This allows the user to always connect two points, even if the terrain
@@ -446,7 +475,7 @@ class PathFactory:
 
         actual_slope = (drop / dist) * 100
 
-        return ProposedSlopeSegment(
+        return ProposedPathSegment(
             points=points,
             target_slope_pct=0.0,  # No target slope for direct line
             target_difficulty=TerrainAnalyzer.classify_difficulty(slope_pct=actual_slope),

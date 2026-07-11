@@ -1,4 +1,4 @@
-"""BaseSlopePath - Base class for slope path geometry with computed metrics.
+"""Path - Base class for slope path geometry with computed metrics.
 
 Provides shared functionality for both proposed and committed slope segments:
 - Points storage
@@ -15,11 +15,11 @@ from skiresort_planner.model.path_point import PathPoint
 
 
 @dataclass
-class BaseSlopePath:
+class Path:
     """Base class for slope paths with computed geometric metrics.
 
     Stores path points and computes metrics on-the-fly from the point data.
-    Both ProposedSlopeSegment and SlopeSegment inherit from this.
+    Both ProposedPathSegment and PathSegment inherit from this.
 
     Attributes:
         points: Path points (source of truth for geometry)
@@ -70,25 +70,28 @@ class BaseSlopePath:
 
     @property
     def max_slope_pct(self) -> float:
-        """Maximum slope percentage within any rolling window.
+        """Steepest-section slope MAGNITUDE (always ≥ 0) within any rolling window.
 
-        Walks point by point, extending window until it exceeds ROLLING_WINDOW_M.
-        Returns the steepest section found (determines difficulty rating).
+        "Steepest section" is a magnitude by definition — how steep the ground
+        is over ROLLING_WINDOW_M, regardless of whether the path climbs or
+        descends. Both consumers want the magnitude: difficulty classification
+        (steeper = harder) and the road ±gradient cap (a 16% climb is as invalid
+        as a 16% descent).
 
         Algorithm:
-        1. Start with avg_slope_pct as initial max
+        1. Seed with abs(avg_slope_pct)
         2. For each starting point, walk forward point by point
-        3. When cumulative distance exceeds window, calculate section slope
-        4. Track the maximum slope found across all windows
+        3. When cumulative distance exceeds the window, take that section's
+           slope magnitude and keep the maximum across all windows
 
         Returns:
-            Maximum slope percentage. Returns avg_slope_pct if path is shorter
-            than the rolling window size.
+            Steepest slope magnitude in percent. Falls back to abs(avg_slope_pct)
+            when the path is shorter than the rolling window.
         """
         window_m = SlopeConfig.ROLLING_WINDOW_M
-        max_slope = self.avg_slope_pct  # Initial guess
+        max_slope = abs(self.avg_slope_pct)  # Magnitude seed
 
-        # Short paths: just return average
+        # Short paths: just return the average magnitude
         if self.length_m < window_m or len(self.points) < 2:
             return max_slope
 

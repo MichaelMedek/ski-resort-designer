@@ -19,10 +19,12 @@ from skiresort_planner.constants import ChartConfig, LiftConfig, StyleConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.model.lift import Lift
-from skiresort_planner.model.proposed_path import ProposedSlopeSegment
+from skiresort_planner.model.path_segment import PathSegment, SegmentKind
+from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
+from skiresort_planner.model.road import Road
+from skiresort_planner.model.segment_path import SegmentPath
 from skiresort_planner.model.slope import Slope
-from skiresort_planner.model.slope_segment import SlopeSegment
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +54,7 @@ class ProfileChart:
 
     def render_proposal(
         self,
-        proposal: ProposedSlopeSegment,
+        proposal: ProposedPathSegment,
         proposed_segment_title: str,
     ) -> go.Figure:
         """Render elevation profile for a proposed slope segment.
@@ -140,7 +142,7 @@ class ProfileChart:
         stats_text = (
             f"Length: {proposal.length_m:.0f}m | "
             f"Drop: {proposal.total_drop_m:.0f}m | "
-            f"Avg Slope: {proposal.avg_slope_pct:.0f}%"
+            f"Drop Avg Slope: {proposal.avg_slope_pct:.0f}%"
         )
 
         fig.add_annotation(
@@ -157,7 +159,7 @@ class ProfileChart:
 
     def render_segment(
         self,
-        segment: SlopeSegment,
+        segment: PathSegment,
         difficulty: str,
         title: Optional[str] = None,
     ) -> go.Figure:
@@ -252,19 +254,57 @@ class ProfileChart:
         graph: ResortGraph,
         title: Optional[str] = None,
     ) -> go.Figure:
-        """Render elevation profile for a complete slope.
+        """Render elevation profile for a complete slope (colored by difficulty)."""
+        difficulty = slope.get_difficulty(segments=graph.segments)
+        total_length = slope.get_total_length(segments=graph.segments)
+        total_drop = slope.get_total_drop(segments=graph.segments)
+        stats_text = f"Length: {total_length:.0f}m | Drop: {total_drop:.0f}m | Segments: {len(slope.segment_ids)}"
+        return self._render_path_profile(
+            path=slope,
+            graph=graph,
+            fill_color=StyleConfig.SLOPE_COLORS[difficulty],
+            title=title or slope.name,
+            stats_text=stats_text,
+        )
 
-        Args:
-            slope: Slope to visualize
-            graph: Resort graph containing segments
-            title: Optional chart title
+    def render_road(
+        self,
+        road: Road,
+        graph: ResortGraph,
+        title: Optional[str] = None,
+    ) -> go.Figure:
+        """Render elevation profile for a road (brown, shows climb/descent)."""
+        total_length = road.get_total_length(segments=graph.segments)
+        total_drop = road.get_total_drop(segments=graph.segments)
+        max_gradient = road.get_max_gradient(segments=graph.segments)
+        stats_text = (
+            f"Length: {total_length:.0f}m | Elevation change: {-total_drop:+.0f}m | Steepest: {max_gradient:.0f}%"
+        )
+        return self._render_path_profile(
+            path=road,
+            graph=graph,
+            fill_color=StyleConfig.ROAD_COLOR,
+            title=title or road.name,
+            stats_text=stats_text,
+        )
 
-        Returns:
-            Plotly Figure object.
+    def _render_path_profile(
+        self,
+        path: SegmentPath,
+        graph: ResortGraph,
+        fill_color: str,
+        title: str,
+        stats_text: str,
+    ) -> go.Figure:
+        """Shared elevation-profile figure for any segment group (slope or road).
+
+        Plots elevation vs. cumulative distance with segment-boundary markers.
+        Caller supplies the fill color and the stats caption so slope-specific
+        (difficulty) and road-specific (climb) framing stay with their owners.
         """
-        all_points = slope.get_all_points(segments=graph.segments)
+        all_points = path.get_all_points(segments=graph.segments)
         if not all_points:
-            raise ValueError(f"Slope {slope.id} must have points to render")
+            raise ValueError(f"{path.id} must have points to render")
 
         distances = [0.0]
         for i in range(1, len(all_points)):
@@ -286,9 +326,6 @@ class ProfileChart:
             ChartConfig.ELEVATION_PADDING_MIN_M,
         )
 
-        difficulty = slope.get_difficulty(segments=graph.segments)
-        color = StyleConfig.SLOPE_COLORS[difficulty]
-
         fig = go.Figure()
 
         fig.add_trace(
@@ -296,33 +333,27 @@ class ProfileChart:
                 x=distances,
                 y=elevations,
                 fill="tozeroy",
-                fillcolor=f"rgba{self._hex_to_rgba(hex_color=color, alpha=0.3)}",
-                line=dict(color=color, width=2),
-                name=slope.name,
+                fillcolor=f"rgba{self._hex_to_rgba(hex_color=fill_color, alpha=0.3)}",
+                line=dict(color=fill_color, width=2),
+                name=title,
                 hovertemplate="Distance: %{x:.0f}m<br>Elevation: %{y:.0f}m<extra></extra>",
             )
         )
 
         # Add segment boundaries
         cum_dist = 0.0
-        for seg_id in slope.segment_ids:
+        for seg_id in path.segment_ids:
             seg = graph.segments.get(seg_id)
             if seg is None:
-                raise ValueError(f"Slope {slope.id} references non-existent segment {seg_id}")
+                raise ValueError(f"{path.id} references non-existent segment {seg_id}")
 
             cum_dist += seg.length_m
-            seg_color = StyleConfig.SLOPE_COLORS[seg.difficulty]
-
             fig.add_vline(
                 x=cum_dist,
                 line_dash="dot",
-                line_color=seg_color,
+                line_color=fill_color,
                 opacity=0.5,
             )
-
-        title = title or slope.name
-        total_length = slope.get_total_length(segments=graph.segments)
-        total_drop = slope.get_total_drop(segments=graph.segments)
 
         fig.update_layout(
             title=dict(text=title, x=0.5),
@@ -344,8 +375,6 @@ class ProfileChart:
             plot_bgcolor="white",
         )
 
-        stats_text = f"Length: {total_length:.0f}m | Drop: {total_drop:.0f}m | Segments: {len(slope.segment_ids)}"
-
         fig.add_annotation(
             xref="paper",
             yref="paper",
@@ -360,7 +389,7 @@ class ProfileChart:
 
     def render_comparison(
         self,
-        proposals: list[ProposedSlopeSegment],
+        proposals: list[ProposedPathSegment],
         title: str = "Path Comparison",
     ) -> go.Figure:
         """Render multiple proposals overlaid for comparison.
@@ -699,19 +728,21 @@ class ProfileChart:
 # =============================================================================
 
 
-def render_building_profiles(
+def render_building_profile(
     building_segments: list[str],
     building_name: str | None,
     graph: ResortGraph,
 ) -> go.Figure:
-    """Render elevation profile for slope being built.
+    """Render the in-build elevation profile for a slope OR road.
 
-    Uses max difficulty from average of individual segments (steepest segment determines
-    overall difficulty, matching the sidebar display).
+    One function for both: the committed segments carry their SegmentKind, so a
+    road renders brown (via render_road) and a slope renders difficulty-colored
+    (via render_segment). Uses max difficulty from the individual segments for a
+    slope (steepest segment determines color, matching the sidebar display).
 
     Args:
-        building_segments: List of segment IDs in current slope (must not be empty)
-        building_name: Name of slope being built
+        building_segments: Segment IDs in the current slope/road (must not be empty)
+        building_name: Name of the entity being built
         graph: Resort graph containing segments
 
     Returns:
@@ -734,16 +765,35 @@ def render_building_profiles(
     if not all_points:
         raise ValueError(f"Segments {building_segments} have no points - data integrity issue")
 
-    # Use max difficulty from individual segments (steepest segment determines color)
-    max_difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=max_avg_slope)
-
     chart = ProfileChart(width=ChartConfig.DEFAULT_WIDTH, height=ChartConfig.PROFILE_HEIGHT_SMALL)
-    combined = SlopeSegment(id="combined", name=building_name or "Current Slope", points=all_points)
-    return chart.render_segment(segment=combined, difficulty=max_difficulty, title="Current committed Slope Progress")
+
+    first_seg = graph.segments[building_segments[0]]
+    # Compare by == not `is`: Streamlit module reloads create a fresh SegmentKind
+    # class, so `is` (identity) fails on segments built under the old class. Because
+    # SegmentKind is a str-Enum, == compares the underlying string value and is
+    # reload-safe. (Plain enums like ActionType lack this and must dispatch by .name.)
+    if first_seg.kind == SegmentKind.ROAD:
+        combined_road = Road(
+            id="combined",
+            name=building_name or "Current Road",
+            segment_ids=list(building_segments),
+            start_node_id="",
+            end_node_id="",
+        )
+        return chart.render_road(road=combined_road, graph=graph, title="Current committed Road Progress")
+    elif first_seg.kind == SegmentKind.SLOPE:
+        # Slope: color by the steepest segment's difficulty.
+        max_difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=max_avg_slope)
+        combined = PathSegment(id="combined", name=building_name or "Current Slope", points=all_points)
+        return chart.render_segment(
+            segment=combined, difficulty=max_difficulty, title="Current committed Slope Progress"
+        )
+    else:
+        raise RuntimeError(f"Unknown segment kind {first_seg.kind} for {first_seg.id}")
 
 
 def render_proposal_preview(
-    proposals: list[ProposedSlopeSegment],
+    proposals: list[ProposedPathSegment],
     selected_idx: int,
 ) -> go.Figure:
     """Render elevation profile preview for selected proposal.

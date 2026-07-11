@@ -252,12 +252,58 @@ Click **"🏔️ View in 3D"** to see pylons and cable from an angled perspectiv
 
 ---
 
+## Building Roads
+
+Roads are **vehicle roads** — access roads and connectors between areas of the resort. Unlike a ski slope, a road may climb, descend, or run flat, but it always stays within a gentle **±15% gradient** so cars can drive it. Roads are drawn as a distinct **brown-orange** ribbon.
+
+Roads are built **segment by segment, just like slopes**: you click the next point, a gentle segment is traced to it, and you keep extending until you press **🏁 Finish Road**.
+
+### Step 1: Select Road mode
+
+Click the **🛣️ Road** button in the sidebar.
+
+### Step 2: Click the start point
+
+Click the road's **origin** — empty terrain or an existing **junction node** (to branch a road off a slope/lift junction).
+
+### Step 3: Extend segment by segment
+
+Click the **next point** the road should reach. Gentle route **proposals** are traced to it and drawn as **dashed translucent-brown** paths (just like slope custom-connect) — with **no endpoint dots**, since the proposals share the same target. Browse them with the **◀ ▶ arrows** in the right panel or by clicking a dashed proposal to highlight it, then press **✅ Commit Road Segment** to commit; the segment turns solid brown and you can extend further. Clicking an existing **node** targets that junction so the road joins it on commit.
+
+- If the terrain to your clicked point is too steep to stay within **±15%**, **no proposal** is offered and you get a message. Pick a closer point or route across gentler ground.
+- **Undo** removes the last committed segment (then the one before it), exactly like a slope.
+
+### Step 4: Finish the road
+
+Press **🏁 Finish Road** in the sidebar. The road receives an auto-generated name and its details panel opens. Press **✖️ Cancel Road** to discard the whole in-progress road.
+
+### Parking places
+
+Wherever a road **shares a junction with a slope or a lift**, that junction node renders as a **🅿️ bigger blue parking marker** automatically.
+
+### Viewing Road Details
+
+Click any road (its brown line or icon) to open its panel:
+
+| Metric | Description |
+|--------|-------------|
+| **Start/End Elevation** | Endpoint heights |
+| **Length** | Total road length |
+| **Average Gradient** | Overall steepness |
+| **Elevation Change** | Net rise/fall (signed) |
+| **Steepest Section** | Steepest 300m section (magnitude), always ≤15% |
+
+As with slopes and lifts, you can view the road's elevation profile, switch to **🏔️ 3D**, **🗑️ Delete** it, or **↩️ Undo**.
+
+---
+
 ## Sidebar Controls
 
 ### Build Mode Selector
 
 - **⛷️ Slope** — Click terrain to start a new ski slope
 - **🪑🚡🎿🚠 Lift buttons** — Click terrain to place a lift
+- **🛣️ Road** — Build a gentle car road segment by segment
 
 The currently active mode is highlighted.
 
@@ -274,6 +320,13 @@ The currently active mode is highlighted.
 | Control | Action |
 |---------|--------|
 | **✖️ Cancel Lift Placement** | Discard start point, return to idle |
+
+### During Road Building
+
+| Control | Action |
+|---------|--------|
+| **🏁 Finish Road** | Finalize the road (enabled after ≥1 segment) |
+| **✖️ Cancel Road** | Discard the whole in-progress road, return to idle |
 
 ### Always Available
 

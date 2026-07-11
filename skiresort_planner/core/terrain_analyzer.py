@@ -12,6 +12,7 @@ Reference: DETAILS.md Sections 2, 3, 4
 
 import logging
 from dataclasses import dataclass
+from enum import Enum
 from math import atan2, cos, degrees, radians, sin, sqrt
 from typing import Optional
 
@@ -62,17 +63,25 @@ class TerrainOrientation:
     difficulty_color: str
 
 
+class SideDirection(str, Enum):
+    """Which way terrain leans perpendicular to the ski direction (str-Enum for serialization)."""
+
+    FLAT = "flat"
+    LEFT = "left"
+    RIGHT = "right"
+
+
 @dataclass(frozen=True)
 class SideSlope:
     """Side slope calculation result.
 
     Attributes:
         slope_pct: Side slope percentage (perpendicular to ski direction)
-        direction: "left", "right", or "flat"
+        direction: Which way the terrain leans (SideDirection)
     """
 
     slope_pct: float
-    direction: str
+    direction: "SideDirection"
 
 
 class TerrainAnalyzer:
@@ -170,20 +179,20 @@ class TerrainAnalyzer:
 
         gradient = analyzer.compute_gradient(lon=start_lon, lat=start_lat)
 
-        if gradient.slope_pct < 0.5:
-            return SideSlope(slope_pct=0.0, direction="flat")
+        if gradient.slope_pct < SlopeConfig.FLAT_GRADIENT_EPS_PCT:
+            return SideSlope(slope_pct=0.0, direction=SideDirection.FLAT)
 
         # Side slope = gradient × sin(angle between ski direction and fall line)
         angle_diff = radians(gradient.bearing_deg - ski_bearing)
         side_slope = gradient.slope_pct * sin(angle_diff)
 
         # Determine direction
-        if abs(side_slope) < 2:
-            direction = "flat"
+        if abs(side_slope) < SlopeConfig.SIDE_SLOPE_FLAT_PCT:
+            direction = SideDirection.FLAT
         elif side_slope > 0:
-            direction = "right"  # Terrain falls to right when looking downhill
+            direction = SideDirection.RIGHT  # Terrain falls to right when looking downhill
         else:
-            direction = "left"
+            direction = SideDirection.LEFT
 
         return SideSlope(slope_pct=side_slope, direction=direction)
 

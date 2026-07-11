@@ -6,7 +6,7 @@ Tests the full lift lifecycle: start → select end → complete.
 from skiresort_planner.constants import MapConfig
 from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint
-from skiresort_planner.model.resort_graph import AddLiftAction, DeleteLiftAction, ResortGraph
+from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
 
@@ -47,12 +47,7 @@ class TestLiftPlacementWorkflow:
         # === Phase 1: Start lift placement ===
         assert sm.current_state_value == "idle_ready"
 
-        sm.start_lift(
-            node_id="N1",
-            lon=start_loc.lon,
-            lat=start_loc.lat,
-            elevation=start_loc.elevation,
-        )
+        sm.start_lift(node_id="N1")
 
         assert sm.current_state_value == "lift_placing", "Should be in LiftPlacing"
         assert ctx.lift.start_node_id == "N1", "Start node should be stored"
@@ -93,106 +88,26 @@ class TestLiftPlacementWorkflow:
         )
         graph.nodes["N1"] = Node(id="N1", location=start_loc)
 
-        sm.start_lift(
-            node_id="N1",
-            lon=start_loc.lon,
-            lat=start_loc.lat,
-            elevation=start_loc.elevation,
-        )
+        sm.start_lift(node_id="N1")
         assert sm.current_state_value == "lift_placing"
 
         sm.cancel_lift()
 
         assert sm.current_state_value == "idle_ready", "Should return to IdleReady"
 
-
-class TestLiftUndoOperations:
-    """Tests for lift undo operations."""
-
-    def test_undo_add_lift_removes_lift(self, mock_dem_blue_slope) -> None:
-        """undo_last for AddLiftAction removes the lift."""
+    def test_start_lift_from_terrain_location(self, mock_dem_blue_slope) -> None:
+        """start_lift with a location (no node) stores start_location for a new node."""
         dem = mock_dem_blue_slope
         M = MapConfig.METERS_PER_DEGREE_EQUATOR
         graph = ResortGraph()
+        sm, ctx = PlannerStateMachine.create(graph=graph)
 
-        # Create nodes
-        graph.nodes["N1"] = Node(
-            id="N1",
-            location=PathPoint(
-                lon=0.0,
-                lat=-1000 / M,
-                elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M),
-            ),
-        )
-        graph.nodes["N2"] = Node(
-            id="N2",
-            location=PathPoint(
-                lon=0.0,
-                lat=0.0,
-                elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0),
-            ),
-        )
+        loc = PathPoint(lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M))
+        sm.start_lift(node_id=None, location=loc)
 
-        # Add lift
-        graph.add_lift(
-            start_node_id="N1",
-            end_node_id="N2",
-            lift_type="gondola",
-            dem=dem,
-        )
-
-        assert len(graph.lifts) == 1
-        assert len(graph.undo_stack) == 1
-        assert isinstance(graph.undo_stack[0], AddLiftAction)
-
-        # Undo
-        graph.undo_last()
-
-        assert len(graph.lifts) == 0, "Lift should be removed"
-
-    def test_undo_delete_lift_restores_lift(self, mock_dem_blue_slope) -> None:
-        """undo_last for DeleteLiftAction restores the lift."""
-        dem = mock_dem_blue_slope
-        M = MapConfig.METERS_PER_DEGREE_EQUATOR
-        graph = ResortGraph()
-
-        # Create nodes
-        graph.nodes["N1"] = Node(
-            id="N1",
-            location=PathPoint(
-                lon=0.0,
-                lat=-1000 / M,
-                elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M),
-            ),
-        )
-        graph.nodes["N2"] = Node(
-            id="N2",
-            location=PathPoint(
-                lon=0.0,
-                lat=0.0,
-                elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0),
-            ),
-        )
-
-        # Add and delete lift
-        lift = graph.add_lift(
-            start_node_id="N1",
-            end_node_id="N2",
-            lift_type="chairlift",
-            dem=dem,
-        )
-        lift_name = lift.name
-        lift_id = lift.id
-
-        graph.delete_lift(lift_id=lift_id)
-        assert len(graph.lifts) == 0
-
-        # Undo delete
-        undone = graph.undo_last()
-
-        assert isinstance(undone, DeleteLiftAction)
-        assert len(graph.lifts) == 1, "Lift should be restored"
-        assert graph.lifts[lift_id].name == lift_name, "Lift name should be preserved"
+        assert sm.current_state_value == "lift_placing"
+        assert ctx.lift.start_node_id is None, "no existing node when starting from terrain"
+        assert ctx.lift.start_location is loc, "terrain start stores the location for new-node creation"
 
 
 class TestSwitchLiftSelfLoop:

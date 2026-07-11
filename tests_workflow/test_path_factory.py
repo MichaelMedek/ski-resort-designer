@@ -8,21 +8,21 @@ import pytest
 
 from skiresort_planner.generators.path_factory import GradeConfig, PathFactory, Side
 from skiresort_planner.model.path_point import PathPoint
-from skiresort_planner.model.proposed_path import ProposedSlopeSegment
+from skiresort_planner.model.proposed_path import ProposedPathSegment
 
 
-def make_path(coords: list[tuple[float, float, float]], slope_pct: float = 20.0) -> ProposedSlopeSegment:
-    """Helper to create a ProposedSlopeSegment from coordinate tuples.
+def make_path(coords: list[tuple[float, float, float]], slope_pct: float = 20.0) -> ProposedPathSegment:
+    """Helper to create a ProposedPathSegment from coordinate tuples.
 
     Args:
         coords: List of (lon, lat, elev) tuples
         slope_pct: Target slope percentage
 
     Returns:
-        ProposedSlopeSegment with the given points
+        ProposedPathSegment with the given points
     """
     points = [PathPoint(lon=lon, lat=lat, elevation=elev) for lon, lat, elev in coords]
-    return ProposedSlopeSegment(points=points, target_slope_pct=slope_pct)
+    return ProposedPathSegment(points=points, target_slope_pct=slope_pct)
 
 
 class TestGradeConfig:
@@ -248,3 +248,60 @@ class TestPathDeduplication:
         assert len(result) == 2
         slopes = sorted(p.target_slope_pct for p in result)
         assert slopes == [15.0, 20.0]
+
+
+class TestRoadModeNoStraightLineFallback:
+    """Road mode (gradient_band set) must NOT fabricate a straight-line fallback.
+
+    Slope mode always creates a straight-line result when Dijkstra finds nothing,
+    so two points always connect. Road mode does not fabricate one.
+
+    NOTE: on merely-steep terrain the grid planner still returns an OUT-OF-BAND
+    route rather than nothing — that over-limit result is caught by the caller's
+    hard cap (see test_click_handlers::TestRoadBuildingClick), not here. This
+    class only asserts the factory never emits the straight-line fallback in
+    road mode.
+    """
+
+    def test_road_mode_never_yields_straight_line_fallback(self, path_factory) -> None:
+        # A gentle, reachable target → a real traced (multi-point) road path,
+        # never the 2-point "Direct Line (fallback)" that slope mode makes.
+        M = 111320.0
+        paths = list(
+            path_factory.generate_manual_paths(
+                start_lon=0.0,
+                start_lat=0.0,
+                start_elevation=path_factory.dem_service.get_elevation_or_raise(lon=0.0, lat=0.0),
+                target_lon=300 / M,
+                target_lat=0.0,
+                target_elevation=path_factory.dem_service.get_elevation_or_raise(lon=300 / M, lat=0.0),
+                gradient_band=(-12.0, 12.0),
+            )
+        )
+        assert paths, "a gentle reachable target should yield a road path"
+        assert all("fallback" not in (p.sector_name or "").lower() for p in paths), (
+            "road mode must never emit the straight-line fallback"
+        )
+        # Road-mode proposals carry the ROAD kind so the committed segment is a road.
+        from skiresort_planner.model.path_segment import SegmentKind
+
+        assert all(p.kind is SegmentKind.ROAD for p in paths)
+
+    def test_slope_mode_still_falls_back_to_straight_line(self, path_factory) -> None:
+        # Slope mode always connects, emitting the straight-line fallback result.
+        from skiresort_planner.model.path_segment import SegmentKind
+
+        M = 111320.0
+        paths = list(
+            path_factory.generate_manual_paths(
+                start_lon=0.0,
+                start_lat=0.0,
+                start_elevation=path_factory.dem_service.get_elevation_or_raise(lon=0.0, lat=0.0),
+                target_lon=0.0,
+                target_lat=-250 / M,
+                target_elevation=path_factory.dem_service.get_elevation_or_raise(lon=0.0, lat=-250 / M),
+                gradient_band=None,
+            )
+        )
+        assert len(paths) >= 1, "slope mode always connects (straight-line fallback)"
+        assert all(p.kind is SegmentKind.SLOPE for p in paths), "slope-mode proposals are SLOPE kind"

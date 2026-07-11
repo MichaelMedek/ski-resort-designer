@@ -18,6 +18,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Single source of truth guard: every MarkerType value must have a matching
+# ClickConfig.TYPE_* tag. If the two drift, mapping silently breaks — fail loudly at import.
+_CLICK_TYPE_TAGS = {v for k, v in vars(ClickConfig).items() if k.startswith("TYPE_")}
+assert {m.value for m in MarkerType} <= _CLICK_TYPE_TAGS, (
+    "MarkerType values must all have a matching ClickConfig.TYPE_* tag"
+)
+
 
 @dataclass
 class ClickDetector:
@@ -128,9 +135,7 @@ class ClickDetector:
         # NODE click
         if obj_type == ClickConfig.TYPE_NODE:
             node_id = obj.get("id")
-            if not node_id:
-                logger.warning("Node click missing id")
-                return None
+            assert node_id, f"node marker must carry an id (rendering bug): {obj}"
             return ClickInfo(
                 click_type=MapClickType.MARKER,
                 marker_type=MarkerType.NODE,
@@ -140,9 +145,7 @@ class ClickDetector:
         # SEGMENT click
         if obj_type == ClickConfig.TYPE_SEGMENT:
             seg_id = obj.get("id")
-            if not seg_id:
-                logger.warning("Segment click missing id")
-                return None
+            assert seg_id, f"segment marker must carry an id (rendering bug): {obj}"
             return ClickInfo(
                 click_type=MapClickType.MARKER,
                 marker_type=MarkerType.SEGMENT,
@@ -152,9 +155,7 @@ class ClickDetector:
         # SLOPE click (icon marker)
         if obj_type == ClickConfig.TYPE_SLOPE:
             slope_id = obj.get("id")
-            if not slope_id:
-                logger.warning("Slope click missing id")
-                return None
+            assert slope_id, f"slope marker must carry an id (rendering bug): {obj}"
             return ClickInfo(
                 click_type=MapClickType.MARKER,
                 marker_type=MarkerType.SLOPE,
@@ -164,22 +165,28 @@ class ClickDetector:
         # LIFT click
         if obj_type == ClickConfig.TYPE_LIFT:
             lift_id = obj.get("id")
-            if not lift_id:
-                logger.warning("Lift click missing id")
-                return None
+            assert lift_id, f"lift marker must carry an id (rendering bug): {obj}"
             return ClickInfo(
                 click_type=MapClickType.MARKER,
                 marker_type=MarkerType.LIFT,
                 lift_id=lift_id,
             )
 
+        # ROAD click
+        if obj_type == ClickConfig.TYPE_ROAD:
+            road_id = obj.get("id")
+            assert road_id, f"road marker must carry an id (rendering bug): {obj}"
+            return ClickInfo(
+                click_type=MapClickType.MARKER,
+                marker_type=MarkerType.ROAD,
+                road_id=road_id,
+            )
+
         # PYLON click
         if obj_type == ClickConfig.TYPE_PYLON:
             lift_id = obj.get("lift_id")
             pylon_index = obj.get("pylon_index")
-            if not lift_id or pylon_index is None:
-                logger.warning(f"Pylon click missing lift_id or pylon_index: {obj}")
-                return None
+            assert lift_id and pylon_index is not None, f"pylon marker must carry lift_id + pylon_index: {obj}"
             return ClickInfo(
                 click_type=MapClickType.MARKER,
                 marker_type=MarkerType.PYLON,
@@ -190,9 +197,7 @@ class ClickDetector:
         # PROPOSAL ENDPOINT click (commit)
         if obj_type == ClickConfig.TYPE_PROPOSAL_ENDPOINT:
             proposal_index = obj.get("proposal_index")
-            if proposal_index is None:
-                logger.warning("Proposal endpoint click missing proposal_index")
-                return None
+            assert proposal_index is not None, f"proposal endpoint must carry proposal_index: {obj}"
             return ClickInfo(
                 click_type=MapClickType.MARKER,
                 marker_type=MarkerType.PROPOSAL_ENDPOINT,
@@ -202,15 +207,13 @@ class ClickDetector:
         # PROPOSAL BODY click (select)
         if obj_type == ClickConfig.TYPE_PROPOSAL_BODY:
             proposal_index = obj.get("proposal_index")
-            if proposal_index is None:
-                logger.warning("Proposal body click missing proposal_index")
-                return None
+            assert proposal_index is not None, f"proposal body must carry proposal_index: {obj}"
             return ClickInfo(
                 click_type=MapClickType.MARKER,
                 marker_type=MarkerType.PROPOSAL_BODY,
                 proposal_index=proposal_index,  # Already 0-indexed
             )
 
-        # Unknown type - log and ignore
+        # Unknown type — pydeck can pick unlabeled/basemap objects; ignore them.
         logger.warning(f"Unknown object type: {obj_type}")
         return None

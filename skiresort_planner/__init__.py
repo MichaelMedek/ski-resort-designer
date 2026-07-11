@@ -8,7 +8,7 @@ A modular, professional-grade ski resort planning application featuring:
 
 Modules:
     core: Foundation classes (geo calculations, DEM service, terrain analysis)
-    model: Data structures (PathPoint, Node, SlopeSegment, Slope, Lift)
+    model: Data structures (PathPoint, Node, PathSegment, Slope, Lift)
     generators: Path generation algorithms (fan patterns, custom direction paths)
     ui: Streamlit interface components (state machine, renderers, sidebar)
 

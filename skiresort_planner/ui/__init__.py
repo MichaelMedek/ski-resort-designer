@@ -8,7 +8,7 @@ File Structure (layout-based naming):
 - pydeck_click_handler.py: Custom click handling for Pydeck maps
 
 Core Components:
-- state_machine.py: PlannerStateMachine (4 states) + PlannerContext
+- state_machine.py: PlannerStateMachine (all states) + PlannerContext
 - actions.py: All action functions (commit, finish, undo, etc.)
 - click_handlers.py: State-specific map click processing
 - validators.py: Input validation with Optional[Message] returns
@@ -18,13 +18,16 @@ UI workflow documented in DETAILS_UI.md.
 
 from skiresort_planner.ui.actions import (
     bump_map_version,
+    cancel_current_road,
     cancel_current_slope,
     cancel_custom_direction_mode,
     cancel_custom_path,
     center_on_lift,
+    center_on_road,
     center_on_slope,
     commit_selected_path,
     enter_custom_direction_mode,
+    finish_current_road,
     finish_current_slope,
     handle_fast_deferred_actions,
     process_custom_connect_deferred,
@@ -36,7 +39,7 @@ from skiresort_planner.ui.actions import (
 )
 from skiresort_planner.ui.bottom_chart import (
     ProfileChart,
-    render_building_profiles,
+    render_building_profile,
     render_proposal_preview,
 )
 from skiresort_planner.ui.center_map import MapRenderer
@@ -62,7 +65,7 @@ __all__ = [
     "StreamlitUIListener",
     "MapRenderer",
     "ProfileChart",
-    "render_building_profiles",
+    "render_building_profile",
     "render_proposal_preview",
     "SidebarRenderer",
     "PathSelectionPanel",
@@ -73,12 +76,15 @@ __all__ = [
     "render_control_panel",
     "bump_map_version",
     "cancel_custom_path",
+    "cancel_current_road",
     "cancel_current_slope",
     "cancel_custom_direction_mode",
     "center_on_lift",
+    "center_on_road",
     "center_on_slope",
     "commit_selected_path",
     "enter_custom_direction_mode",
+    "finish_current_road",
     "finish_current_slope",
     "handle_fast_deferred_actions",
     "process_custom_connect_deferred",

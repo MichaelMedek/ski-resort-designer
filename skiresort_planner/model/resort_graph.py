@@ -24,9 +24,10 @@ from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint
-from skiresort_planner.model.proposed_path import ProposedSlopeSegment
+from skiresort_planner.model.path_segment import PathSegment, SegmentKind
+from skiresort_planner.model.proposed_path import ProposedPathSegment
+from skiresort_planner.model.road import Road
 from skiresort_planner.model.slope import Slope
-from skiresort_planner.model.slope_segment import SlopeSegment
 
 if TYPE_CHECKING:
     from skiresort_planner.core.dem_service import DEMService
@@ -45,8 +46,10 @@ class ActionType(Enum):
     ADD_SEGMENTS = auto()
     FINISH_SLOPE = auto()
     ADD_LIFT = auto()
+    FINISH_ROAD = auto()
     DELETE_SLOPE = auto()
     DELETE_LIFT = auto()
+    DELETE_ROAD = auto()
 
 
 @dataclass(frozen=True)
@@ -90,12 +93,31 @@ class AddLiftAction:
 
 
 @dataclass(frozen=True)
+class FinishRoadAction:
+    """Undo action for finishing a road (mirrors FinishSlopeAction).
+
+    Ungroups the Road but keeps its segments, so undo returns to road building
+    with the segments intact; further undos peel each segment (AddSegmentsAction).
+    """
+
+    road_id: str
+    segment_ids: tuple[str, ...]
+    road_name: str
+    start_node_id: str | None
+
+    @property
+    def action_type(self) -> ActionType:
+        """Return the enum type for dispatch."""
+        return ActionType.FINISH_ROAD
+
+
+@dataclass(frozen=True)
 class DeleteSlopeAction:
     """Undo action for deleting a slope (stores data for restore)."""
 
     slope_id: str
     deleted_slope: "Slope"
-    deleted_segments: tuple["SlopeSegment", ...]
+    deleted_segments: tuple["PathSegment", ...]
     deleted_nodes: tuple["Node", ...] = ()  # Nodes orphaned by segment removal
 
     @property
@@ -118,7 +140,30 @@ class DeleteLiftAction:
         return ActionType.DELETE_LIFT
 
 
-UndoAction = AddSegmentsAction | FinishSlopeAction | AddLiftAction | DeleteSlopeAction | DeleteLiftAction
+@dataclass(frozen=True)
+class DeleteRoadAction:
+    """Undo action for deleting a road (stores data for restore)."""
+
+    road_id: str
+    deleted_road: "Road"
+    deleted_segments: tuple["PathSegment", ...]
+    deleted_nodes: tuple["Node", ...] = ()  # Nodes orphaned by segment removal
+
+    @property
+    def action_type(self) -> ActionType:
+        """Return the enum type for dispatch."""
+        return ActionType.DELETE_ROAD
+
+
+UndoAction = (
+    AddSegmentsAction
+    | FinishSlopeAction
+    | AddLiftAction
+    | FinishRoadAction
+    | DeleteSlopeAction
+    | DeleteLiftAction
+    | DeleteRoadAction
+)
 
 
 class ResortGraph:
@@ -136,15 +181,17 @@ class ResortGraph:
     def __init__(self) -> None:
         """Initialize empty resort graph."""
         self.nodes: dict[str, Node] = {}
-        self.segments: dict[str, SlopeSegment] = {}
+        self.segments: dict[str, PathSegment] = {}
         self.slopes: dict[str, Slope] = {}
         self.lifts: dict[str, Lift] = {}
+        self.roads: dict[str, Road] = {}
         self.undo_stack: list[UndoAction] = []
 
         self._node_counter = 0
         self._segment_counter = 0
         self._slope_counter = 0
         self._lift_counter = 0
+        self._road_counter = 0
 
     def _next_node_id(self) -> str:
         self._node_counter += 1
@@ -161,6 +208,10 @@ class ResortGraph:
     def _next_lift_id(self) -> str:
         self._lift_counter += 1
         return f"{EntityPrefixes.LIFT}{self._lift_counter}"
+
+    def _next_road_id(self) -> str:
+        self._road_counter += 1
+        return f"{EntityPrefixes.ROAD}{self._road_counter}"
 
     def _push_undo(self, action: UndoAction) -> None:
         """Push action to undo stack with size limiting.
@@ -249,7 +300,8 @@ class ResortGraph:
 
     def commit_paths(
         self,
-        paths: list[ProposedSlopeSegment],
+        paths: list[ProposedPathSegment],
+        record_undo: bool = True,
     ) -> list[str]:
         """Commit proposed paths to the graph.
 
@@ -262,7 +314,10 @@ class ResortGraph:
         nodes (via get_or_create_node's find_nearest_node check).
 
         Args:
-            paths: List of ProposedSlopeSegment to commit
+            paths: List of ProposedPathSegment to commit
+            record_undo: When True, push a segment-level AddSegmentsAction. Both
+                slopes and roads pass True so undo peels one segment at a time;
+                finishing then records a FinishSlopeAction / FinishRoadAction on top.
 
         Returns:
             List of end node IDs for continuation.
@@ -275,14 +330,27 @@ class ResortGraph:
             if not path.points:
                 continue
 
-            # Get or create start node
+            # Get start node.
+            # If the proposal extends from an existing node, reuse it EXACTLY.
+            # Spline smoothing + momentum could drift the traced start point.
+            # Same fix the end uses via target_node_id.
             start_pt = path.start
             assert start_pt is not None  # Guaranteed by `if not path.points: continue` check
-            start_node, start_created = self.get_or_create_node(
-                lon=start_pt.lon,
-                lat=start_pt.lat,
-                elevation=start_pt.elevation,
-            )
+            if path.start_node_id and path.start_node_id in self.nodes:
+                start_node = self.nodes[path.start_node_id]
+                start_created = False
+                # Snap path geometry to the exact node coordinates.
+                path.points[0] = PathPoint(
+                    lon=start_node.lon,
+                    lat=start_node.lat,
+                    elevation=start_node.elevation,
+                )
+            else:
+                start_node, start_created = self.get_or_create_node(
+                    lon=start_pt.lon,
+                    lat=start_pt.lat,
+                    elevation=start_pt.elevation,
+                )
             if start_created:
                 new_node_ids.append(start_node.id)
 
@@ -326,7 +394,7 @@ class ResortGraph:
 
             # Create segment (metrics computed as properties from points)
             segment_id = self._next_segment_id()
-            segment = SlopeSegment(
+            segment = PathSegment(
                 id=segment_id,
                 name=f"Segment {self._segment_counter}",
                 points=path.points,
@@ -334,13 +402,14 @@ class ResortGraph:
                 end_node_id=end_node.id,
                 side_slope_pct=side_slope_pct,
                 side_slope_dir=side_slope_dir,
+                kind=path.kind,  # slope vs road identity carried from the proposal
             )
             self.segments[segment_id] = segment
             new_segment_ids.append(segment_id)
             end_node_ids.append(end_node.id)
 
         # Record for undo
-        if new_segment_ids:
+        if record_undo and new_segment_ids:
             self._push_undo(
                 AddSegmentsAction(
                     segment_ids=tuple(new_segment_ids),
@@ -349,6 +418,36 @@ class ResortGraph:
             )
 
         return end_node_ids
+
+    def _resolve_finish_endpoints(
+        self, segment_ids: list[str]
+    ) -> tuple[PathSegment, PathSegment, Node, Node, float] | None:
+        """Validate a finish request and return (first_seg, last_seg, start_node, end_node, avg_bearing).
+
+        Returns None if the segment list is empty or any segment/endpoint node is missing.
+        Shared by finish_slope / finish_road (validation + bearing only).
+        """
+        if not segment_ids:
+            return None
+
+        first_seg = self.segments.get(segment_ids[0])
+        last_seg = self.segments.get(segment_ids[-1])
+        if not first_seg or not last_seg:
+            return None
+
+        start_node = self.nodes.get(first_seg.start_node_id)
+        end_node = self.nodes.get(last_seg.end_node_id)
+        if not start_node or not end_node:
+            return None
+
+        avg_bearing = GeoCalculator.initial_bearing_deg(
+            lon1=start_node.lon, lat1=start_node.lat, lon2=end_node.lon, lat2=end_node.lat
+        )
+        return first_seg, last_seg, start_node, end_node, avg_bearing
+
+    # =========================================================================
+    # Slope Operations
+    # =========================================================================
 
     def finish_slope(
         self,
@@ -364,38 +463,15 @@ class ResortGraph:
         Returns:
             Created Slope or None if invalid.
         """
-        if not segment_ids:
+        resolved = self._resolve_finish_endpoints(segment_ids=segment_ids)
+        if resolved is None:
             return None
-
-        # Get first and last segment
-        first_seg = self.segments.get(segment_ids[0])
-        last_seg = self.segments.get(segment_ids[-1])
-
-        if not first_seg or not last_seg:
-            return None
-
-        # Calculate metrics for naming
-        start_node = self.nodes.get(first_seg.start_node_id)
-        end_node = self.nodes.get(last_seg.end_node_id)
-
-        if not start_node or not end_node:
-            return None
-
-        # Calculate average bearing
-        avg_bearing = GeoCalculator.initial_bearing_deg(
-            lon1=start_node.lon,
-            lat1=start_node.lat,
-            lon2=end_node.lon,
-            lat2=end_node.lat,
-        )
+        first_seg, last_seg, start_node, end_node, avg_bearing = resolved
 
         slope_id = self._next_slope_id()
-
-        # Determine difficulty from steepest section (max_slope_pct considers rolling windows)
+        # Difficulty from the steepest section (max_slope_pct over rolling windows).
         max_slope = max(self.segments[sid].max_slope_pct for sid in segment_ids if sid in self.segments)
         difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=max_slope)
-
-        # Generate name
         if name is None:
             name = Slope.generate_name(
                 difficulty=difficulty,
@@ -405,8 +481,6 @@ class ResortGraph:
                 avg_bearing=avg_bearing,
             )
 
-        logger.info(f"Slope finished: {name}, {len(segment_ids)} segments, difficulty={difficulty}")
-
         slope = Slope(
             id=slope_id,
             name=name,
@@ -415,14 +489,9 @@ class ResortGraph:
             end_node_id=last_seg.end_node_id,
         )
         self.slopes[slope_id] = slope
-
-        # Update segment names
         for seg_id in segment_ids:
-            seg = self.segments.get(seg_id)
-            if seg:
-                seg.name = name
-
-        # Record for undo (store slope name and start node for context restoration)
+            self.segments[seg_id].name = name
+        logger.info(f"Slope finished: {name}, {len(segment_ids)} segments, difficulty={difficulty}")
         self._push_undo(
             FinishSlopeAction(
                 slope_id=slope_id,
@@ -431,8 +500,90 @@ class ResortGraph:
                 start_node_id=first_seg.start_node_id,
             )
         )
-
         return slope
+
+    # =========================================================================
+    # Road Operations
+    # =========================================================================
+
+    def finish_road(
+        self,
+        segment_ids: list[str],
+        name: Optional[str] = None,
+    ) -> Optional[Road]:
+        """Group committed segments into a vehicle Road.
+
+        Records a FinishRoadAction (mirrors finish_slope): undo ungroups the road
+        but keeps its segments, which carry their own AddSegmentsAction entries.
+
+        Args:
+            segment_ids: Segment IDs the road is made of.
+            name: Optional custom name (generates a compass name if None).
+
+        Returns:
+            Created Road or None if invalid.
+        """
+        resolved = self._resolve_finish_endpoints(segment_ids=segment_ids)
+        if resolved is None:
+            return None
+        first_seg, last_seg, _start_node, _end_node, avg_bearing = resolved
+
+        road_id = self._next_road_id()
+        if name is None:
+            name = Road.generate_name(road_id=road_id, avg_bearing=avg_bearing)
+
+        road = Road(
+            id=road_id,
+            name=name,
+            segment_ids=segment_ids,
+            start_node_id=first_seg.start_node_id,
+            end_node_id=last_seg.end_node_id,
+        )
+        self.roads[road_id] = road
+        for seg_id in segment_ids:
+            self.segments[seg_id].name = name
+        logger.info(f"Road finished: {name}, {len(segment_ids)} segments")
+        self._push_undo(
+            FinishRoadAction(
+                road_id=road_id,
+                segment_ids=tuple(segment_ids),
+                road_name=name,
+                start_node_id=first_seg.start_node_id,
+            )
+        )
+        return road
+
+    def delete_road(self, road_id: str) -> bool:
+        """Delete a road and its segments.
+
+        Args:
+            road_id: ID of road to delete.
+
+        Returns:
+            True if deleted, False if not found.
+        """
+        road = self.roads.get(road_id)
+        if not road:
+            return False
+
+        deleted_segments = [self.segments[seg_id] for seg_id in road.segment_ids if seg_id in self.segments]
+        for seg_id in road.segment_ids:
+            self.segments.pop(seg_id, None)
+        del self.roads[road_id]
+
+        # Nodes orphaned by segment removal (connection_count == 0).
+        orphaned_nodes = [self.nodes[nid] for nid in self.nodes if self.get_connection_count(node_id=nid) == 0]
+        self._push_undo(
+            DeleteRoadAction(
+                road_id=road_id,
+                deleted_road=road,
+                deleted_segments=tuple(deleted_segments),
+                deleted_nodes=tuple(orphaned_nodes),
+            )
+        )
+        self.cleanup_isolated_nodes()
+        logger.info(f"Deleted road {road.name} with {len(road.segment_ids)} segments")
+        return True
 
     # =========================================================================
     # Lift Operations
@@ -495,27 +646,38 @@ class ResortGraph:
 
         action = self.undo_stack.pop()
 
-        if action.action_type == ActionType.ADD_SEGMENTS:
+        # Compare by .name (both sides): ActionType is a plain Enum, and the
+        # undo_stack lives in st.session_state holding OLD-class references after a
+        # Streamlit reload — plain-enum `==` is identity-based and would fail.
+        action_name = action.action_type.name
+
+        if action_name == ActionType.ADD_SEGMENTS.name:
             add_seg = cast(AddSegmentsAction, action)
             for seg_id in add_seg.segment_ids:
                 self.segments.pop(seg_id, None)
             self.cleanup_isolated_nodes()  # Remove orphaned nodes from segment removal
 
-        elif action.action_type == ActionType.ADD_LIFT:
+        elif action_name == ActionType.ADD_LIFT.name:
             add_lift = cast(AddLiftAction, action)
             self.lifts.pop(add_lift.lift_id, None)
             self.cleanup_isolated_nodes()  # Remove orphaned station nodes
 
-        elif action.action_type == ActionType.FINISH_SLOPE:
+        elif action_name == ActionType.FINISH_SLOPE.name:
+            # Ungroup the slope but keep its segments; their own AddSegmentsAction
+            # entries handle per-segment removal on further undo.
             finish = cast(FinishSlopeAction, action)
             self.slopes.pop(finish.slope_id, None)
             for seg_id in finish.segment_ids:
-                seg = self.segments.get(seg_id)
-                if seg:
-                    seg.name = f"Segment {seg_id[1:]}"
-            # No nodes are added in finish_slope only in last segment, so no cleanup needed
+                self.segments[seg_id].name = f"Segment {seg_id[1:]}"
 
-        elif action.action_type == ActionType.DELETE_SLOPE:
+        elif action_name == ActionType.FINISH_ROAD.name:
+            # Mirror FINISH_SLOPE: ungroup the road, keep its segments.
+            finish_road = cast(FinishRoadAction, action)
+            self.roads.pop(finish_road.road_id, None)
+            for seg_id in finish_road.segment_ids:
+                self.segments[seg_id].name = f"Segment {seg_id[1:]}"
+
+        elif action_name == ActionType.DELETE_SLOPE.name:
             del_slope = cast(DeleteSlopeAction, action)
             # Restore orphaned nodes first (they're needed by segments)
             for node in del_slope.deleted_nodes:
@@ -529,7 +691,7 @@ class ResortGraph:
                 f"and {len(del_slope.deleted_nodes)} nodes"
             )
 
-        elif action.action_type == ActionType.DELETE_LIFT:
+        elif action_name == ActionType.DELETE_LIFT.name:
             del_lift = cast(DeleteLiftAction, action)
             # Restore orphaned nodes first (they're needed by lift)
             for node in del_lift.deleted_nodes:
@@ -537,6 +699,22 @@ class ResortGraph:
             # Restore deleted lift
             self.lifts[del_lift.lift_id] = del_lift.deleted_lift
             logger.info(f"Restored lift {del_lift.lift_id} with {len(del_lift.deleted_nodes)} nodes")
+
+        elif action_name == ActionType.DELETE_ROAD.name:
+            del_road = cast(DeleteRoadAction, action)
+            # Restore orphaned nodes first (they're needed by segments)
+            for node in del_road.deleted_nodes:
+                self.nodes[node.id] = node
+            self.roads[del_road.road_id] = del_road.deleted_road
+            for seg in del_road.deleted_segments:
+                self.segments[seg.id] = seg
+            logger.info(
+                f"Restored road {del_road.road_id} with {len(del_road.deleted_segments)} segments "
+                f"and {len(del_road.deleted_nodes)} nodes"
+            )
+
+        else:
+            raise RuntimeError(f"Unknown action type in undo_last: {action_name}")
 
         return action
 
@@ -553,20 +731,13 @@ class ResortGraph:
         if not slope:
             return False
 
-        # Collect segments to store for undo
         deleted_segments = [self.segments[seg_id] for seg_id in slope.segment_ids if seg_id in self.segments]
-
-        # Remove all segments belonging to this slope
         for seg_id in slope.segment_ids:
             self.segments.pop(seg_id, None)
-
-        # Remove the slope
         del self.slopes[slope_id]
 
-        # Identify nodes that will be orphaned (connection_count == 0 after removal)
+        # Nodes orphaned by segment removal (connection_count == 0).
         orphaned_nodes = [self.nodes[nid] for nid in self.nodes if self.get_connection_count(node_id=nid) == 0]
-
-        # Push to undo stack with full data for restore (including orphaned nodes)
         self._push_undo(
             DeleteSlopeAction(
                 slope_id=slope_id,
@@ -575,9 +746,7 @@ class ResortGraph:
                 deleted_nodes=tuple(orphaned_nodes),
             )
         )
-
-        self.cleanup_isolated_nodes()  # Remove orphaned nodes from segment removal
-
+        self.cleanup_isolated_nodes()
         logger.info(f"Deleted slope {slope.name} with {len(slope.segment_ids)} segments")
         return True
 
@@ -620,6 +789,7 @@ class ResortGraph:
 
     def get_slope_by_segment_id(self, segment_id: str) -> Optional[Slope]:
         """Find the slope containing a given segment.
+        Not applicabale for roads, as they have no segements.
 
         Args:
             segment_id: ID of segment to find
@@ -699,6 +869,8 @@ class ResortGraph:
                 "total_length_m": 0,
                 "longest_run_m": 0,
                 "total_lifts": len(self.lifts),
+                "total_roads": len(self.roads),
+                "total_road_length_m": 0,
             }
 
         total_vertical = sum(s.total_drop_m for s in self.segments.values())
@@ -713,6 +885,8 @@ class ResortGraph:
             if seg.length_m > longest:
                 longest = seg.length_m
 
+        total_road_length = sum(road.get_total_length(segments=self.segments) for road in self.roads.values())
+
         return {
             "total_slopes": len(self.slopes),
             "total_segments": len(self.segments),
@@ -720,6 +894,8 @@ class ResortGraph:
             "total_length_m": total_length,
             "longest_run_m": longest,
             "total_lifts": len(self.lifts),
+            "total_roads": len(self.roads),
+            "total_road_length_m": total_road_length,
         }
 
     def get_elevation_range(self) -> tuple[float, float] | None:
@@ -737,10 +913,45 @@ class ResortGraph:
         lats = [n.lat for n in self.nodes.values()]
         return sum(lons) / len(lons), sum(lats) / len(lats)
 
-    def change_token(self) -> tuple[int, int, int, int, int]:
+    def get_parking_nodes(self) -> list[Node]:
+        """Nodes where a road meets a slope or lift — computed parking places.
+
+        A parking place is not a stored entity: it exists wherever a road's
+        segment shares a node with a slope segment or a lift station. Computed
+        fresh so it always tracks the current roads (appears/disappears as
+        roads are added or removed).
+        """
+        road_segment_ids = {sid for road in self.roads.values() for sid in road.segment_ids}
+        if not road_segment_ids:
+            return []
+
+        # Nodes touched by road segments.
+        road_nodes: set[str] = set()
+        for sid in road_segment_ids:
+            seg = self.segments.get(sid)
+            if seg:
+                road_nodes.add(seg.start_node_id)
+                road_nodes.add(seg.end_node_id)
+
+        # Nodes touched by slopes (their segments) or lift stations.
+        slope_segment_ids = {sid for slope in self.slopes.values() for sid in slope.segment_ids}
+        ski_nodes: set[str] = set()
+        for sid in slope_segment_ids:
+            seg = self.segments.get(sid)
+            if seg:
+                ski_nodes.add(seg.start_node_id)
+                ski_nodes.add(seg.end_node_id)
+        for lift in self.lifts.values():
+            ski_nodes.add(lift.start_node_id)
+            ski_nodes.add(lift.end_node_id)
+
+        shared = road_nodes & ski_nodes
+        return [self.nodes[nid] for nid in shared if nid in self.nodes]
+
+    def change_token(self) -> tuple[int, int, int, int, int, int]:
         """Return a cheap snapshot that changes on any graph mutation.
 
-        The four entity counters only grow; undo_stack length moves on
+        The entity counters only grow; undo_stack length moves on
         commit/cancel/undo. Comparing this token to the last-saved one tells
         the autosave hook whether a write is needed — no full serialization.
         """
@@ -749,6 +960,7 @@ class ResortGraph:
             self._segment_counter,
             self._slope_counter,
             self._lift_counter,
+            self._road_counter,
             len(self.undo_stack),
         )
 
@@ -764,11 +976,13 @@ class ResortGraph:
             "segments": {sid: asdict(seg) for sid, seg in self.segments.items()},
             "slopes": {slid: asdict(slope) for slid, slope in self.slopes.items()},
             "lifts": {lid: asdict(lift) for lid, lift in self.lifts.items()},
+            "roads": {rid: asdict(road) for rid, road in self.roads.items()},
             "counters": {
                 "node": self._node_counter,
                 "segment": self._segment_counter,
                 "slope": self._slope_counter,
                 "lift": self._lift_counter,
+                "road": self._road_counter,
             },
         }
 
@@ -781,7 +995,7 @@ class ResortGraph:
             graph.nodes[nid] = Node.from_dict(data=node_data)
 
         for sid, seg_data in data["segments"].items():
-            graph.segments[sid] = SlopeSegment.from_dict(data=seg_data)
+            graph.segments[sid] = PathSegment.from_dict(data=seg_data)
 
         for slid, slope_data in data["slopes"].items():
             graph.slopes[slid] = Slope.from_dict(data=slope_data)
@@ -789,11 +1003,40 @@ class ResortGraph:
         for lid, lift_data in data["lifts"].items():
             graph.lifts[lid] = Lift.from_dict(data=lift_data)
 
+        # Roads were added after the first backups shipped, so a pre-roads
+        # backup has no "roads" key — default to empty
+        for rid, road_data in data.get("roads", {}).items():
+            graph.roads[rid] = Road.from_dict(data=road_data)
+
+        # A road-owned segment MUST be kind=ROAD; fail loudly rather than mis-render it as a slope.
+        for road in graph.roads.values():
+            for seg_id in road.segment_ids:
+                seg = graph.segments.get(seg_id)
+                assert seg is not None and seg.kind == SegmentKind.ROAD, (
+                    f"road {road.id} owns segment {seg_id} with kind "
+                    f"{seg.kind if seg else 'MISSING'} — expected ROAD (corrupt/stale save)"
+                )
+
+        # Discard orphan segments: any segment owned by no slope or road.
+        # Drop them (and any nodes they orphan) rather than keep undeletable data in the graph.
+        owned_segment_ids = {sid for slope in graph.slopes.values() for sid in slope.segment_ids}
+        owned_segment_ids |= {sid for road in graph.roads.values() for sid in road.segment_ids}
+        orphan_segment_ids = [sid for sid in graph.segments if sid not in owned_segment_ids]
+        if orphan_segment_ids:
+            logger.warning(
+                f"Discarding {len(orphan_segment_ids)} orphan segment(s) owned by no slope/road "
+                f"(interrupted-build leftovers): {orphan_segment_ids}"
+            )
+            for sid in orphan_segment_ids:
+                del graph.segments[sid]
+            graph.cleanup_isolated_nodes()
+
         counters = data["counters"]
         graph._node_counter = counters["node"]
         graph._segment_counter = counters["segment"]
         graph._slope_counter = counters["slope"]
         graph._lift_counter = counters["lift"]
+        graph._road_counter = counters.get("road", 0)
 
         return graph
 
@@ -854,6 +1097,24 @@ class ResortGraph:
             if not lift.cable_points:
                 raise ValueError(f"Lift {lift.name} must have cable_points for GPX export")
             for pt in lift.cable_points:
+                trkpt = ET.SubElement(trkseg, "trkpt", lat=str(pt.lat), lon=str(pt.lon))
+                ET.SubElement(trkpt, "ele").text = f"{pt.elevation:.1f}"
+
+        # Export roads (Road is a SegmentPath like Slope; no difficulty)
+        for road in self.roads.values():
+            all_points = road.get_all_points(segments=self.segments)
+            total_length = road.get_total_length(segments=self.segments)
+            total_drop = road.get_total_drop(segments=self.segments)
+
+            trk = ET.SubElement(gpx, "trk")
+            ET.SubElement(trk, "name").text = road.name
+            ET.SubElement(
+                trk, "desc"
+            ).text = f"Road - Elevation change {-total_drop:+.0f}m - Length {total_length:.0f}m"
+            ET.SubElement(trk, "type").text = "road"
+
+            trkseg = ET.SubElement(trk, "trkseg")
+            for pt in all_points:
                 trkpt = ET.SubElement(trkseg, "trkpt", lat=str(pt.lat), lon=str(pt.lon))
                 ET.SubElement(trkpt, "ele").text = f"{pt.elevation:.1f}"
 

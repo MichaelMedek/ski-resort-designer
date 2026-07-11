@@ -14,7 +14,7 @@ Reference: DETAILS.md Section 7 for algorithm details.
 import logging
 import math
 from dataclasses import dataclass
-from math import exp
+from math import exp, radians, sin
 from typing import Optional
 
 import numpy as np
@@ -27,7 +27,7 @@ from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.model.path_point import PathPoint
-from skiresort_planner.model.proposed_path import ProposedSlopeSegment
+from skiresort_planner.model.proposed_path import ProposedPathSegment
 
 logger = logging.getLogger(__name__)
 
@@ -86,21 +86,36 @@ class LeastCostPathPlanner:
         target_elevation: float,
         target_slope_pct: float,
         side: str,
-    ) -> Optional[ProposedSlopeSegment]:
+        gradient_band: Optional[tuple[float, float]] = None,
+        incoming_bearing: Optional[float] = None,
+        earthwork_tolerance_m: float = 0.0,
+    ) -> Optional[ProposedPathSegment]:
         """Plan path using grid-based Dijkstra search.
 
         Args:
             start_lon, start_lat, start_elevation: Starting point
             target_lon, target_lat, target_elevation: Target point
-            target_slope_pct: Target effective slope percentage
+            target_slope_pct: Target effective slope percentage (slope mode)
             side: "left" or "right" - preferred side of direct line
+            gradient_band: Optional (min_pct, max_pct) signed gradient band. When
+                given (road mode), the cost stays flat inside the band and only
+                penalizes leaving it, with no uphill penalty — cars may climb.
+                When None (slope mode), behavior is unchanged.
+            incoming_bearing: Optional heading (deg) the path arrives at the start
+                node with, from the previous committed segment. When given, a light
+                distance-decaying turn penalty biases the first edges to continue
+                roughly in-line (momentum, no kink at the junction). None → no
+                momentum (first segment / slope fan — unchanged behavior).
+            earthwork_tolerance_m: Max metres a ROAD may cut below / fill above the
+                natural ground to hold a gentler grade (cut-and-fill). 0 for slopes
+                (they lie on the snow surface — unchanged). Endpoints stay on the
+                ground; only the interior deviates, tapering to 0 at both ends.
 
         Returns:
-            ProposedSlopeSegment if path found, None otherwise.
+            ProposedPathSegment if path found, None otherwise.
         """
-        # Validate inputs
-        drop_m = start_elevation - target_elevation
-        if drop_m <= 0:
+        # Slope mode requires net descent; road mode may climb or descend.
+        if gradient_band is None and start_elevation - target_elevation <= 0:
             return None
 
         direct_distance_m = GeoCalculator.haversine_distance_m(
@@ -133,6 +148,8 @@ class LeastCostPathPlanner:
             side=side,
             lons=lons,
             lats=lats,
+            gradient_band=gradient_band,
+            incoming_bearing=incoming_bearing,
         )
 
         if path_nodes is None:
@@ -150,9 +167,14 @@ class LeastCostPathPlanner:
         points = self._smooth_path_spline(
             points=raw_points,
             target_slope_pct=target_slope_pct,
+            incoming_bearing=incoming_bearing,
         )
 
-        return ProposedSlopeSegment(
+        # Road earthwork: let the interior cut/fill within tolerance to gentle the
+        # grade (endpoints stay on the ground). No-op when tolerance is 0 (slopes).
+        points = self._apply_earthwork_allowance(points=points, tolerance_m=earthwork_tolerance_m)
+
+        return ProposedPathSegment(
             points=points,
             target_slope_pct=target_slope_pct,
             is_connector=True,
@@ -168,6 +190,10 @@ class LeastCostPathPlanner:
     ) -> Optional[tuple[list[list[float]], list[list[float]], list[list[float]], GridNode, GridNode]]:
         """Build elevation grid covering the search area."""
         # Calculate grid bounds with buffer
+        # TODO(serpentine): this buffer (0.5×direct) is too tight for road
+        # switchbacks — a zig-zag needs much more lateral room than a slope.
+        # A serpentine road redesign (see _calc_edge_cost FIXME) should widen this
+        # for road mode so in-band switchbacks physically fit in the search grid.
         buffer_m = direct_distance * PlannerConfig.GRID_BUFFER_FACTOR
         total_extent = direct_distance + 2 * buffer_m
 
@@ -224,7 +250,8 @@ class LeastCostPathPlanner:
                 elev = self.dem.get_elevation(lon=lon, lat=lat)
                 if elev is None:
                     raise RuntimeError(
-                        f"DEM returned None for grid point at row={row}, col={col} (lon={lon}, lat={lat}), cannot build grid with missing elevation data"
+                        f"DEM returned None for grid point at row={row}, col={col} "
+                        f"(lon={lon}, lat={lat}), cannot build grid with missing elevation data"
                     )
 
                 elev_row.append(elev)
@@ -278,6 +305,8 @@ class LeastCostPathPlanner:
         side: str,
         lons: list[list[float]],
         lats: list[list[float]],
+        gradient_band: Optional[tuple[float, float]] = None,
+        incoming_bearing: Optional[float] = None,
     ) -> tuple[Optional[list[GridNode]], int, int]:
         """Least-cost path using SciPy's C-optimized Dijkstra.
 
@@ -291,6 +320,10 @@ class LeastCostPathPlanner:
         # Target coords (used for side preference in edge cost)
         t_lon = lons[target.row][target.col]
         t_lat = lats[target.row][target.col]
+
+        # Start coords: momentum's turn penalty decays with distance from here.
+        s_lon = lons[start.row][start.col]
+        s_lat = lats[start.row][start.col]
 
         # Build sparse graph (row, col, data) for CSR matrix
         row_list: list[int] = []
@@ -330,6 +363,10 @@ class LeastCostPathPlanner:
                         side=side,
                         target_lon=t_lon,
                         target_lat=t_lat,
+                        gradient_band=gradient_band,
+                        incoming_bearing=incoming_bearing,
+                        start_lon=s_lon,
+                        start_lat=s_lat,
                     )
 
                     if edge_cost < float("inf"):
@@ -390,14 +427,37 @@ class LeastCostPathPlanner:
         side: str,
         target_lon: float,
         target_lat: float,
+        gradient_band: Optional[tuple[float, float]] = None,
+        incoming_bearing: Optional[float] = None,
+        start_lon: Optional[float] = None,
+        start_lat: Optional[float] = None,
     ) -> float:
-        """Minimal cost function: distance weighted by slope deviation and uphill penalty.
+        """Cost function: distance weighted by a slope penalty.
 
-        Two soft constraints:
-        1. Exponential penalty for slope deviation from target
-        2. Exponential uphill penalty (zero for downhill, grows for uphill)
+        Slope mode (gradient_band is None): two soft constraints —
+        exponential penalty for deviation from target_slope_pct, plus an
+        exponential uphill penalty (zero downhill, grows uphill).
 
-        No hard cutoffs - allows occasional uphill due to DEM noise.
+        Road mode (gradient_band = (min_pct, max_pct)): cost is flat inside
+        the band and grows exponentially with the signed distance *outside*
+        it, with NO uphill penalty — cars may climb within the band.
+
+        No hard cutoffs - allows occasional band excursions due to DEM noise.
+
+        Momentum (incoming_bearing set): a light, distance-decaying turn penalty
+        multiplies the base cost so edges leaving the start node roughly in-line
+        with the incoming heading are cheaper. Decays to 1.0 (no effect) by MOMENTUM_DECAY_M
+        from the start, so mid-segment routing is untouched. Needs start_lon/lat.
+
+        FIXME(side-bias): `side` ("left"/"right") AND `target_lon`/`target_lat` are
+        currently DEAD — this cost is purely position/slope-based and never reads
+        them, so a left and a right plan trace the IDENTICAL least-cost route. All
+        three are kept in the signature (and threaded from plan()/_graph_dijkstra)
+        for the planned side-aware upgrade: a signed cross-track bias term needs the
+        direct start→target line (target_lon/lat) and which side to prefer (side) —
+        mirror PathTracer.trace_downhill's `side_sign` — or an any-angle/heading-aware
+        planner would make left/right diverge into a real choice. Until then, callers
+        generate a single side (see PathFactory.generate_manual_paths road config).
         """
         # Horizontal distance
         horiz_dist = GeoCalculator.haversine_distance_m(lat1=from_lat, lon1=from_lon, lat2=to_lat, lon2=to_lon)
@@ -409,17 +469,146 @@ class LeastCostPathPlanner:
         drop = from_elev - to_elev
         actual_slope = (drop / horiz_dist) * 100
 
-        # Slope deviation penalty
-        slope_diff = abs(actual_slope - target_slope_pct)
-        slope_cost = exp(slope_diff / PlannerConfig.COST_SIGMA)
+        if gradient_band is not None:
+            # Road mode: soft penalty ramps from the COMFORT threshold (12%), NOT
+            # the hard cap (15%) — so Dijkstra prefers gentler lines and fewer
+            # near-limit routes get traced only to be hard-capped-and-refused by
+            # the caller. The hard cap stays the true validity limit.
+            soft = PathConfig.ROAD_SOFT_GRADIENT_PCT
+            over = max(0.0, abs(actual_slope) - soft)
+            # FIXME(serpentine): this SOFT penalty (now knee'd at the 12% comfort
+            # threshold) still lets Dijkstra prefer a short out-of-band route over a
+            # long in-band switchback — so on steep terrain roads still exceed the
+            # band instead of zig-zagging (the caller then hard-caps and refuses).
+            # To make roads serpentine "like a green slope always works", redesign
+            # to EITHER:
+            #   (a) hard cutoff: return inf when the slope exceeds the hard cap so
+            #       Dijkstra only routes through in-band cells, AND widen the grid
+            #       buffer (see _build_grid) so switchbacks fit; expose ONE
+            #       user-tunable "max detour" knob; OR
+            #   (b) replace grid-Dijkstra for roads with an angle-based tracer that
+            #       lays fixed-grade zig-zag legs (mirror PathTracer.trace_downhill /
+            #       DETAILS.md §3 traverse-angle math).
+            # Deferred intentionally — see plan. Keep the soft form for now.
+            base_cost = horiz_dist * exp(over / PlannerConfig.COST_SIGMA)
+        else:
+            # Slope mode: deviation-from-target penalty + uphill penalty.
+            slope_diff = abs(actual_slope - target_slope_pct)
+            slope_cost = exp(slope_diff / PlannerConfig.COST_SIGMA)
 
-        # Uphill penalty: zero for downhill, exponential for uphill
-        # Uses same sigma as slope deviation for consistency
-        uphill_penalty = 1.0
-        if actual_slope < 0:
-            uphill_penalty = exp(abs(actual_slope) / PlannerConfig.COST_SIGMA)
+            uphill_penalty = 1.0
+            if actual_slope < 0:
+                uphill_penalty = exp(abs(actual_slope) / PlannerConfig.COST_SIGMA)
 
-        return horiz_dist * slope_cost * uphill_penalty
+            base_cost = horiz_dist * slope_cost * uphill_penalty
+
+        return base_cost * self._momentum_multiplier(
+            from_lon=from_lon,
+            from_lat=from_lat,
+            to_lon=to_lon,
+            to_lat=to_lat,
+            incoming_bearing=incoming_bearing,
+            start_lon=start_lon,
+            start_lat=start_lat,
+        )
+
+    def _momentum_multiplier(
+        self,
+        from_lon: float,
+        from_lat: float,
+        to_lon: float,
+        to_lat: float,
+        incoming_bearing: Optional[float],
+        start_lon: Optional[float],
+        start_lat: Optional[float],
+    ) -> float:
+        """Distance-decaying momentum penalty for a clean departure from a node.
+
+        Two stacked terms, both fading to 1.0 (no effect) past their range so
+        mid-segment routing is untouched:
+
+        - TURN: an edge whose heading deviates from `incoming_bearing` costs more,
+          fading over MOMENTUM_DECAY_M. Keeps the path leaving at the right heading.
+        - POSITION: the edge's endpoint drifting laterally off the incoming line
+          (cross-track offset) costs more — stronger weight, MUCH faster fade
+          (MOMENTUM_POS_DECAY_M). Pins WHERE the path leaves so it can't jump
+          sideways off the node, then releases quickly to terrain-following.
+
+        Returns 1.0 when there is no incoming heading / start position.
+        """
+        if incoming_bearing is None or start_lon is None or start_lat is None:
+            return 1.0
+
+        dist_from_start = GeoCalculator.haversine_distance_m(
+            lat1=start_lat, lon1=start_lon, lat2=from_lat, lon2=from_lon
+        )
+
+        # TURN term (heading continuity), fading over the long decay.
+        turn_penalty = 0.0
+        if dist_from_start < PlannerConfig.MOMENTUM_DECAY_M:
+            edge_bearing = GeoCalculator.initial_bearing_deg(lon1=from_lon, lat1=from_lat, lon2=to_lon, lat2=to_lat)
+            turn = abs(edge_bearing - incoming_bearing) % 360
+            if turn > 180:
+                turn = 360 - turn  # normalize to [0, 180]
+            decay = 1.0 - dist_from_start / PlannerConfig.MOMENTUM_DECAY_M
+            turn_penalty = PlannerConfig.MOMENTUM_TURN_WEIGHT * decay * (turn / 90.0)
+
+        # POSITION term (cross-track pin), stronger but fading over the short decay.
+        # Cross-track = perpendicular distance of the edge endpoint from the incoming
+        # line through the start node; that is what a sideways jump increases.
+        pos_penalty = 0.0
+        to_dist_from_start = GeoCalculator.haversine_distance_m(
+            lat1=start_lat, lon1=start_lon, lat2=to_lat, lon2=to_lon
+        )
+        if to_dist_from_start < PlannerConfig.MOMENTUM_POS_DECAY_M:
+            to_bearing = GeoCalculator.initial_bearing_deg(lon1=start_lon, lat1=start_lat, lon2=to_lon, lat2=to_lat)
+            angle_off = abs(to_bearing - incoming_bearing) % 360
+            if angle_off > 180:
+                angle_off = 360 - angle_off
+            cross_track_m = to_dist_from_start * abs(sin(radians(angle_off)))
+            pos_decay = 1.0 - to_dist_from_start / PlannerConfig.MOMENTUM_POS_DECAY_M
+            lateral_units = cross_track_m / PlannerConfig.MOMENTUM_POS_SCALE_M
+            pos_penalty = PlannerConfig.MOMENTUM_POS_WEIGHT * pos_decay * lateral_units
+
+        if turn_penalty == 0.0 and pos_penalty == 0.0:
+            return 1.0
+        return exp(turn_penalty + pos_penalty)
+
+    def _apply_earthwork_allowance(self, points: list[PathPoint], tolerance_m: float) -> list[PathPoint]:
+        """Let a road's INTERIOR cut below / fill above the ground to gentle its grade.
+
+        The traced elevations sit on the natural ground, so the grade is whatever the
+        terrain does. We pull each interior point toward the STRAIGHT line between the
+        two endpoints (the gentlest possible profile) but never move it more than the
+        earthwork budget from the real ground — the classic cut-and-fill trade. The
+        budget is ``min(tolerance_m, dist_from_nearest_end / EARTHWORK_TAPER_RATIO)`` so
+        the START and END stay exactly on the ground. Iterative Laplacian smoothing.
+
+        Only elevation is touched; the horizontal route (lon/lat) is preserved.
+        """
+        # tolerance_m == 0 → returned unchanged
+        if tolerance_m <= 0.0 or len(points) < 3:
+            return points
+
+        # Cumulative along-path distance at each point (drives the straight-line lerp + taper).
+        cum = [0.0]
+        for i in range(1, len(points)):
+            cum.append(cum[-1] + points[i - 1].distance_to(other=points[i]))
+        total = cum[-1]
+        if total <= 0.0:
+            return points
+
+        start_elev, end_elev = points[0].elevation, points[-1].elevation
+        adjusted = [points[0]]  # first point kept exactly (endpoint stays on ground)
+        for i in range(1, len(points) - 1):
+            ground = points[i].elevation
+            straight = start_elev + (end_elev - start_elev) * (cum[i] / total)  # gentlest profile
+            # Budget tapers to 0 at both ends (min-distance-to-either-end / ratio), capped at tolerance.
+            budget = min(tolerance_m, min(cum[i], total - cum[i]) / PlannerConfig.EARTHWORK_TAPER_RATIO)
+            elev = min(ground + budget, max(ground - budget, straight))  # move toward line, clamp to ±budget
+            adjusted.append(PathPoint(lon=points[i].lon, lat=points[i].lat, elevation=elev))
+        adjusted.append(points[-1])  # last point kept exactly (endpoint stays on ground)
+        return adjusted
 
     def _path_to_points(
         self,
@@ -440,11 +629,44 @@ class LeastCostPathPlanner:
             )
         return points
 
+    def _nudge_join_toward_bearing(self, points: list[PathPoint], incoming_bearing: Optional[float]) -> list[PathPoint]:
+        """Gently rotate the first join-region points toward the incoming heading.
+
+        Keeps the anchor (points[0]) fixed and, for each early point within
+        MOMENTUM_DECAY_M of it, blends the point's bearing-from-anchor toward
+        `incoming_bearing` by a factor that decays to zero across the region. The
+        per-point rotation is clamped to MAX_TURN_PER_STEP_DEG so the join can never
+        swing wildly (no cliff dives / reversed turns). Distance-from-anchor and
+        elevation are preserved; the caller re-samples elevation from the DEM after.
+        Returns points unchanged when there is no incoming heading.
+        """
+        if incoming_bearing is None or len(points) < 3:
+            return points
+
+        anchor = points[0]
+        nudged: list[PathPoint] = [anchor]
+        for pt in points[1:]:
+            dist = GeoCalculator.haversine_distance_m(lat1=anchor.lat, lon1=anchor.lon, lat2=pt.lat, lon2=pt.lon)
+            if dist >= PlannerConfig.MOMENTUM_DECAY_M or dist < 0.1:
+                nudged.append(pt)
+                continue
+
+            bearing = GeoCalculator.initial_bearing_deg(lon1=anchor.lon, lat1=anchor.lat, lon2=pt.lon, lat2=pt.lat)
+            diff = (incoming_bearing - bearing + 180) % 360 - 180  # signed shortest turn to incoming
+            weight = 1.0 - dist / PlannerConfig.MOMENTUM_DECAY_M  # full at anchor → 0 at decay distance
+            rotate = max(-PathConfig.MAX_TURN_PER_STEP_DEG, min(PathConfig.MAX_TURN_PER_STEP_DEG, diff * weight))
+            new_lon, new_lat = GeoCalculator.destination(
+                lon=anchor.lon, lat=anchor.lat, bearing_deg=(bearing + rotate) % 360, distance_m=dist
+            )
+            nudged.append(PathPoint(lon=new_lon, lat=new_lat, elevation=pt.elevation))
+        return nudged
+
     def _smooth_path_spline(
         self,
         points: list[PathPoint],
         target_slope_pct: float,
         step_m: float = 7.0,
+        incoming_bearing: Optional[float] = None,
     ) -> list[PathPoint]:
         """Smooth grid path using cubic spline interpolation and resample at fixed intervals.
 
@@ -456,12 +678,20 @@ class LeastCostPathPlanner:
             points: Raw grid path points
             target_slope_pct: Target slope - controls smoothing aggressiveness
             step_m: Output point spacing in meters (default 7m)
+            incoming_bearing: Optional heading (deg) the path arrives with. When set,
+                the join region (first MOMENTUM_DECAY_M) is gently nudged toward that
+                heading BEFORE the spline pass, so the road leaves the node in-line
+                instead of kinking. The nudge is bounded (MAX_TURN_PER_STEP_DEG),
+                decays to zero over the region, and never moves the anchor point;
+                elevations are still DEM-sourced below, so it cannot invent terrain.
 
         Returns:
             Smoothed path with regular point spacing and DEM-sampled elevations.
         """
         if len(points) < 4:
             return points
+
+        points = self._nudge_join_toward_bearing(points=points, incoming_bearing=incoming_bearing)
 
         lons = np.array([p.lon for p in points])
         lats = np.array([p.lat for p in points])

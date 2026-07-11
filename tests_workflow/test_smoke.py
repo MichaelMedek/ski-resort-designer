@@ -95,7 +95,13 @@ class TestConfigurationValidation:
         """Entity ID prefixes are unique to prevent ID collisions."""
         from skiresort_planner.constants import EntityPrefixes
 
-        prefixes = [EntityPrefixes.NODE, EntityPrefixes.SEGMENT, EntityPrefixes.SLOPE, EntityPrefixes.LIFT]
+        prefixes = [
+            EntityPrefixes.NODE,
+            EntityPrefixes.SEGMENT,
+            EntityPrefixes.SLOPE,
+            EntityPrefixes.LIFT,
+            EntityPrefixes.ROAD,
+        ]
         assert len(prefixes) == len(set(prefixes))
 
 
@@ -113,11 +119,14 @@ class TestStateMachineConfiguration:
             "idle_ready",
             "idle_viewing_slope",
             "idle_viewing_lift",
+            "idle_viewing_road",
             "slope_starting",
             "slope_building",
             "slope_custom_picking",
             "slope_custom_path",
             "lift_placing",
+            "road_starting",
+            "road_building",
         ],
     )
     def test_state_machine_has_state(self, empty_graph, state_name: str) -> None:
