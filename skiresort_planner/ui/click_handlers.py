@@ -438,9 +438,8 @@ def _handle_custom_connect_click(click_info: ClickInfo, elevation: float | None)
         OutsideTerrainMessage(lat=target_lat, lon=target_lon).display()
         return
 
-    # Resolve the START point coordinates for validation. The authoritative source
-    # depends on the current slope state; none of these require creating a node here
-    # (the STARTING origin node is materialised in the transition's before-hook).
+    # Resolve the START coordinates for validation. No node is created here — the
+    # STARTING origin node is materialised in the transition's before-hook.
     if ctx.slope_build.endpoints:  # BUILDING: current endpoint
         start = graph.nodes[ctx.slope_build.endpoints[0]]
         start_lon, start_lat, start_elevation = start.lon, start.lat, start.elevation

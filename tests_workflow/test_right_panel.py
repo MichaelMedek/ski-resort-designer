@@ -55,8 +55,6 @@ def _dispatch(sm, ctx, graph) -> None:
         ctx=ctx,
         graph=graph,
         on_commit=_noop,
-        on_custom_direction=_noop,
-        on_cancel_custom=_noop,
         on_cancel_connection=_noop,
     )
 
@@ -290,10 +288,22 @@ class TestPathSelectionPanelRuns:
             context=ctx,
             graph=graph,
             on_commit=_noop,
-            on_custom_direction=_noop,
-            on_cancel_custom=_noop,
             on_cancel_connection=_noop,
         )
+
+    @staticmethod
+    def _capture_buttons(fake_st) -> list[str]:
+        """Record every button label rendered this pass (label is the 1st positional arg)."""
+        labels: list[str] = []
+        orig = fake_st.button
+
+        def spy(*args: object, **kwargs: object) -> bool:
+            if args:
+                labels.append(str(args[0]))
+            return orig(*args, **kwargs)
+
+        fake_st.button = spy
+        return labels
 
     def test_no_proposals_runs(self, fake_st, empty_graph) -> None:
         _sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
@@ -305,7 +315,28 @@ class TestPathSelectionPanelRuns:
         ctx.proposals.selected_idx = 0
         self._panel(ctx, empty_graph).render()
 
-    def test_custom_connect_enabled_runs(self, fake_st, empty_graph) -> None:
+    def test_custom_target_shows_cancel_custom_path(self, fake_st, empty_graph, path_points_blue) -> None:
+        # A plain custom target (no connector node) → "Cancel Custom Path", never "Cancel Connection".
         _sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        ctx.custom_connect.enabled = True
+        ctx.custom_connect.force_mode = True
+        ctx.proposals.paths = [ProposedPathSegment(points=path_points_blue, target_difficulty="blue")]
+        ctx.proposals.selected_idx = 0
+        labels = self._capture_buttons(fake_st)
         self._panel(ctx, empty_graph).render()
+        assert any("Cancel Custom Path" in b for b in labels)
+        assert not any("Cancel Connection" in b for b in labels)
+
+    def test_connector_target_shows_cancel_connection(self, fake_st, empty_graph, path_points_blue) -> None:
+        # A connector (routing to an existing node) → "Cancel Connection", matching the finish label.
+        _sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        ctx.custom_connect.force_mode = True
+        ctx.proposals.paths = [
+            ProposedPathSegment(
+                points=path_points_blue, target_difficulty="blue", is_connector=True, target_node_id="N3"
+            )
+        ]
+        ctx.proposals.selected_idx = 0
+        labels = self._capture_buttons(fake_st)
+        self._panel(ctx, empty_graph).render()
+        assert any("Cancel Connection" in b for b in labels)
+        assert not any("Cancel Custom Path" in b for b in labels)

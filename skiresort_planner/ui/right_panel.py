@@ -190,13 +190,13 @@ def _render_proposal_browser(ctx: PlannerContext, *, key_prefix: str, noun: str)
 
     col_prev, col_nav_label, col_next = st.columns([1, 2, 1])
     with col_prev:
-        if st.button("◀", key=f"prev_{key_prefix}", width="stretch", help=f"Previous {noun[:-1]}"):
+        if st.button("◀", key=f"prev_{key_prefix}", width="stretch", help="Previous"):
             ctx.proposals.selected_idx = (selected_idx - 1) % num_paths
             reload_map()
     with col_nav_label:
         st.markdown(f"**◀ ▶ Browse {num_paths} {noun}**")
     with col_next:
-        if st.button("▶", key=f"next_{key_prefix}", width="stretch", help=f"Next {noun[:-1]}"):
+        if st.button("▶", key=f"next_{key_prefix}", width="stretch", help="Next"):
             ctx.proposals.selected_idx = (selected_idx + 1) % num_paths
             reload_map()
 
@@ -398,7 +398,7 @@ def _render_road_building_panel(
 
     selected_idx = ctx.proposals.selected_idx if ctx.proposals.selected_idx is not None else 0
 
-    _render_proposal_browser(ctx, key_prefix="road_path", noun="options")
+    _render_proposal_browser(ctx=ctx, key_prefix="road_path", noun="options")
 
     if st.button(
         "✅ Commit Road Segment",
@@ -524,11 +524,9 @@ class PathSelectionPanel:
             return
 
         num_paths = len(self.ctx.proposals.paths)
-        # Clamp to a valid selection: paths exist here, so an unset/out-of-range index
-        # just means "show the first one" — no placeholder/unknown-stats branch needed.
-        selected_idx = self.ctx.proposals.selected_idx
-        if selected_idx is None or not (0 <= selected_idx < num_paths):
-            selected_idx = 0
+        # selected_idx is kept in range by generation (reset to 0) and browser nav (% num_paths);
+        # None only before the first selection → show the first proposal.
+        selected_idx = self.ctx.proposals.selected_idx if self.ctx.proposals.selected_idx is not None else 0
 
         path = self.ctx.proposals.paths[selected_idx]
         emoji = StyleConfig.DIFFICULTY_EMOJIS[path.difficulty]
@@ -552,7 +550,7 @@ class PathSelectionPanel:
         ).display()
 
         # Navigation arrows
-        _render_proposal_browser(self.ctx, key_prefix="path", noun="paths")
+        _render_proposal_browser(ctx=self.ctx, key_prefix="path", noun="paths")
 
         # Commit button
         if is_connector:

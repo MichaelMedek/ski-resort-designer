@@ -340,7 +340,7 @@ The final slope classification is determined by the **steepest section among all
 
 ## 7. Custom Direction / Connect Paths
 
-When the automatically generated fan paths don't include the direction you want, the **Custom Direction** feature lets you click anywhere downhill to set a target.
+When the automatically generated fan paths don't include the direction you want, just **click the point you want to reach** while building the slope — terrain-adaptive path(s) are routed to that target. Clicking an existing node routes a connector that auto-finishes the slope on commit.
 
 ### 7.1 Multi-Grade Path Search
 

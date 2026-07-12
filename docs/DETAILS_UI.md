@@ -122,12 +122,14 @@ Click **"🏔️ View in 3D"** to see the slope from an angled perspective with 
 
 ## Custom Direction
 
-When the auto-generated proposals don't go where you want:
+When the auto-generated fan-out proposals don't go where you want, e.g. for connections to existing nodes, just **click the point you want to reach** exactly like roads:
 
-1. Click **"🎯 Custom Direction"** in the right panel
-2. Current proposals are hidden
-3. **Click anywhere downhill** on the map
-4. A path is generated using terrain-adaptive routing
+1. While building a slope, **click anywhere downhill** on the map (or on an existing node)
+2. The fan-out proposals are replaced by terrain-adaptive path(s) routed to that point
+3. Browse them with the **◀ ▶ arrows**, or click a proposal to select it
+4. Click the selected proposal again (or press **✅ Commit This Path**) to commit
+5. Click a **different** point to re-target — new proposals are traced to the new point
+6. Press **✖️ Cancel Custom Path** (or **✖️ Cancel Connection** when targeting a node) to discard targeting and return to the fan-out proposals
 
 ### Connecting to Existing Nodes
 
@@ -135,7 +137,7 @@ If you click **directly on a node marker** (white circle):
 - A connection path is generated to that node
 - Committing this path **auto-finishes the slope** (creates a junction)
 
-**Constraint:** Target must be within the segment length slider range (default 500m, max 1000m).
+**Constraint:** The target must be **downhill** and within **1000m** of the start point; a click outside that range is refused.
 
 ---
 
@@ -401,7 +403,7 @@ Click **📤 Export GPX** to download GPS tracks of your slopes for use in other
 
 - **3-6 segments** per slope works well (300-800m vertical)
 - Mix difficulties by varying traverse angles
-- Use **Custom Direction** to connect slopes at junctions
+- Click an existing **node** to connect slopes at junctions
 
 ### Lift Design
 

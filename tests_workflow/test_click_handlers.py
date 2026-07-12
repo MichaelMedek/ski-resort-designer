@@ -204,7 +204,7 @@ class TestIdleClickRouting:
 
 
 class TestCustomConnectClick:
-    """A custom-connect target click (while building) transitions to custom picking."""
+    """A terrain/node click while building auto-routes a custom-connect path (no button)."""
 
     def test_downhill_terrain_target_transitions_to_custom_path(
         self, fake_st, path_factory, mock_dem_blue_slope
@@ -215,15 +215,14 @@ class TestCustomConnectClick:
         graph = ResortGraph()
         sm, ctx = _session(fake_st, graph, path_factory, dem)
         sm.start_building(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
-        sm.enable_custom_connect()
-        assert ctx.custom_connect.enabled
 
-        # Click downhill terrain 400m south → valid custom target.
+        # Click downhill terrain 400m south → valid custom target, auto-enters custom path.
         handle_slope_building_click(
             ClickInfo(click_type=MapClickType.TERRAIN, lat=-400 / M, lon=0.0),
             elevation=dem.get_elevation_or_raise(lon=0.0, lat=-400 / M),
         )
-        assert sm.is_slope_custom_path, "valid target transitions to custom-path state"
+        assert sm.is_slope_custom_path, "valid target auto-transitions to custom-path state"
+        assert ctx.custom_connect.force_mode, "force_mode is set when showing custom proposals"
 
     def test_uphill_target_is_rejected(self, fake_st, path_factory, mock_dem_blue_slope) -> None:
         from skiresort_planner.ui.click_handlers import handle_slope_building_click
@@ -233,13 +232,13 @@ class TestCustomConnectClick:
         sm, ctx = _session(fake_st, graph, path_factory, dem)
         # Start low so an uphill target is invalid.
         sm.start_building(lon=0.0, lat=-400 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-400 / M))
-        sm.enable_custom_connect()
 
         handle_slope_building_click(
             ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),  # uphill (summit)
             elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0),
         )
-        assert not sm.is_slope_custom_path  # rejected → stayed in custom picking
+        assert not sm.is_slope_custom_path, "invalid (uphill) target does NOT enter custom mode"
+        assert not ctx.custom_connect.force_mode
 
 
 # =============================================================================
@@ -304,28 +303,28 @@ class TestSlopeBuildingClick:
         )
         assert len(graph.segments) == 1, "endpoint click on a non-connector commits the path"
 
-    def test_node_click_without_custom_connect_is_rejected(
-        self, fake_st, path_factory, mock_dem_red_slope_diagonal
-    ) -> None:
+    def test_node_click_routes_custom_connect(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         from skiresort_planner.ui.click_handlers import handle_slope_building_click
 
         sm, _ctx, graph = self._building(fake_st, mock_dem_red_slope_diagonal, path_factory)
+        # A downhill node south of the origin → clicking it auto-routes a connector.
         node, _ = graph.get_or_create_node(lon=0.0, lat=-0.001, elevation=1990.0)
-        # A node click while building without custom-connect is a user error: no state change.
         handle_slope_building_click(
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id), elevation=None
         )
-        assert sm.is_any_slope_state
+        assert sm.is_slope_custom_path, "node click auto-enters custom path"
 
-    def test_terrain_click_without_custom_connect_is_rejected(
-        self, fake_st, path_factory, mock_dem_red_slope_diagonal
-    ) -> None:
+    def test_terrain_click_routes_custom_connect(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         from skiresort_planner.ui.click_handlers import handle_slope_building_click
 
         sm, _ctx, _graph = self._building(fake_st, mock_dem_red_slope_diagonal, path_factory)
-        # A bare terrain click while building is a user error: no state change.
-        handle_slope_building_click(ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0), elevation=1000.0)
-        assert sm.is_slope_starting or sm.is_slope_building
+        dem = mock_dem_red_slope_diagonal
+        # A downhill terrain point (south of origin) auto-routes a custom-connect path.
+        handle_slope_building_click(
+            ClickInfo(click_type=MapClickType.TERRAIN, lat=-300 / M, lon=0.0),
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-300 / M),
+        )
+        assert sm.is_slope_custom_path, "terrain click auto-enters custom path"
 
     def test_lift_marker_click_while_building_is_rejected(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal

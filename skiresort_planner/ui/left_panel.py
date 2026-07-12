@@ -610,9 +610,8 @@ class SidebarRenderer:
         if cancel_slope:
             logger.info(f"UI: Cancel slope requested for {self.ctx.slope_build.name}")
 
-        # Path generation settings — only meaningful for fan-out proposals. While
-        # routing a custom-connect path to a clicked target (force_mode), segment
-        # length / recompute don't apply, so hide the whole block.
+        # Path settings apply only to fan-out proposals; hide the whole block while
+        # routing a custom-connect path to a clicked target (force_mode).
         recompute = False
         if not self.ctx.custom_connect.force_mode:
             st.markdown("**⚙️ Path Settings**")

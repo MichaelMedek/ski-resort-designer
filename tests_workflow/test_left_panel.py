@@ -121,6 +121,33 @@ class TestModeSelectorButton:
         assert ctx.build_mode.mode == BuildMode.ROAD, "clicking the Road button must switch build mode"
 
 
+class TestPathSettingsVisibility:
+    """The ⚙️ Path Settings block only applies to fan-out proposals, so it is hidden
+    while routing a custom-connect path (force_mode)."""
+
+    @staticmethod
+    def _capture_markdown(fake_st) -> list[str]:
+        seen: list[str] = []
+        fake_st.markdown = lambda text, *a, **k: seen.append(text)
+        return seen
+
+    def test_path_settings_shown_in_fan_out(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        sm.start_building(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
+        seen = self._capture_markdown(fake_st)
+        SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
+        assert any("Path Settings" in m for m in seen), "fan-out mode shows the Path Settings block"
+
+    def test_path_settings_hidden_in_custom_mode(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        sm.start_building(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
+        ctx.custom_connect.force_mode = True  # showing custom-connect proposals
+        seen = self._capture_markdown(fake_st)
+        actions = SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
+        assert not any("Path Settings" in m for m in seen), "custom mode hides the Path Settings block"
+        assert actions["recompute"] is False, "no Recompute button in custom mode"
+
+
 # =============================================================================
 # Undo-action labels (_describe_undo_action, one per action type)
 # =============================================================================

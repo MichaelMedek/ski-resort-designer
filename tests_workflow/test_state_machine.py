@@ -46,17 +46,15 @@ VALID_TRANSITIONS: list[tuple[str, list[str], str | None]] = [
     # From SLOPE_STARTING
     ("cancel_slope", ["slope_starting"], None),
     ("commit_path", ["slope_starting"], "setup_commit_first"),
-    ("enable_custom", ["slope_starting"], None),
+    ("select_custom_target", ["slope_starting"], None),
     # From SLOPE_BUILDING (with guards)
     ("cancel_slope", ["slope_building"], None),
     ("commit_path", ["slope_building"], "setup_commit_continue"),  # self-loop
-    ("enable_custom", ["slope_building"], None),
-    # From SLOPE_CUSTOM_PICKING
-    ("cancel_slope", ["slope_custom_picking"], None),
-    ("cancel_custom", ["slope_custom_picking"], None),
+    ("select_custom_target", ["slope_building"], None),
     # From SLOPE_CUSTOM_PATH
     ("cancel_slope", ["slope_custom_path"], None),
     ("cancel_custom", ["slope_custom_path"], None),
+    ("select_custom_target", ["slope_custom_path"], None),  # self-loop (re-target)
     # From LIFT_PLACING
     ("cancel_lift", ["lift_placing"], None),
     # From IDLE (road build entry) — road mirrors slope
@@ -77,17 +75,17 @@ VALID_TRANSITIONS: list[tuple[str, list[str], str | None]] = [
 
 INVALID_TRANSITIONS: list[tuple[str, list[str]]] = [
     # Cannot start slope from building states
-    ("start_slope", ["slope_starting", "slope_building", "slope_custom_picking", "slope_custom_path", "lift_placing"]),
+    ("start_slope", ["slope_starting", "slope_building", "slope_custom_path", "lift_placing"]),
     # Cannot start lift from building states
-    ("start_lift", ["slope_starting", "slope_building", "slope_custom_picking", "slope_custom_path", "lift_placing"]),
+    ("start_lift", ["slope_starting", "slope_building", "slope_custom_path", "lift_placing"]),
     # Cannot view slope from building states
-    ("view_slope", ["slope_starting", "slope_building", "slope_custom_picking", "slope_custom_path", "lift_placing"]),
+    ("view_slope", ["slope_starting", "slope_building", "slope_custom_path", "lift_placing"]),
     # Cannot view lift from building states
-    ("view_lift", ["slope_starting", "slope_building", "slope_custom_picking", "slope_custom_path", "lift_placing"]),
+    ("view_lift", ["slope_starting", "slope_building", "slope_custom_path", "lift_placing"]),
     # Cannot close panel when no panel open
     (
         "close_panel",
-        ["idle_ready", "slope_starting", "slope_building", "slope_custom_picking", "slope_custom_path", "lift_placing"],
+        ["idle_ready", "slope_starting", "slope_building", "slope_custom_path", "lift_placing"],
     ),
     # Cannot cancel slope from non-slope states
     ("cancel_slope", ["idle_ready", "idle_viewing_slope", "idle_viewing_lift", "lift_placing"]),
@@ -103,20 +101,17 @@ INVALID_TRANSITIONS: list[tuple[str, list[str]]] = [
             "idle_ready",
             "idle_viewing_slope",
             "idle_viewing_lift",
-            "slope_custom_picking",
             "slope_custom_path",
             "lift_placing",
         ],
     ),
-    # Cannot enable custom from non-slope states
+    # Cannot select a custom target outside slope-building states
     (
-        "enable_custom",
+        "select_custom_target",
         [
             "idle_ready",
             "idle_viewing_slope",
             "idle_viewing_lift",
-            "slope_custom_picking",
-            "slope_custom_path",
             "lift_placing",
         ],
     ),
@@ -129,7 +124,6 @@ INVALID_TRANSITIONS: list[tuple[str, list[str]]] = [
             "idle_viewing_lift",
             "slope_starting",
             "slope_building",
-            "slope_custom_picking",
             "slope_custom_path",
         ],
     ),
@@ -230,8 +224,8 @@ class TestCancelCustomGuards:
         """Cancel custom with 0 segments returns to SLOPE_STARTING."""
         sm, ctx = sm_and_ctx
 
-        # Setup: Force to slope_custom_picking with no committed segments
-        _force_state(sm=sm, state_name="slope_custom_picking")
+        # Setup: Force to slope_custom_path with no committed segments
+        _force_state(sm=sm, state_name="slope_custom_path")
         ctx.slope_build.segments = []  # No segments committed
 
         # Act: Call cancel_custom event
@@ -244,8 +238,8 @@ class TestCancelCustomGuards:
         """Cancel custom with segments returns to SLOPE_BUILDING."""
         sm, ctx = sm_and_ctx
 
-        # Setup: Force to slope_custom_picking with committed segments
-        _force_state(sm=sm, state_name="slope_custom_picking")
+        # Setup: Force to slope_custom_path with committed segments
+        _force_state(sm=sm, state_name="slope_custom_path")
         ctx.slope_build.segments = ["S1"]  # Has committed segments
 
         # Act: Call cancel_custom event

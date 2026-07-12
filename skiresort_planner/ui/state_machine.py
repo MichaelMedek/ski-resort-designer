@@ -945,11 +945,8 @@ class PlannerStateMachine(StateMachine):
     # Custom Connect Transitions (Single Source of Truth for ctx.custom_connect.*)
     # ──────────────────────────────────────────────────────────────────────────────
     # All custom_connect state mutations happen ONLY in these hooks:
-    # - _before_target_from_*: per-transition before= hooks for select_custom_target.
-    #   These set start_node, target_location, target_node and force_mode=True.
-    #   There is deliberately NO event-level before_select_custom_target hook — an
-    #   event-level hook fires IN ADDITION to the per-transition ones, which would
-    #   double-process the target.
+    # - _before_target_from_*: per-transition before= hooks for select_custom_target (set
+    #   start_node/target/force_mode). NO event-level hook — it would double-fire on top.
     # - cancel_custom/cancel_slope: Clears state via clear_custom_connect().
     # ──────────────────────────────────────────────────────────────────────────────
 

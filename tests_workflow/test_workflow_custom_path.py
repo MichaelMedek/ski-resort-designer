@@ -1,168 +1,153 @@
 """Integration test for custom path connection workflow.
 
-Tests the custom connect feature: enable → pick target → view options → commit.
+Tests the custom-connect feature: a terrain/node click routes a path to that target
+(select_custom_target → SlopeCustomPath), re-targeting is a self-loop, and Cancel
+Connection (cancel_custom) returns to the fan-out. There is no button and no picking
+state — targeting is map-only, mirroring roads.
 """
 
+from skiresort_planner.constants import MapConfig
+from skiresort_planner.ui.context import CustomConnectContext
 from tests_workflow.conftest import WorkflowSetup
 
+M = MapConfig.METERS_PER_DEGREE_EQUATOR
 
-class TestCustomConnectWorkflow:
-    """Tests for custom path connection workflow."""
 
-    def test_custom_connect_from_starting_state(self, workflow_setup: WorkflowSetup) -> None:
-        """Enable custom connect mode from SlopeStarting state.
+def _commit_first_segment(sm, graph, factory, start_elev) -> str:
+    """Commit one fan segment from the origin so the SM reaches slope_building."""
+    proposals = list(factory.generate_fan(lon=0.0, lat=0.0, elevation=start_elev))
+    endpoint_ids = graph.commit_paths(paths=[proposals[0]])
+    seg_id = list(graph.segments.keys())[0]
+    sm.commit_path(segment_id=seg_id, endpoint_node_id=endpoint_ids[0])
+    return endpoint_ids[0]
 
-        Workflow: SlopeStarting → enable_custom → SlopeCustomPicking
-        """
+
+class TestSelectCustomTargetWorkflow:
+    """A target click routes a custom-connect path (SlopeCustomPath) from any slope state."""
+
+    def test_select_target_from_starting_state(self, workflow_setup: WorkflowSetup) -> None:
+        """SlopeStarting → select_custom_target → SlopeCustomPath (no button, no picking)."""
         sm, ctx, graph, factory, dem = workflow_setup
 
-        # Start slope
         start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
         sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
         assert sm.current_state_value == "slope_starting"
 
-        # Enable custom connect
-        sm.enable_custom()
-
-        assert sm.current_state_value == "slope_custom_picking", "Should be in custom picking"
-
-    def test_custom_connect_from_building_state(self, workflow_setup: WorkflowSetup) -> None:
-        """Enable custom connect mode from SlopeBuilding state.
-
-        Workflow: SlopeBuilding → enable_custom → SlopeCustomPicking
-        """
-        sm, ctx, graph, factory, dem = workflow_setup
-
-        # Build one segment first
-        start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
-        sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
-
-        proposals = list(factory.generate_fan(lon=0.0, lat=0.0, elevation=start_elev))
-        endpoint_ids = graph.commit_paths(paths=[proposals[0]])
-        seg_id = list(graph.segments.keys())[0]
-        sm.commit_path(segment_id=seg_id, endpoint_node_id=endpoint_ids[0])
-
-        assert sm.current_state_value == "slope_building"
-
-        # Enable custom connect
-        sm.enable_custom()
-
-        assert sm.current_state_value == "slope_custom_picking", "Should be in custom picking"
-
-
-class TestCancelCustomConnect:
-    """Tests for canceling custom connect mode."""
-
-    def test_cancel_custom_returns_to_starting(self, workflow_setup: WorkflowSetup) -> None:
-        """cancel_custom from SlopeCustomPicking returns to SlopeStarting when no segments."""
-        sm, ctx, graph, factory, dem = workflow_setup
-
-        # Start slope and enable custom (no segments committed)
-        start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
-        sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
-        sm.enable_custom()
-
-        assert sm.current_state_value == "slope_custom_picking"
-        assert len(ctx.slope_build.segments) == 0, "No segments committed"
-
-        # Cancel custom - should return to starting (no segments)
-        sm.cancel_custom()
-
-        assert sm.current_state_value == "slope_starting", "Should return to starting"
-
-    def test_cancel_custom_returns_to_building(self, workflow_setup: WorkflowSetup) -> None:
-        """cancel_custom from SlopeCustomPicking returns to SlopeBuilding when has segments."""
-        sm, ctx, graph, factory, dem = workflow_setup
-
-        # Start and build one segment
-        start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
-        sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
-
-        proposals = list(factory.generate_fan(lon=0.0, lat=0.0, elevation=start_elev))
-        endpoint_ids = graph.commit_paths(paths=[proposals[0]])
-        seg_id = list(graph.segments.keys())[0]
-        sm.commit_path(segment_id=seg_id, endpoint_node_id=endpoint_ids[0])
-
-        # Enable custom
-        sm.enable_custom()
-        assert sm.current_state_value == "slope_custom_picking"
-        assert len(ctx.slope_build.segments) == 1, "Has 1 segment"
-
-        # Cancel custom - should return to building (has segments)
-        sm.cancel_custom()
-
-        assert sm.current_state_value == "slope_building", "Should return to building"
-
-
-class TestCancelSlopeFromCustom:
-    """Tests for cancel_slope from custom connect states."""
-
-    def test_cancel_slope_from_custom_picking(self, workflow_setup: WorkflowSetup) -> None:
-        """cancel_slope from SlopeCustomPicking returns to IdleReady."""
-        sm, ctx, graph, factory, dem = workflow_setup
-
-        start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
-        sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
-        sm.enable_custom()
-
-        assert sm.current_state_value == "slope_custom_picking"
-
-        # Cancel entire slope
-        sm.cancel_slope()
-
-        assert sm.current_state_value == "idle_ready", "Should return to IdleReady"
-
-
-class TestSelectCustomTarget:
-    """Tests for selecting custom target location."""
-
-    def test_select_target_transitions_to_custom_path(self, workflow_setup: WorkflowSetup) -> None:
-        """select_custom_target transitions from SlopeCustomPicking to SlopeCustomPath."""
-        sm, ctx, graph, factory, dem = workflow_setup
-        from skiresort_planner.constants import MapConfig
-
-        M = MapConfig.METERS_PER_DEGREE_EQUATOR
-
-        start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
-        sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
-        sm.enable_custom()
-
-        assert sm.current_state_value == "slope_custom_picking"
-
-        # Select a target (downhill from start)
         target_lat = -500 / M
         target_elev = dem.get_elevation_or_raise(lon=0.0, lat=target_lat)
-        target_location = (0.0, target_lat, target_elev)
+        sm.select_custom_target(target_location=(0.0, target_lat, target_elev))
 
-        sm.select_custom_target(target_location=target_location)
+        assert sm.current_state_value == "slope_custom_path", "Should route to custom path"
+        assert ctx.custom_connect.force_mode, "force_mode set while showing custom proposals"
+        # The origin node was materialised from the selection and captured as start_node.
+        assert ctx.custom_connect.start_node is not None
+        assert ctx.slope_build.start_node_id == ctx.custom_connect.start_node
 
-        assert sm.current_state_value == "slope_custom_path", "Should be in custom path state"
-        assert ctx.custom_connect.target_location is not None
-        assert ctx.custom_connect.target_location[0] == 0.0  # lon
-        assert abs(ctx.custom_connect.target_location[1] - target_lat) < 0.0001  # lat
+    def test_select_target_from_building_state(self, workflow_setup: WorkflowSetup) -> None:
+        """SlopeBuilding → select_custom_target → SlopeCustomPath."""
+        sm, ctx, graph, factory, dem = workflow_setup
+
+        start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
+        sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
+        endpoint_id = _commit_first_segment(sm, graph, factory, start_elev)
+        assert sm.current_state_value == "slope_building"
+
+        target_lat = -500 / M
+        target_elev = dem.get_elevation_or_raise(lon=0.0, lat=target_lat)
+        sm.select_custom_target(target_location=(0.0, target_lat, target_elev))
+
+        assert sm.current_state_value == "slope_custom_path"
+        assert ctx.custom_connect.start_node == endpoint_id, "routes from the current endpoint"
+
+    def test_retarget_is_a_self_loop(self, workflow_setup: WorkflowSetup) -> None:
+        """SlopeCustomPath → select_custom_target → SlopeCustomPath (re-target)."""
+        sm, ctx, graph, factory, dem = workflow_setup
+
+        start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
+        sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
+        sm.select_custom_target(target_location=(0.0, -400 / M, dem.get_elevation_or_raise(lon=0.0, lat=-400 / M)))
+        start_node_first = ctx.custom_connect.start_node
+        assert sm.current_state_value == "slope_custom_path"
+
+        # Click a new target → stays in custom path, target moves, start node unchanged.
+        new_lat = -600 / M
+        new_elev = dem.get_elevation_or_raise(lon=0.0, lat=new_lat)
+        sm.select_custom_target(target_location=(0.0, new_lat, new_elev))
+
+        assert sm.current_state_value == "slope_custom_path", "re-target stays in custom path"
+        assert ctx.custom_connect.start_node == start_node_first, "start node preserved on re-target"
+        assert abs(ctx.custom_connect.target_location[1] - new_lat) < 0.0001, "target moved to new point"
 
     def test_target_node_captured_for_identity_reuse(self, workflow_setup: WorkflowSetup) -> None:
         """When the target is an existing node, its id is captured so commit reuses it
         by identity (not an 80m proximity guess that a drifted end could miss). A
         terrain target leaves it None (proximity fallback).
         """
-        from skiresort_planner.constants import MapConfig
-        from skiresort_planner.ui.context import CustomConnectContext
-
         sm, ctx, graph, factory, dem = workflow_setup
 
         start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
         sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
-        sm.enable_custom()
 
         # Node target → its id is captured for exact reuse on commit.
-        sm.select_custom_target(
-            target_location=(0.0, -600 / MapConfig.METERS_PER_DEGREE_EQUATOR, 1880.0), target_node="N7"
-        )
+        sm.select_custom_target(target_location=(0.0, -600 / M, 1880.0), target_node="N7")
         assert ctx.custom_connect.target_node == "N7", "clicked node's identity is captured"
 
         # Default (terrain target, no node kwarg) leaves it None → proximity fallback.
         assert CustomConnectContext().target_node is None
+
+
+class TestCancelCustomConnect:
+    """Cancel Connection (cancel_custom) leaves targeting and returns to the fan-out."""
+
+    def test_cancel_custom_returns_to_starting(self, workflow_setup: WorkflowSetup) -> None:
+        """cancel_custom from SlopeCustomPath returns to SlopeStarting when no segments."""
+        sm, ctx, graph, factory, dem = workflow_setup
+
+        start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
+        sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
+        sm.select_custom_target(target_location=(0.0, -500 / M, dem.get_elevation_or_raise(lon=0.0, lat=-500 / M)))
+
+        assert sm.current_state_value == "slope_custom_path"
+        assert len(ctx.slope_build.segments) == 0, "No segments committed"
+
+        sm.cancel_custom()
+
+        assert sm.current_state_value == "slope_starting", "Should return to starting"
+        assert not ctx.custom_connect.force_mode, "custom state cleared"
+
+    def test_cancel_custom_returns_to_building(self, workflow_setup: WorkflowSetup) -> None:
+        """cancel_custom from SlopeCustomPath returns to SlopeBuilding when has segments."""
+        sm, ctx, graph, factory, dem = workflow_setup
+
+        start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
+        sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
+        _commit_first_segment(sm, graph, factory, start_elev)
+        sm.select_custom_target(target_location=(0.0, -500 / M, dem.get_elevation_or_raise(lon=0.0, lat=-500 / M)))
+
+        assert sm.current_state_value == "slope_custom_path"
+        assert len(ctx.slope_build.segments) == 1, "Has 1 segment"
+
+        sm.cancel_custom()
+
+        assert sm.current_state_value == "slope_building", "Should return to building"
+
+
+class TestCancelSlopeFromCustom:
+    """cancel_slope discards the whole slope from the custom-path state."""
+
+    def test_cancel_slope_from_custom_path(self, workflow_setup: WorkflowSetup) -> None:
+        """cancel_slope from SlopeCustomPath returns to IdleReady."""
+        sm, ctx, graph, factory, dem = workflow_setup
+
+        start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
+        sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
+        sm.select_custom_target(target_location=(0.0, -500 / M, dem.get_elevation_or_raise(lon=0.0, lat=-500 / M)))
+
+        assert sm.current_state_value == "slope_custom_path"
+
+        sm.cancel_slope()
+
+        assert sm.current_state_value == "idle_ready", "Should return to IdleReady"
 
 
 class TestCommitCustomContinue:
@@ -171,35 +156,26 @@ class TestCommitCustomContinue:
     def test_commit_custom_continue_transitions_to_building(self, workflow_setup: WorkflowSetup) -> None:
         """commit_custom_continue from SlopeCustomPath returns to SlopeBuilding."""
         sm, ctx, graph, factory, dem = workflow_setup
-        from skiresort_planner.constants import MapConfig
 
-        M = MapConfig.METERS_PER_DEGREE_EQUATOR
-
-        # 1. Start slope
+        # 1. Start slope and commit first segment to reach slope_building.
         start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
         sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
-
-        # 2. Commit first segment to get to slope_building
-        proposals = list(factory.generate_fan(lon=0.0, lat=0.0, elevation=start_elev))
-        endpoint_ids = graph.commit_paths(paths=[proposals[0]])
-        seg_id_1 = list(graph.segments.keys())[0]
-        sm.commit_path(segment_id=seg_id_1, endpoint_node_id=endpoint_ids[0])
+        endpoint_id = _commit_first_segment(sm, graph, factory, start_elev)
         assert sm.current_state_value == "slope_building"
 
-        # 3. Enable custom and select target
-        sm.enable_custom()
+        # 2. Click a target → custom path.
         target_lat = -500 / M
         target_elev = dem.get_elevation_or_raise(lon=0.0, lat=target_lat)
         sm.select_custom_target(target_location=(0.0, target_lat, target_elev))
         assert sm.current_state_value == "slope_custom_path"
 
-        # 4. Simulate committing a custom path segment (continue building)
-        end_node = graph.nodes[endpoint_ids[0]]
+        # 3. Simulate committing a custom path segment (continue building).
+        end_node = graph.nodes[endpoint_id]
         proposals_2 = list(factory.generate_fan(lon=end_node.lon, lat=end_node.lat, elevation=end_node.elevation))
         endpoint_ids_2 = graph.commit_paths(paths=[proposals_2[0]])
         seg_id_2 = list(graph.segments.keys())[-1]
 
-        # 5. Call commit_custom_continue
+        # 4. Call commit_custom_continue.
         sm.commit_custom_continue(segment_id=seg_id_2, endpoint_node_id=endpoint_ids_2[0])
 
         assert sm.current_state_value == "slope_building", "Should return to slope_building"
@@ -213,42 +189,30 @@ class TestCommitCustomFinish:
     def test_commit_custom_finish_transitions_to_viewing(self, workflow_setup: WorkflowSetup) -> None:
         """commit_custom_finish from SlopeCustomPath transitions to IdleViewingSlope."""
         sm, ctx, graph, factory, dem = workflow_setup
-        from skiresort_planner.constants import MapConfig
 
-        M = MapConfig.METERS_PER_DEGREE_EQUATOR
-
-        # 1. Start slope
+        # 1. Start slope and commit first segment.
         start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
         sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
-
-        # 2. Commit first segment
-        proposals = list(factory.generate_fan(lon=0.0, lat=0.0, elevation=start_elev))
-        endpoint_ids = graph.commit_paths(paths=[proposals[0]])
-        seg_id_1 = list(graph.segments.keys())[0]
-        sm.commit_path(segment_id=seg_id_1, endpoint_node_id=endpoint_ids[0])
+        endpoint_id = _commit_first_segment(sm, graph, factory, start_elev)
         assert sm.current_state_value == "slope_building"
 
-        # 3. Enable custom and select target
-        sm.enable_custom()
+        # 2. Click a target → custom path.
         target_lat = -500 / M
         target_elev = dem.get_elevation_or_raise(lon=0.0, lat=target_lat)
         sm.select_custom_target(target_location=(0.0, target_lat, target_elev))
         assert sm.current_state_value == "slope_custom_path"
 
-        # 4. Simulate committing a connector segment and finishing slope
-        end_node = graph.nodes[endpoint_ids[0]]
+        # 3. Simulate committing a connector segment and finishing the slope.
+        end_node = graph.nodes[endpoint_id]
         proposals_2 = list(factory.generate_fan(lon=end_node.lon, lat=end_node.lat, elevation=end_node.elevation))
         endpoint_ids_2 = graph.commit_paths(paths=[proposals_2[0]])
         seg_id_2 = list(graph.segments.keys())[-1]
-
-        # Add segment to building context before finishing
         ctx.slope_build.segments.append(seg_id_2)
 
-        # Finish the slope
         slope = graph.finish_slope(segment_ids=ctx.slope_build.segments)
         assert slope is not None, "Slope should be created"
 
-        # 5. Call commit_custom_finish
+        # 4. Call commit_custom_finish.
         sm.commit_custom_finish(segment_id=seg_id_2, slope_id=slope.id)
 
         assert sm.current_state_value == "idle_viewing_slope", "Should transition to viewing slope"
