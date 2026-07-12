@@ -173,6 +173,7 @@ class TestFinishSlopeFromCustom:
 
         assert sm.current_state_value == "idle_viewing_slope", "Finish during targeting lands in viewing"
         assert not ctx.custom_connect.force_mode, "in-progress target cleared"
+        assert len(ctx.proposals.paths) == 0, "in-progress proposals cleared when finishing from targeting"
 
 
 class TestCommitCustomContinue:

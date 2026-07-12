@@ -332,28 +332,39 @@ def _commit_path_transition(sm: PlannerStateMachine, segment_id: str, endpoint_n
         sm.commit_path(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
 
 
-def _finish_current_entity(*, is_road: bool) -> None:
-    """Finalize the current slope/road from its committed segments, then fire the finish event.
+def _finalize_entity(*, is_road: bool) -> "SegmentPath":
+    """Finalize the current build's committed segments into a slope/road and recenter.
 
-    Shared tail of the sidebar Finish buttons (finish_current_slope/road wrappers).
+    Shared finalization tail: build the entity from ctx.{road,slope}_build.segments,
+    recenter, bump the map. The caller fires the appropriate finish event. Returns the
+    finalized entity so the caller can pass its id to that event.
     """
-    sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
 
     build = ctx.road_build if is_road else ctx.slope_build
-    if not build.segments:
-        raise RuntimeError(f"finish called with no segments (is_road={is_road})")
-
     entity = (
         graph.finish_road(segment_ids=build.segments) if is_road else graph.finish_slope(segment_ids=build.segments)
     )
     if not entity:
         raise RuntimeError(f"graph.finish_{'road' if is_road else 'slope'}() failed for segments: {build.segments}")
 
-    logger.info(f"{'Road' if is_road else 'Slope'} {entity.name} (id={entity.id}) created successfully")
+    logger.info(f"{'Road' if is_road else 'Slope'} {entity.name} (id={entity.id}) finalized")
     center_on_segment_path(ctx=ctx, graph=graph, path=entity, zoom=MapConfig.VIEWING_ZOOM)
     bump_map_version()  # Clear stale click state
+    return entity
+
+
+def _finish_current_entity(*, is_road: bool) -> None:
+    """Finish the current slope/road from committed segments (sidebar Finish buttons)."""
+    sm: PlannerStateMachine = st.session_state.state_machine
+    ctx: PlannerContext = st.session_state.context
+
+    build = ctx.road_build if is_road else ctx.slope_build
+    if not build.segments:
+        raise RuntimeError(f"finish called with no segments (is_road={is_road})")
+
+    entity = _finalize_entity(is_road=is_road)
     if is_road:
         sm.finish_road(road_id=entity.id)
     else:
@@ -363,24 +374,15 @@ def _finish_current_entity(*, is_road: bool) -> None:
 def _finish_connector(*, segment_id: str, is_road: bool) -> None:
     """Auto-finish a connector segment (target is an existing node), shared by slopes + roads.
 
-    Appends the segment to the build, finalizes the entity, recenters, fires the
-    connector-finish event (commit_road_finish / commit_custom_finish).
+    Appends the segment to the build, finalizes the entity, fires the connector-finish
+    event (commit_road_finish / commit_custom_finish).
     """
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
-    graph: ResortGraph = st.session_state.graph
 
     build = ctx.road_build if is_road else ctx.slope_build
     build.segments.append(segment_id)
-    entity = (
-        graph.finish_road(segment_ids=build.segments) if is_road else graph.finish_slope(segment_ids=build.segments)
-    )
-    if not entity:
-        raise RuntimeError(f"graph.finish_{'road' if is_road else 'slope'}() failed for connector: {build.segments}")
-
-    logger.info(f"{'Road' if is_road else 'Slope'} {entity.name} (id={entity.id}) auto-finished from connector")
-    center_on_segment_path(ctx=ctx, graph=graph, path=entity, zoom=MapConfig.VIEWING_ZOOM)
-    bump_map_version()
+    entity = _finalize_entity(is_road=is_road)
     if is_road:
         sm.commit_road_finish(segment_id=segment_id, road_id=entity.id)
     else:

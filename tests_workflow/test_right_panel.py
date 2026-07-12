@@ -49,6 +49,20 @@ def _noop(*args: object, **kwargs: object) -> None:
     return None
 
 
+def _capture_buttons(fake_st) -> list[str]:
+    """Record every button label rendered this pass (label is the 1st positional arg)."""
+    labels: list[str] = []
+    orig = fake_st.button
+
+    def spy(*args: object, **kwargs: object) -> bool:
+        if args:
+            labels.append(str(args[0]))
+        return orig(*args, **kwargs)
+
+    fake_st.button = spy
+    return labels
+
+
 def _dispatch(sm, ctx, graph) -> None:
     render_control_panel(
         sm=sm,
@@ -259,6 +273,21 @@ class TestControlPanelDispatch:
         assert sm.is_road_building_only
         _dispatch(sm, ctx, empty_graph)
 
+    def test_road_connector_shows_finish_label(self, fake_st, empty_graph, path_points_blue) -> None:
+        # A road proposal onto an existing node is a connector → the shared _commit_button_label
+        # gives the road panel "🏁 Finish → {node}", never plain "Commit Road Segment".
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        sm.start_road(node_id=None, location=path_points_blue[0])
+        ctx.proposals.paths = [
+            ProposedPathSegment(points=path_points_blue, is_connector=True, target_node_id="N7", kind=SegmentKind.ROAD)
+        ]
+        ctx.proposals.selected_idx = 0
+
+        labels = _capture_buttons(fake_st)
+        _dispatch(sm, ctx, empty_graph)
+        assert any("🏁 Finish → N7" in b for b in labels), "road connector commit shows the Finish label"
+        assert not any("Commit Road Segment" in b for b in labels)
+
     def test_slope_starting_panel_runs(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         sm.start_building(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
@@ -291,20 +320,6 @@ class TestPathSelectionPanelRuns:
             on_cancel_connection=_noop,
         )
 
-    @staticmethod
-    def _capture_buttons(fake_st) -> list[str]:
-        """Record every button label rendered this pass (label is the 1st positional arg)."""
-        labels: list[str] = []
-        orig = fake_st.button
-
-        def spy(*args: object, **kwargs: object) -> bool:
-            if args:
-                labels.append(str(args[0]))
-            return orig(*args, **kwargs)
-
-        fake_st.button = spy
-        return labels
-
     def test_no_proposals_runs(self, fake_st, empty_graph) -> None:
         _sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         self._panel(ctx, empty_graph).render()
@@ -321,13 +336,14 @@ class TestPathSelectionPanelRuns:
         ctx.custom_connect.force_mode = True
         ctx.proposals.paths = [ProposedPathSegment(points=path_points_blue, target_difficulty="blue")]
         ctx.proposals.selected_idx = 0
-        labels = self._capture_buttons(fake_st)
+        labels = _capture_buttons(fake_st)
         self._panel(ctx, empty_graph).render()
         assert any("Cancel Custom Path" in b for b in labels)
         assert not any("Cancel Connection" in b for b in labels)
 
     def test_connector_target_shows_cancel_connection(self, fake_st, empty_graph, path_points_blue) -> None:
-        # A connector (routing to an existing node) → "Cancel Connection", matching the finish label.
+        # A connector (routing to an existing node) → "Cancel Connection" + the shared
+        # "🏁 Finish → {node}" commit label (from _commit_button_label), never plain Commit.
         _sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         ctx.custom_connect.force_mode = True
         ctx.proposals.paths = [
@@ -336,7 +352,9 @@ class TestPathSelectionPanelRuns:
             )
         ]
         ctx.proposals.selected_idx = 0
-        labels = self._capture_buttons(fake_st)
+        labels = _capture_buttons(fake_st)
         self._panel(ctx, empty_graph).render()
         assert any("Cancel Connection" in b for b in labels)
         assert not any("Cancel Custom Path" in b for b in labels)
+        assert any("🏁 Finish → N3" in b for b in labels), "slope connector commit shows the Finish label"
+        assert not any("Commit This Path" in b for b in labels)
