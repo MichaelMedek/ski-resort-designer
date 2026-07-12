@@ -33,11 +33,9 @@ from skiresort_planner.ui import (
     bump_map_version,
     cancel_current_road,
     cancel_current_slope,
-    cancel_custom_direction_mode,
     cancel_custom_path,
     commit_selected_path,
     dispatch_click,
-    enter_custom_direction_mode,
     finish_current_road,
     finish_current_slope,
     handle_fast_deferred_actions,
@@ -276,8 +274,8 @@ def _render_map_fragment_inner() -> None:
             )
             extra_layers.extend(arrow_layers)
 
-    # Add direction arrow in custom connect mode
-    if ctx.custom_connect.enabled and ctx.custom_connect.start_node:
+    # Add direction arrow while routing a custom-connect path (targeting a clicked point)
+    if ctx.custom_connect.force_mode and ctx.custom_connect.start_node:
         start_node = graph.nodes.get(ctx.custom_connect.start_node)
         if start_node:
             gradient = terrain_analyzer.compute_gradient(lon=start_node.lon, lat=start_node.lat)
@@ -580,8 +578,6 @@ def _run_app_ui() -> None:
             ctx=ctx,
             graph=graph,
             on_commit=commit_selected_path,
-            on_custom_direction=enter_custom_direction_mode,
-            on_cancel_custom=cancel_custom_direction_mode,
             on_cancel_connection=cancel_custom_path,
         )
 

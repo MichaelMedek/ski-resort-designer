@@ -298,7 +298,7 @@ def _generate_custom_connect_paths() -> None:
 
     ctx.proposals.paths = paths
     ctx.proposals.selected_idx = 0
-    # Note: enabled, force_mode, target_location already set by before_select_custom_target hook
+    # Note: force_mode, target_location, start_node already set by the target before-hook
     # No cleanup here - before_cancel_* and before_commit_* hooks handle it on exit
     logger.info(f"Generated {len(paths)} custom paths from {start_node.id} to ({target_lat:.6f}, {target_lon:.6f})")
 
@@ -500,7 +500,7 @@ def recompute_paths() -> None:
             return
 
     # Clear custom connect when generating fan paths
-    if ctx.custom_connect.enabled or ctx.custom_connect.force_mode:
+    if ctx.custom_connect.force_mode:
         ctx.clear_custom_connect()
 
     if ctx.slope_build.endpoints:
@@ -880,40 +880,18 @@ def undo_last_action() -> None:
 
 
 # =============================================================================
-# CUSTOM DIRECTION MODE
+# CUSTOM CONNECT MODE
 # =============================================================================
 
 
-def enter_custom_direction_mode() -> None:
-    """Enter custom direction mode via state machine transition.
-
-    Triggers enable_custom_from_starting or enable_custom_from_building
-    depending on current state. All context setup is handled by before_* hooks.
-    """
-    sm: PlannerStateMachine = st.session_state.state_machine
-    logger.info("[ACTION] Custom Direction button clicked - triggering state transition")
-    sm.enable_custom_connect()
-
-
-def cancel_custom_direction_mode() -> None:
-    """Cancel custom direction mode via state machine transition.
-
-    Triggers cancel_custom_to_starting or cancel_custom_to_building.
-    Path regeneration is triggered by before_* hooks.
-    """
-    sm: PlannerStateMachine = st.session_state.state_machine
-    logger.info("[ACTION] Cancel Custom Direction - triggering state transition")
-    sm.cancel_custom_connect()
-
-
 def cancel_custom_path() -> None:
-    """Cancel custom path mode (from SLOPE_CUSTOM_PATH) via state machine transition.
+    """Leave custom targeting (from SLOPE_CUSTOM_PATH), back to fan-out proposals.
 
     Triggers cancel_path_to_starting or cancel_path_to_building.
     Path regeneration is triggered by before_* hooks.
     """
     sm: PlannerStateMachine = st.session_state.state_machine
-    logger.info("[ACTION] Cancel Custom Path - triggering state transition")
+    logger.info("[ACTION] Cancel Connection - triggering state transition")
     sm.cancel_custom_connect()
 
 

@@ -309,13 +309,16 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
 
 
 def handle_slope_building_click(click_info: ClickInfo, elevation: float | None) -> None:
-    """Handle click in SLOPE_BUILDING state - commit path, select path, or custom connect.
+    """Handle click in a slope-building state - commit path, select path, or re-target.
+
+    A TERRAIN or NODE click routes a custom-connect path to that target.
+    An invalid target (uphill/too far) shows a warning and does NOT change state.
 
     Valid Click Types:
         PROPOSAL_ENDPOINT → Commit the path
         PROPOSAL_BODY → Select the path variant (no commit)
-        TERRAIN → Target for custom connect mode (if enabled)
-        NODE → Target for custom connect mode (snap to node)
+        TERRAIN → Route a custom-connect path to that point
+        NODE → Route a custom-connect path to that node (snap + connect)
 
     Invalid Click Types (during building):
         SLOPE → Cannot view while building
@@ -324,17 +327,9 @@ def handle_slope_building_click(click_info: ClickInfo, elevation: float | None) 
     """
     ctx: "PlannerContext" = st.session_state.context
 
-    # Custom connect mode - generate path to clicked point
-    if ctx.custom_connect.enabled:
-        _handle_custom_connect_click(click_info=click_info, elevation=elevation)
-        return
-
-    # TERRAIN click without custom connect = user error
+    # TERRAIN click → route a custom-connect path to the clicked point.
     if click_info.click_type == MapClickType.TERRAIN:
-        InvalidClickMessage(
-            action="click terrain",
-            reason='Enable "Custom Connect" to select a target point.',
-        ).display()
+        _handle_custom_connect_click(click_info=click_info, elevation=elevation)
         return
 
     # MARKER clicks
@@ -361,12 +356,9 @@ def handle_slope_building_click(click_info: ClickInfo, elevation: float | None) 
             _select_or_commit_proposal(ctx=ctx, idx=click_info.proposal_number - 1)
             return
 
-        # NODE without custom connect = user error
+        # NODE → route a custom-connect path to that node (snap + connect).
         if marker_type == MarkerType.NODE:
-            InvalidClickMessage(
-                action="click node",
-                reason='Enable "Custom Connect" to select a target point.',
-            ).display()
+            _handle_custom_connect_click(click_info=click_info, elevation=elevation)
             return
 
         # SLOPE during building = user error
@@ -402,7 +394,13 @@ def handle_slope_building_click(click_info: ClickInfo, elevation: float | None) 
 
 
 def _handle_custom_connect_click(click_info: ClickInfo, elevation: float | None) -> None:
-    """Handle click in custom connect mode - validate target and trigger state transition."""
+    """Route a slope custom-connect path to a clicked terrain point or node.
+
+    Validates the target is downhill and in range BEFORE firing the transition, so an
+    invalid target shows a warning and leaves the current state (and its fan-out
+    proposals) untouched. On success, fires select_custom_target — the state machine
+    resolves it to select_target_from_starting / _from_building / retarget_custom.
+    """
     sm: "PlannerStateMachine" = st.session_state.state_machine
     ctx: "PlannerContext" = st.session_state.context
     graph: "ResortGraph" = st.session_state.graph
@@ -440,41 +438,47 @@ def _handle_custom_connect_click(click_info: ClickInfo, elevation: float | None)
         OutsideTerrainMessage(lat=target_lat, lon=target_lon).display()
         return
 
-    # Get start node
-    start_node = None
-    if ctx.slope_build.endpoints:
-        start_node = graph.nodes.get(ctx.slope_build.endpoints[0])
-    elif ctx.custom_connect.start_node:
-        start_node = graph.nodes.get(ctx.custom_connect.start_node)
-
-    if not start_node:
-        ctx.clear_custom_connect()
+    # Resolve the START point coordinates for validation. The authoritative source
+    # depends on the current slope state; none of these require creating a node here
+    # (the STARTING origin node is materialised in the transition's before-hook).
+    if ctx.slope_build.endpoints:  # BUILDING: current endpoint
+        start = graph.nodes[ctx.slope_build.endpoints[0]]
+        start_lon, start_lat, start_elevation = start.lon, start.lat, start.elevation
+    elif ctx.custom_connect.start_node:  # CUSTOM_PATH re-target: keep existing start
+        start = graph.nodes[ctx.custom_connect.start_node]
+        start_lon, start_lat, start_elevation = start.lon, start.lat, start.elevation
+    elif ctx.slope_build.start_node_id:  # STARTING from an existing node
+        start = graph.nodes[ctx.slope_build.start_node_id]
+        start_lon, start_lat, start_elevation = start.lon, start.lat, start.elevation
+    elif ctx.selection.has_selection() and ctx.selection.elevation is not None:  # STARTING from terrain
+        start_lon, start_lat, start_elevation = ctx.selection.lon, ctx.selection.lat, ctx.selection.elevation
+    else:
         raise RuntimeError(
-            f"Start node not found in custom connect mode: "
-            f"building.endpoints={ctx.slope_build.endpoints}, "
-            f"custom_connect.start_node={ctx.custom_connect.start_node}"
+            f"No slope start point to route from: endpoints={ctx.slope_build.endpoints}, "
+            f"start_node={ctx.custom_connect.start_node}, start_node_id={ctx.slope_build.start_node_id}"
         )
 
     # Validate target is downhill and within range
     if error := validate_custom_target_downhill(
-        start_elevation=start_node.elevation,
+        start_elevation=start_elevation,
         target_elevation=target_elevation,
     ):
         error.display()
         return
 
     if error := validate_custom_target_distance(
-        start_lat=start_node.lat, start_lon=start_node.lon, target_lat=target_lat, target_lon=target_lon
+        start_lat=start_lat, start_lon=start_lon, target_lat=target_lat, target_lon=target_lon
     ):
         error.display()
         return
 
     logger.info(
-        f"Custom connect from {start_node.id} ({start_node.elevation:.0f}m) "
+        f"Custom connect from ({start_lat:.6f}, {start_lon:.6f}, {start_elevation:.0f}m) "
         f"to ({target_lat:.6f}, {target_lon:.6f}, {target_elevation:.0f}m)"
     )
 
-    # Trigger state transition - hooks will set context and deferred flag
+    # Trigger state transition - the target before-hook sets context (start_node,
+    # target_location, force_mode); enter_slope_custom_path regenerates proposals.
     sm.select_custom_target(target_location=(target_lon, target_lat, target_elevation), target_node=target_node_id)
 
 
@@ -644,7 +648,7 @@ def handle_road_building_click(click_info: ClickInfo, elevation: float | None) -
     graph: "ResortGraph" = st.session_state.graph
     factory: "PathFactory" = st.session_state.path_factory
 
-    # A proposal click SELECTS the variant; re-clicking the already-selected onen COMMITS it.
+    # A proposal click SELECTS the variant; re-clicking the already-selected one COMMITS it.
     # Road proposals overlap at the same target, so endpoint and body clicks are
     # equivalent here — both route through the same select-or-commit rule.
     if click_info.click_type == MapClickType.MARKER and click_info.marker_type in {

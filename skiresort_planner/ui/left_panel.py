@@ -610,28 +610,32 @@ class SidebarRenderer:
         if cancel_slope:
             logger.info(f"UI: Cancel slope requested for {self.ctx.slope_build.name}")
 
-        # Path generation settings
-        st.markdown("**⚙️ Path Settings**")
-        segment_length = st.slider(
-            "Segment Length (m)",
-            min_value=PathConfig.SEGMENT_LENGTH_MIN_M,
-            max_value=PathConfig.SEGMENT_LENGTH_MAX_M,
-            value=self.ctx.segment_length_m,
-            step=50,
-            help="Target length for generated path segments",
-            key="segment_length_slider",
-        )
+        # Path generation settings — only meaningful for fan-out proposals. While
+        # routing a custom-connect path to a clicked target (force_mode), segment
+        # length / recompute don't apply, so hide the whole block.
+        recompute = False
+        if not self.ctx.custom_connect.force_mode:
+            st.markdown("**⚙️ Path Settings**")
+            segment_length = st.slider(
+                "Segment Length (m)",
+                min_value=PathConfig.SEGMENT_LENGTH_MIN_M,
+                max_value=PathConfig.SEGMENT_LENGTH_MAX_M,
+                value=self.ctx.segment_length_m,
+                step=50,
+                help="Target length for generated path segments",
+                key="segment_length_slider",
+            )
 
-        if segment_length != self.ctx.segment_length_m:
-            logger.info(f"UI: Segment length changed to {segment_length}m")
-            self.ctx.segment_length_m = segment_length
-            self.ctx.click_dedup.pending_recompute = True
+            if segment_length != self.ctx.segment_length_m:
+                logger.info(f"UI: Segment length changed to {segment_length}m")
+                self.ctx.segment_length_m = segment_length
+                self.ctx.click_dedup.pending_recompute = True
 
-        recompute = st.button(
-            "🔄 Recompute Paths",
-            width="stretch",
-            help="Generate new path variations",
-        )
+            recompute = st.button(
+                "🔄 Recompute Paths",
+                width="stretch",
+                help="Generate new path variations",
+            )
 
         return {
             "finish_slope": finish_slope,

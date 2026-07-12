@@ -175,13 +175,37 @@ def _render_close_delete_buttons(
 # =============================================================================
 
 
+def _render_proposal_browser(ctx: PlannerContext, *, key_prefix: str, noun: str) -> None:
+    """Render the ◀ ▶ proposal browser shared by the slope and road panels.
+
+    Cycles ctx.proposals.selected_idx and refreshes the map on each arrow. Only
+    drawn when there is more than one proposal; a single proposal needs no browser.
+    `noun` is the browsed unit ("paths" / "options"); `key_prefix` scopes the
+    Streamlit widget keys so slope and road browsers don't collide.
+    """
+    num_paths = len(ctx.proposals.paths)
+    if num_paths <= 1:
+        return
+    selected_idx = ctx.proposals.selected_idx if ctx.proposals.selected_idx is not None else 0
+
+    col_prev, col_nav_label, col_next = st.columns([1, 2, 1])
+    with col_prev:
+        if st.button("◀", key=f"prev_{key_prefix}", width="stretch", help=f"Previous {noun[:-1]}"):
+            ctx.proposals.selected_idx = (selected_idx - 1) % num_paths
+            reload_map()
+    with col_nav_label:
+        st.markdown(f"**◀ ▶ Browse {num_paths} {noun}**")
+    with col_next:
+        if st.button("▶", key=f"next_{key_prefix}", width="stretch", help=f"Next {noun[:-1]}"):
+            ctx.proposals.selected_idx = (selected_idx + 1) % num_paths
+            reload_map()
+
+
 def render_control_panel(
     sm: PlannerStateMachine,
     ctx: PlannerContext,
     graph: ResortGraph,
     on_commit: Callable[[int], None],
-    on_custom_direction: Callable[[], None],
-    on_cancel_custom: Callable[[], None],
     on_cancel_connection: Callable[[], None],
 ) -> None:
     """Render the appropriate control panel for the current state.
@@ -212,8 +236,6 @@ def render_control_panel(
         ctx=ctx,
         graph=graph,
         on_commit=on_commit,
-        on_custom_direction=on_custom_direction,
-        on_cancel_custom=on_cancel_custom,
         on_cancel_connection=on_cancel_connection,
     )
 
@@ -223,8 +245,6 @@ def _render_idle_panel(
     ctx: PlannerContext,
     graph: ResortGraph,
     on_commit: Callable[[int], None],
-    on_custom_direction: Callable[[], None],
-    on_cancel_custom: Callable[[], None],
     on_cancel_connection: Callable[[], None],
 ) -> None:
     """Render control panel for IDLE state.
@@ -245,8 +265,6 @@ def _render_slope_building_panel(
     ctx: PlannerContext,
     graph: ResortGraph,
     on_commit: Callable[[int], None],
-    on_custom_direction: Callable[[], None],
-    on_cancel_custom: Callable[[], None],
     on_cancel_connection: Callable[[], None],
 ) -> None:
     """Render control panel for SLOPE_BUILDING state - progress + path selection."""
@@ -258,8 +276,6 @@ def _render_slope_building_panel(
         context=ctx,
         graph=graph,
         on_commit=on_commit,
-        on_custom_direction=on_custom_direction,
-        on_cancel_custom=on_cancel_custom,
         on_cancel_connection=on_cancel_connection,
     ).render()
 
@@ -296,8 +312,6 @@ def _render_lift_placing_panel(
     ctx: PlannerContext,
     graph: ResortGraph,
     on_commit: Callable[[int], None],
-    on_custom_direction: Callable[[], None],
-    on_cancel_custom: Callable[[], None],
     on_cancel_connection: Callable[[], None],
 ) -> None:
     """Render control panel for LIFT_PLACING state - progress + action."""
@@ -341,8 +355,6 @@ def _render_road_building_panel(
     ctx: PlannerContext,
     graph: ResortGraph,
     on_commit: Callable[[int], None],
-    on_custom_direction: Callable[[], None],
-    on_cancel_custom: Callable[[], None],
     on_cancel_connection: Callable[[], None],
 ) -> None:
     """Render control panel while building a road (ROAD_STARTING / ROAD_BUILDING).
@@ -386,18 +398,7 @@ def _render_road_building_panel(
 
     selected_idx = ctx.proposals.selected_idx if ctx.proposals.selected_idx is not None else 0
 
-    if num_paths > 1:
-        col_prev, col_nav_label, col_next = st.columns([1, 2, 1])
-        with col_prev:
-            if st.button("◀", key="prev_road_path", width="stretch", help="Previous road option"):
-                ctx.proposals.selected_idx = (selected_idx - 1) % num_paths
-                reload_map()
-        with col_nav_label:
-            st.markdown(f"**◀ ▶ Browse {num_paths} options**")
-        with col_next:
-            if st.button("▶", key="next_road_path", width="stretch", help="Next road option"):
-                ctx.proposals.selected_idx = (selected_idx + 1) % num_paths
-                reload_map()
+    _render_proposal_browser(ctx, key_prefix="road_path", noun="options")
 
     if st.button(
         "✅ Commit Road Segment",
@@ -509,46 +510,25 @@ class PathSelectionPanel:
         context: PlannerContext,
         graph: ResortGraph,
         on_commit: Callable[[int], None],
-        on_custom_direction: Callable[[], None],
-        on_cancel_custom: Callable[[], None],
         on_cancel_connection: Callable[[], None],
     ) -> None:
         self.ctx = context
         self.graph = graph
         self.on_commit = on_commit
-        self.on_custom_direction = on_custom_direction
-        self.on_cancel_custom = on_cancel_custom
         self.on_cancel_connection = on_cancel_connection
 
     def render(self) -> None:
         """Render the path selection panel."""
-        if self.ctx.custom_connect.enabled:
-            SlopeActionMessage(is_custom_direction=True).display()
-            if st.button(
-                "✖️ Cancel Custom Direction",
-                width="stretch",
-                help="Return to regular path proposals",
-            ):
-                logger.info("UI: Cancel Custom Direction clicked")
-                self.on_cancel_custom()
-            return
-
         if not self.ctx.proposals.paths:
             SlopeActionMessage().display()
             return
 
-        selected_idx = self.ctx.proposals.selected_idx
         num_paths = len(self.ctx.proposals.paths)
-
-        if selected_idx is None or selected_idx >= num_paths:
-            SlopeActionMessage(
-                is_selecting_path=True,
-                num_paths=num_paths,
-                selected_path_idx=0,
-                path_difficulty="unknown",
-                path_difficulty_emoji="⬜",
-            ).display()
-            return
+        # Clamp to a valid selection: paths exist here, so an unset/out-of-range index
+        # just means "show the first one" — no placeholder/unknown-stats branch needed.
+        selected_idx = self.ctx.proposals.selected_idx
+        if selected_idx is None or not (0 <= selected_idx < num_paths):
+            selected_idx = 0
 
         path = self.ctx.proposals.paths[selected_idx]
         emoji = StyleConfig.DIFFICULTY_EMOJIS[path.difficulty]
@@ -572,17 +552,7 @@ class PathSelectionPanel:
         ).display()
 
         # Navigation arrows
-        col_prev, col_nav_label, col_next = st.columns([1, 2, 1])
-        with col_prev:
-            if st.button("◀", key="prev_path", width="stretch", help="Previous path variant"):
-                self.ctx.proposals.selected_idx = (selected_idx - 1) % num_paths
-                reload_map()  # Refresh map with new selection
-        with col_nav_label:
-            st.markdown(f"**◀ ▶ Browse {num_paths} paths**")
-        with col_next:
-            if st.button("▶", key="next_path", width="stretch", help="Next path variant"):
-                self.ctx.proposals.selected_idx = (selected_idx + 1) % num_paths
-                reload_map()  # Refresh map with new selection
+        _render_proposal_browser(self.ctx, key_prefix="path", noun="paths")
 
         # Commit button
         if is_connector:
@@ -596,25 +566,21 @@ class PathSelectionPanel:
             logger.info(f"UI: Commit button clicked for path {selected_idx}, is_connector={is_connector}")
             self.on_commit(selected_idx)
 
-        # Custom Direction button (not shown if already in custom connect mode)
-        if not self.ctx.custom_connect.enabled and not self.ctx.custom_connect.force_mode:  # type: ignore[redundant-expr]  # noqa: SIM102
-            if st.button(
-                "🎯 Custom Direction",
-                width="stretch",
-                help="Click anywhere downhill to create a path to that point, or connect to an existing node",
-            ):
-                logger.info("UI: Custom Direction button clicked")
-                self.on_custom_direction()
-
-        # Cancel Connection button
+        # While showing custom-connect proposals, offer a way back to fan-out.
+        # The label adapts: a connector routes to a node ("Cancel Connection"), a custom target ("Cancel Custom Path").
         if self.ctx.custom_connect.force_mode:
+            cancel_label = "✖️ Cancel Connection" if is_connector else "✖️ Cancel Custom Path"
             if st.button(
-                "✖️ Cancel Connection",
+                cancel_label,
                 width="stretch",
-                help="Return to regular path proposals",
+                help="Return to regular fan-out path proposals",
             ):
-                logger.info("UI: Cancel Connection clicked")
+                logger.info(f"UI: {cancel_label} clicked")
                 self.on_cancel_connection()
+        else:
+            # Fan-out mode: the panel showed auto-generated proposals, but the user can
+            # also aim anywhere. Make that discoverable now that there is no button.
+            st.caption("🎯 Or click any downhill point or node on the map to route a path there.")
 
 
 # =============================================================================

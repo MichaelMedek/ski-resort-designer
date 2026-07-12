@@ -395,14 +395,12 @@ class ViewingContext(BaseContext):
 class CustomConnectContext(BaseContext):
     """Custom connect mode state."""
 
-    enabled: bool = False
     start_node: str | None = None
     force_mode: bool = False
     target_location: LonLatElev | None = None  # (lon, lat, elev)
     target_node: str | None = None  # Set when the target is an EXISTING node → reuse it by id (no proximity guess)
 
     def clear(self) -> None:
-        self.enabled = False
         self.start_node = None
         self.force_mode = False
         self.target_location = None

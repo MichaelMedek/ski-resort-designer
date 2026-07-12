@@ -366,12 +366,11 @@ class LiftPlacingContextMessage(Message):
 class SlopeActionMessage(Message):
     """RIGHT panel: Specific action instruction for slope building.
 
-    Covers: path selection, custom direction mode
+    Covers: path selection (fan-out and custom-connect proposals).
     """
 
     # Action state flags
     is_selecting_path: bool = False
-    is_custom_direction: bool = False
     is_custom_path: bool = False  # True if proposals came from custom connection
 
     # Path selection info (when is_selecting_path=True)
@@ -394,13 +393,6 @@ class SlopeActionMessage(Message):
 
     @property
     def message(self) -> str:
-        if self.is_custom_direction:
-            return (
-                "🎯 **Select Target**\n\n"
-                "- 👆 Click **downhill** to set target direction\n"
-                "- ⚪ Click near **node** to connect & finish slope"
-            )
-
         if self.is_selecting_path:
             is_conn = self.is_connector and self.target_node_id
             path_label = "Custom Proposal" if self.is_custom_path else "Proposed Segment"
@@ -420,7 +412,11 @@ class SlopeActionMessage(Message):
             )
 
         # No flags set - show fallback message for empty paths (terrain too steep, etc.)
-        return "⚠️ **No Paths Available**\n\n- Try 🎯 **Custom Direction** to pick a target\n- Or ↩️ **Undo** to go back"
+        return (
+            "⚠️ **No Paths Available**\n\n"
+            "- 👆 Click a **downhill** point or **node** to route a path to it\n"
+            "- Or ↩️ **Undo** to go back"
+        )
 
 
 @dataclass(frozen=True)
