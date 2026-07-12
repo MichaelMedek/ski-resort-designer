@@ -185,17 +185,10 @@ class PathConfig:
     FLAT_TERRAIN_THRESHOLD_PCT = 15.0  # Below this slope %, use bearing smoothing (no clear fall line)
     BEARING_SMOOTHING_WEIGHT = 0.8  # Weight of the averaged bearing vs terrain bearing on flat terrain
 
-    # Roads for cars: the gentle gradient that limits routing.
-    # Cars may climb, descend, or run flat, but never exceed this steepness.
+    # Roads for cars: the hard gradient cap enforced at build time.
+    # Cars may climb, descend, or run flat, but a proposal over this is refused.
+    # (Roads AIM for the green grades 7%/12% — see PathFactory.generate_manual_paths.)
     ROAD_MAX_GRADIENT_PCT = 15
-    # Comfort knee (< hard cap): the target grade a road AIMS to hold is the direct
-    # endpoint grade clamped to this magnitude (PathFactory._road_target_grade).
-    # On steep ground the road can't hold it straight, so the planner serpentines to
-    # reach it — same attractor that lets green slopes traverse any terrain.
-    ROAD_SOFT_GRADIENT_PCT = 10
-
-
-assert PathConfig.ROAD_SOFT_GRADIENT_PCT < PathConfig.ROAD_MAX_GRADIENT_PCT
 
 
 class EarthworkConfig:

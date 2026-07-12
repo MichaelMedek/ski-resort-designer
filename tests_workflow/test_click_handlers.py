@@ -594,7 +594,9 @@ class TestRoadBuildingClick:
         assert ctx.road_build.segments == []
         assert len(graph.segments) == 0
 
-    def test_node_target_extends_and_joins(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
+    def test_node_target_is_connector_and_auto_finishes(
+        self, fake_st, path_factory, mock_dem_red_slope_diagonal
+    ) -> None:
         from skiresort_planner.ui.click_handlers import handle_road_building_click
 
         dem = mock_dem_red_slope_diagonal
@@ -606,11 +608,14 @@ class TestRoadBuildingClick:
         handle_road_building_click(
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=end.id), elevation=None
         )
-        assert len(ctx.proposals.paths) >= 1, "a node target also proposes a route to browse"
-        assert all(p.target_node_id == end.id for p in ctx.proposals.paths), "proposals snap onto the target node"
+        assert len(ctx.proposals.paths) >= 1, "a node target proposes a route to browse"
+        assert all(p.is_connector and p.target_node_id == end.id for p in ctx.proposals.paths), (
+            "a node target is a connector that snaps onto the node"
+        )
+        # Committing a connector auto-finishes the road (parity with slope custom-connect).
         self._commit_proposal()
-        assert sm.is_road_building_only
-        assert len(ctx.road_build.segments) == 1
+        assert sm.is_idle_viewing_road, "connector commit auto-finishes the road"
+        assert len(graph.roads) == 1
 
 
 # =============================================================================

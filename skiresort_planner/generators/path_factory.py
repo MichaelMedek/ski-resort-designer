@@ -65,13 +65,14 @@ class GradeConfig:
         difficulty: Slope difficulty (green/blue/red/black)
         grade: Steepness variant (gentle/steep)
         target_slope_pct: Target slope percentage
-        side: Traverse direction (left/right/center)
+        side: Traverse direction — only meaningful for the fan (trace_downhill). The
+            grid planner ignores side, so planner-path configs leave it at CENTER.
     """
 
     difficulty: str
     grade: str
     target_slope_pct: float
-    side: Side
+    side: Side = Side.CENTER
 
     @property
     def name(self) -> str:
@@ -331,19 +332,13 @@ class PathFactory:
         return unique
 
     @staticmethod
-    def _road_target_grade(start_elevation: float, target_elevation: float, direct_distance_m: float) -> float:
-        """Grade (signed %) a road aims to hold: the direct endpoint grade, clamped in
-        magnitude to the comfort knee.
+    def _road_target_grades(signed_drop: float) -> list[float]:
+        """The signed GREEN grades a road may hold, sign from signed_drop.
 
-            target = sign(H) · min(|H| / L, ROAD_SOFT_GRADIENT_PCT)
-
-        H = signed drop (+ descent), L = direct distance. Gentle ground (|H|/L ≤ knee):
-        target is the direct grade → the planner draws it straight. Steep (|H|/L > knee):
-        target is the gentler knee, unreachable straight → the planner serpentines to hold it.
+        signed_drop = start_elev − target_elev (+ descent, − climb). Same magnitudes as
+        a green slope; sign is the only road-vs-slope difference.
         """
-        signed_drop = start_elevation - target_elevation  # + = net descent, − = net climb
-        direct_grade_pct = (signed_drop / direct_distance_m) * 100
-        return math.copysign(min(abs(direct_grade_pct), PathConfig.ROAD_SOFT_GRADIENT_PCT), direct_grade_pct)
+        return [math.copysign(target, signed_drop) for target in SlopeConfig.DIFFICULTY_TARGETS["green"].values()]
 
     def generate_manual_paths(
         self,
@@ -361,16 +356,16 @@ class PathFactory:
         viable ski routes, deduplicated to keep the gentlest measured slope per
         trajectory. Falls back to a straight line when nothing viable is found.
 
-        Road mode (road_mode=True): a vehicle road holding the endpoint grade clamped to
-        the comfort knee, so it may climb/descend/run flat and serpentines on steep
-        ground. No straight-line fallback: a straight line across steep ground is not a
-        valid road.
+        Road mode (road_mode=True): a vehicle road holding a GREEN grade (7%/12%),
+        signed for the endpoints' direction so it may climb or descend, serpentining
+        on steep ground. No straight-line fallback: a straight line across steep ground
+        is not a valid road.
 
         Args:
             start_lon, start_lat, start_elevation: Starting point.
             target_lon, target_lat: Target coordinates (user click).
             target_elevation: Target elevation (queries DEM if None).
-            road_mode: True for a vehicle road (may climb, holds a clamped grade), False
+            road_mode: True for a vehicle road (may climb, holds a green grade), False
                 for a ski path (descent-only, difficulty-grade fan).
 
         Yields:
@@ -382,37 +377,24 @@ class PathFactory:
             logger.warning(f"No elevation at target ({target_lon}, {target_lat})")
             return
 
-        # Road mode traces one gentle route per side; slope mode sweeps all
-        # difficulty-grade targets. Both feed the same planner + dedup.
-
-        # FIXME(side-bias): `side` is currently DEAD in the planner —
-        # LeastCostPathPlanner._calc_edge_cost ignores it, so LEFT and RIGHT trace the
-        # identical least-cost route and dedup to one. Rather than emit a fake
-        # duplicate, road mode generates a single LEFT proposal. When a side-aware cost
-        # is added, restore a second RIGHT config here so roads offer a real choice.
+        # The grid planner ignores `side` (grade-only cost), so both modes leave
+        # GradeConfig.side at its CENTER default — no dead LEFT/RIGHT duplication here.
         if road_mode:
-            # A road holds the direct endpoint grade, clamped to the comfort knee — so on
-            # steep ground it serpentines to hold that gentle grade (§7.3). Its direction
-            # (up/down) is fixed by the endpoints; the planner keeps the segment monotonic.
-            road_grade = self._road_target_grade(
-                start_elevation=start_elevation,
-                target_elevation=target_elevation,
-                direct_distance_m=GeoCalculator.haversine_distance_m(
-                    lat1=start_lat, lon1=start_lon, lat2=target_lat, lon2=target_lon
-                ),
-            )
-            gradient_mode = GradientMode.DOWNHILL if start_elevation >= target_elevation else GradientMode.UPHILL
+            # A road holds a GREEN grade, signed by the endpoints' direction (climb or
+            # descend). Same routing as a green slope; sign is the only difference. On
+            # steep ground the planner serpentines to hold it (§7.3).
+            signed_drop = start_elevation - target_elevation
+            gradient_mode = GradientMode.DOWNHILL if signed_drop >= 0 else GradientMode.UPHILL
             configs: list[GradeConfig] = [
-                GradeConfig(difficulty="", grade="road", target_slope_pct=road_grade, side=Side.LEFT),
-                GradeConfig(difficulty="", grade="road", target_slope_pct=road_grade, side=Side.RIGHT),
+                GradeConfig(difficulty="", grade="road", target_slope_pct=grade)
+                for grade in self._road_target_grades(signed_drop=signed_drop)
             ]
         else:
             gradient_mode = GradientMode.DOWNHILL  # slopes always descend
             configs = [
-                GradeConfig(difficulty=difficulty, grade=grade_name, target_slope_pct=target_slope, side=side_enum)
+                GradeConfig(difficulty=difficulty, grade=grade_name, target_slope_pct=target_slope)
                 for difficulty in SlopeConfig.DIFFICULTIES
                 for grade_name, target_slope in SlopeConfig.DIFFICULTY_TARGETS[difficulty].items()
-                for side_enum in [Side.LEFT, Side.RIGHT]
             ]
 
         all_paths: list[ProposedPathSegment] = []
@@ -425,7 +407,6 @@ class PathFactory:
                 target_lat=target_lat,
                 target_elevation=target_elevation,
                 target_grade_pct=config.target_slope_pct,
-                side=config.side.value,
                 gradient_mode=gradient_mode,
             )
             if path is None:

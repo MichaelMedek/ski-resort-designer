@@ -150,6 +150,31 @@ class TestCancelSlopeFromCustom:
         assert sm.current_state_value == "idle_ready", "Should return to IdleReady"
 
 
+class TestFinishSlopeFromCustom:
+    """Sidebar Finish during targeting: finish_slope must be valid from slope_custom_path
+    (regression for the TransitionNotAllowed crash), finalizing the committed segments and
+    dropping the in-progress target proposal.
+    """
+
+    def test_finish_slope_from_custom_path_no_crash(self, workflow_setup: WorkflowSetup) -> None:
+        sm, ctx, graph, factory, dem = workflow_setup
+
+        # Commit one real segment, then start targeting a new point (SlopeCustomPath).
+        start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
+        sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
+        _commit_first_segment(sm, graph, factory, start_elev)
+        sm.select_custom_target(target_location=(0.0, -500 / M, dem.get_elevation_or_raise(lon=0.0, lat=-500 / M)))
+        assert sm.current_state_value == "slope_custom_path"
+
+        # Sidebar Finish fires the finish_slope event — must resolve, not raise.
+        slope = graph.finish_slope(segment_ids=ctx.slope_build.segments)
+        assert slope is not None
+        sm.finish_slope(slope_id=slope.id)
+
+        assert sm.current_state_value == "idle_viewing_slope", "Finish during targeting lands in viewing"
+        assert not ctx.custom_connect.force_mode, "in-progress target cleared"
+
+
 class TestCommitCustomContinue:
     """Tests for commit_custom_continue transition (slope_custom_path → slope_building)."""
 

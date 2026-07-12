@@ -320,48 +320,79 @@ def _find_closest_gradient_path(paths: "list[ProposedPathSegment]", target_gradi
 # =============================================================================
 
 
-def _commit_path_transition(
-    sm: PlannerStateMachine,
-    segment_id: str,
-    endpoint_node_id: str,
-    is_connector: bool,
-    slope: "Slope | None" = None,
-) -> None:
-    """Dispatch to appropriate state machine event for path commit.
+def _commit_path_transition(sm: PlannerStateMachine, segment_id: str, endpoint_node_id: str) -> None:
+    """Dispatch a non-connector slope commit to the right state-machine event.
 
-    Uses events instead of direct transition calls - the state machine
-    resolves which transition to use based on current state:
-    - SlopeStarting + commit_path event → commit_first_path transition
-    - SlopeBuilding + commit_path event → commit_continue_path transition
-    - SlopeCustomPath: separate events for different intents (finish vs continue)
-
-    Args:
-        sm: State machine instance
-        segment_id: ID of committed segment
-        endpoint_node_id: ID of endpoint node
-        is_connector: Whether this path connects to an existing node
-        slope: Finalized slope object (required for connector from SlopeCustomPath)
+    - SlopeStarting/SlopeBuilding + commit_path → commit_first_path / commit_continue_path
+    - SlopeCustomPath + commit_custom_continue (continue building after a custom segment)
     """
     if sm.is_slope_custom_path:
-        # Custom path has different intents: finish (connector) vs continue
-        if is_connector:
-            if slope is None:
-                raise RuntimeError("slope required for connector commit_custom_finish transition")
-            sm.commit_custom_finish(segment_id=segment_id, slope_id=slope.id)
-        else:
-            sm.commit_custom_continue(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
+        sm.commit_custom_continue(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
     else:
-        # Use event - state machine resolves to commit_first_path or commit_continue_path
         sm.commit_path(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
 
 
-def commit_selected_path(path_idx: int) -> None:
-    """Commit selected path to graph and trigger next path generation.
+def _finish_current_entity(*, is_road: bool) -> None:
+    """Finalize the current slope/road from its committed segments, then fire the finish event.
 
-    Handles state-specific transitions:
-    - From SlopeStarting/SlopeBuilding: uses commit_path
-    - From SlopeCustomPath + connector: uses commit_custom_finish (direct finish)
-    - From SlopeCustomPath + continue: uses commit_custom_continue
+    Shared tail of the sidebar Finish buttons (finish_current_slope/road wrappers).
+    """
+    sm: PlannerStateMachine = st.session_state.state_machine
+    ctx: PlannerContext = st.session_state.context
+    graph: ResortGraph = st.session_state.graph
+
+    build = ctx.road_build if is_road else ctx.slope_build
+    if not build.segments:
+        raise RuntimeError(f"finish called with no segments (is_road={is_road})")
+
+    entity = (
+        graph.finish_road(segment_ids=build.segments) if is_road else graph.finish_slope(segment_ids=build.segments)
+    )
+    if not entity:
+        raise RuntimeError(f"graph.finish_{'road' if is_road else 'slope'}() failed for segments: {build.segments}")
+
+    logger.info(f"{'Road' if is_road else 'Slope'} {entity.name} (id={entity.id}) created successfully")
+    center_on_segment_path(ctx=ctx, graph=graph, path=entity, zoom=MapConfig.VIEWING_ZOOM)
+    bump_map_version()  # Clear stale click state
+    if is_road:
+        sm.finish_road(road_id=entity.id)
+    else:
+        sm.finish_slope(slope_id=entity.id)
+
+
+def _finish_connector(*, segment_id: str, is_road: bool) -> None:
+    """Auto-finish a connector segment (target is an existing node), shared by slopes + roads.
+
+    Appends the segment to the build, finalizes the entity, recenters, fires the
+    connector-finish event (commit_road_finish / commit_custom_finish).
+    """
+    sm: PlannerStateMachine = st.session_state.state_machine
+    ctx: PlannerContext = st.session_state.context
+    graph: ResortGraph = st.session_state.graph
+
+    build = ctx.road_build if is_road else ctx.slope_build
+    build.segments.append(segment_id)
+    entity = (
+        graph.finish_road(segment_ids=build.segments) if is_road else graph.finish_slope(segment_ids=build.segments)
+    )
+    if not entity:
+        raise RuntimeError(f"graph.finish_{'road' if is_road else 'slope'}() failed for connector: {build.segments}")
+
+    logger.info(f"{'Road' if is_road else 'Slope'} {entity.name} (id={entity.id}) auto-finished from connector")
+    center_on_segment_path(ctx=ctx, graph=graph, path=entity, zoom=MapConfig.VIEWING_ZOOM)
+    bump_map_version()
+    if is_road:
+        sm.commit_road_finish(segment_id=segment_id, road_id=entity.id)
+    else:
+        sm.commit_custom_finish(segment_id=segment_id, slope_id=entity.id)
+
+
+def commit_selected_path(path_idx: int) -> None:
+    """Commit the selected proposal, unified across slopes and roads.
+
+    A connector (target is an existing node) auto-finishes the entity via
+    _finish_connector; otherwise a road self-loops (commit_road) and a slope
+    continues building (commit_path / commit_custom_continue).
     """
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
@@ -371,13 +402,12 @@ def commit_selected_path(path_idx: int) -> None:
         raise RuntimeError(f"Invalid path index {path_idx}, valid range: 0-{len(ctx.proposals.paths) - 1}")
 
     path = ctx.proposals.paths[path_idx]
-    is_connector = path.is_connector and path.target_node_id
-
-    ctx.custom_connect.clear()
+    is_connector = bool(path.is_connector and path.target_node_id)
+    is_road = sm.is_any_road_state
     committed_gradient = path.avg_slope_pct
 
+    ctx.custom_connect.clear()
     end_node_ids = graph.commit_paths(paths=[path])
-
     if not end_node_ids:
         raise RuntimeError(f"graph.commit_paths() returned empty for path {path_idx + 1}")
 
@@ -388,10 +418,13 @@ def commit_selected_path(path_idx: int) -> None:
         f"{path.length_m:.0f}m, {path.avg_slope_pct:.1f}%, endpoint={endpoint_node_id}"
     )
 
-    # Road building: roads commit through this same function (no fan, no connector
-    # auto-finish) and stay in road_building via the commit_road event (SM resolves
-    # to commit_road_first / commit_road_continue), mirroring the slope commit_path.
-    if sm.is_any_road_state:
+    # Connector → auto-finish the entity (slope or road).
+    if is_connector:
+        _finish_connector(segment_id=segment_id, is_road=is_road)
+        return
+
+    # Road non-connector: add segment, keep extending (commit_road self-loop).
+    if is_road:
         ctx.clear_proposals()
         end_node = graph.nodes.get(endpoint_node_id)
         if end_node is not None:
@@ -400,25 +433,7 @@ def commit_selected_path(path_idx: int) -> None:
         sm.commit_road(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
         return
 
-    if is_connector:
-        logger.info(f"Connector to {path.target_node_id}")
-        # For connectors from SlopeCustomPath, finish the slope and transition to viewing
-        if sm.is_slope_custom_path:
-            # Add segment to building context before finishing
-            ctx.slope_build.segments.append(segment_id)
-            # Finish the slope
-            slope = graph.finish_slope(segment_ids=ctx.slope_build.segments)
-            if not slope:
-                raise RuntimeError(f"graph.finish_slope() failed for connector: {ctx.slope_build.segments}")
-            logger.info(f"Slope {slope.name} (id={slope.id}) auto-finished from connector")
-            center_on_slope(ctx=ctx, graph=graph, slope=slope, zoom=MapConfig.VIEWING_ZOOM)
-            bump_map_version()
-            sm.commit_custom_finish(segment_id=segment_id, slope_id=slope.id)
-        else:
-            # For other states, use commit_path
-            sm.commit_path(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
-        return
-
+    # Slope non-connector: continue building, regenerate the fan from the new endpoint.
     end_node = graph.nodes.get(endpoint_node_id)
     if end_node:
         ctx.set_selection(lon=end_node.lon, lat=end_node.lat, elevation=end_node.elevation)
@@ -426,9 +441,7 @@ def commit_selected_path(path_idx: int) -> None:
         ctx.deferred.path_generation = True
         ctx.deferred.gradient_target = committed_gradient
 
-    _commit_path_transition(
-        sm=sm, segment_id=segment_id, endpoint_node_id=endpoint_node_id, is_connector=False, slope=None
-    )
+    _commit_path_transition(sm=sm, segment_id=segment_id, endpoint_node_id=endpoint_node_id)
 
 
 def recompute_paths() -> None:
@@ -516,22 +529,8 @@ def recompute_paths() -> None:
 
 
 def finish_current_slope() -> None:
-    """Finish building and create the finalized slope."""
-    sm: PlannerStateMachine = st.session_state.state_machine
-    ctx: PlannerContext = st.session_state.context
-    graph: ResortGraph = st.session_state.graph
-
-    if not ctx.slope_build.segments:
-        raise RuntimeError("finish_current_slope called with no segments")
-
-    slope = graph.finish_slope(segment_ids=ctx.slope_build.segments)
-    if not slope:
-        raise RuntimeError(f"graph.finish_slope() failed for segments: {ctx.slope_build.segments}")
-
-    logger.info(f"Slope {slope.name} (id={slope.id}) created successfully")
-    center_on_segment_path(ctx=ctx, graph=graph, path=slope, zoom=MapConfig.VIEWING_ZOOM)
-    bump_map_version()  # Clear stale click state
-    sm.finish_slope(slope_id=slope.id)
+    """Finish building and create the finalized slope (sidebar Finish button)."""
+    _finish_current_entity(is_road=False)
 
 
 def _discard_build(build_ctx: "SegmentBuildContext") -> None:
@@ -577,22 +576,8 @@ def cancel_current_slope() -> None:
 
 
 def finish_current_road() -> None:
-    """Finish building and create the finalized road (mirrors finish_current_slope)."""
-    sm: PlannerStateMachine = st.session_state.state_machine
-    ctx: PlannerContext = st.session_state.context
-    graph: ResortGraph = st.session_state.graph
-
-    if not ctx.road_build.segments:
-        raise RuntimeError("finish_current_road called with no segments")
-
-    road = graph.finish_road(segment_ids=ctx.road_build.segments)
-    if not road:
-        raise RuntimeError(f"graph.finish_road() failed for segments: {ctx.road_build.segments}")
-
-    logger.info(f"Road {road.name} (id={road.id}) created successfully")
-    center_on_segment_path(ctx=ctx, graph=graph, path=road, zoom=MapConfig.VIEWING_ZOOM)
-    bump_map_version()  # Clear stale click state
-    sm.finish_road(road_id=road.id)
+    """Finish building and create the finalized road (sidebar Finish button)."""
+    _finish_current_entity(is_road=True)
 
 
 def cancel_current_road() -> None:

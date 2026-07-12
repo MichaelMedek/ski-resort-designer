@@ -392,22 +392,15 @@ A **Road** is a vehicle road built **segment-by-segment**, exactly like a custom
 
 A road is traced by the same grid-Dijkstra algorithm and the same cost function as §7.2. A road holds a **target grade** exactly the way a slope holds its difficulty target; the two behavioral differences are how that target grade is chosen and that a road may climb.
 
-**Target grade.** A road's target grade is the direct grade between the endpoints, clamped in **magnitude** to a comfort knee $g_{\text{soft}}$ (`ROAD_SOFT_GRADIENT_PCT`). With $H = z_{\text{start}} - z_{\text{target}}$ the signed drop (positive = descent) and $L$ the direct horizontal distance:
+**Target grade.** A road reuses the **green** slope targets (7% gentle, 12% steep, from `SlopeConfig.DIFFICULTY_TARGETS["green"]`), signed by the endpoints' direction. With $H = z_{\text{start}} - z_{\text{target}}$ the signed drop (positive = descent):
 
-$$g_{\text{target}} = \operatorname{sign}(H) \cdot \min\!\left(\frac{|H|}{L},\; g_{\text{soft}}\right)$$
+$$g_{\text{target}} \in \{\operatorname{sign}(H)\cdot 7,\; \operatorname{sign}(H)\cdot 12\}$$
 
-- **Gentle terrain** ($|H|/L \le g_{\text{soft}}$): a straight constant-grade line already achieves the target, so the route is drawn **straight**.
-- **Steep terrain** ($|H|/L > g_{\text{soft}}$): the target is the gentler knee, unreachable by a straight line, so the route **lengthens into a serpentine** to hold it — the same mechanism that lets a green slope traverse steep terrain (§5).
+So a road is planned exactly like a **green slope** — the only difference is the sign (a road may aim uphill). On gentle ground both targets exceed the direct grade and collapse to one straight route; on steep ground each serpentines to hold its grade, giving two proposals (gentle vs steeper green).
 
-Clamping the *magnitude* is correct because rerouting only ever lengthens the path, which can lower the effective grade below $|H|/L$ but never raise it: $g_{\text{soft}}$ is a ceiling approached from above, $|H|/L$ the floor on gentle ground.
+**Cost function.** Every edge is scored by the identical grade-deviation penalty and the identical against-direction monotonicity penalty as §7.2, against $g_{\text{target}}$. A road picks its `GradientMode` from the endpoints — `DOWNHILL` when it descends, `UPHILL` when it climbs — and the monotonicity penalty then keeps the segment one-way (no looping), exactly as it does for a descent-only slope. There is no road-specific relaxation of the cost.
 
-**Cost function.** Every edge is scored by the identical grade-deviation penalty as §7.2, against $g_{\text{target}}$:
-
-$$\text{cost}_{\text{road}} = d \times \exp\left(\frac{|\text{slope}_{\text{actual}} - g_{\text{target}}|}{\sigma}\right)$$
-
-The one difference from the slope cost is the **uphill penalty is dropped** ($P_{\text{uphill}} = 1$): a car road may climb, descend, or run flat with equal preference, because the signed target grade already encodes the intended direction. A ski slope keeps the uphill penalty (skiers descend).
-
-**±15% is a HARD cap at build time.** The exponential term is only a *soft* preference; every finished proposal is additionally **hard-capped** at $g_{\max} = 15\%$ (`ROAD_MAX_GRADIENT_PCT`) and a steeper route is refused ("No car road within ±15% is possible to that point"). A committed road therefore never exceeds the hard cap. Both $g_{\text{soft}}$ and $g_{\max}$ are single-sourced constants — no hardcoded percentages.
+**±15% is a HARD cap at build time.** The exponential term is only a *soft* preference; every finished proposal is additionally **hard-capped** at $g_{\max} = 15\%$ (`ROAD_MAX_GRADIENT_PCT`) by the caller and a steeper route is refused ("No car road within ±15% is possible to that point"). A committed road therefore never exceeds the hard cap. The green targets and $g_{\max}$ are single-sourced constants — no hardcoded percentages.
 
 ---
 

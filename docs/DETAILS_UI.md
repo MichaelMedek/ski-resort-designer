@@ -270,7 +270,7 @@ Click the road's **origin** — empty terrain or an existing **junction node** (
 
 ### Step 3: Extend segment by segment
 
-Click the **next point** the road should reach. Gentle route **proposals** are traced to it and drawn as **dashed translucent-brown** paths (just like slope custom-connect) — with **no endpoint dots**, since the proposals share the same target. Browse them with the **◀ ▶ arrows** in the right panel or by clicking a dashed proposal to highlight it, then press **✅ Commit Road Segment** to commit; the segment turns solid brown and you can extend further. Clicking an existing **node** targets that junction so the road joins it on commit.
+Click the **next point** the road should reach. Two gentle route **proposals** (green 7%/12% grades, signed for climb or descent) are traced to it and drawn as **dashed translucent-brown** paths (just like slope custom-connect) — with **no endpoint dots**, since the proposals share the same target. Browse them with the **◀ ▶ arrows** in the right panel or by clicking a dashed proposal to highlight it, then press **✅ Commit Road Segment** to commit; the segment turns solid brown and you can extend further. Clicking an existing **node** makes the proposal a **connector**: the button becomes **🏁 Finish → {node}** and committing joins that junction and **finishes the road** (exactly like slope custom-connect to a node).
 
 - If the terrain to your clicked point is too steep to stay within **±15%**, **no proposal** is offered and you get a message. Pick a closer point or route across gentler ground.
 - **Undo** removes the last committed segment (then the one before it), exactly like a slope.

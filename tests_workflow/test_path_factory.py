@@ -6,6 +6,7 @@ Focus on _are_paths_similar and _deduplicate_paths which are mathematical compar
 
 import pytest
 
+from skiresort_planner.constants import SlopeConfig
 from skiresort_planner.generators.path_factory import GradeConfig, PathFactory, Side
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.proposed_path import ProposedPathSegment
@@ -251,44 +252,19 @@ class TestPathDeduplication:
 
 
 class TestRoadTargetGrade:
-    """PathFactory._road_target_grade derives the grade a road aims to hold: the signed
-    direct grade H/L, clamped in MAGNITUDE to ROAD_SOFT_GRADIENT_PCT. This is what lets a
-    road reuse the same grade attractor and serpentine on steep ground (§7.3).
+    """A road aims for the GREEN grades (7%/12%), signed by the endpoints' direction
+    (descend → +, climb → −). Same magnitudes as a green slope; sign is the only difference.
     """
 
-    def test_gentle_terrain_aims_direct_grade(self) -> None:
-        """Below the knee, the target IS the direct grade (60m / 1000m = 6%)."""
-        grade = PathFactory._road_target_grade(
-            start_elevation=1060.0, target_elevation=1000.0, direct_distance_m=1000.0
-        )
-        assert grade == pytest.approx(6.0)
+    def test_descent_aims_positive_green_grades(self) -> None:
+        """A net descent (positive signed_drop) targets +7 and +12."""
+        green = SlopeConfig.DIFFICULTY_TARGETS["green"]
+        assert PathFactory._road_target_grades(signed_drop=100.0) == [green["gentle"], green["steep"]]
 
-    def test_steep_descent_clamped_to_knee(self) -> None:
-        """A steep descent is clamped DOWN to the comfort knee (forces a serpentine)."""
-        from skiresort_planner.constants import PathConfig
-
-        # 300m drop over 1000m = 30% → clamp down to the comfort knee.
-        grade = PathFactory._road_target_grade(
-            start_elevation=1300.0, target_elevation=1000.0, direct_distance_m=1000.0
-        )
-        assert grade == pytest.approx(PathConfig.ROAD_SOFT_GRADIENT_PCT)
-
-    def test_steep_climb_clamped_to_negative_knee(self) -> None:
-        """A net CLIMB yields a negative target, clamped to −knee. Sign preserved."""
-        from skiresort_planner.constants import PathConfig
-
-        # Target 300m ABOVE start over 1000m = −30% → clamp to −knee.
-        grade = PathFactory._road_target_grade(
-            start_elevation=1000.0, target_elevation=1300.0, direct_distance_m=1000.0
-        )
-        assert grade == pytest.approx(-PathConfig.ROAD_SOFT_GRADIENT_PCT)
-
-    def test_gentle_climb_aims_negative_direct_grade(self) -> None:
-        """A gentle climb below the knee aims the (negative) direct grade (−5%)."""
-        grade = PathFactory._road_target_grade(
-            start_elevation=1000.0, target_elevation=1050.0, direct_distance_m=1000.0
-        )
-        assert grade == pytest.approx(-5.0)
+    def test_climb_aims_negative_green_grades(self) -> None:
+        """A net climb (negative signed_drop) targets −7 and −12 (sign preserved)."""
+        green = SlopeConfig.DIFFICULTY_TARGETS["green"]
+        assert PathFactory._road_target_grades(signed_drop=-100.0) == [-green["gentle"], -green["steep"]]
 
 
 class TestRoadModeNoStraightLineFallback:

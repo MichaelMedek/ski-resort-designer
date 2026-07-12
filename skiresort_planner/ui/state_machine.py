@@ -488,7 +488,7 @@ class PlannerStateMachine(StateMachine):
     # 5.6. select_target_from_building [event: select_custom_target]: Click a target on the map
 
     commit_continue_path = slope_building.to(slope_building, event="commit_path")  # 5.5 [event: commit_path] self-loop
-    finish_slope = slope_building.to(idle_viewing_slope)  # 5.2 [direct]
+    finish_slope = slope_building.to(idle_viewing_slope, event="finish_slope")  # 5.2 [event: finish_slope]
     cancel_from_building = slope_building.to(idle_ready, event="cancel_slope")  # 5.1 [event: cancel_slope]
     select_target_from_building = slope_building.to(
         slope_custom_path, event="select_custom_target", before="_before_target_from_building"
@@ -497,19 +497,24 @@ class PlannerStateMachine(StateMachine):
     # ==========================================================================
     # 6. Transitions: From SLOPE_CUSTOM_PATH
     # ==========================================================================
-    # Events available: cancel_custom, cancel_slope, select_custom_target (self-loop)
+    # Events available: cancel_custom, cancel_slope, select_custom_target (self-loop), finish_slope
     # 6.1. cancel_slope_from_custom_path [event: cancel_slope]: Cancel entire slope
     # 6.2. commit_custom_finish [direct]: Auto-finish when connecting to existing node
     # 6.3. commit_custom_continue [direct]: Commit and keep building
     # 6.4. cancel_path_to_starting [event: cancel_custom, guard]: Back to fan-out when has_no_segments
     # 6.5. cancel_path_to_building [event: cancel_custom, guard]: Back to fan-out when has segments
     # 6.6. retarget_custom [event: select_custom_target, self-loop]: Click a new target → re-route
+    # 6.7. finish_slope_from_custom [event: finish_slope]: Sidebar Finish during targeting —
+    #      finalize committed segments, drop the in-progress proposal
 
     commit_custom_continue = slope_custom_path.to(slope_building)  # 6.3 [direct]
     commit_custom_finish = slope_custom_path.to(idle_viewing_slope)  # 6.2 [direct] auto-finish connector
     retarget_custom = slope_custom_path.to(
         slope_custom_path, event="select_custom_target", before="_before_retarget_custom"
     )  # 6.6 [event: select_custom_target] self-loop
+    finish_slope_from_custom = slope_custom_path.to(
+        idle_viewing_slope, event="finish_slope", before="_before_finish_slope_from_custom"
+    )  # 6.7 [event: finish_slope]
     cancel_path_to_starting = slope_custom_path.to(
         slope_starting, cond="has_no_segments", event="cancel_custom"
     )  # 6.4 [event: cancel_custom, guard]
@@ -538,10 +543,18 @@ class PlannerStateMachine(StateMachine):
     # 9.4. commit_road_first [event: commit_road]: first traced segment
     # 9.5. commit_road_continue [event: commit_road, self-loop]: extend the road
     # 9.2. finish_road [direct]: Finish button
+    # 9.6. commit_road_finish [event: commit_road_finish]: a connector segment (target is an
+    #      existing node) ends the road immediately, from either state. Mirrors commit_custom_finish.
 
     commit_road_first = road_starting.to(road_building, event="commit_road")  # 9.4 [event: commit_road]
     commit_road_continue = road_building.to(road_building, event="commit_road")  # 9.5 [event: commit_road] self-loop
     finish_road = road_building.to(idle_viewing_road)  # 9.2 [direct]
+    commit_road_finish_from_starting = road_starting.to(
+        idle_viewing_road, event="commit_road_finish"
+    )  # 9.6 [event: commit_road_finish]
+    commit_road_finish_from_building = road_building.to(
+        idle_viewing_road, event="commit_road_finish"
+    )  # 9.6 [event: commit_road_finish]
     cancel_road_from_starting = road_starting.to(idle_ready, event="cancel_road")  # 9.1 [event: cancel_road]
     cancel_road_from_building = road_building.to(idle_ready, event="cancel_road")  # 9.1 [event: cancel_road]
 
@@ -571,6 +584,9 @@ class PlannerStateMachine(StateMachine):
             # commit_road event
             "commit_road_first",
             "commit_road_continue",
+            # commit_road_finish event
+            "commit_road_finish_from_starting",
+            "commit_road_finish_from_building",
             # cancel_slope event
             "cancel_from_starting",
             "cancel_from_building",
@@ -811,6 +827,12 @@ class PlannerStateMachine(StateMachine):
     # ==========================================================================
     # Transition Actions (before_* hooks)
     # ==========================================================================
+    # Naming convention (enforced repo-wide):
+    #   before_<event>   → auto-discovered event-level hook; fires for EVERY transition
+    #                      of that event. Use when all transitions share one action.
+    #   _before_<name>   → private; wired explicitly via before="..." on ONE transition.
+    #                      Use when transitions sharing an event need DIFFERENT actions
+    #                      (e.g. select_custom_target: starting vs building vs retarget).
 
     def before_start_slope(
         self,
@@ -863,6 +885,23 @@ class PlannerStateMachine(StateMachine):
             self.context.slope_build.segments.append(segment_id)
         self.context.viewing.set_slope_id(slope_id=slope_id)
         self.context.custom_connect.clear()
+
+    def before_commit_road_finish(self, segment_id: str, road_id: str) -> None:
+        """Road connector auto-finish (mirrors before_commit_custom_finish).
+
+        Idempotent on segment_id (caller appends before graph.finish_road()).
+        enter_idle_viewing_road clears road_build, so no clear here.
+        """
+        if segment_id not in self.context.road_build.segments:
+            self.context.road_build.segments.append(segment_id)
+        self.context.viewing.set_road_id(road_id=road_id)
+
+    def _before_finish_slope_from_custom(self, slope_id: str) -> None:
+        """Sidebar Finish during targeting: drop the in-progress proposal (never in
+        segments) and clear custom-connect + proposals. set_slope_id via before_finish_slope.
+        """
+        self.context.clear_custom_connect()
+        self.context.clear_proposals()
 
     def before_finish_slope(self, slope_id: str) -> None:
         """Action before finishing a slope."""

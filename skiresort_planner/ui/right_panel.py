@@ -43,10 +43,21 @@ from skiresort_planner.ui.state_machine import PlannerContext, PlannerStateMachi
 
 if TYPE_CHECKING:
     from skiresort_planner.model.lift import Lift
+    from skiresort_planner.model.proposed_path import ProposedPathSegment
     from skiresort_planner.model.road import Road
     from skiresort_planner.model.slope import Slope
 
 logger = logging.getLogger(__name__)
+
+
+def _commit_button_label(path: "ProposedPathSegment", *, continue_label: str, continue_help: str) -> tuple[str, str]:
+    """(label, help) for the primary commit button, shared by slope + road panels.
+
+    A connector (target is an existing node) finishes the entity; otherwise continue.
+    """
+    if path.is_connector and path.target_node_id:
+        return f"🏁 Finish → {path.target_node_id}", f"Connect to {path.target_node_id} and finish"
+    return continue_label, continue_help
 
 
 # =============================================================================
@@ -400,13 +411,13 @@ def _render_road_building_panel(
 
     _render_proposal_browser(ctx=ctx, key_prefix="road_path", noun="options")
 
-    if st.button(
-        "✅ Commit Road Segment",
-        type="primary",
-        width="stretch",
-        help="Add this segment and keep extending the road",
-    ):
-        logger.info(f"UI: Commit road segment clicked for proposal {selected_idx}")
+    label, help_text = _commit_button_label(
+        ctx.proposals.paths[selected_idx],
+        continue_label="✅ Commit Road Segment",
+        continue_help="Add this segment and keep extending the road",
+    )
+    if st.button(label, type="primary", width="stretch", help=help_text):
+        logger.info(f"UI: Commit road clicked for proposal {selected_idx}")
         on_commit(selected_idx)
 
 
@@ -552,14 +563,12 @@ class PathSelectionPanel:
         # Navigation arrows
         _render_proposal_browser(ctx=self.ctx, key_prefix="path", noun="paths")
 
-        # Commit button
-        if is_connector:
-            commit_label = f"🏁 Finish → {path.target_node_id}"
-            commit_help = f"Connect to {path.target_node_id} and finish this slope"
-        else:
-            commit_label = "✅ Commit This Path"
-            commit_help = "Add this segment and continue building"
-
+        # Commit button (shared label logic with the road panel)
+        commit_label, commit_help = _commit_button_label(
+            path,
+            continue_label="✅ Commit This Path",
+            continue_help="Add this segment and continue building",
+        )
         if st.button(commit_label, type="primary", width="stretch", help=commit_help):
             logger.info(f"UI: Commit button clicked for path {selected_idx}, is_connector={is_connector}")
             self.on_commit(selected_idx)

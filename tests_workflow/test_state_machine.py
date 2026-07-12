@@ -51,10 +51,12 @@ VALID_TRANSITIONS: list[tuple[str, list[str], str | None]] = [
     ("cancel_slope", ["slope_building"], None),
     ("commit_path", ["slope_building"], "setup_commit_continue"),  # self-loop
     ("select_custom_target", ["slope_building"], None),
+    ("finish_slope", ["slope_building"], None),
     # From SLOPE_CUSTOM_PATH
     ("cancel_slope", ["slope_custom_path"], None),
     ("cancel_custom", ["slope_custom_path"], None),
     ("select_custom_target", ["slope_custom_path"], None),  # self-loop (re-target)
+    ("finish_slope", ["slope_custom_path"], None),  # sidebar Finish during targeting
     # From LIFT_PLACING
     ("cancel_lift", ["lift_placing"], None),
     # From IDLE (road build entry) — road mirrors slope
@@ -65,6 +67,7 @@ VALID_TRANSITIONS: list[tuple[str, list[str], str | None]] = [
     ("commit_road", ["road_starting"], "setup_commit_road_first"),
     ("cancel_road", ["road_building"], None),
     ("commit_road", ["road_building"], "setup_commit_road_continue"),  # self-loop
+    ("commit_road_finish", ["road_starting", "road_building"], None),  # connector auto-finish
 ]
 
 
@@ -136,6 +139,16 @@ INVALID_TRANSITIONS: list[tuple[str, list[str]]] = [
     (
         "commit_road",
         ["idle_ready", "idle_viewing_slope", "slope_starting", "slope_building", "lift_placing"],
+    ),
+    # Cannot fire the road connector-finish outside road-build states
+    (
+        "commit_road_finish",
+        ["idle_ready", "idle_viewing_slope", "slope_starting", "slope_building", "slope_custom_path", "lift_placing"],
+    ),
+    # Finish_slope is valid from slope_building + slope_custom_path only
+    (
+        "finish_slope",
+        ["idle_ready", "idle_viewing_slope", "idle_viewing_lift", "slope_starting", "lift_placing"],
     ),
 ]
 

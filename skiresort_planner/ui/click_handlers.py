@@ -741,9 +741,11 @@ def handle_road_building_click(click_info: ClickInfo, elevation: float | None) -
         RoadTooSteepMessage(gentlest_pct=gentlest, max_grade_pct=band_max).display()
         return
 
-    # Joining an existing node: snap proposal ends onto it on commit.
+    # Joining an existing node: it's a connector → snap ends onto it and auto-finish
+    # the road on commit (mirrors slope custom-connect).
     if target_node_id is not None:
         for p in proposals:
+            p.is_connector = True
             p.target_node_id = target_node_id
 
     # Extending from an existing node: reuse it exactly on commit (never duplicate it).

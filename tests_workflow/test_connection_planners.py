@@ -80,9 +80,6 @@ class TestEdgeCostFunction:
             to_lon=10.0009,  # ~100m east at 47°N
             to_lat=47.0,
             target_grade_pct=20.0,
-            side="left",
-            target_lon=10.001,
-            target_lat=46.999,
         )
 
         # Cost should be approximately distance (since exp(0) = 1.0)
@@ -105,9 +102,6 @@ class TestEdgeCostFunction:
             to_lon=10.0009,
             to_lat=47.0,
             target_grade_pct=20.0,
-            side="left",
-            target_lon=10.001,
-            target_lat=46.999,
         )
 
         cost_deviating = planner._calc_edge_cost(
@@ -118,9 +112,6 @@ class TestEdgeCostFunction:
             to_lon=10.0009,
             to_lat=47.0,
             target_grade_pct=20.0,
-            side="left",
-            target_lon=10.001,
-            target_lat=46.999,
         )
 
         assert cost_deviating > cost_matching, "Higher deviation should increase cost"
@@ -141,9 +132,6 @@ class TestEdgeCostFunction:
             to_lon=10.0009,
             to_lat=47.0,
             target_grade_pct=20.0,
-            side="left",
-            target_lon=10.001,
-            target_lat=46.999,
         )
 
         # Uphill edge (20m climb)
@@ -155,9 +143,6 @@ class TestEdgeCostFunction:
             to_lon=10.0009,
             to_lat=47.0,
             target_grade_pct=20.0,
-            side="left",
-            target_lon=10.001,
-            target_lat=46.999,
         )
 
         assert cost_uphill > cost_downhill, "Uphill should be more expensive"
@@ -177,9 +162,6 @@ class TestEdgeCostFunction:
             to_lon=10.0,  # Same position
             to_lat=47.0,
             target_grade_pct=20.0,
-            side="left",
-            target_lon=10.001,
-            target_lat=46.999,
         )
 
         assert math.isinf(cost), "Zero distance should return infinity"
@@ -281,7 +263,6 @@ class TestPlannerIntegration:
             target_lat=47.001,
             target_elevation=2100.0,  # Higher than start
             target_grade_pct=20.0,
-            side="left",
         )
 
         assert result is None, "Uphill path should return None"
@@ -296,7 +277,6 @@ class TestPlannerIntegration:
             target_lat=47.0,
             target_elevation=1900.0,
             target_grade_pct=20.0,
-            side="left",
         )
 
         assert result is None, "Zero distance path should return None"
@@ -323,9 +303,6 @@ class TestEdgeCostGradeAttractor:
             to_lon=30.0 / 111320.0,
             to_lat=0.0,
             target_grade_pct=target_grade_pct,
-            side="left",
-            target_lon=1.0,
-            target_lat=0.0,
             gradient_mode=gradient_mode,
         )
 

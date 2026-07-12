@@ -96,7 +96,6 @@ class LeastCostPathPlanner:
         target_lat: float,
         target_elevation: float,
         target_grade_pct: float,
-        side: str,
         gradient_mode: GradientMode = GradientMode.DOWNHILL,
     ) -> Optional[ProposedPathSegment]:
         """Plan a least-cost path that holds a target grade from start to target.
@@ -104,7 +103,6 @@ class LeastCostPathPlanner:
         Args:
             start_lon/lat/elevation, target_lon/lat/elevation: the two endpoints.
             target_grade_pct: signed grade the path aims to hold (+ = descending).
-            side: "left" or "right" preference (currently a no-op, see _calc_edge_cost).
             gradient_mode: DOWNHILL (default) forces net-descent and penalizes climbing
                 (skiable pistes); UPHILL forces net-ascent and penalizes descending. The
                 monotonicity is what prevents the path from looping.
@@ -146,7 +144,6 @@ class LeastCostPathPlanner:
             start=start_node,
             target=target_node,
             target_grade_pct=target_grade_pct,
-            side=side,
             lons=lons,
             lats=lats,
             gradient_mode=gradient_mode,
@@ -297,7 +294,6 @@ class LeastCostPathPlanner:
         start: GridNode,
         target: GridNode,
         target_grade_pct: float,
-        side: str,
         lons: list[list[float]],
         lats: list[list[float]],
         gradient_mode: GradientMode = GradientMode.DOWNHILL,
@@ -310,10 +306,6 @@ class LeastCostPathPlanner:
         n_rows = len(elevations)
         n_cols = len(elevations[0])
         N = n_rows * n_cols
-
-        # Target coords (used for side preference in edge cost)
-        t_lon = lons[target.row][target.col]
-        t_lat = lats[target.row][target.col]
 
         # Build sparse graph (row, col, data) for CSR matrix
         row_list: list[int] = []
@@ -345,14 +337,11 @@ class LeastCostPathPlanner:
                     edge_cost = self._calc_edge_cost(
                         from_elev=from_elev,
                         to_elev=to_elev,
-                        from_lon=from_lon,
                         from_lat=from_lat,
-                        to_lon=to_lon,
                         to_lat=to_lat,
+                        from_lon=from_lon,
+                        to_lon=to_lon,
                         target_grade_pct=target_grade_pct,
-                        side=side,
-                        target_lon=t_lon,
-                        target_lat=t_lat,
                         gradient_mode=gradient_mode,
                     )
 
@@ -411,9 +400,6 @@ class LeastCostPathPlanner:
         to_lon: float,
         to_lat: float,
         target_grade_pct: float,
-        side: str,
-        target_lon: float,
-        target_lat: float,
         gradient_mode: GradientMode = GradientMode.DOWNHILL,
     ) -> float:
         """Edge cost = distance × exp(|actual_grade − target_grade| / σ) × against-mode.
@@ -423,10 +409,6 @@ class LeastCostPathPlanner:
         that runs AGAINST the gradient_mode (climbing in DOWNHILL mode, or descending in
         UPHILL mode) is exponentially penalized — that one-way monotonicity is what stops
         the path from looping. It's a soft preference; any hard cap is enforced by the caller.
-
-        FIXME(side-bias): `side`, `target_lon`, `target_lat` are DEAD — cost is
-        grade only, so left and right trace the same route. Kept for a future
-        side-aware planner; until then callers emit one side.
         """
         # Horizontal distance
         horiz_dist = GeoCalculator.haversine_distance_m(lat1=from_lat, lon1=from_lon, lat2=to_lat, lon2=to_lon)
