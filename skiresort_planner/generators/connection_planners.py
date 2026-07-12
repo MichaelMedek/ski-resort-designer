@@ -199,7 +199,7 @@ class LeastCostPathPlanner:
 
         # Grid dimensions
         n_cells = int(total_extent / PlannerConfig.GRID_RESOLUTION_M) + 1
-        n_cells = min(n_cells, PlannerConfig.MAX_GRID_SIZE)  # Cap grid size for performance
+        n_cells = min(n_cells, int(PlannerConfig.MAX_GRID_SIZE))  # Cap grid size for performance
 
         # Center point
         center_lon = (start_lon + target_lon) / 2

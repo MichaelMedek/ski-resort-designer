@@ -248,12 +248,13 @@ class PlannerConfig:
 
     # Grid search parameters
     GRID_RESOLUTION_M = 15.0  # Grid cell size in meters
-    GRID_BUFFER_FACTOR = 0.5  # Extra buffer around start-target line (as fraction)
+    # Lateral room around the direct start→target line, as a fraction of that distance.
+    GRID_BUFFER_FACTOR = 1.0
     MAX_GRID_SIZE = 100  # Maximum grid cells per dimension (performance cap)
 
     # Cost function parameters
-    # Cost = distance × exp(slope_deviation / COST_SIGMA) × uphill_penalty
-    COST_SIGMA = 12.0  # Slope deviation sensitivity (lower = stricter matching)
+    # Cost = distance × exp(slope_deviation / COST_SIGMA) × against-mode penalty
+    COST_SIGMA = 8.0  # Slope deviation sensitivity (lower = stricter grade matching)
 
     # Momentum: when extending a path from a node, a distance-decaying turn penalty
     # biases the first stretch to leave the node roughly in-line with the incoming
