@@ -13,7 +13,7 @@ Design ski resorts on real Alpine terrain with an interactive map-based tool.
 1. **Click** on the map to place a starting point → path proposals appear
 2. **Click** a dashed line to select it → stats appear in right panel
 3. **Click "✅ Commit"** → segment becomes solid, new proposals appear
-4. **Click "🏁 Finish Slope"** → slope is complete with a name and difficulty rating
+4. **Click "🏁 Finish Committed Slope"** → slope is complete with a name and difficulty rating
 
 ---
 
@@ -85,7 +85,7 @@ Repeat steps 2-3 to add more segments. The right panel shows cumulative stats:
 
 ![Finished Slope](images/2-FinishSlope.png)
 
-Click **"🏁 Finish Slope"** in the sidebar when done.
+Click **"🏁 Finish Committed Slope"** in the sidebar when done.
 
 - The slope receives an auto-generated name
 - Final difficulty = the steepest segment's rating
@@ -258,7 +258,7 @@ Click **"🏔️ View in 3D"** to see pylons and cable from an angled perspectiv
 
 Roads are **vehicle roads** — access roads and connectors between areas of the resort. Unlike a ski slope, a road may climb, descend, or run flat, but it always stays within a gentle **±15% gradient** so cars can drive it. Roads are drawn as a distinct **brown-orange** ribbon.
 
-Roads are built **segment by segment, just like slopes**: you click the next point, a gentle segment is traced to it, and you keep extending until you press **🏁 Finish Road**.
+Roads are built **segment by segment, just like slopes**: you click the next point, a gentle segment is traced to it, and you keep extending until you press **🏁 Finish Committed Road**.
 
 ### Step 1: Select Road mode
 
@@ -277,7 +277,7 @@ Click the **next point** the road should reach. Two gentle route **proposals** (
 
 ### Step 4: Finish the road
 
-Press **🏁 Finish Road** in the sidebar. The road receives an auto-generated name and its details panel opens. Press **✖️ Cancel Road** to discard the whole in-progress road.
+Press **🏁 Finish Committed Road** in the sidebar. The road receives an auto-generated name and its details panel opens. Press **✖️ Cancel Road** to discard the whole in-progress road.
 
 ### Parking places
 
@@ -314,7 +314,7 @@ The currently active mode is highlighted.
 | Control | Action |
 |---------|--------|
 | **Segment Length Slider** | Adjust path length (100–1000m) |
-| **🏁 Finish Slope** | Complete and name the current slope |
+| **🏁 Finish Committed Slope** | Complete and name the current slope |
 | **✖️ Cancel Slope** | Discard all uncommitted segments |
 
 ### During Lift Placement
@@ -327,7 +327,7 @@ The currently active mode is highlighted.
 
 | Control | Action |
 |---------|--------|
-| **🏁 Finish Road** | Finalize the road (enabled after ≥1 segment) |
+| **🏁 Finish Committed Road** | Finalize the road (enabled after ≥1 segment) |
 | **✖️ Cancel Road** | Discard the whole in-progress road, return to idle |
 
 ### Always Available

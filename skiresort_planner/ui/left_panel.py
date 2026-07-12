@@ -311,11 +311,15 @@ class SidebarRenderer:
         has_segments = self.ctx.road_build.has_committed_segments()
 
         finish_road = st.button(
-            "🏁 Finish Road",
+            "🏁 Finish Committed Road",
             type="primary",
             width="stretch",
             disabled=not has_segments,
-            help="Add at least one segment before finishing" if not has_segments else "Finalize this road",
+            help=(
+                "Add at least one segment before finishing"
+                if not has_segments
+                else "Finalize the committed segments (any unconfirmed proposal is discarded)"
+            ),
         )
         cancel_road = st.button(
             "✖️ Cancel Road",
@@ -594,11 +598,15 @@ class SidebarRenderer:
 
         # Action buttons
         finish_slope = st.button(
-            "🏁 Finish Slope",
+            "🏁 Finish Committed Slope",
             type="primary",
             width="stretch",
             disabled=not has_segments,
-            help="Commit at least one segment before finishing" if not has_segments else "Finalize this slope",
+            help=(
+                "Commit at least one segment before finishing"
+                if not has_segments
+                else "Finalize the committed segments (any unconfirmed proposal is discarded)"
+            ),
         )
 
         # Cancel slope - immediate action (no confirmation)
