@@ -15,7 +15,7 @@ import logging
 import math
 from dataclasses import dataclass
 from enum import Enum
-from math import exp, radians, sin
+from math import exp
 from typing import Optional
 
 import numpy as np
@@ -98,7 +98,6 @@ class LeastCostPathPlanner:
         target_grade_pct: float,
         side: str,
         gradient_mode: GradientMode = GradientMode.DOWNHILL,
-        incoming_bearing: Optional[float] = None,
     ) -> Optional[ProposedPathSegment]:
         """Plan a least-cost path that holds a target grade from start to target.
 
@@ -109,8 +108,6 @@ class LeastCostPathPlanner:
             gradient_mode: DOWNHILL (default) forces net-descent and penalizes climbing
                 (skiable pistes); UPHILL forces net-ascent and penalizes descending. The
                 monotonicity is what prevents the path from looping.
-            incoming_bearing: heading (deg) inherited from a prior segment; adds a
-                decaying turn penalty so the path leaves in-line (no kink). None → off.
 
         Returns:
             ProposedPathSegment if path found, None otherwise.
@@ -153,7 +150,6 @@ class LeastCostPathPlanner:
             lons=lons,
             lats=lats,
             gradient_mode=gradient_mode,
-            incoming_bearing=incoming_bearing,
         )
 
         if path_nodes is None:
@@ -171,7 +167,6 @@ class LeastCostPathPlanner:
         points = self._smooth_path_spline(
             points=raw_points,
             target_grade_pct=target_grade_pct,
-            incoming_bearing=incoming_bearing,
         )
 
         return ProposedPathSegment(
@@ -306,7 +301,6 @@ class LeastCostPathPlanner:
         lons: list[list[float]],
         lats: list[list[float]],
         gradient_mode: GradientMode = GradientMode.DOWNHILL,
-        incoming_bearing: Optional[float] = None,
     ) -> tuple[Optional[list[GridNode]], int, int]:
         """Least-cost path using SciPy's C-optimized Dijkstra.
 
@@ -320,10 +314,6 @@ class LeastCostPathPlanner:
         # Target coords (used for side preference in edge cost)
         t_lon = lons[target.row][target.col]
         t_lat = lats[target.row][target.col]
-
-        # Start coords: momentum's turn penalty decays with distance from here.
-        s_lon = lons[start.row][start.col]
-        s_lat = lats[start.row][start.col]
 
         # Build sparse graph (row, col, data) for CSR matrix
         row_list: list[int] = []
@@ -364,9 +354,6 @@ class LeastCostPathPlanner:
                         target_lon=t_lon,
                         target_lat=t_lat,
                         gradient_mode=gradient_mode,
-                        incoming_bearing=incoming_bearing,
-                        start_lon=s_lon,
-                        start_lat=s_lat,
                     )
 
                     if edge_cost < float("inf"):
@@ -428,9 +415,6 @@ class LeastCostPathPlanner:
         target_lon: float,
         target_lat: float,
         gradient_mode: GradientMode = GradientMode.DOWNHILL,
-        incoming_bearing: Optional[float] = None,
-        start_lon: Optional[float] = None,
-        start_lat: Optional[float] = None,
     ) -> float:
         """Edge cost = distance × exp(|actual_grade − target_grade| / σ) × against-mode.
 
@@ -440,12 +424,9 @@ class LeastCostPathPlanner:
         UPHILL mode) is exponentially penalized — that one-way monotonicity is what stops
         the path from looping. It's a soft preference; any hard cap is enforced by the caller.
 
-        Momentum (incoming_bearing set): a decaying turn penalty near the start node
-        keeps the path leaving in-line (no kink), fading to nothing by MOMENTUM_DECAY_M.
-
         FIXME(side-bias): `side`, `target_lon`, `target_lat` are DEAD — cost is
-        grade/position only, so left and right trace the same route. Kept for a future
-        side-aware (cross-track) or heading-aware planner; until then callers emit one side.
+        grade only, so left and right trace the same route. Kept for a future
+        side-aware planner; until then callers emit one side.
         """
         # Horizontal distance
         horiz_dist = GeoCalculator.haversine_distance_m(lat1=from_lat, lon1=from_lon, lat2=to_lat, lon2=to_lon)
@@ -468,79 +449,7 @@ class LeastCostPathPlanner:
         if wrong_way:
             against_penalty = exp(abs(actual_grade) / PlannerConfig.COST_SIGMA)
 
-        base_cost = horiz_dist * grade_cost * against_penalty
-
-        return base_cost * self._momentum_multiplier(
-            from_lon=from_lon,
-            from_lat=from_lat,
-            to_lon=to_lon,
-            to_lat=to_lat,
-            incoming_bearing=incoming_bearing,
-            start_lon=start_lon,
-            start_lat=start_lat,
-        )
-
-    def _momentum_multiplier(
-        self,
-        from_lon: float,
-        from_lat: float,
-        to_lon: float,
-        to_lat: float,
-        incoming_bearing: Optional[float],
-        start_lon: Optional[float],
-        start_lat: Optional[float],
-    ) -> float:
-        """Distance-decaying momentum penalty for a clean departure from a node.
-
-        Two stacked terms, both fading to 1.0 (no effect) past their range so
-        mid-segment routing is untouched:
-
-        - TURN: an edge whose heading deviates from `incoming_bearing` costs more,
-          fading over MOMENTUM_DECAY_M. Keeps the path leaving at the right heading.
-        - POSITION: the edge's endpoint drifting laterally off the incoming line
-          (cross-track offset) costs more — stronger weight, MUCH faster fade
-          (MOMENTUM_POS_DECAY_M). Pins WHERE the path leaves so it can't jump
-          sideways off the node, then releases quickly to terrain-following.
-
-        Returns 1.0 when there is no incoming heading / start position.
-        """
-        if incoming_bearing is None or start_lon is None or start_lat is None:
-            return 1.0
-
-        dist_from_start = GeoCalculator.haversine_distance_m(
-            lat1=start_lat, lon1=start_lon, lat2=from_lat, lon2=from_lon
-        )
-
-        # TURN term (heading continuity), fading over the long decay.
-        turn_penalty = 0.0
-        if dist_from_start < PlannerConfig.MOMENTUM_DECAY_M:
-            edge_bearing = GeoCalculator.initial_bearing_deg(lon1=from_lon, lat1=from_lat, lon2=to_lon, lat2=to_lat)
-            turn = abs(edge_bearing - incoming_bearing) % 360
-            if turn > 180:
-                turn = 360 - turn  # normalize to [0, 180]
-            decay = 1.0 - dist_from_start / PlannerConfig.MOMENTUM_DECAY_M
-            turn_penalty = PlannerConfig.MOMENTUM_TURN_WEIGHT * decay * (turn / 90.0)
-
-        # POSITION term (cross-track pin), stronger but fading over the short decay.
-        # Cross-track = perpendicular distance of the edge endpoint from the incoming
-        # line through the start node; that is what a sideways jump increases.
-        pos_penalty = 0.0
-        to_dist_from_start = GeoCalculator.haversine_distance_m(
-            lat1=start_lat, lon1=start_lon, lat2=to_lat, lon2=to_lon
-        )
-        if to_dist_from_start < PlannerConfig.MOMENTUM_POS_DECAY_M:
-            to_bearing = GeoCalculator.initial_bearing_deg(lon1=start_lon, lat1=start_lat, lon2=to_lon, lat2=to_lat)
-            angle_off = abs(to_bearing - incoming_bearing) % 360
-            if angle_off > 180:
-                angle_off = 360 - angle_off
-            cross_track_m = to_dist_from_start * abs(sin(radians(angle_off)))
-            pos_decay = 1.0 - to_dist_from_start / PlannerConfig.MOMENTUM_POS_DECAY_M
-            lateral_units = cross_track_m / PlannerConfig.MOMENTUM_POS_SCALE_M
-            pos_penalty = PlannerConfig.MOMENTUM_POS_WEIGHT * pos_decay * lateral_units
-
-        if turn_penalty == 0.0 and pos_penalty == 0.0:
-            return 1.0
-        return exp(turn_penalty + pos_penalty)
+        return horiz_dist * grade_cost * against_penalty
 
     def _path_to_points(
         self,
@@ -561,44 +470,11 @@ class LeastCostPathPlanner:
             )
         return points
 
-    def _nudge_join_toward_bearing(self, points: list[PathPoint], incoming_bearing: Optional[float]) -> list[PathPoint]:
-        """Gently rotate the first join-region points toward the incoming heading.
-
-        Keeps the anchor (points[0]) fixed and, for each early point within
-        MOMENTUM_DECAY_M of it, blends the point's bearing-from-anchor toward
-        `incoming_bearing` by a factor that decays to zero across the region. The
-        per-point rotation is clamped to MAX_TURN_PER_STEP_DEG so the join can never
-        swing wildly (no cliff dives / reversed turns). Distance-from-anchor and
-        elevation are preserved; the caller re-samples elevation from the DEM after.
-        Returns points unchanged when there is no incoming heading.
-        """
-        if incoming_bearing is None or len(points) < 3:
-            return points
-
-        anchor = points[0]
-        nudged: list[PathPoint] = [anchor]
-        for pt in points[1:]:
-            dist = GeoCalculator.haversine_distance_m(lat1=anchor.lat, lon1=anchor.lon, lat2=pt.lat, lon2=pt.lon)
-            if dist >= PlannerConfig.MOMENTUM_DECAY_M or dist < 0.1:
-                nudged.append(pt)
-                continue
-
-            bearing = GeoCalculator.initial_bearing_deg(lon1=anchor.lon, lat1=anchor.lat, lon2=pt.lon, lat2=pt.lat)
-            diff = (incoming_bearing - bearing + 180) % 360 - 180  # signed shortest turn to incoming
-            weight = 1.0 - dist / PlannerConfig.MOMENTUM_DECAY_M  # full at anchor → 0 at decay distance
-            rotate = max(-PathConfig.MAX_TURN_PER_STEP_DEG, min(PathConfig.MAX_TURN_PER_STEP_DEG, diff * weight))
-            new_lon, new_lat = GeoCalculator.destination(
-                lon=anchor.lon, lat=anchor.lat, bearing_deg=(bearing + rotate) % 360, distance_m=dist
-            )
-            nudged.append(PathPoint(lon=new_lon, lat=new_lat, elevation=pt.elevation))
-        return nudged
-
     def _smooth_path_spline(
         self,
         points: list[PathPoint],
         target_grade_pct: float,
         step_m: float = 7.0,
-        incoming_bearing: Optional[float] = None,
     ) -> list[PathPoint]:
         """Smooth grid path using cubic spline interpolation and resample at fixed intervals.
 
@@ -610,20 +486,12 @@ class LeastCostPathPlanner:
             points: Raw grid path points
             target_grade_pct: Target grade - gentler targets get more aggressive smoothing
             step_m: Output point spacing in meters (default 7m)
-            incoming_bearing: Optional heading (deg) the path arrives with. When set,
-                the join region (first MOMENTUM_DECAY_M) is gently nudged toward that
-                heading BEFORE the spline pass, so the path leaves the node in-line
-                instead of kinking. The nudge is bounded (MAX_TURN_PER_STEP_DEG),
-                decays to zero over the region, and never moves the anchor point;
-                elevations are still DEM-sourced below, so it cannot invent terrain.
 
         Returns:
             Smoothed path with regular point spacing and DEM-sampled elevations.
         """
         if len(points) < 4:
             return points
-
-        points = self._nudge_join_toward_bearing(points=points, incoming_bearing=incoming_bearing)
 
         lons = np.array([p.lon for p in points])
         lats = np.array([p.lat for p in points])

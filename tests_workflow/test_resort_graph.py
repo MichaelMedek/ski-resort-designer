@@ -173,7 +173,7 @@ class TestConnectorGeometrySnapping:
 
     def test_start_node_id_reuses_node_and_never_duplicates(self, empty_graph, mock_dem_blue_slope) -> None:
         """A path carrying start_node_id reuses that exact node — even when the traced
-        start point has drifted well past the snap threshold (momentum/smoothing can do
+        start point has drifted well past the snap threshold (spline smoothing can do
         this). Regression: extending from an existing node must NEVER spawn a duplicate.
         """
         graph = empty_graph

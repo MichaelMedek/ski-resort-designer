@@ -1,10 +1,10 @@
 """Standalone parameter-tuning experiment for the path-planning algorithm.
 
-Loads a saved resort backup, harvests the REAL slope/road segment endpoints (and their
-incoming headings) as a corpus of build scenarios, then replays each scenario through
-`LeastCostPathPlanner` over the REAL DEM while sweeping the tunable parameters. For every
-(parameter, scenario) pair it records objective metrics, aggregates them across the corpus
-for statistical evidence, and writes a Markdown report ending in a confirmed good config.
+Loads a saved resort backup, harvests the REAL slope/road segment endpoints as a corpus
+of build scenarios, then replays each scenario through `LeastCostPathPlanner` over the
+REAL DEM while sweeping the tunable parameters. For every (parameter, scenario) pair it
+records objective metrics, aggregates them across the corpus for statistical evidence,
+and writes a Markdown report ending in a confirmed good config.
 
 Run:  python scripts/tune_path_planner.py
 Output: docs/experiments/path-planner-tuning.md
@@ -18,7 +18,6 @@ from __future__ import annotations
 import json
 import statistics
 from dataclasses import dataclass, field
-from math import radians, sin
 from typing import Any, Callable, Optional
 
 from skiresort_planner.constants import BACKUP_DIR, PROJECT_ROOT, PathConfig, PlannerConfig
@@ -39,9 +38,8 @@ REPORT_PATH = PROJECT_ROOT / "docs" / "experiments" / "path-planner-tuning.md"
 class Scenario:
     """One 'extend a segment' build situation taken from a real saved entity.
 
-    start/end are real committed segment endpoints; incoming_bearing is the heading the
-    prior geometry arrives with (None for the first segment of an entity). is_road picks
-    road-mode (gradient band + earthwork) vs slope-mode.
+    start/end are real committed segment endpoints; is_road picks road-mode (gradient
+    band + earthwork) vs slope-mode.
     """
 
     label: str
@@ -51,22 +49,19 @@ class Scenario:
     end_lon: float
     end_lat: float
     end_elev: float
-    incoming_bearing: Optional[float]
     is_road: bool
 
 
 def harvest_scenarios(backup: dict[str, Any], dem: DEMService) -> list[Scenario]:
     """Build a scenario per segment of every slope/road in the backup.
 
-    For each segment we take its first and last point as start/target, and derive the
-    incoming bearing from the previous segment's final leg (None for the first segment).
+    For each segment we take its first and last point as start/target.
     """
     segments = backup["segments"]
     scenarios: list[Scenario] = []
 
     def add_entity(entity_id: str, seg_ids: list[str], is_road: bool) -> None:
-        prev_last_two: Optional[tuple[dict[str, float], dict[str, float]]] = None
-        for idx, sid in enumerate(seg_ids):
+        for sid in seg_ids:
             seg = segments.get(sid)
             if seg is None or len(seg["points"]) < 2:
                 continue
@@ -77,10 +72,6 @@ def harvest_scenarios(backup: dict[str, Any], dem: DEMService) -> list[Scenario]
                 continue
             if dem.get_elevation(lon=end["lon"], lat=end["lat"]) is None:
                 continue
-            incoming = None
-            if prev_last_two is not None:
-                a, b = prev_last_two
-                incoming = GeoCalculator.initial_bearing_deg(lon1=a["lon"], lat1=a["lat"], lon2=b["lon"], lat2=b["lat"])
             scenarios.append(
                 Scenario(
                     label=f"{entity_id}:{sid}",
@@ -90,11 +81,9 @@ def harvest_scenarios(backup: dict[str, Any], dem: DEMService) -> list[Scenario]
                     end_lon=end["lon"],
                     end_lat=end["lat"],
                     end_elev=end["elevation"],
-                    incoming_bearing=incoming,
                     is_road=is_road,
                 )
             )
-            prev_last_two = (pts[-2], pts[-1])
 
     for rid, road in backup.get("roads", {}).items():
         add_entity(rid, road["segment_ids"], is_road=True)
@@ -114,39 +103,18 @@ class Metrics:
 
     ok: bool  # a path was produced at all
     max_slope_pct: float  # steepest rolling-window grade (road cap = 15%)
-    join_kink_deg: float  # angle between incoming heading and the path's first leg
-    start_jump_m: float  # cross-track offset of the path 30 m from the node (sideways jump)
     length_ratio: float  # path length / straight-line distance (detour; 1.0 = straight)
     endpoint_err_m: float  # how far the path's endpoints sit from the requested nodes
     is_road: bool  # this scenario is a road (subject to the ±15% cap)
     road_rejected: bool  # ROAD scenario whose gentlest proposal still exceeds the ±15% cap
 
 
-def _turn(a: float, b: float) -> float:
-    d = abs(a - b) % 360
-    return d if d <= 180 else 360 - d
-
-
 def measure(path: Optional[ProposedPathSegment], sc: Scenario) -> Metrics:
     """Compute objective metrics for one proposal against its scenario."""
     if path is None or len(path.points) < 2:
         # No path at all: for a road that counts as a rejection (nothing to commit).
-        return Metrics(False, 0.0, 0.0, 0.0, 0.0, 0.0, is_road=sc.is_road, road_rejected=sc.is_road)
+        return Metrics(False, 0.0, 0.0, 0.0, is_road=sc.is_road, road_rejected=sc.is_road)
     pts = path.points
-
-    # Join kink: incoming heading vs first leg (0 if no incoming bearing).
-    first_leg = GeoCalculator.initial_bearing_deg(lon1=pts[0].lon, lat1=pts[0].lat, lon2=pts[3].lon, lat2=pts[3].lat)
-    kink = _turn(sc.incoming_bearing, first_leg) if sc.incoming_bearing is not None else 0.0
-
-    # Start jump: cross-track offset ~30 m from the node relative to the incoming line.
-    jump = 0.0
-    if sc.incoming_bearing is not None:
-        for q in pts[1:]:
-            d = GeoCalculator.haversine_distance_m(lat1=pts[0].lat, lon1=pts[0].lon, lat2=q.lat, lon2=q.lon)
-            if d >= 30.0:
-                b = GeoCalculator.initial_bearing_deg(lon1=pts[0].lon, lat1=pts[0].lat, lon2=q.lon, lat2=q.lat)
-                jump = d * abs(sin(radians(_turn(b, sc.incoming_bearing))))
-                break
 
     # Length ratio (detour).
     length = sum(pts[i].distance_to(other=pts[i + 1]) for i in range(len(pts) - 1))
@@ -160,7 +128,7 @@ def measure(path: Optional[ProposedPathSegment], sc: Scenario) -> Metrics:
     # cell + half a cell); production `commit_paths` snaps endpoints exactly onto the
     # node via start_node_id/target_node_id, so the committed value is ~0. We track it
     # only to DETECT route distortion: a value far above the grid-snap floor means the
-    # route is being bent, not just the join.
+    # route is being bent.
     endpoint_snap = max(
         GeoCalculator.haversine_distance_m(lat1=sc.start_lat, lon1=sc.start_lon, lat2=pts[0].lat, lon2=pts[0].lon),
         GeoCalculator.haversine_distance_m(lat1=sc.end_lat, lon1=sc.end_lon, lat2=pts[-1].lat, lon2=pts[-1].lon),
@@ -170,7 +138,7 @@ def measure(path: Optional[ProposedPathSegment], sc: Scenario) -> Metrics:
     # would refuse to offer it. Slopes have no such cap, so they're never rejected.
     road_rejected = sc.is_road and path.max_slope_pct > float(PathConfig.ROAD_MAX_GRADIENT_PCT)
 
-    return Metrics(True, path.max_slope_pct, kink, jump, length_ratio, endpoint_snap, sc.is_road, road_rejected)
+    return Metrics(True, path.max_slope_pct, length_ratio, endpoint_snap, sc.is_road, road_rejected)
 
 
 def run_scenario(factory: PathFactory, sc: Scenario) -> Metrics:
@@ -184,7 +152,6 @@ def run_scenario(factory: PathFactory, sc: Scenario) -> Metrics:
             target_lat=sc.end_lat,
             target_elevation=sc.end_elev,
             road_mode=sc.is_road,
-            incoming_bearing=sc.incoming_bearing,
         )
     )
     # Pick the gentlest proposal (what the user is most likely to commit).
@@ -213,11 +180,9 @@ class Aggregate:
 
     value: float
     n_ok: int
-    kink_med: float
-    jump_med: float
     slope_med: float
     length_med: float
-    endpoint_med: float  # median grid-snap; a jump above the floor = route distortion
+    endpoint_med: float  # median grid-snap; a value above the floor = route distortion
     reject_rate: float  # fraction of ROAD scenarios whose gentlest route still exceeds ±15%
     n_road: int  # number of road scenarios in this subset (denominator for reject_rate)
     raw: dict[str, float] = field(default_factory=dict)
@@ -236,8 +201,6 @@ def aggregate(metrics: list[Metrics]) -> Aggregate:
     return Aggregate(
         value=0.0,
         n_ok=len(ok),
-        kink_med=med([m.join_kink_deg for m in ok]),
-        jump_med=med([m.start_jump_m for m in ok]),
         slope_med=med([m.max_slope_pct for m in ok]),
         length_med=med([m.length_ratio for m in ok]),
         endpoint_med=med([m.endpoint_err_m for m in ok]),
@@ -283,8 +246,6 @@ def pick_best(param: Param, aggs: list[Aggregate]) -> Aggregate:
     (length_ratio) so we don't buy a marginal gain with a wildly longer road.
     """
     metric_of: dict[str, Callable[[Aggregate], float]] = {
-        "join_kink_deg": lambda a: a.kink_med,
-        "start_jump_m": lambda a: a.jump_med,
         "max_slope_pct": lambda a: a.slope_med,
         "reject_rate": lambda a: a.reject_rate,
     }
@@ -325,8 +286,6 @@ def write_report(
     )
     lines.append("- `slope` — median steepest rolling-window grade (%), road validity cap = 15")
     lines.append("- `length` — path length / straight-line (detour ratio; 1.0 = straight)")
-    lines.append("- `kink` — join angle (deg) between incoming heading and the path's first leg")
-    lines.append("- `jump` — sideways cross-track offset (m) ~30 m off the node")
     lines.append(
         "- `snap` — raw-proposal endpoint offset from the requested node (m); production commit pins endpoints to the node (→ ~0), tracked only to spot route distortion"
     )
@@ -337,18 +296,16 @@ def write_report(
         lines.append("")
         lines.append(f"Road scenarios in corpus: {aggs[0].n_road}.")
         lines.append("")
-        lines.append("| value | n_ok | reject | slope | length | kink | jump | snap |")
-        lines.append("|------:|-----:|-------:|------:|-------:|-----:|-----:|-----:|")
+        lines.append("| value | n_ok | reject | slope | length | snap |")
+        lines.append("|------:|-----:|-------:|------:|-------:|-----:|")
         for a in aggs:
             marker = " ✅" if a.value == best.value else ""
             lines.append(
                 f"| {a.value:g}{marker} | {a.n_ok} | {_fmt(a.reject_rate)} | {_fmt(a.slope_med)} | "
-                f"{_fmt(a.length_med)} | {_fmt(a.kink_med)} | {_fmt(a.jump_med)} | {_fmt(a.endpoint_med)} |"
+                f"{_fmt(a.length_med)} | {_fmt(a.endpoint_med)} |"
             )
         lines.append("")
         metric_med = {
-            "join_kink_deg": best.kink_med,
-            "start_jump_m": best.jump_med,
             "max_slope_pct": best.slope_med,
             "reject_rate": best.reject_rate,
         }[param.metric]
@@ -372,8 +329,8 @@ def write_report(
     lines.append("```")
     lines.append("")
     lines.append("_Consistency check: `snap` measures the raw grid-snap (production commit pins endpoints")
-    lines.append("to the node, → ~0). The chosen values keep `snap` near its floor, so the join metrics")
-    lines.append("(kink/jump) reflect a genuinely cleaner departure, not a route dragged off its endpoints._")
+    lines.append("to the node, → ~0). The chosen values keep `snap` near its floor, so the slope/detour")
+    lines.append("metrics reflect the real route quality, not one dragged off its endpoints._")
 
     REPORT_PATH.write_text("\n".join(lines) + "\n")
 

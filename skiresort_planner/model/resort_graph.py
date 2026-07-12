@@ -332,7 +332,7 @@ class ResortGraph:
 
             # Get start node.
             # If the proposal extends from an existing node, reuse it EXACTLY.
-            # Spline smoothing + momentum could drift the traced start point.
+            # Spline smoothing could drift the traced start point.
             # Same fix the end uses via target_node_id.
             start_pt = path.start
             assert start_pt is not None  # Guaranteed by `if not path.points: continue` check

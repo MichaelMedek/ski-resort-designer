@@ -189,14 +189,14 @@ class PathTracer:
             if terrain_slope < flat_terrain_threshold and len(recent_bearings) >= 2:
                 sin_sum = sum(np.sin(np.radians(b)) for b in recent_bearings)
                 cos_sum = sum(np.cos(np.radians(b)) for b in recent_bearings)
-                momentum_bearing = np.degrees(np.arctan2(sin_sum, cos_sum)) % 360
-                momentum_weight = PathConfig.MOMENTUM_WEIGHT_FACTOR * (1.0 - terrain_slope / flat_terrain_threshold)
-                diff = terrain_bearing - momentum_bearing
+                smoothed_bearing = np.degrees(np.arctan2(sin_sum, cos_sum)) % 360
+                smoothing_weight = PathConfig.BEARING_SMOOTHING_WEIGHT * (1.0 - terrain_slope / flat_terrain_threshold)
+                diff = terrain_bearing - smoothed_bearing
                 if diff > 180:
                     diff -= 360
                 elif diff < -180:
                     diff += 360
-                target_bearing = (momentum_bearing + (1.0 - momentum_weight) * diff) % 360
+                target_bearing = (smoothed_bearing + (1.0 - smoothing_weight) * diff) % 360
             else:
                 target_bearing = terrain_bearing
 

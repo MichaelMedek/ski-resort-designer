@@ -3,7 +3,7 @@
 Warnings indicate situations requiring special attention during construction:
 - Excavator work for side cuts exceeding threshold
 - Slope too steep for safe skiing
-- Slope too flat for skiing momentum
+- Slope too flat to keep skiers gliding
 
 Reference: DETAILS.md Section 4
 """

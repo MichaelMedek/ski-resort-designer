@@ -354,7 +354,6 @@ class PathFactory:
         target_lat: float,
         target_elevation: Optional[float] = None,
         road_mode: bool = False,
-        incoming_bearing: Optional[float] = None,
     ) -> Iterator[ProposedPathSegment]:
         """Generate paths connecting the start to a user-clicked target.
 
@@ -373,8 +372,6 @@ class PathFactory:
             target_elevation: Target elevation (queries DEM if None).
             road_mode: True for a vehicle road (may climb, holds a clamped grade), False
                 for a ski path (descent-only, difficulty-grade fan).
-            incoming_bearing: Heading (deg) inherited from the previous segment for
-                momentum (continue in-line across a node). None on the first segment.
 
         Yields:
             ProposedPathSegment for each unique path, sorted by avg_slope_pct.
@@ -392,8 +389,7 @@ class PathFactory:
         # LeastCostPathPlanner._calc_edge_cost ignores it, so LEFT and RIGHT trace the
         # identical least-cost route and dedup to one. Rather than emit a fake
         # duplicate, road mode generates a single LEFT proposal. When a side-aware cost
-        # (signed cross-track bias) or an any-angle/heading-aware planner is added,
-        # restore a second RIGHT config here so roads offer a real left/right choice.
+        # is added, restore a second RIGHT config here so roads offer a real choice.
         if road_mode:
             # A road holds the direct endpoint grade, clamped to the comfort knee — so on
             # steep ground it serpentines to hold that gentle grade (§7.3). Its direction
@@ -431,7 +427,6 @@ class PathFactory:
                 target_grade_pct=config.target_slope_pct,
                 side=config.side.value,
                 gradient_mode=gradient_mode,
-                incoming_bearing=incoming_bearing,
             )
             if path is None:
                 continue

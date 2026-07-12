@@ -25,7 +25,6 @@ from skiresort_planner.ui.actions import (
     center_on_road,
     center_on_slope,
     commit_selected_path,
-    incoming_bearing_from_segments,
     reload_map,
 )
 from skiresort_planner.ui.validators import (
@@ -733,7 +732,6 @@ def handle_road_building_click(click_info: ClickInfo, elevation: float | None) -
             target_lat=end_lat,
             target_elevation=end_elevation,
             road_mode=True,
-            incoming_bearing=incoming_bearing_from_segments(graph=graph, segment_ids=ctx.road_build.segments),
         )
     )
     proposals = [p for p in candidates if p.max_slope_pct <= band_max]

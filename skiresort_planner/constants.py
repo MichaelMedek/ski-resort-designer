@@ -181,9 +181,9 @@ class PathConfig:
 
     # Path tracing behavior parameters (self-intersection and smoothing)
     MAX_TURN_PER_STEP_DEG = 40.0  # Max angular change per step to prevent self-intersection
-    BEARING_SMOOTHING_WINDOW = 4  # Number of recent bearings to average for momentum
-    FLAT_TERRAIN_THRESHOLD_PCT = 15.0  # Below this slope %, use momentum-based bearing smoothing
-    MOMENTUM_WEIGHT_FACTOR = 0.8  # Weight factor for momentum bearing on flat terrain
+    BEARING_SMOOTHING_WINDOW = 4  # Number of recent bearings to average when smoothing
+    FLAT_TERRAIN_THRESHOLD_PCT = 15.0  # Below this slope %, use bearing smoothing (no clear fall line)
+    BEARING_SMOOTHING_WEIGHT = 0.8  # Weight of the averaged bearing vs terrain bearing on flat terrain
 
     # Roads for cars: the gentle gradient that limits routing.
     # Cars may climb, descend, or run flat, but never exceed this steepness.
@@ -255,22 +255,6 @@ class PlannerConfig:
     # Cost function parameters
     # Cost = distance × exp(slope_deviation / COST_SIGMA) × against-mode penalty
     COST_SIGMA = 8.0  # Slope deviation sensitivity (lower = stricter grade matching)
-
-    # Momentum: when extending a path from a node, a distance-decaying turn penalty
-    # biases the first stretch to leave the node roughly in-line with the incoming
-    # heading (no sharp kink at junctions). DECAY is the dominant lever: it must be a
-    # meaningful fraction of a segment or the path just absorbs the penalty;
-    # keep WEIGHT modest so it never routes around a cliff (high weight over-detours).
-    MOMENTUM_TURN_WEIGHT = 2.0  # Turn-penalty strength near the start node (0 = off)
-    MOMENTUM_DECAY_M = 450.0  # Turn penalty fades linearly to 0 over this distance from start
-
-    # Momentum — POSITION pin: on top of the bearing (turn) penalty above, penalize
-    # lateral drift away from the incoming line right at the node. Stronger
-    # weight but a MUCH faster fade than the turn term — it must nail the first few
-    # metres then release to terrain-following.
-    MOMENTUM_POS_WEIGHT = 4.0  # Cross-track (position) penalty strength at the node
-    MOMENTUM_POS_DECAY_M = 120.0  # Position pin fades linearly to 0 over this (≪ turn decay)
-    MOMENTUM_POS_SCALE_M = 15.0  # Lateral offset (m) that costs one unit of weight (~1 grid cell)
 
     # Path deduplication for overlapping path removal
     # ~0.0001 degrees ≈ ~10 meters at mid-latitudes
