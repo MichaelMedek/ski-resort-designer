@@ -9,6 +9,7 @@ import math
 
 from scipy.interpolate import splev, splprep
 
+from skiresort_planner.constants import GeometricTuningConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_smoothing import resample_cubic_spline, smooth_joined_path
@@ -43,6 +44,22 @@ def _anchors(segs: list[list[PathPoint]]) -> list[PathPoint]:
     return [segs[0][0], *(seg[-1] for seg in segs)]
 
 
+def _smooth(segs: list[list[PathPoint]], anchors: list[PathPoint] | None = None) -> list[list[PathPoint]]:
+    """Call smooth_joined_path with the real GeometricTuningConfig knobs (slope factor).
+
+    smooth_joined_path takes every knob explicitly (no import-time defaults), so tests pass
+    them the same way production does.
+    """
+    return smooth_joined_path(
+        segment_point_lists=segs,
+        node_anchors=anchors if anchors is not None else _anchors(segs),
+        step_m=GeometricTuningConfig.RESAMPLE_STEP_M,
+        smoothing_factor=GeometricTuningConfig.SLOPE_SMOOTHING_FACTOR,
+        node_weight=GeometricTuningConfig.NODE_WEIGHT,
+        corridor_weight=GeometricTuningConfig.CORRIDOR_WEIGHT,
+    )
+
+
 def _turn_deg(a: PathPoint, b: PathPoint, c: PathPoint) -> float:
     """Absolute heading change (deg) at b for the polyline a->b->c."""
     h1 = GeoCalculator.initial_bearing_deg(lon1=a.lon, lat1=a.lat, lon2=b.lon, lat2=b.lat)
@@ -67,7 +84,7 @@ class TestSmoothJoinedPath:
         raw_turn = _turn_deg(segs[0][-2], segs[0][-1], segs[1][1])
         assert raw_turn > 60
 
-        out = smooth_joined_path(segment_point_lists=segs, node_anchors=_anchors(segs))
+        out = _smooth(segs)
         # After smoothing, the max turn anywhere along the joined path is a smooth (not kinked) bend.
         joined = out[0] + out[1][1:]
         max_turn = max(_turn_deg(joined[i - 1], joined[i], joined[i + 1]) for i in range(1, len(joined) - 1))
@@ -79,7 +96,7 @@ class TestSmoothJoinedPath:
         # zero-speed CUSP (sharp edge). Regression for the switchback sharp-edge bug — an
         # over-heavy node weight used to collapse curvature to ~0 here.
         segs = _sharp_L_path()
-        out = smooth_joined_path(segment_point_lists=segs, node_anchors=_anchors(segs))
+        out = _smooth(segs)
         joined = out[0] + out[1][1:]
         min_radius = _min_curvature_radius_m(joined)
         assert min_radius > 1.0, f"smoothed curve must have a real turn radius (no cusp), got {min_radius:.2f}m"
@@ -90,7 +107,7 @@ class TestSmoothJoinedPath:
         # — they are NOT snapped back exactly, so a switchback stays a smooth radius.
         segs = _sharp_L_path()
         anchors = _anchors(segs)
-        out = smooth_joined_path(segment_point_lists=segs, node_anchors=anchors)
+        out = _smooth(segs, anchors)
         assert out[0][0] == anchors[0], "start endpoint pinned exactly"
         assert out[-1][-1] == anchors[2], "end endpoint pinned exactly"
         assert out[0][-1] == out[1][0], "junction shared by value across the two segments"
@@ -99,7 +116,7 @@ class TestSmoothJoinedPath:
 
     def test_junction_shared_by_value(self) -> None:
         segs = _sharp_L_path()
-        out = smooth_joined_path(segment_point_lists=segs, node_anchors=_anchors(segs))
+        out = _smooth(segs)
         assert len(out) == 2, "segment count preserved"
         assert out[0][-1] == out[1][0], "adjacent segments must share the junction point by value"
         assert len(out[0]) >= 2 and len(out[1]) >= 2, "each segment keeps >=2 points"
@@ -111,7 +128,7 @@ class TestSmoothJoinedPath:
         s3 = _leg(s2[-1].lon, s2[-1].lat, step, 0.0, 20, z0=s2[-1].elevation, dz=-0.5)
         segs = [s1, s2, s3]
         anchors = _anchors(segs)
-        out = smooth_joined_path(segment_point_lists=segs, node_anchors=anchors)
+        out = _smooth(segs, anchors)
         assert len(out) == 3
         assert out[0][-1] == out[1][0], "junction 1 shared by value"
         assert out[1][-1] == out[2][0], "junction 2 shared by value"
@@ -123,14 +140,14 @@ class TestSmoothJoinedPath:
 
     def test_single_segment_returned_unchanged(self) -> None:
         seg = _leg(0.0, 0.0, 10 / M, 0.0, 20, z0=2000.0, dz=-0.5)
-        out = smooth_joined_path(segment_point_lists=[seg], node_anchors=[seg[0], seg[-1]])
+        out = _smooth([seg], [seg[0], seg[-1]])
         assert out == [seg]
 
     def test_short_path_returns_inputs_unchanged(self) -> None:
         # Fewer than 4 joined points → spline can't fit; inputs come back untouched.
         a = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=1 / M, lat=0.0, elevation=1999.0)]
         b = [PathPoint(lon=1 / M, lat=0.0, elevation=1999.0), PathPoint(lon=2 / M, lat=0.0, elevation=1998.0)]
-        out = smooth_joined_path(segment_point_lists=[a, b], node_anchors=[a[0], a[-1], b[-1]])
+        out = _smooth([a, b], [a[0], a[-1], b[-1]])
         assert out == [a, b]
 
 

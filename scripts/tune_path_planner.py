@@ -7,7 +7,7 @@ Loads a saved resort backup and harvests two real corpora from it, then sweeps t
     over the real DEM. Sweeps GRID_BUFFER_FACTOR / MAX_GRID_SIZE / COST_SIGMA against the
     fraction of sensible ROADS whose gentlest route still busts the ±15% cap (a wrong refusal).
   - SMOOTHING scenarios (one per >=2-segment slope/road): replays `smooth_joined_path`.
-    Sweeps CORRIDOR_WEIGHT / SMOOTHING_FACTOR / RESAMPLE_STEP_M against node-to-ribbon gap,
+    Sweeps CORRIDOR_WEIGHT / ROAD_SMOOTHING_FACTOR / SLOPE_SMOOTHING_FACTOR / RESAMPLE_STEP_M against node-to-ribbon gap,
     sharpest turn, and steepest-section inflation.
 
 Each sweep mutates ONE knob (others held at their current default) and restores it after.
@@ -273,11 +273,16 @@ def run_smoothing_scenario(scenario: SmoothingScenario) -> SmoothingMetrics:
     Reads the class attributes and passes them EXPLICITLY — smooth_joined_path binds its
     defaults at import time, so a swept setattr on the class would otherwise be ignored.
     """
+    factor = (
+        GeometricTuningConfig.ROAD_SMOOTHING_FACTOR
+        if scenario.is_road
+        else GeometricTuningConfig.SLOPE_SMOOTHING_FACTOR
+    )
     smoothed = smooth_joined_path(
         segment_point_lists=scenario.segment_points,
         node_anchors=scenario.node_anchors,
         step_m=GeometricTuningConfig.RESAMPLE_STEP_M,
-        smoothing_factor=GeometricTuningConfig.SMOOTHING_FACTOR,
+        smoothing_factor=factor,
         node_weight=GeometricTuningConfig.NODE_WEIGHT,
         corridor_weight=GeometricTuningConfig.CORRIDOR_WEIGHT,
     )
@@ -495,7 +500,8 @@ def main() -> None:
         "MAX_GRID_SIZE",
         "COST_SIGMA",
         "CORRIDOR_WEIGHT",
-        "SMOOTHING_FACTOR",
+        "ROAD_SMOOTHING_FACTOR",
+        "SLOPE_SMOOTHING_FACTOR",
         "RESAMPLE_STEP_M",
     ]
     baseline = {n: getattr(GeometricTuningConfig, n) for n in param_names}
@@ -507,7 +513,8 @@ def main() -> None:
     ]
     smoothing_params = [
         Param("CORRIDOR_WEIGHT", [0.02, 0.05, 0.1, 0.3, 1.0], metric="turn"),
-        Param("SMOOTHING_FACTOR", [5.0, 20.0, 50.0, 100.0], metric="turn"),
+        Param("ROAD_SMOOTHING_FACTOR", [15.0, 25.0, 50.0, 100.0], metric="turn"),
+        Param("SLOPE_SMOOTHING_FACTOR", [8.0, 15.0, 25.0, 50.0], metric="turn"),
         Param("RESAMPLE_STEP_M", [4.0, 7.0, 10.0, 15.0], metric="turn"),
     ]
 

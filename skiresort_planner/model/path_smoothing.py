@@ -16,7 +16,7 @@ from typing import Any
 import numpy as np
 from scipy.interpolate import splev, splprep
 
-from skiresort_planner.constants import GeometricTuningConfig, MapConfig
+from skiresort_planner.constants import MapConfig
 from skiresort_planner.model.path_point import PathPoint
 
 logger = logging.getLogger(__name__)
@@ -102,10 +102,10 @@ def smooth_joined_path(
     *,
     segment_point_lists: list[list[PathPoint]],
     node_anchors: list[PathPoint],
-    step_m: float = GeometricTuningConfig.RESAMPLE_STEP_M,
-    smoothing_factor: float = GeometricTuningConfig.SMOOTHING_FACTOR,
-    node_weight: float = GeometricTuningConfig.NODE_WEIGHT,
-    corridor_weight: float = GeometricTuningConfig.CORRIDOR_WEIGHT,
+    step_m: float,
+    smoothing_factor: float,
+    node_weight: float,
+    corridor_weight: float,
 ) -> list[list[PathPoint]]:
     """Smooth a multi-segment path across its junctions and re-slice it per segment.
 

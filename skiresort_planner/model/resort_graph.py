@@ -447,13 +447,15 @@ class ResortGraph:
         )
         return first_seg, last_seg, start_node, end_node, avg_bearing
 
-    def _smooth_finished_path(self, segment_ids: list[str]) -> None:
+    def _smooth_finished_path(self, segment_ids: list[str], smoothing_factor: float) -> None:
         """Whole-path smooth a finished entity across its junctions, in place.
 
         No-op for a single segment. EVERY node on the path (outer endpoints + every junction)
         stays pinned exactly on the ribbon, so markers sit on the path and any node can be a
         branch point; only the shape between nodes rounds. Never rejects — a road may drift
         over the ±15% build cap here (bridge/cut/fill), which is intentional; not re-applied.
+
+        smoothing_factor: higher = smoother (roads); lower hugs terrain (slopes).
         """
         if len(segment_ids) < 2:
             return  # single-segment path has no junction to smooth
@@ -465,6 +467,10 @@ class ResortGraph:
         smoothed = smooth_joined_path(
             segment_point_lists=[seg.points for seg in segments],
             node_anchors=[self.nodes[nid].location for nid in boundary_node_ids],
+            step_m=GeometricTuningConfig.RESAMPLE_STEP_M,
+            smoothing_factor=smoothing_factor,
+            node_weight=GeometricTuningConfig.NODE_WEIGHT,
+            corridor_weight=GeometricTuningConfig.CORRIDOR_WEIGHT,
         )
         for seg, pts in zip(segments, smoothed):
             seg.points = pts
@@ -489,7 +495,9 @@ class ResortGraph:
         Returns:
             Created Slope or None if invalid.
         """
-        self._smooth_finished_path(segment_ids=segment_ids)
+        self._smooth_finished_path(
+            segment_ids=segment_ids, smoothing_factor=GeometricTuningConfig.SLOPE_SMOOTHING_FACTOR
+        )
         resolved = self._resolve_finish_endpoints(segment_ids=segment_ids)
         if resolved is None:
             return None
@@ -550,7 +558,9 @@ class ResortGraph:
         Returns:
             Created Road or None if invalid.
         """
-        self._smooth_finished_path(segment_ids=segment_ids)
+        self._smooth_finished_path(
+            segment_ids=segment_ids, smoothing_factor=GeometricTuningConfig.ROAD_SMOOTHING_FACTOR
+        )
         resolved = self._resolve_finish_endpoints(segment_ids=segment_ids)
         if resolved is None:
             return None
