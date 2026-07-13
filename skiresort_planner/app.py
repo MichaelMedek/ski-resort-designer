@@ -261,14 +261,15 @@ def _render_map_fragment_inner() -> None:
     # Collect extra layers for overlays
     extra_layers: list[pdk.Layer] = []
 
-    # Add orientation arrows in Building state
-    if sm.is_any_slope_state and ctx.selection.lon is not None and ctx.selection.lat is not None:
-        orientation = terrain_analyzer.get_orientation(lon=ctx.selection.lon, lat=ctx.selection.lat)
+    # Add orientation arrows in Building state.
+    sel = ctx.selection
+    if sm.is_any_slope_state and sel.lon is not None and sel.lat is not None and sel.elevation is not None:
+        orientation = terrain_analyzer.get_orientation(lon=sel.lon, lat=sel.lat)
         if orientation:
             arrow_layers = renderer.create_orientation_arrows_layers(
-                lat=ctx.selection.lat,
-                lon=ctx.selection.lon,
-                elevation=ctx.selection.elevation or 0.0,
+                lat=sel.lat,
+                lon=sel.lon,
+                elevation=sel.elevation,
                 orientation=orientation,
                 use_3d=use_3d,
             )

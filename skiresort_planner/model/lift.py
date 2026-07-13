@@ -363,7 +363,7 @@ class Lift:
         start = nodes.get(self.start_node_id)
         end = nodes.get(self.end_node_id)
         if not start or not end:
-            return 0.0
+            raise ValueError(f"Start or end node not found for lift {self.id}")
         return end.elevation - start.elevation
 
     def get_length_m(self, nodes: dict[str, "Node"]) -> float:

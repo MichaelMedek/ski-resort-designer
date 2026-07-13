@@ -200,10 +200,10 @@ class GeometricTuningConfig:
 
     # --- Whole-path finish smoothing (path_smoothing.py) ---
     RESAMPLE_STEP_M = 7.0  # Output point spacing of the smoothed polyline (tuned: 10m+ aliases sharp turns)
-    SMOOTHING_FACTOR = 5.0  # splprep s = FACTOR * point_count (higher = smoother; tuned on real corpus)
-    # Per-point splprep weight applied at EVERY node on the path.
-    # The single spline PASSES THROUGH each node. Higher = tighter pin, less rounding.
-    PIN_WEIGHT = 100.0
+    SMOOTHING_FACTOR = 50.0  # splprep s = FACTOR * point_count; high averages corridor jitter into a radius (verified: fewer non-hairpin cusps than 20)
+    # Node weight vs corridor weight in the weighted spline fit.
+    NODE_WEIGHT = 10.0  # Smooth spline should mathc very well at nodes
+    CORRIDOR_WEIGHT = 1.0  # In between path points are less stricly used for attraction
 
 
 class EarthworkConfig:

@@ -15,6 +15,7 @@ All data (elevations, node names, stats) must be preserved in the consolidated m
 """
 
 import logging
+import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
@@ -133,8 +134,10 @@ class RoadTooSteepMessage(ToastMessage):
     def message(self) -> str:
         if self.gentlest_pct is None:
             return f"Too steep for a car road — no route to that point within ±{self.max_grade_pct:.0f}%."
+        # Round the gentlest UP to 0.1% so it never renders equal to the cap
+        gentlest_shown = math.ceil(self.gentlest_pct * 10) / 10
         return (
-            f"Too steep for a car road — gentlest possible is {self.gentlest_pct:.0f}%, "
+            f"Too steep for a car road — gentlest possible is {gentlest_shown:.1f}%, "
             f"over the ±{self.max_grade_pct:.0f}% limit."
         )
 
@@ -168,8 +171,11 @@ class LiftMustGoUphillMessage(ToastMessage):
 
     @property
     def message(self) -> str:
-        diff = self.end_elevation_m - self.start_elevation_m
-        return f"Lift Must Go Uphill — {self.start_elevation_m:.0f}m → {self.end_elevation_m:.0f}m ({diff:+.0f}m)"
+        # Fires only when end <= start. Show 1-decimal elevations so a sub-metre downhill is
+        # visible (integer metres would render an identical-looking "2500m → 2500m") and the
+        # diff stays arithmetically consistent with the two shown numbers.
+        start, end = round(self.start_elevation_m, 1), round(self.end_elevation_m, 1)
+        return f"Lift Must Go Uphill — {start:.1f}m → {end:.1f}m ({end - start:+.1f}m)"
 
 
 @dataclass(frozen=True)
@@ -198,7 +204,10 @@ class TargetTooFarMessage(ToastMessage):
 
     @property
     def message(self) -> str:
-        return f"Target Too Far — {self.distance_m:.0f}m (max: {self.max_distance_m:.0f}m)"
+        # Round the distance UP to 0.1 m so it never renders equal to the max: this fires
+        # only when distance strictly exceeds the max, and ".0f" could show "1000m (max: 1000m)".
+        distance_shown = math.ceil(self.distance_m * 10) / 10
+        return f"Target Too Far — {distance_shown:.1f}m (max: {self.max_distance_m:.0f}m)"
 
 
 @dataclass(frozen=True)
@@ -220,7 +229,10 @@ class TargetNotDownhillMessage(ToastMessage):
             drop_explainer = f" (Target is {abs(drop):.0f}m above your current point)"
         else:
             drop_explainer = ""
-        return f"Not Downhill Enough — drop: {drop:.0f}m, need at least {self.min_drop_m:.0f}m" + drop_explainer
+        # Round the drop DOWN to 0.1 m so it never renders equal to the minimum: this fires
+        # only when drop is strictly under min_drop_m, and ".0f" could show "drop: 5m, need at least 5m".
+        drop_shown = math.floor(drop * 10) / 10
+        return f"Not Downhill Enough — drop: {drop_shown:.1f}m, need at least {self.min_drop_m:.0f}m" + drop_explainer
 
 
 @dataclass(frozen=True)

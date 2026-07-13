@@ -458,6 +458,56 @@ class TestStatsWithRoads:
         assert stats["total_road_length_m"] > 0
 
 
+class TestNodeSharingDeletes:
+    """Deleting one entity must NOT orphan a node another entity still uses (real-world: a
+    road and a slope meeting at a base node; delete one, the junction node must survive)."""
+
+    def _slope_plus_road_sharing_top_node(self, graph, path_points_blue):
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        shared = path_points_blue[0]
+        road_points = [
+            PathPoint(lon=shared.lon, lat=shared.lat, elevation=shared.elevation),
+            PathPoint(lon=300 / M, lat=shared.lat, elevation=shared.elevation),
+        ]
+        road = _commit_road(graph, road_points)
+        shared_node_id = graph.segments[slope.segment_ids[0]].start_node_id
+        return slope, road, shared_node_id
+
+    def test_delete_slope_keeps_node_shared_with_road(self, empty_graph, path_points_blue) -> None:
+        slope, road, shared_id = self._slope_plus_road_sharing_top_node(empty_graph, path_points_blue)
+        assert empty_graph.get_connection_count(node_id=shared_id) >= 2  # slope seg + road seg
+
+        assert empty_graph.delete_slope(slope_id=slope.id) is True
+
+        assert shared_id in empty_graph.nodes, "node shared with the road must survive slope deletion"
+        assert road.id in empty_graph.roads, "road is untouched by slope deletion"
+        assert empty_graph.get_connection_count(node_id=shared_id) == 1, "only the road connection remains"
+
+    def test_delete_both_entities_cleans_shared_node(self, empty_graph, path_points_blue) -> None:
+        slope, road, shared_id = self._slope_plus_road_sharing_top_node(empty_graph, path_points_blue)
+        empty_graph.delete_slope(slope_id=slope.id)
+        empty_graph.delete_road(road_id=road.id)
+        assert shared_id not in empty_graph.nodes, "node is orphaned once BOTH users are gone"
+
+    def test_undo_slope_delete_restores_without_duplicating_shared_node(self, empty_graph, path_points_blue) -> None:
+        slope, road, shared_id = self._slope_plus_road_sharing_top_node(empty_graph, path_points_blue)
+        node_count_before = len(empty_graph.nodes)
+        empty_graph.delete_slope(slope_id=slope.id)
+        empty_graph.undo_last()
+        assert slope.id in empty_graph.slopes, "slope restored"
+        assert len(empty_graph.nodes) == node_count_before, "no duplicate node created on restore"
+
+
+class TestLiftMetricsInvariants:
+    def test_vertical_rise_raises_on_missing_node(self, empty_graph, mock_dem_blue_slope) -> None:
+        # A committed lift's endpoint nodes are a graph invariant; a missing one is a real bug,
+        # so get_vertical_rise must raise (not silently return 0.0) — matches get_length_m.
+        lift = _add_lift(empty_graph, mock_dem_blue_slope)
+        with pytest.raises(ValueError):
+            lift.get_vertical_rise(nodes={})
+
+
 # =============================================================================
 # Whole-path smoothing on finish (DETAILS.md §5.8)
 # =============================================================================
@@ -512,9 +562,10 @@ class TestFinishSmoothing:
         assert max_turn < raw_turn, f"junction should round (raw {raw_turn:.1f} -> {max_turn:.1f})"
         assert max_turn < 20, f"rounded junction should be gentle, got {max_turn:.1f}"
 
-    def test_finish_pins_every_node_onto_ribbon(self, empty_graph, mock_dem_blue_slope) -> None:
-        # Outer endpoints AND the internal junction must land exactly on their node coords,
-        # so markers connect and any node can be a branch point (the purpose of pinning).
+    def test_finish_endpoints_exact_junction_near_and_shared(self, empty_graph, mock_dem_blue_slope) -> None:
+        # Outer endpoints land exactly on their nodes (entity termini). The internal junction
+        # is shared by value between the two segments and stays within a few metres of its node
+        # — NOT snapped back exactly, so a switchback stays a smooth radius rather than a cusp.
         graph = empty_graph
         seg_ids = _commit_L_slope(graph, mock_dem_blue_slope)
         start_node = graph.nodes[graph.segments[seg_ids[0]].start_node_id]
@@ -531,12 +582,9 @@ class TestFinishSmoothing:
             start_node.lat,
             start_node.elevation,
         )
-        assert (junction_pt.lon, junction_pt.lat, junction_pt.elevation) == (
-            junction_node.lon,
-            junction_node.lat,
-            junction_node.elevation,
-        ), "internal junction must be pinned exactly onto the node"
         assert (last_pt.lon, last_pt.lat, last_pt.elevation) == (end_node.lon, end_node.lat, end_node.elevation)
+        assert junction_pt == graph.segments[seg_ids[1]].points[0], "junction shared by value across segments"
+        assert junction_pt.distance_to(other=junction_node.location) < 15.0, "junction stays near its node"
 
     def test_finish_preserves_segment_count_and_ids(self, empty_graph, mock_dem_blue_slope) -> None:
         graph = empty_graph

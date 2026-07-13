@@ -104,16 +104,19 @@ def smooth_joined_path(
     node_anchors: list[PathPoint],
     step_m: float = GeometricTuningConfig.RESAMPLE_STEP_M,
     smoothing_factor: float = GeometricTuningConfig.SMOOTHING_FACTOR,
-    pin_weight: float = GeometricTuningConfig.PIN_WEIGHT,
+    node_weight: float = GeometricTuningConfig.NODE_WEIGHT,
+    corridor_weight: float = GeometricTuningConfig.CORRIDOR_WEIGHT,
 ) -> list[list[PathPoint]]:
     """Smooth a multi-segment path across its junctions and re-slice it per segment.
 
-    Joins the segments (deduping shared junctions), fits ONE cubic spline over the whole
-    path with high weights at EVERY node (all segment boundaries) so the curve passes
-    through each one (tight-but-smooth, not a kink), then re-slices at the exact node
-    arc-positions. Adjacent lists share the junction point by value, pinned exactly to the
-    node coordinate, so markers sit on the ribbon and any node can be a branch point.
-    Single-segment input is returned unchanged.
+    Fits ONE cubic spline over the whole joined path with a WEIGHTED least-squares balance:
+    the boundary nodes get a heavy weight (pulled hard onto the curve — they're authoritative
+    and any node can be a branch point), while the raw planner corridor points get a light
+    weight, acting as a soft "magnetic pull". This lets the spline average the planner's
+    staircase / switchback-reversal jitter into a smooth radius instead of threading every
+    noisy point and collapsing to a zero-speed CUSP (the sharp-edge bug at switchbacks).
+    The path is re-sliced at the junction arc-positions so adjacent segments share the
+    junction point by value. Single-segment input is returned unchanged.
 
     node_anchors: authoritative node coords, one per boundary — [outer start, junction_1,
         ..., junction_{n-1}, outer end]; length == len(segment_point_lists) + 1.
@@ -128,33 +131,30 @@ def smooth_joined_path(
         junction_after.append(len(joined) - 1)
         joined.extend(seg[1:])
 
-    # Pin the exact node coords into the spline input at every boundary, then weight them
-    # heavily so the fitted curve passes through them (only the between-node shape relaxes).
-    pin_indices = [0, *junction_after, len(joined) - 1]
-    for idx, anchor in zip(pin_indices, node_anchors):
+    # Set the exact node coords at every boundary, then weight nodes heavily and corridor
+    # points lightly so the fit is pulled onto the nodes but only softly toward the corridor.
+    node_indices = [0, *junction_after, len(joined) - 1]
+    for idx, anchor in zip(node_indices, node_anchors):
         joined[idx] = anchor
-    weights = np.ones(len(joined))
-    weights[pin_indices] = pin_weight
+    weights = np.full(len(joined), corridor_weight)
+    weights[node_indices] = node_weight
 
     fit = _fit_spline(points=joined, smoothing_factor=smoothing_factor, step_m=step_m, weights=weights)
     if fit is None:
         return segment_point_lists  # too short to smooth — leave the raw segments intact
 
     # Resample on a uniform grid but force an exact sample at every junction arc-position,
-    # so each cut lands precisely on its node rather than up to half a step away.
+    # so each cut lands on its node and adjacent segments share that point by value.
     total_length = float(fit.cumdist[-1])
     base = np.arange(0, total_length + step_m / 2, step_m)
     junction_dists = [float(fit.cumdist[j]) for j in junction_after]
     all_dists = np.array(sorted(set(base.tolist()) | set(junction_dists)))
     smoothed = _eval_spline(fit=fit, dists=all_dists)
 
-    # Pin every boundary point exactly onto its node (sub-meter nudge, tangent-consistent
-    # because the weighted spline already aims through it): endpoints + each junction cut.
+    # Pin ONLY the outer endpoints exactly — they are the entity termini.
     smoothed[0] = node_anchors[0]
     smoothed[-1] = node_anchors[-1]
     cut_indices = [int(np.searchsorted(all_dists, d)) for d in junction_dists]
-    for cut, anchor in zip(cut_indices, node_anchors[1:-1]):
-        smoothed[cut] = anchor
 
     # Slice inclusive-both-ends so seg[k].points[-1] == seg[k+1].points[0] by value.
     result: list[list[PathPoint]] = []

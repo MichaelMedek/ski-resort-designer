@@ -7,7 +7,7 @@ Loads a saved resort backup and harvests two real corpora from it, then sweeps t
     over the real DEM. Sweeps GRID_BUFFER_FACTOR / MAX_GRID_SIZE / COST_SIGMA against the
     fraction of sensible ROADS whose gentlest route still busts the ±15% cap (a wrong refusal).
   - SMOOTHING scenarios (one per >=2-segment slope/road): replays `smooth_joined_path`.
-    Sweeps PIN_WEIGHT / SMOOTHING_FACTOR / RESAMPLE_STEP_M against node-to-ribbon gap,
+    Sweeps CORRIDOR_WEIGHT / SMOOTHING_FACTOR / RESAMPLE_STEP_M against node-to-ribbon gap,
     sharpest turn, and steepest-section inflation.
 
 Each sweep mutates ONE knob (others held at their current default) and restores it after.
@@ -24,11 +24,14 @@ beyond the value under test (restored after each trial).
 from __future__ import annotations
 
 import json
+import math
 import statistics
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from skiresort_planner.constants import BACKUP_DIR, PROJECT_ROOT, GeometricTuningConfig, PathConfig
+from scipy.interpolate import splev, splprep
+
+from skiresort_planner.constants import BACKUP_DIR, PROJECT_ROOT, GeometricTuningConfig, MapConfig, PathConfig
 from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.generators.path_factory import PathFactory
@@ -200,6 +203,7 @@ class SmoothingMetrics:
 
     node_gap_max_m: float  # worst distance from a node marker to the smoothed ribbon
     turn_max_deg: float  # sharpest heading change anywhere along the smoothed ribbon
+    min_radius_m: float  # smallest turn radius of the smoothed curve — a cusp (sharp edge) → ~0
     slope_before_pct: float  # steepest 300m section before smoothing
     slope_after_pct: float  # steepest 300m section after smoothing
     is_road: bool
@@ -212,6 +216,28 @@ def _turn_deg(a: PathPoint, b: PathPoint, c: PathPoint) -> float:
     h2 = GeoCalculator.initial_bearing_deg(lon1=b.lon, lat1=b.lat, lon2=c.lon, lat2=c.lat)
     d = abs(h1 - h2) % 360
     return d if d <= 180 else 360 - d
+
+
+def _min_curvature_radius_m(points: list[PathPoint]) -> float:
+    """Smallest turn radius (m) of a cubic through points. A zero-speed CUSP (sharp edge) → ~0."""
+    if len(points) < 5:
+        return 999.0
+    lat0 = points[0].lat
+    k = MapConfig.METERS_PER_DEGREE_EQUATOR * math.cos(math.radians(lat0))
+    xs = [p.lon * k for p in points]
+    ys = [p.lat * MapConfig.METERS_PER_DEGREE_EQUATOR for p in points]
+    u = [0.0]
+    for i in range(1, len(points)):
+        u.append(u[-1] + max(1e-9, math.hypot(xs[i] - xs[i - 1], ys[i] - ys[i - 1])))
+    if u[-1] < 20:
+        return 999.0
+    tck, _ = splprep([xs, ys], u=u, s=0, k=3)
+    uu = [u[-1] * t / 1500 for t in range(1501)]
+    dx, dy = splev(uu, tck, der=1)
+    ddx, ddy = splev(uu, tck, der=2)
+    return float(
+        min((dx[i] ** 2 + dy[i] ** 2) ** 1.5 / max(abs(dx[i] * ddy[i] - dy[i] * ddx[i]), 1e-9) for i in range(len(uu)))
+    )
 
 
 def _steepest_pct(segment_points: list[list[PathPoint]]) -> float:
@@ -236,7 +262,9 @@ def measure_smoothing(scenario: SmoothingScenario, smoothed: list[list[PathPoint
     before = _steepest_pct(scenario.segment_points)
     after = _steepest_pct(smoothed)
     over_cap = scenario.is_road and after > float(PathConfig.ROAD_MAX_GRADIENT_PCT)
-    return SmoothingMetrics(node_gap, turn_max, before, after, scenario.is_road, over_cap)
+    return SmoothingMetrics(
+        node_gap, turn_max, _min_curvature_radius_m(joined), before, after, scenario.is_road, over_cap
+    )
 
 
 def run_smoothing_scenario(scenario: SmoothingScenario) -> SmoothingMetrics:
@@ -250,7 +278,8 @@ def run_smoothing_scenario(scenario: SmoothingScenario) -> SmoothingMetrics:
         node_anchors=scenario.node_anchors,
         step_m=GeometricTuningConfig.RESAMPLE_STEP_M,
         smoothing_factor=GeometricTuningConfig.SMOOTHING_FACTOR,
-        pin_weight=GeometricTuningConfig.PIN_WEIGHT,
+        node_weight=GeometricTuningConfig.NODE_WEIGHT,
+        corridor_weight=GeometricTuningConfig.CORRIDOR_WEIGHT,
     )
     return measure_smoothing(scenario, smoothed)
 
@@ -306,6 +335,10 @@ def aggregate_smoothing(metrics: list[SmoothingMetrics]) -> dict[str, float]:
         "gap_med": _med([m.node_gap_max_m for m in metrics]),
         "gap_p95": _pctl([m.node_gap_max_m for m in metrics], 0.95),
         "turn": _med([m.turn_max_deg for m in metrics]),
+        # cusp_rate: fraction whose smoothed curve has a sub-metre turn radius (a sharp edge).
+        # This is the metric that actually matters — turn_max on the coarse polyline can look
+        # low while the underlying curve still cusps between samples.
+        "cusp_rate": sum(1 for m in metrics if m.min_radius_m < 1.0) / len(metrics) if metrics else float("nan"),
         "slope_rise": _med([m.slope_after_pct - m.slope_before_pct for m in metrics]),
         "over_cap": (sum(1 for m in road if m.over_cap) / len(road)) if road else float("nan"),
     }
@@ -330,18 +363,22 @@ def sweep(param: Param, evaluate: Any) -> list[Aggregate]:
 def pick_best(param: Param, aggs: list[Aggregate]) -> Aggregate:
     """Pick the value minimising this knob's target metric, tie-broken sensibly per group.
 
-    Smoothing turn knobs must keep the node gap tight, so they only choose among values whose
-    gap_p95 is within 1m of the best; planner knobs tie-break reject-rate by lower detour.
+    Planner knobs tie-break reject-rate by lower detour. Smoothing knobs target cusp-freeness
+    first (the real sharp-edge metric), then keep the node gap tight and steepness stable.
     """
     m = param.metric
     if m == "reject":
         return min(aggs, key=lambda a: (round(a.stats["reject"], 3), round(a.stats["length"], 3)))
     if m == "gap":
         return min(aggs, key=lambda a: (round(a.stats["gap_p95"], 2), round(a.stats["turn"], 1)))
-    # turn-targeting smoothing knobs: gentlest turn among gap-safe values, then least slope-rise.
-    best_gap = min(a.stats["gap_p95"] for a in aggs)
-    gap_ok = [a for a in aggs if a.stats["gap_p95"] <= best_gap + 1.0]
-    return min(gap_ok, key=lambda a: (round(a.stats["turn"], 1), round(a.stats["slope_rise"], 2)))
+    # turn-targeting smoothing knobs: keep the node gap acceptable FIRST (p95 <= 5 m — a value
+    # that drives cusps to zero by letting the ribbon drift metres off every node is not usable),
+    # then fewest cusps, then the gentlest turn. A low turn that still cusps is not a win.
+    GAP_CEILING_M = 5.0
+    usable = [a for a in aggs if a.stats["gap_p95"] <= GAP_CEILING_M] or aggs
+    best_cusp = min(a.stats["cusp_rate"] for a in usable)
+    cusp_ok = [a for a in usable if a.stats["cusp_rate"] <= best_cusp + 1e-9]
+    return min(cusp_ok, key=lambda a: (round(a.stats["turn"], 1), round(a.stats["slope_rise"], 2)))
 
 
 # =============================================================================
@@ -383,7 +420,8 @@ def write_report(
     lines.append(
         "**Metrics (all lower = better):** `reject` (roads busting ±15%), `slope` (steepest %), "
         "`length` (detour ratio), `snap` (raw endpoint grid-snap, m), `gap_med`/`gap_p95` "
-        "(node→ribbon distance, m), `turn` (sharpest bend, °), `slope_rise` (steepest-section "
+        "(node→ribbon distance, m), `turn` (sharpest bend, °), `cusp_rate` (fraction whose "
+        "smoothed curve has a sub-metre turn radius — a sharp edge), `slope_rise` (steepest-section "
         "inflation, pp), `over_cap` (roads over ±15% after smoothing)."
     )
     lines.append("")
@@ -456,7 +494,7 @@ def main() -> None:
         "GRID_BUFFER_FACTOR",
         "MAX_GRID_SIZE",
         "COST_SIGMA",
-        "PIN_WEIGHT",
+        "CORRIDOR_WEIGHT",
         "SMOOTHING_FACTOR",
         "RESAMPLE_STEP_M",
     ]
@@ -468,8 +506,8 @@ def main() -> None:
         Param("COST_SIGMA", [4.0, 6.0, 8.0, 12.0], metric="reject"),
     ]
     smoothing_params = [
-        Param("PIN_WEIGHT", [10.0, 100.0, 500.0, 1000.0, 5000.0], metric="gap"),
-        Param("SMOOTHING_FACTOR", [1.0, 2.0, 3.0, 5.0, 8.0], metric="turn"),
+        Param("CORRIDOR_WEIGHT", [0.02, 0.05, 0.1, 0.3, 1.0], metric="turn"),
+        Param("SMOOTHING_FACTOR", [5.0, 20.0, 50.0, 100.0], metric="turn"),
         Param("RESAMPLE_STEP_M", [4.0, 7.0, 10.0, 15.0], metric="turn"),
     ]
 
@@ -487,7 +525,7 @@ def main() -> None:
 
     groups = [
         ("Planner (grid-Dijkstra routing)", ["reject", "slope", "length", "snap"], planner_sweeps),
-        ("Finish smoothing", ["gap_med", "gap_p95", "turn", "slope_rise", "over_cap"], smoothing_sweeps),
+        ("Finish smoothing", ["gap_med", "gap_p95", "turn", "cusp_rate", "slope_rise", "over_cap"], smoothing_sweeps),
     ]
 
     import os

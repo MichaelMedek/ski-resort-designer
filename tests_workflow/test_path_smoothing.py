@@ -1,17 +1,36 @@
 """Unit tests for whole-path junction smoothing (model/path_smoothing.py).
 
-Builds an explicit sharp-kink two-segment path and asserts the smoother rounds the shape
-between nodes while pinning EVERY node (outer endpoints + the junction) exactly onto the
-ribbon, preserves the segment split, and never raises.
+Builds explicit multi-segment paths and asserts the weighted-spline smoother rounds the
+shape between nodes (no zero-speed cusp), pins the outer endpoints exactly, keeps internal
+junctions near their node and shared by value, preserves the segment split, and never raises.
 """
 
 import math
+
+from scipy.interpolate import splev, splprep
 
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_smoothing import resample_cubic_spline, smooth_joined_path
 
 M = 111320.0  # metres per degree near the equator
+
+
+def _min_curvature_radius_m(points: list[PathPoint]) -> float:
+    """Smallest turn radius (m) along a cubic through points. A cusp (sharp edge) → ~0."""
+    lat0 = points[0].lat
+    k = M * math.cos(math.radians(lat0))
+    xs = [p.lon * k for p in points]
+    ys = [p.lat * M for p in points]
+    u = [0.0]
+    for i in range(1, len(points)):
+        u.append(u[-1] + max(1e-9, math.hypot(xs[i] - xs[i - 1], ys[i] - ys[i - 1])))
+    tck, _ = splprep([xs, ys], u=u, s=0, k=3)
+    uu = [u[-1] * t / 1500 for t in range(1501)]
+    dx, dy = splev(uu, tck, der=1)
+    ddx, ddy = splev(uu, tck, der=2)
+    radii = [(dx[i] ** 2 + dy[i] ** 2) ** 1.5 / max(abs(dx[i] * ddy[i] - dy[i] * ddx[i]), 1e-9) for i in range(len(uu))]
+    return min(radii)
 
 
 def _leg(start_lon: float, start_lat: float, d_lon: float, d_lat: float, n: int, z0: float, dz: float) -> list:
@@ -55,16 +74,28 @@ class TestSmoothJoinedPath:
         assert max_turn < raw_turn, f"junction should round (raw {raw_turn:.1f} -> {max_turn:.1f})"
         assert max_turn < 30, f"junction should be a smooth bend <30deg, got {max_turn:.1f}"
 
-    def test_all_nodes_pinned_onto_ribbon(self) -> None:
-        # Every node (start, junction, end) must sit EXACTLY on the smoothed ribbon so its
-        # marker connects and any node can be a branch point — this is the whole purpose.
+    def test_no_cusp_at_junction(self) -> None:
+        # The core guarantee: the smoothed ribbon rounds the corner with a real radius, not a
+        # zero-speed CUSP (sharp edge). Regression for the switchback sharp-edge bug — an
+        # over-heavy node weight used to collapse curvature to ~0 here.
+        segs = _sharp_L_path()
+        out = smooth_joined_path(segment_point_lists=segs, node_anchors=_anchors(segs))
+        joined = out[0] + out[1][1:]
+        min_radius = _min_curvature_radius_m(joined)
+        assert min_radius > 1.0, f"smoothed curve must have a real turn radius (no cusp), got {min_radius:.2f}m"
+
+    def test_nodes_on_ribbon_endpoints_exact_junctions_near(self) -> None:
+        # Outer endpoints are pinned EXACTLY (entity termini, shared with other entities).
+        # Internal junctions are shared by value and sit within a small tolerance of the node
+        # — they are NOT snapped back exactly, so a switchback stays a smooth radius.
         segs = _sharp_L_path()
         anchors = _anchors(segs)
         out = smooth_joined_path(segment_point_lists=segs, node_anchors=anchors)
-        assert out[0][0] == anchors[0], "start node pinned"
-        assert out[0][-1] == anchors[1], "junction node pinned on segment 1 end"
-        assert out[1][0] == anchors[1], "junction node pinned on segment 2 start"
-        assert out[-1][-1] == anchors[2], "end node pinned"
+        assert out[0][0] == anchors[0], "start endpoint pinned exactly"
+        assert out[-1][-1] == anchors[2], "end endpoint pinned exactly"
+        assert out[0][-1] == out[1][0], "junction shared by value across the two segments"
+        junction = out[0][-1]
+        assert junction.distance_to(other=anchors[1]) < 15.0, "junction stays within a few metres of its node"
 
     def test_junction_shared_by_value(self) -> None:
         segs = _sharp_L_path()
@@ -73,7 +104,7 @@ class TestSmoothJoinedPath:
         assert out[0][-1] == out[1][0], "adjacent segments must share the junction point by value"
         assert len(out[0]) >= 2 and len(out[1]) >= 2, "each segment keeps >=2 points"
 
-    def test_three_segments_pins_every_junction(self) -> None:
+    def test_three_segments_share_every_junction(self) -> None:
         step = 10 / M
         s1 = _leg(0.0, 0.0, step, 0.0, 20, z0=2100.0, dz=-0.5)
         s2 = _leg(s1[-1].lon, s1[-1].lat, 0.0, step, 20, z0=s1[-1].elevation, dz=-0.5)
@@ -82,8 +113,10 @@ class TestSmoothJoinedPath:
         anchors = _anchors(segs)
         out = smooth_joined_path(segment_point_lists=segs, node_anchors=anchors)
         assert len(out) == 3
-        assert out[0][-1] == anchors[1] and out[1][0] == anchors[1], "junction 1 pinned + shared"
-        assert out[1][-1] == anchors[2] and out[2][0] == anchors[2], "junction 2 pinned + shared"
+        assert out[0][-1] == out[1][0], "junction 1 shared by value"
+        assert out[1][-1] == out[2][0], "junction 2 shared by value"
+        assert out[0][-1].distance_to(other=anchors[1]) < 15.0, "junction 1 near its node"
+        assert out[1][-1].distance_to(other=anchors[2]) < 15.0, "junction 2 near its node"
 
     def test_single_segment_returned_unchanged(self) -> None:
         seg = _leg(0.0, 0.0, 10 / M, 0.0, 20, z0=2000.0, dz=-0.5)
