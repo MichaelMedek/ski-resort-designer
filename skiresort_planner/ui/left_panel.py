@@ -12,19 +12,22 @@ All rendering logic is encapsulated to keep the main app.py concise.
 
 import json
 import logging
+from collections.abc import Callable
 from datetime import datetime
-from typing import Any, Callable, Literal, cast
+from typing import Literal, cast
 
 import streamlit as st
 
 from skiresort_planner.constants import (
     LiftConfig,
+    MapConfig,
     OSMConfig,
     PathConfig,
     SlopeConfig,
     StyleConfig,
 )
 from skiresort_planner.enum_utils import enum_eq
+from skiresort_planner.generators.geocoder import geocode
 from skiresort_planner.model.message import (
     FileLoadErrorMessage,
 )
@@ -38,22 +41,16 @@ from skiresort_planner.model.resort_graph import (
     FinishRoadAction,
     FinishSlopeAction,
     ImportOSMAction,
+    MergeNodesAction,
     ResortGraph,
     UndoAction,
 )
 from skiresort_planner.persistence import backup_store
-from skiresort_planner.ui.actions import (
-    bump_map_version,
-    reload_map,
-    trigger_rerun,
-    undo_last_action,
-)
-from skiresort_planner.ui.context import EntityKind
-from skiresort_planner.ui.state_machine import (
-    BuildMode,
-    PlannerContext,
-    PlannerStateMachine,
-)
+from skiresort_planner.ui.actions import undo_last_action
+from skiresort_planner.ui.context import BuildMode, EntityKind, PlannerContext
+from skiresort_planner.ui.infra import bump_map_version, reload_map, trigger_rerun
+from skiresort_planner.ui.mode_registry import OPERATIONS, BuilderOperation, OperationGroup
+from skiresort_planner.ui.state_machine import PlannerStateMachine
 
 logger = logging.getLogger(__name__)
 
@@ -66,44 +63,48 @@ def _describe_undo_action(action: UndoAction, graph: ResortGraph) -> str:
     fail. enum_eq compares the stable string form and is reload-safe.
     """
     if enum_eq(action.action_type, ActionType.ADD_SEGMENTS):
-        act = cast(AddSegmentsAction, action)
-        n_segments = len(act.segment_ids)
+        segments_act = cast(AddSegmentsAction, action)
+        n_segments = len(segments_act.segment_ids)
         # Roads commit via the same AddSegmentsAction path — name slope/road by kind.
-        first_seg = graph.segments.get(act.segment_ids[0]) if act.segment_ids else None
+        first_seg = graph.segments.get(segments_act.segment_ids[0]) if segments_act.segment_ids else None
         if first_seg is None:
-            raise RuntimeError(f"AddSegmentsAction references missing segment {act.segment_ids}")
+            raise RuntimeError(f"AddSegmentsAction references missing segment {segments_act.segment_ids}")
         # SegmentKind is a str-Enum, so .value ("slope"/"road") is reload-safe.
         return f"Remove {n_segments} segment(s) from current {first_seg.kind.value}"
 
     elif enum_eq(action.action_type, ActionType.FINISH_SLOPE):
-        act = cast(FinishSlopeAction, action)
-        return f"Restore slope **{act.slope_name}** to building mode"
+        finish_slope_act = cast(FinishSlopeAction, action)
+        return f"Restore slope **{finish_slope_act.slope_name}** to building mode"
 
     elif enum_eq(action.action_type, ActionType.ADD_LIFT):
-        act = cast(AddLiftAction, action)
-        lift = graph.lifts.get(act.lift_id)
-        name = lift.name if lift else act.lift_id
+        add_lift_act = cast(AddLiftAction, action)
+        lift = graph.lifts.get(add_lift_act.lift_id)
+        name = lift.name if lift else add_lift_act.lift_id
         return f"Delete lift **{name}**"
 
     elif enum_eq(action.action_type, ActionType.FINISH_ROAD):
-        act = cast(FinishRoadAction, action)
-        return f"Restore road **{act.road_name}** to building mode"
+        finish_road_act = cast(FinishRoadAction, action)
+        return f"Restore road **{finish_road_act.road_name}** to building mode"
 
     elif enum_eq(action.action_type, ActionType.DELETE_SLOPE):
-        act = cast(DeleteSlopeAction, action)
-        return f"Restore deleted slope **{act.deleted_slope.name}**"
+        delete_slope_act = cast(DeleteSlopeAction, action)
+        return f"Restore deleted slope **{delete_slope_act.deleted_slope.name}**"
 
     elif enum_eq(action.action_type, ActionType.DELETE_LIFT):
-        act = cast(DeleteLiftAction, action)
-        return f"Restore deleted lift **{act.deleted_lift.name}**"
+        delete_lift_act = cast(DeleteLiftAction, action)
+        return f"Restore deleted lift **{delete_lift_act.deleted_lift.name}**"
 
     elif enum_eq(action.action_type, ActionType.DELETE_ROAD):
-        act = cast(DeleteRoadAction, action)
-        return f"Restore deleted road **{act.deleted_road.name}**"
+        delete_road_act = cast(DeleteRoadAction, action)
+        return f"Restore deleted road **{delete_road_act.deleted_road.name}**"
 
     elif enum_eq(action.action_type, ActionType.IMPORT_OSM):
-        act = cast(ImportOSMAction, action)
-        return f"Remove OSM import ({len(act.slope_ids)} slopes, {len(act.lift_ids)} lifts)"
+        import_act = cast(ImportOSMAction, action)
+        return f"Remove OSM import ({len(import_act.slope_ids)} slopes, {len(import_act.lift_ids)} lifts)"
+
+    elif enum_eq(action.action_type, ActionType.MERGE_NODES):
+        merge = cast(MergeNodesAction, action)
+        return f"Un-merge {len(merge.deleted_nodes) + 1} nodes"
 
     else:
         raise RuntimeError(f"Unknown action type: {action.action_type}")
@@ -164,9 +165,6 @@ def _confirm_reset_resort_dialog() -> None:
             trigger_rerun()
 
 
-logger = logging.getLogger(__name__)
-
-
 class SidebarRenderer:
     """Renders the sidebar UI and returns action flags.
 
@@ -211,42 +209,46 @@ class SidebarRenderer:
             Help text explaining button action or why it's disabled
 
         Raises:
-            ValueError: If state combination doesn't match any known case
+            ValueError: If the button is disabled/enabled for a reason this method doesn't recognise.
         """
         is_slope_mode = BuildMode.is_slope(mode)
         is_lift_mode = BuildMode.is_lift(mode)
         is_road_mode = BuildMode.is_road(mode)
+        is_import_mode = BuildMode.is_import(mode)
+        is_merge_mode = BuildMode.is_merge(mode)
 
         if is_disabled:
             if is_building_or_placing:
                 return "Finish or cancel current action first"
-            elif viewing_slope and not is_slope_mode:
+            if viewing_slope and not is_slope_mode:
                 return "Close slope panel to switch build mode"
-            elif viewing_lift and not is_lift_mode:
+            if viewing_lift and not is_lift_mode:
                 return "Close lift panel to switch build mode"
-            elif viewing_road and not is_road_mode:
+            if viewing_road and not is_road_mode:
                 return "Close road panel to switch build mode"
-            else:
-                raise ValueError(
-                    f"Button {mode} is disabled but no known reason: "
-                    f"is_building_or_placing={is_building_or_placing}, "
-                    f"viewing_slope={viewing_slope}, viewing_lift={viewing_lift}, viewing_road={viewing_road}"
-                )
-        elif viewing_lift and is_lift_mode:
-            return f"Change viewed lift to {label}"
-        elif is_slope_mode:
-            return "Click on map to start building a ski slope"
-        elif is_road_mode:
-            return "Click two points on the map to connect them with a gentle car road"
-        elif is_lift_mode:
-            return f"Click on map to start placing a {label}"
-        else:
             raise ValueError(
-                f"Button {mode} has no help text: is_disabled={is_disabled}, "
-                f"viewing_lift={viewing_lift}, is_slope={is_slope_mode}, is_lift={is_lift_mode}, is_road={is_road_mode}"
+                f"Button {mode} is disabled but no known reason: "
+                f"is_building_or_placing={is_building_or_placing}, "
+                f"viewing_slope={viewing_slope}, viewing_lift={viewing_lift}, viewing_road={viewing_road}"
             )
+        if viewing_lift and is_lift_mode:
+            return f"Change viewed lift to {label}"
+        if is_slope_mode:
+            return "Click on map to start building a ski slope"
+        if is_road_mode:
+            return "Click two points on the map to connect them with a gentle car road"
+        if is_lift_mode:
+            return f"Click on map to start placing a {label}"
+        if is_import_mode:
+            return "Select, then click the map to place an import area — real lifts & pistes inside it are added."
+        if is_merge_mode:
+            return "Select, then click node markers to merge them into one (median position)."
+        raise ValueError(
+            f"Button {mode} has no help text: is_disabled={is_disabled}, "
+            f"viewing_slope={viewing_slope}, viewing_lift={viewing_lift}, viewing_road={viewing_road}"
+        )
 
-    def render(self) -> dict[str, Any]:
+    def render(self) -> dict[str, bool | str]:
         """Render complete sidebar and return action flags.
 
         Returns:
@@ -259,7 +261,7 @@ class SidebarRenderer:
             # undo_last_action() calls st.rerun() internally
 
         with st.sidebar:
-            actions = {
+            actions: dict[str, bool | str] = {
                 "undo": False,
                 "cancel_slope": False,
                 "finish_slope": False,
@@ -271,27 +273,38 @@ class SidebarRenderer:
 
             self._render_mode_selector()
             st.divider()
-
-            # Mode-specific controls: close button OR building/placing controls
-            if self.sm.is_idle_viewing_slope or self.sm.is_idle_viewing_lift or self.sm.is_idle_viewing_road:
-                self._render_close_panel_button()
-            elif self.sm.is_any_slope_state:
-                actions.update(self._render_slope_building_controls())
-            elif self.sm.is_lift_placing:
-                self._render_lift_cancel_button()
-            elif self.sm.is_import_placing:
-                self._render_import_building_controls()
-            elif self.sm.is_any_road_state:
-                actions.update(self._render_road_building_controls())
-
+            actions.update(self._render_mode_specific_controls())
             st.divider()
-            self._render_undo_reset_buttons()
+            self._render_always_available()
             st.divider()
-            self._render_resort_stats()
-            st.divider()
-            self._render_save_load()
+            self._render_resort_data()
 
             return actions
+
+    def _render_mode_specific_controls(self) -> dict[str, bool | str]:
+        """Render the controls for the current state: viewing close button OR building/placing controls.
+
+        Returns the action flags produced by the building controls (empty for states that produce none).
+        """
+        # Mode-specific controls: close button OR building/placing controls
+        if self.sm.is_idle_viewing_slope or self.sm.is_idle_viewing_lift or self.sm.is_idle_viewing_road:
+            self._render_close_panel_button()
+        elif self.sm.is_any_slope_state:
+            return self._render_slope_building_controls()
+        elif self.sm.is_lift_placing:
+            self._render_lift_cancel_button()
+        elif self.sm.is_import_placing:
+            self._render_import_building_controls()
+        elif self.sm.is_merge_placing:
+            self._render_merge_building_controls()
+        elif self.sm.is_any_road_state:
+            return self._render_road_building_controls()
+        return {}
+
+    def _render_resort_data(self) -> None:
+        """Render the resort-data group: cumulative stats and save/load controls."""
+        self._render_resort_stats()
+        self._render_save_load()
 
     def _render_close_panel_button(self) -> None:
         """Render close panel button for viewing states."""
@@ -323,7 +336,7 @@ class SidebarRenderer:
             help="Discard start point and return to idle",
         )
 
-    def _render_road_building_controls(self) -> dict[str, Any]:
+    def _render_road_building_controls(self) -> dict[str, bool | str]:
         """Render controls during road building (mirrors _render_slope_building_controls).
 
         Returns a dict with finish_road / cancel_road flags for the render loop.
@@ -350,8 +363,46 @@ class SidebarRenderer:
 
         return {"finish_road": finish_road, "cancel_road": cancel_road}
 
-    def _render_undo_reset_buttons(self) -> None:
-        """Render undo and reset view buttons."""
+    def _render_search_box(self) -> None:
+        """Render a place-search box that recenters the map on the top OSM match.
+
+        A form so Enter submits (enter_to_submit) and the script only reruns on submit.
+        In the always-available controls, usable in any mode. Recentering only moves the camera;
+        it never touches build state, so it's safe while building or viewing.
+        """
+        with st.form("place_search_form", clear_on_submit=False, border=False):
+            col_input, col_btn = st.columns([4, 1])
+            with col_input:
+                query = st.text_input(
+                    "Search place",
+                    key="place_search",
+                    placeholder="🔍 Search a resort, town, …",
+                    label_visibility="collapsed",
+                )
+            with col_btn:
+                submitted = st.form_submit_button("🔍", width="stretch", help="Search and center the map")
+
+        if not submitted:
+            return
+
+        result = geocode(query)
+        if result is None:
+            st.warning("No place found.")
+            return
+
+        self.ctx.map.set_center(lon=result.lon, lat=result.lat)
+        self.ctx.map.zoom = MapConfig.DEFAULT_ZOOM
+        logger.info(f"UI: Search centered map on {result.display_name!r} ({result.lat:.4f}, {result.lon:.4f})")
+        reload_map()
+
+    def _render_always_available(self) -> None:
+        """Render the always-available controls: place search, undo, and reset view."""
+        self._render_search_box()
+        self._render_undo_button()
+        self._render_reset_view_button()
+
+    def _render_undo_button(self) -> None:
+        """Render the undo button (opens a confirmation dialog for the last action)."""
         can_undo = bool(self.graph.undo_stack)
         if st.button(
             "↩️ Undo Last Action",
@@ -362,6 +413,8 @@ class SidebarRenderer:
             last_action = self.graph.undo_stack[-1]
             _confirm_undo_dialog(action=last_action, graph=self.graph)
 
+    def _render_reset_view_button(self) -> None:
+        """Render the reset-view button (recenters camera to defaults, cleans orphan nodes)."""
         if st.button(
             "📷 Reset View",
             width="stretch",
@@ -401,6 +454,20 @@ class SidebarRenderer:
             help="Discard the placed area and return to idle",
         )
 
+    def _render_merge_building_controls(self) -> None:
+        """Render controls while selecting nodes to merge (MERGE_PLACING).
+
+        Shows how many nodes are selected and a Cancel button. Confirming happens from the right
+        panel (the "Confirm Merge" button), mirroring the import Confirm flow.
+        """
+        count = len(self.ctx.merge.node_ids)
+        st.caption(f"👆 Click node markers to select ({count} selected), then Confirm Merge on the right.")
+        self._cancel_button(
+            label="✖️ Cancel Merge",
+            on_cancel=self.sm.cancel_merge,
+            help="Clear the selection and return to idle",
+        )
+
     def _render_mode_selector(self) -> None:
         """Render unified build type selector with 7 buttons.
 
@@ -421,19 +488,23 @@ class SidebarRenderer:
         viewing_kind = viewing[0] if viewing is not None else None
 
         if viewing_kind is not None:
-            st.markdown(f"### 👁️ Viewing {viewing_kind.value.capitalize()}")
+            st.markdown(f"### {StyleConfig.VIEWING_ICON} Viewing {viewing_kind.value.capitalize()}")
         elif self.sm.is_any_slope_state:
-            st.markdown("### 🏗️ Building Slope...")
+            st.markdown(f"### {StyleConfig.BUILDING_ICON} Building Slope...")
         elif self.sm.is_lift_placing:
-            st.markdown("### 🏗️ Placing Lift...")
+            st.markdown(f"### {StyleConfig.BUILDING_ICON} Placing Lift...")
         elif self.sm.is_any_road_state:
-            st.markdown("### 🏗️ Building Road...")
+            st.markdown(f"### {StyleConfig.BUILDING_ICON} Building Road...")
         elif self.sm.is_import_placing:
-            st.markdown(f"### {StyleConfig.IMPORT_ICON} Importing Area...")
+            st.markdown(f"### {StyleConfig.BUILDING_ICON} Importing Area...")
+        elif self.sm.is_merge_placing:
+            st.markdown(f"### {StyleConfig.BUILDING_ICON} Merging Nodes...")
         else:
-            # All Idle* states (IdleReady, IdleViewing*)
+            # All Idle* states (IdleReady, IdleViewing*). The lift glyph tracks the first lift
+            # button so the header always matches whatever lift renders first.
             st.markdown(
-                f"### {StyleConfig.SLOPE_ICON}{StyleConfig.ROAD_ICON}{StyleConfig.LIFT_ICONS['gondola']} Ready to Build"
+                f"### {StyleConfig.SLOPE_ICON}{StyleConfig.ROAD_ICON}"
+                f"{StyleConfig.LIFT_ICONS[BuildMode.LIFT_TYPES[0]]} Ready to Build"
             )
 
         # Buttons disabled during building/placing
@@ -442,6 +513,7 @@ class SidebarRenderer:
             or self.sm.is_lift_placing
             or self.sm.is_any_road_state
             or self.sm.is_import_placing
+            or self.sm.is_merge_placing
         )
         current_mode = self.ctx.build_mode.mode
 
@@ -452,219 +524,76 @@ class SidebarRenderer:
             # enum_eq is reload-safe: EntityKind survives Streamlit reloads while the class is redefined.
             lines = ["- 🔄 Use lift buttons to change type"] if enum_eq(viewing_kind, EntityKind.LIFT) else []
             lines.append("- ✖️ **Close** the right panel to return")
-            lines.append(f"- 🗺️ Click terrain/node → new {viewing_kind.value}")
+            lines.append(f"- {StyleConfig.BUILDING_ICON} Click terrain/node → new {viewing_kind.value}")
             st.markdown("\n".join(lines))
         else:
             # All Idle* states without viewing panel
             st.markdown(
                 "- 🔘 Select **Slope**, **Road** or **Lift** type below\n"
-                "- 🗺️ Click terrain/node → start building\n"
-                "- 👁️ Click existing slope/road/lift → view stats"
+                f"- {StyleConfig.BUILDING_ICON} Click terrain/node → start building\n"
+                f"- {StyleConfig.VIEWING_ICON} Click existing slope/road/lift → view stats\n"
+                "- 🛠️ Or use **Import** / **Node Merge** utilities below"
             )
 
-        # Build type options for lifts (2x2 grid)
-        lift_options = [
-            (BuildMode.CHAIRLIFT, StyleConfig.LIFT_ICONS["chairlift"], StyleConfig.LIFT_DISPLAY_NAMES["chairlift"]),
-            (BuildMode.GONDOLA, StyleConfig.LIFT_ICONS["gondola"], StyleConfig.LIFT_DISPLAY_NAMES["gondola"]),
-            (
-                BuildMode.SURFACE_LIFT,
-                StyleConfig.LIFT_ICONS["surface_lift"],
-                StyleConfig.LIFT_DISPLAY_NAMES["surface_lift"],
-            ),
-            (
-                BuildMode.AERIAL_TRAM,
-                StyleConfig.LIFT_ICONS["aerial_tram"],
-                StyleConfig.LIFT_DISPLAY_NAMES["aerial_tram"],
-            ),
-        ]
+        def render_op_button(op: BuilderOperation) -> None:
+            """Render one registry operation as a full-width button (selected = primary + bold)."""
+            enabled = op.enabled(self.sm)
+            selected = self._op_selected(op.mode, current_mode)
+            icon = BuildMode.icon(op.mode)
+            label = BuildMode.display_name(op.mode)
+            btn_type: Literal["primary", "secondary"] = "primary" if selected else "secondary"
+            btn_label = f"{icon} **{label}**" if selected else f"{icon} {label}"
+            help_text = self._get_button_help(
+                mode=op.mode,
+                label=label,
+                is_disabled=not enabled,
+                is_building_or_placing=buttons_disabled,
+                viewing_slope=viewing_slope,
+                viewing_lift=viewing_lift,
+                viewing_road=viewing_road,
+            )
+            if st.button(
+                btn_label,
+                width="stretch",
+                type=btn_type,
+                key=f"build_btn_{op.mode}",
+                disabled=not enabled,
+                help=help_text,
+            ):
+                op.on_select(self.ctx, self.sm)  # each op owns its own select side effects
 
-        # === SLOPE button (full width) ===
-        slope_disabled = buttons_disabled or viewing_lift or viewing_road
-        slope_selected = current_mode == BuildMode.SLOPE
-        slope_type: Literal["primary", "secondary"] = "primary" if slope_selected else "secondary"
-        slope_label = f"{StyleConfig.SLOPE_ICON} **Slope**" if slope_selected else f"{StyleConfig.SLOPE_ICON} Slope"
-        slope_help = self._get_button_help(
-            mode=BuildMode.SLOPE,
-            label="Slope",
-            is_disabled=slope_disabled,
-            is_building_or_placing=buttons_disabled,
-            viewing_slope=viewing_slope,
-            viewing_lift=viewing_lift,
-            viewing_road=viewing_road,
-        )
-        # Build mode changes are context-only → use canonical refresh helper
-        if st.button(
-            slope_label,
-            width="stretch",
-            type=slope_type,
-            key="build_btn_slope",
-            disabled=slope_disabled,
-            help=slope_help,
-        ):
-            self.ctx.build_mode.mode = BuildMode.SLOPE
-            logger.info("UI: Build mode set to Slope")
-            reload_map()
+        # BUILDER group: Slope + Road full-width, then the 4 lift types in a 2x2 grid.
+        builders = [op for op in OPERATIONS.values() if op.group == OperationGroup.BUILDER]
+        non_lift_builders = [op for op in builders if not BuildMode.is_lift(op.mode)]
+        lift_builders = [op for op in builders if BuildMode.is_lift(op.mode)]
+        for op in non_lift_builders:
+            render_op_button(op)
+        for row_start in range(0, len(lift_builders), 2):
+            cols = st.columns(2)
+            for col, op in zip(cols, lift_builders[row_start : row_start + 2], strict=False):
+                with col:
+                    render_op_button(op)
 
-        # === ROAD button (full width) — vehicle road, brown ===
-        road_disabled = buttons_disabled or viewing_slope or viewing_lift
-        road_selected = current_mode == BuildMode.ROAD
-        road_type: Literal["primary", "secondary"] = "primary" if road_selected else "secondary"
-        road_label = f"{StyleConfig.ROAD_ICON} **Road**" if road_selected else f"{StyleConfig.ROAD_ICON} Road"
-        road_help = self._get_button_help(
-            mode=BuildMode.ROAD,
-            label="Road",
-            is_disabled=road_disabled,
-            is_building_or_placing=buttons_disabled,
-            viewing_slope=viewing_slope,
-            viewing_lift=viewing_lift,
-            viewing_road=viewing_road,
-        )
-        if st.button(
-            road_label,
-            width="stretch",
-            type=road_type,
-            key="build_btn_road",
-            disabled=road_disabled,
-            help=road_help,
-        ):
-            self.ctx.build_mode.mode = BuildMode.ROAD
-            logger.info("UI: Build mode set to Road")
-            reload_map()
+        # UTILITY group (import + node-merge): visually separated by a divider — same category
+        # technically, but optically distinct from the real builders.
+        utilities = [op for op in OPERATIONS.values() if op.group == OperationGroup.UTILITY]
+        if utilities:
+            st.divider()
+            for op in utilities:
+                render_op_button(op)
 
-        # === LIFT buttons (2x2 grid) ===
-        # Row 1: Chairlift, Gondola
-        col1, col2 = st.columns(2)
-        for col, (mode, icon, label) in zip([col1, col2], lift_options[:2]):
-            with col:
-                self._render_lift_button(
-                    mode=mode,
-                    icon=icon,
-                    label=label,
-                    current_mode=current_mode,
-                    buttons_disabled=buttons_disabled,
-                    viewing_slope=viewing_slope,
-                    viewing_lift=viewing_lift,
-                    viewing_road=viewing_road,
-                )
+    def _op_selected(self, mode: str, current_mode: str) -> bool:
+        """Whether the button for `mode` shows as selected.
 
-        # Row 2: Surface Lift, Aerial Tram
-        col3, col4 = st.columns(2)
-        for col, (mode, icon, label) in zip([col3, col4], lift_options[2:]):
-            with col:
-                self._render_lift_button(
-                    mode=mode,
-                    icon=icon,
-                    label=label,
-                    current_mode=current_mode,
-                    buttons_disabled=buttons_disabled,
-                    viewing_slope=viewing_slope,
-                    viewing_lift=viewing_lift,
-                    viewing_road=viewing_road,
-                )
-
-        # === IMPORT button (full width) — OSM import, click-to-place a bounding box ===
-        # Available from any idle state (import can start while viewing); only disabled mid-build.
-        import_selected = current_mode == BuildMode.IMPORT
-        import_type: Literal["primary", "secondary"] = "primary" if import_selected else "secondary"
-        import_label = (
-            f"{StyleConfig.IMPORT_ICON} **Import (OSM)**"
-            if import_selected
-            else f"{StyleConfig.IMPORT_ICON} Import (OSM)"
-        )
-        if st.button(
-            import_label,
-            width="stretch",
-            type=import_type,
-            key="build_btn_import",
-            disabled=buttons_disabled,
-            help="Select, then click the map to place an import area — real lifts & pistes inside it are added.",
-        ):
-            self.ctx.build_mode.mode = BuildMode.IMPORT
-            logger.info("UI: Build mode set to Import")
-            reload_map()
-
-    def _render_lift_button(
-        self,
-        mode: str,
-        icon: str,
-        label: str,
-        current_mode: str,
-        buttons_disabled: bool,
-        viewing_slope: bool,
-        viewing_lift: bool,
-        viewing_road: bool,
-    ) -> None:
-        """Render a single lift type button."""
-        # Lift buttons: disabled when building/placing OR viewing a slope/road
-        mode_disabled = buttons_disabled or viewing_slope or viewing_road
-        is_selected = current_mode == mode
-
-        # When viewing lift, highlight the viewed lift's type
-        if viewing_lift and self.ctx.viewing.lift_id:
-            viewed_lift = self.graph.lifts.get(self.ctx.viewing.lift_id)
-            is_selected = viewed_lift is not None and viewed_lift.lift_type == mode
-
-        button_type: Literal["primary", "secondary"] = "primary" if is_selected else "secondary"
-        button_label = f"{icon} **{label}**" if is_selected else f"{icon} {label}"
-        button_help = self._get_button_help(
-            mode=mode,
-            label=label,
-            is_disabled=mode_disabled,
-            is_building_or_placing=buttons_disabled,
-            viewing_slope=viewing_slope,
-            viewing_lift=viewing_lift,
-            viewing_road=viewing_road,
-        )
-
-        if st.button(
-            button_label,
-            width="stretch",
-            type=button_type,
-            key=f"build_btn_{mode}",
-            disabled=mode_disabled,
-            help=button_help,
-        ):
-            # When viewing lift, change the lift's type
-            if viewing_lift:
-                self._change_viewed_lift_type(new_type=mode)
-            else:
-                self.ctx.build_mode.mode = mode
-                self.ctx.lift.type = mode
-                logger.info(f"UI: Build mode set to {BuildMode.display_name(mode)}")
-            reload_map()  # Build mode changes are context-only
-
-    def _change_viewed_lift_type(self, new_type: str) -> None:
-        """Change the type of the currently viewed lift.
-
-        Uses Lift.update_type() to recalculate all type-dependent fields.
-        Also updates global build_mode so new lifts use this type.
+        Normally the selected build mode; while viewing a lift, the lift button matching the viewed
+        lift's type is highlighted instead (the lift buttons re-type the viewed lift).
         """
-        lift_id = self.ctx.viewing.lift_id
-        if not lift_id:
-            raise RuntimeError("_change_viewed_lift_type called but no lift_id in viewing context")
+        if self.sm.is_idle_viewing_lift and self.ctx.viewing.lift_id and BuildMode.is_lift(mode):
+            viewed_lift = self.graph.lifts.get(self.ctx.viewing.lift_id)
+            return viewed_lift is not None and viewed_lift.lift_type == mode
+        return current_mode == mode
 
-        lift = self.graph.lifts.get(lift_id)
-        if not lift:
-            return  # Lift deleted?
-
-        # Always update global build_mode (even if same type - ensures consistency)
-        self.ctx.build_mode.mode = new_type
-        self.ctx.lift.type = new_type
-
-        if lift.lift_type == new_type:
-            return  # No actual type change needed
-
-        # A lift in the graph always has valid endpoint nodes — a miss is corrupted state.
-        start_node = self.graph.nodes.get(lift.start_node_id)
-        end_node = self.graph.nodes.get(lift.end_node_id)
-        assert start_node and end_node, f"lift {lift_id} references missing nodes (data integrity bug)"
-
-        # Use centralized method to update all type-dependent fields
-        lift.update_type(new_type=new_type, start_node=start_node, end_node=end_node)
-
-        logger.info(f"UI: Changed lift {lift_id} type to {new_type}")
-
-    def _render_slope_building_controls(self) -> dict[str, Any]:
+    def _render_slope_building_controls(self) -> dict[str, bool | str]:
         """Render controls for slope building state (mirrors _render_road_building_controls).
 
         Returns dict with finish_slope, cancel_slope, recompute flags.

@@ -21,7 +21,7 @@ import math
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TypedDict, cast
 from urllib.parse import urlencode
 
 import requests
@@ -37,6 +37,23 @@ logger = logging.getLogger(__name__)
 BBox = tuple[float, float, float, float]
 # An OSM way vertex as (lon, lat).
 Vertex = tuple[float, float]
+
+
+class OverpassVertex(TypedDict):
+    """One inline geometry vertex from an Overpass `out geom;` way."""
+
+    lon: float
+    lat: float
+
+
+class OverpassElement(TypedDict, total=False):
+    """One Overpass element (a way). `total=False`: any field may be absent in a raw response,
+    so every access below still guards with .get()/defaults — the TypedDict only names the shape.
+    """
+
+    id: int
+    tags: dict[str, str]
+    geometry: list[OverpassVertex]
 
 
 def bbox_around(center_lon: float, center_lat: float, half_width_m: float) -> BBox:
@@ -98,7 +115,7 @@ class OSMImporter:
     def __init__(self, dem: DEMService) -> None:
         self.dem = dem
 
-    def fetch(self, bbox: BBox) -> list[dict[str, Any]]:
+    def fetch(self, bbox: BBox) -> list[OverpassElement]:
         """Fetch all OSM lift/piste ways in the box with ONE Overpass query.
 
         A lift/piste-only query is light enough that even a full-size box returns in a few seconds,
@@ -115,7 +132,7 @@ class OSMImporter:
             time.sleep(wait_s)
             return self._query(bbox)
 
-    def _query(self, bbox: BBox) -> list[dict[str, Any]]:
+    def _query(self, bbox: BBox) -> list[OverpassElement]:
         """POST one Overpass query for the box and return its ways (with inline geometry).
 
         Uses Overpass's native bbox filter. Raises on any non-200 (the caller decides whether the
@@ -137,7 +154,7 @@ class OSMImporter:
             timeout=OSMConfig.OVERPASS_TIMEOUT_S,
         )
         response.raise_for_status()
-        elements: list[dict[str, Any]] = response.json()["elements"]
+        elements = cast(list[OverpassElement], response.json()["elements"])
         logger.info(f"Overpass returned {len(elements)} elements for bbox {bbox}")
         return elements
 

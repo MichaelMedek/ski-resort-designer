@@ -9,15 +9,29 @@ state change (3D toggle, close panel) is asserted.
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
+from skiresort_planner.ui.context import EntityKind
+from skiresort_planner.ui.mode_registry import ENTITY_KIND_SPECS, render_control_panel
 from skiresort_planner.ui.right_panel import (
+    EntityInfoControlPanel,
     LiftStatsPanel,
     RoadStatsPanel,
     SlopeStatsPanel,
-    render_control_panel,
 )
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
 M = 111320.0
+
+
+def _info_panel(kind, sm, ctx, graph):  # type: ignore[no-untyped-def]
+    """Build the viewing-info ControlPanel for a kind and render it (on_commit/on_cancel unused)."""
+    EntityInfoControlPanel(
+        sm=sm,
+        ctx=ctx,
+        graph=graph,
+        on_commit=lambda _i: None,
+        on_cancel_connection=lambda: None,
+        spec=ENTITY_KIND_SPECS[kind],
+    ).render()
 
 
 def _build_slope(graph: ResortGraph, path_points: list) -> str:
@@ -81,7 +95,8 @@ def _dispatch(sm, ctx, graph) -> None:
 class TestStatsPanelsRun:
     """Each stats panel renders its OWN metric labels — no kind shares another's
     layout by accident (the per-kind drift that hit the sidebar). Metric labels are
-    captured to assert the distinguishing fields actually render."""
+    captured to assert the distinguishing fields actually render.
+    """
 
     @staticmethod
     def _capture_labels(fake_st) -> list[str]:
@@ -128,8 +143,6 @@ class TestInfoPanelButtonClicks:
         fake_st.session_state["map_version"] = 0
 
     def test_enable_3d_from_slope_panel(self, fake_st, empty_graph, path_points_blue) -> None:
-        from skiresort_planner.ui.right_panel import _render_slope_info_panel
-
         slope_id = _build_slope(empty_graph, path_points_blue)
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         sm.show_slope_info_panel(slope_id=slope_id)
@@ -137,12 +150,10 @@ class TestInfoPanelButtonClicks:
 
         assert not ctx.viewing.view_3d
         fake_st.clicked_keys = {"slope_3d_view"}
-        _render_slope_info_panel(sm=sm, ctx=ctx, graph=empty_graph)
+        _info_panel(EntityKind.SLOPE, sm, ctx, empty_graph)
         assert ctx.viewing.view_3d, "clicking 'View in 3D' must enable 3D"
 
     def test_disable_3d_from_slope_panel(self, fake_st, empty_graph, path_points_blue) -> None:
-        from skiresort_planner.ui.right_panel import _render_slope_info_panel
-
         slope_id = _build_slope(empty_graph, path_points_blue)
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         sm.show_slope_info_panel(slope_id=slope_id)
@@ -150,12 +161,10 @@ class TestInfoPanelButtonClicks:
         self._bump_ready(fake_st, sm, ctx, empty_graph)
 
         fake_st.clicked_keys = {"slope_2d_view"}
-        _render_slope_info_panel(sm=sm, ctx=ctx, graph=empty_graph)
+        _info_panel(EntityKind.SLOPE, sm, ctx, empty_graph)
         assert not ctx.viewing.view_3d, "clicking 'Return to 2D' on a slope must disable 3D"
 
     def test_disable_3d_from_road_panel(self, fake_st, empty_graph, path_points_blue) -> None:
-        from skiresort_planner.ui.right_panel import _render_road_info_panel
-
         road_id = _build_road(empty_graph, path_points_blue)
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         sm.show_road_info_panel(road_id=road_id)
@@ -163,14 +172,15 @@ class TestInfoPanelButtonClicks:
         self._bump_ready(fake_st, sm, ctx, empty_graph)
 
         fake_st.clicked_keys = {"road_2d_view"}
-        _render_road_info_panel(sm=sm, ctx=ctx, graph=empty_graph)
+        _info_panel(EntityKind.ROAD, sm, ctx, empty_graph)
         assert not ctx.viewing.view_3d, "clicking 'Return to 2D' must disable 3D"
 
     def test_entity_actions_are_wide_stacked_and_ordered(
         self, fake_st, empty_graph, path_points_blue, monkeypatch
     ) -> None:
         """Every viewed-entity action button is full-width (width='stretch'), stacked (no columns),
-        and in the fixed order 3D-toggle → Rename → Close → Delete."""
+        and in the fixed order 3D-toggle → Rename → Close → Delete.
+        """
         from skiresort_planner.ui import right_panel
 
         slope_id = _build_slope(empty_graph, path_points_blue)
@@ -205,20 +215,16 @@ class TestInfoPanelButtonClicks:
         assert all(c.get("width") == "stretch" for c in calls), "all action buttons must be full-width"
 
     def test_enable_3d_from_lift_panel(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
-        from skiresort_planner.ui.right_panel import _render_lift_info_panel
-
         lift_id = _build_lift(empty_graph, mock_dem_blue_slope)
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         sm.show_lift_info_panel(lift_id=lift_id)
         self._bump_ready(fake_st, sm, ctx, empty_graph)
 
         fake_st.clicked_keys = {"lift_3d_view"}
-        _render_lift_info_panel(sm=sm, ctx=ctx, graph=empty_graph)
+        _info_panel(EntityKind.LIFT, sm, ctx, empty_graph)
         assert ctx.viewing.view_3d, "clicking 'View in 3D' on a lift must enable 3D"
 
     def test_enable_3d_from_road_panel(self, fake_st, empty_graph, path_points_blue) -> None:
-        from skiresort_planner.ui.right_panel import _render_road_info_panel
-
         road_id = _build_road(empty_graph, path_points_blue)
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         sm.show_road_info_panel(road_id=road_id)
@@ -226,12 +232,10 @@ class TestInfoPanelButtonClicks:
 
         assert not ctx.viewing.view_3d
         fake_st.clicked_keys = {"road_3d_view"}
-        _render_road_info_panel(sm=sm, ctx=ctx, graph=empty_graph)
+        _info_panel(EntityKind.ROAD, sm, ctx, empty_graph)
         assert ctx.viewing.view_3d, "clicking 'View in 3D' on a road must enable 3D"
 
     def test_disable_3d_from_lift_panel(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
-        from skiresort_planner.ui.right_panel import _render_lift_info_panel
-
         lift_id = _build_lift(empty_graph, mock_dem_blue_slope)
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         sm.show_lift_info_panel(lift_id=lift_id)
@@ -239,12 +243,10 @@ class TestInfoPanelButtonClicks:
         self._bump_ready(fake_st, sm, ctx, empty_graph)
 
         fake_st.clicked_keys = {"lift_2d_view"}
-        _render_lift_info_panel(sm=sm, ctx=ctx, graph=empty_graph)
+        _info_panel(EntityKind.LIFT, sm, ctx, empty_graph)
         assert not ctx.viewing.view_3d, "clicking 'Return to 2D' on a lift must disable 3D"
 
     def test_close_slope_panel_returns_to_idle(self, fake_st, empty_graph, path_points_blue) -> None:
-        from skiresort_planner.ui.right_panel import _render_slope_info_panel
-
         slope_id = _build_slope(empty_graph, path_points_blue)
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         sm.show_slope_info_panel(slope_id=slope_id)
@@ -252,7 +254,7 @@ class TestInfoPanelButtonClicks:
 
         assert sm.is_idle_viewing_slope
         fake_st.clicked_keys = {"close_slope"}
-        _render_slope_info_panel(sm=sm, ctx=ctx, graph=empty_graph)
+        _info_panel(EntityKind.SLOPE, sm, ctx, empty_graph)
         assert not sm.is_idle_viewing_slope, "clicking Close must leave the viewing state"
 
     def test_rename_button_offered_in_each_panel(
@@ -263,12 +265,6 @@ class TestInfoPanelButtonClicks:
         We capture the button keys rather than click it — clicking would invoke the real
         @st.dialog. The dialog body's effect is covered by TestRenameEntityAction.
         """
-        from skiresort_planner.ui.right_panel import (
-            _render_lift_info_panel,
-            _render_road_info_panel,
-            _render_slope_info_panel,
-        )
-
         keys: list[str] = []
         orig_button = fake_st.button
         fake_st.button = lambda *a, **k: (keys.append(k.get("key")), orig_button(*a, **k))[1]
@@ -280,17 +276,17 @@ class TestInfoPanelButtonClicks:
         self._bump_ready(fake_st, sm, ctx, empty_graph)
 
         sm.show_slope_info_panel(slope_id=slope_id)
-        _render_slope_info_panel(sm=sm, ctx=ctx, graph=empty_graph)
+        _info_panel(EntityKind.SLOPE, sm, ctx, empty_graph)
         assert "rename_slope" in keys
 
         sm.hide_info_panel()
         sm.show_road_info_panel(road_id=road_id)
-        _render_road_info_panel(sm=sm, ctx=ctx, graph=empty_graph)
+        _info_panel(EntityKind.ROAD, sm, ctx, empty_graph)
         assert "rename_road" in keys
 
         sm.hide_info_panel()
         sm.show_lift_info_panel(lift_id=lift_id)
-        _render_lift_info_panel(sm=sm, ctx=ctx, graph=empty_graph)
+        _info_panel(EntityKind.LIFT, sm, ctx, empty_graph)
         assert "rename_lift" in keys
 
 

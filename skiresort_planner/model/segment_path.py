@@ -11,7 +11,7 @@ Reference: DETAILS.md
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
+from typing import TYPE_CHECKING, ClassVar, TypeVar, cast
 
 from skiresort_planner.constants import SlopeConfig
 
@@ -96,7 +96,7 @@ class SegmentPath:
 
     def get_all_points(self, segments: dict[str, "PathSegment"]) -> list["PathPoint"]:
         """All points across segments, deduplicated at shared junction nodes."""
-        all_points: list["PathPoint"] = []
+        all_points: list[PathPoint] = []
         for seg_id in self.segment_ids:
             seg = segments.get(seg_id)
             if seg:
@@ -124,14 +124,14 @@ class SegmentPath:
         return start.location, end.location
 
     @classmethod
-    def from_dict(cls: type[T], data: dict[str, Any]) -> T:
+    def from_dict(cls: type[T], data: dict[str, object]) -> T:
         """Create an instance from a serialized dict."""
         return cls(
-            id=data["id"],
-            name=data["name"],
-            segment_ids=data["segment_ids"],
-            start_node_id=data["start_node_id"],
-            end_node_id=data["end_node_id"],
+            id=cast(str, data["id"]),
+            name=cast(str, data["name"]),
+            segment_ids=cast(list[str], data["segment_ids"]),
+            start_node_id=cast(str, data["start_node_id"]),
+            end_node_id=cast(str, data["end_node_id"]),
         )
 
     def __repr__(self) -> str:

@@ -14,7 +14,7 @@ Reference: DETAILS.md
 import logging
 import random
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 from skiresort_planner.constants import EntityPrefixes, LiftConfig, NameConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
@@ -657,7 +657,7 @@ class Lift:
         anchor_y.append(end_elevation + station_height)
 
         # Sort anchor points by distance
-        anchor_sorted = sorted(zip(anchor_x, anchor_y), key=lambda p: p[0])
+        anchor_sorted = sorted(zip(anchor_x, anchor_y, strict=False), key=lambda p: p[0])
         anchor_x = [p[0] for p in anchor_sorted]
         anchor_y = [p[1] for p in anchor_sorted]
 
@@ -709,20 +709,30 @@ class Lift:
         return cable_points
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Lift":
+    def from_dict(cls, data: dict[str, object]) -> "Lift":
         """Create Lift from dictionary.
 
         All fields are required - raises KeyError if missing.
         """
         return cls(
-            id=data["id"],
-            name=data["name"],
-            start_node_id=data["start_node_id"],
-            end_node_id=data["end_node_id"],
-            lift_type=data["lift_type"],
-            terrain_points=[PathPoint(**p) for p in data["terrain_points"]],
-            pylons=[Pylon(**p) for p in data["pylons"]],
-            cable_points=[PathPoint(**p) for p in data["cable_points"]],
+            id=cast(str, data["id"]),
+            name=cast(str, data["name"]),
+            start_node_id=cast(str, data["start_node_id"]),
+            end_node_id=cast(str, data["end_node_id"]),
+            lift_type=cast(str, data["lift_type"]),
+            terrain_points=[PathPoint(**p) for p in cast(list[dict[str, float]], data["terrain_points"])],
+            pylons=[
+                Pylon(
+                    index=int(p["index"]),
+                    distance_m=float(p["distance_m"]),
+                    lat=float(p["lat"]),
+                    lon=float(p["lon"]),
+                    ground_elevation_m=float(p["ground_elevation_m"]),
+                    height_m=float(p["height_m"]),
+                )
+                for p in cast(list[dict[str, float]], data["pylons"])
+            ],
+            cable_points=[PathPoint(**p) for p in cast(list[dict[str, float]], data["cable_points"])],
         )
 
     def __repr__(self) -> str:

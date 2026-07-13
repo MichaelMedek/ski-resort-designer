@@ -37,10 +37,8 @@ from skiresort_planner.core.path_tracer import PathTracer
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.generators.path_factory import PathFactory
 from skiresort_planner.model.click_info import ClickInfo, MapClickType, MarkerType
-from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.resort_graph import ResortGraph
 from tests_workflow.conftest import MockDEMService
-
 
 # =============================================================================
 # TEST CONSTANTS
@@ -118,29 +116,25 @@ def create_command_executor() -> None:
     """
     import streamlit as st
 
-    from skiresort_planner.model.click_info import ClickInfo, MapClickType, MarkerType
-    from skiresort_planner.model.resort_graph import ResortGraph
-    from skiresort_planner.ui.click_handlers import dispatch_click
     from skiresort_planner.ui.actions import (
-        commit_selected_path,
-        finish_current_slope,
-        cancel_current_slope,
-        finish_current_road,
         cancel_current_road,
+        cancel_current_slope,
         cancel_custom_path,
-        undo_last_action,
+        commit_selected_path,
+        delete_lift_action,
+        delete_road_action,
+        delete_slope_action,
+        finish_current_road,
+        finish_current_slope,
         handle_fast_deferred_actions,
         process_custom_connect_deferred,
         process_path_generation_deferred,
         recompute_paths,
-        delete_slope_action,
-        delete_lift_action,
-        delete_road_action,
+        undo_last_action,
     )
+    from skiresort_planner.ui.context import BuildMode, PlannerContext
+    from skiresort_planner.ui.mode_registry import dispatch_click
     from skiresort_planner.ui.state_machine import PlannerStateMachine
-    from skiresort_planner.ui.context import PlannerContext, BuildMode
-    from skiresort_planner.generators.path_factory import PathFactory
-    from tests_workflow.conftest import MockDEMService
 
     def execute_deferred_actions() -> None:
         """Test helper: Execute all pending deferred actions.

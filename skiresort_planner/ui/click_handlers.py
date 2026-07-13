@@ -11,7 +11,7 @@ Design Principles:
 """
 
 import logging
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 import streamlit as st
 
@@ -20,14 +20,13 @@ from skiresort_planner.model.click_info import ClickInfo, MapClickType, MarkerTy
 from skiresort_planner.model.message import InvalidClickMessage, OutsideTerrainMessage, RoadTooSteepMessage
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.ui.actions import (
-    bump_map_version,
     center_on_lift,
     center_on_road,
     center_on_slope,
     commit_selected_path,
     confirm_import_action,
-    reload_map,
 )
+from skiresort_planner.ui.infra import bump_map_version, reload_map
 from skiresort_planner.ui.validators import (
     validate_custom_target_distance,
     validate_custom_target_downhill,
@@ -39,77 +38,10 @@ if TYPE_CHECKING:
     from skiresort_planner.core.dem_service import DEMService
     from skiresort_planner.generators.path_factory import PathFactory
     from skiresort_planner.model.resort_graph import ResortGraph
-    from skiresort_planner.ui.state_machine import (
-        PlannerContext,
-        PlannerStateMachine,
-    )
+    from skiresort_planner.ui.context import PlannerContext
+    from skiresort_planner.ui.state_machine import PlannerStateMachine
 
 logger = logging.getLogger(__name__)
-
-
-# =============================================================================
-# CLICK DISPATCH
-# =============================================================================
-
-
-def get_click_handler(sm: "PlannerStateMachine") -> Callable[..., None]:
-    """Get the appropriate click handler for the given state.
-
-    Args:
-        sm: State machine to check state properties
-
-    Returns:
-        Handler function (click_info, elevation) -> None
-
-    Raises:
-        RuntimeError: If state has no registered handler
-    """
-    # Use state machine properties instead of string comparison
-    if sm.is_idle:
-        return handle_idle_click
-    elif sm.is_any_slope_state:
-        return handle_slope_building_click
-    elif sm.is_lift_placing:
-        return handle_lift_placing_click
-    elif sm.is_import_placing:
-        return handle_import_placing_click
-    elif sm.is_any_road_state:
-        return handle_road_building_click
-    else:
-        raise RuntimeError(
-            f"No click handler registered for state '{sm.get_state_name()}'. "
-            f"Expected idle, slope building, lift placing, import placing, or road building state."
-        )
-
-
-def dispatch_click(click_info: ClickInfo) -> None:
-    """Dispatch click to appropriate state handler.
-
-    Called by app.py after ClickDetector returns a ClickInfo.
-
-    Args:
-        click_info: Unified click information from ClickDetector
-
-    Raises:
-        RuntimeError: If state has no handler or click is outside terrain
-    """
-    sm: "PlannerStateMachine" = st.session_state.state_machine
-    dem: "DEMService" = st.session_state.dem_service
-
-    # Get elevation ONLY for terrain clicks (markers don't have lat/lon)
-    elevation: float | None = None
-    if click_info.click_type == MapClickType.TERRAIN:
-        assert click_info.lon is not None and click_info.lat is not None  # Validated in ClickInfo
-        elevation = dem.get_elevation(lon=click_info.lon, lat=click_info.lat)
-        if elevation is None:
-            OutsideTerrainMessage(lat=click_info.lat, lon=click_info.lon).display()
-            return
-
-    state_name = sm.get_state_name()
-    logger.info(f"Dispatching {click_info.display_name} in state {state_name}")
-
-    handler = get_click_handler(sm=sm)
-    handler(click_info=click_info, elevation=elevation)
 
 
 # =============================================================================
@@ -152,9 +84,9 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
     Invalid Click Types:
         PROPOSAL_* → Programming error (no proposals in idle)
     """
-    sm: "PlannerStateMachine" = st.session_state.state_machine
-    ctx: "PlannerContext" = st.session_state.context
-    graph: "ResortGraph" = st.session_state.graph
+    sm: PlannerStateMachine = st.session_state.state_machine
+    ctx: PlannerContext = st.session_state.context
+    graph: ResortGraph = st.session_state.graph
 
     build_mode = ctx.build_mode.mode
 
@@ -340,7 +272,7 @@ def handle_slope_building_click(click_info: ClickInfo, elevation: float | None) 
         PYLON → Cannot view while building
         ROAD → Cannot view while building
     """
-    ctx: "PlannerContext" = st.session_state.context
+    ctx: PlannerContext = st.session_state.context
 
     # TERRAIN click → route a custom-connect path to the clicked point.
     if click_info.click_type == MapClickType.TERRAIN:
@@ -424,9 +356,9 @@ def _handle_custom_connect_click(click_info: ClickInfo, elevation: float | None)
     proposals) untouched. On success, fires select_custom_target — the state machine
     resolves it to select_target_from_starting / _from_building / retarget_custom.
     """
-    sm: "PlannerStateMachine" = st.session_state.state_machine
-    ctx: "PlannerContext" = st.session_state.context
-    graph: "ResortGraph" = st.session_state.graph
+    sm: PlannerStateMachine = st.session_state.state_machine
+    ctx: PlannerContext = st.session_state.context
+    graph: ResortGraph = st.session_state.graph
 
     # Get target coordinates - from terrain click or from node lookup
     target_lon: float
@@ -473,6 +405,7 @@ def _handle_custom_connect_click(click_info: ClickInfo, elevation: float | None)
         start = graph.nodes[ctx.slope_build.start_node_id]
         start_lon, start_lat, start_elevation = start.lon, start.lat, start.elevation
     elif ctx.selection.has_selection() and ctx.selection.elevation is not None:  # STARTING from terrain
+        assert ctx.selection.lon is not None and ctx.selection.lat is not None  # has_selection() guarantees
         start_lon, start_lat, start_elevation = ctx.selection.lon, ctx.selection.lat, ctx.selection.elevation
     else:
         raise RuntimeError(
@@ -501,7 +434,11 @@ def _handle_custom_connect_click(click_info: ClickInfo, elevation: float | None)
 
     # Trigger state transition - the target before-hook sets context (start_node,
     # target_location, force_mode); enter_slope_custom_path regenerates proposals.
-    sm.select_custom_target(target_location=(target_lon, target_lat, target_elevation), target_node=target_node_id)
+    sm.send(
+        "select_custom_target",
+        target_location=(target_lon, target_lat, target_elevation),
+        target_node=target_node_id,
+    )
 
 
 def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) -> None:
@@ -522,10 +459,10 @@ def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) ->
         PYLON → Cannot view while placing
         PROPOSAL_* → No proposals in lift mode
     """
-    sm: "PlannerStateMachine" = st.session_state.state_machine
-    ctx: "PlannerContext" = st.session_state.context
-    graph: "ResortGraph" = st.session_state.graph
-    dem: "DEMService" = st.session_state.dem_service
+    sm: PlannerStateMachine = st.session_state.state_machine
+    ctx: PlannerContext = st.session_state.context
+    graph: ResortGraph = st.session_state.graph
+    dem: DEMService = st.session_state.dem_service
 
     # Check for invalid marker clicks first
     if click_info.click_type == MapClickType.MARKER:
@@ -673,8 +610,8 @@ def handle_import_placing_click(click_info: ClickInfo, elevation: float | None) 
         TERRAIN              → move the box center and redraw
     Anything else is ignored (the box is only a center + rectangle).
     """
-    sm: "PlannerStateMachine" = st.session_state.state_machine
-    ctx: "PlannerContext" = st.session_state.context
+    sm: PlannerStateMachine = st.session_state.state_machine
+    ctx: PlannerContext = st.session_state.context
 
     # Center-dot re-click → confirm (the documented shortcut, like re-clicking a proposal).
     if click_info.click_type == MapClickType.MARKER and click_info.marker_type == MarkerType.IMPORT_CENTER:
@@ -695,6 +632,31 @@ def handle_import_placing_click(click_info: ClickInfo, elevation: float | None) 
     logger.info(f"[IMPORT] Ignoring {click_info.display_name} — click the center dot or terrain to re-place")
 
 
+def handle_merge_placing_click(click_info: ClickInfo, elevation: float | None) -> None:
+    """Handle a click while selecting nodes to merge (MERGE_PLACING).
+
+    A NODE marker click toggles that node in the selection (re-click removes it) via the
+    toggle_merge_node self-loop, then redraws so the selection colour updates. Every other click
+    (terrain, slope/lift/road/proposal markers) is an InvalidClickMessage — merge only operates on
+    nodes, and this branch handles every marker type so the dispatch never crashes.
+    """
+    sm: PlannerStateMachine = st.session_state.state_machine
+
+    # NODE marker → toggle it in the selection.
+    if click_info.click_type == MapClickType.MARKER and click_info.marker_type == MarkerType.NODE:
+        assert click_info.node_id is not None  # Validated in ClickInfo
+        logger.info(f"[MERGE] Node click: toggling {click_info.node_id} in the merge selection")
+        sm.toggle_merge_node(node_id=click_info.node_id)
+        reload_map()
+        return
+
+    # Anything else (terrain or a non-node marker) is not selectable for merge.
+    InvalidClickMessage(
+        action="select for merge",
+        reason="Click node markers to select which nodes to merge, then press Confirm Merge.",
+    ).display()
+
+
 def handle_road_building_click(click_info: ClickInfo, elevation: float | None) -> None:
     """Handle a click while building a road (ROAD_STARTING / ROAD_BUILDING).
 
@@ -707,9 +669,9 @@ def handle_road_building_click(click_info: ClickInfo, elevation: float | None) -
     The gradient band is a HARD guarantee: if no in-band proposal can be traced
     to the clicked point (steep terrain), nothing is proposed and the user is told.
     """
-    ctx: "PlannerContext" = st.session_state.context
-    graph: "ResortGraph" = st.session_state.graph
-    factory: "PathFactory" = st.session_state.path_factory
+    ctx: PlannerContext = st.session_state.context
+    graph: ResortGraph = st.session_state.graph
+    factory: PathFactory = st.session_state.path_factory
 
     # A proposal click SELECTS the variant; re-clicking the already-selected one COMMITS it.
     # Road proposals overlap at the same target, so endpoint and body clicks are

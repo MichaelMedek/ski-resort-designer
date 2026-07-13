@@ -13,6 +13,7 @@ IMPORTANT: Only infrastructure belongs here (rerun, map version).
 
 import logging
 from collections.abc import Callable
+from typing import Literal
 
 import streamlit as st
 from streamlit_js_eval import streamlit_js_eval  # type: ignore[import-untyped]
@@ -47,7 +48,7 @@ def _autosave_if_dirty() -> None:
     st.session_state._saved_token = token
 
 
-def trigger_rerun(scope: str = "app") -> None:
+def trigger_rerun(scope: Literal["app", "fragment"] = "app") -> None:
     """Trigger Streamlit rerun with optional scope.
 
     This is a mockable wrapper around st.rerun() for testability.
@@ -131,5 +132,5 @@ def viewport_map_height(reserved_below_px: int = 0) -> int | None:
     window_height = st.session_state.get("window_height_px")
     if window_height is None:
         return None
-    available = window_height - ChartConfig.MAP_TOP_OFFSET_PX - reserved_below_px
+    available: int = int(window_height) - ChartConfig.MAP_TOP_OFFSET_PX - reserved_below_px
     return max(available, ChartConfig.MAP_MIN_HEIGHT_PX)

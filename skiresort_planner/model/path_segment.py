@@ -12,7 +12,7 @@ Reference: DETAILS.md
 from dataclasses import dataclass
 from enum import Enum
 from math import floor
-from typing import Any
+from typing import cast
 
 import pyproj
 from shapely.geometry import LineString
@@ -204,15 +204,15 @@ class PathSegment(Path):
         return []
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "PathSegment":
+    def from_dict(cls, data: dict[str, object]) -> "PathSegment":
         """Create PathSegment from dictionary."""
         return cls(
-            id=data["id"],
-            name=data["name"],
-            points=[PathPoint(**p) for p in data["points"]],
-            start_node_id=data["start_node_id"],
-            end_node_id=data["end_node_id"],
-            side_slope_pct=data.get("side_slope_pct", 0.0),
+            id=cast(str, data["id"]),
+            name=cast(str, data["name"]),
+            points=[PathPoint(**p) for p in cast(list[dict[str, float]], data["points"])],
+            start_node_id=cast(str, data["start_node_id"]),
+            end_node_id=cast(str, data["end_node_id"]),
+            side_slope_pct=cast(float, data.get("side_slope_pct", 0.0)),
             side_slope_dir=SideDirection(data.get("side_slope_dir", SideDirection.FLAT.value)),
             # Pre-enum saves have no "kind" → default to SLOPE.
             kind=SegmentKind(data.get("kind", SegmentKind.SLOPE.value)),

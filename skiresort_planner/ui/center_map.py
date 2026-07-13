@@ -20,7 +20,7 @@ Reference: DETAILS_UI.md for interaction patterns
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import pydeck as pdk
 
@@ -39,6 +39,9 @@ from skiresort_planner.model.resort_graph import ResortGraph
 
 if TYPE_CHECKING:
     from skiresort_planner.core.terrain_analyzer import TerrainOrientation
+    from skiresort_planner.model.lift import Lift
+    from skiresort_planner.model.road import Road
+    from skiresort_planner.model.slope import Slope
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +164,7 @@ class MapRenderer:
         extra_layers: list[pdk.Layer] | None = None,
         terrain_layer: pdk.Layer | None = None,
         use_3d: bool = False,
+        merge_node_ids: list[str] | None = None,
     ) -> pdk.Deck:
         """Render complete map with all layers.
 
@@ -175,6 +179,7 @@ class MapRenderer:
             extra_layers: Additional layers to include (markers always on top)
             terrain_layer: Pre-generated terrain elevation layer (BitmapLayer)
             use_3d: If True, render with 3D terrain elevations. If False, flat 2D at z=0.
+            merge_node_ids: Node ids currently selected for merging — drawn RED.
 
         Returns:
             pdk.Deck object ready for display.
@@ -194,7 +199,7 @@ class MapRenderer:
                 layer_collection.lifts.extend(lift_layers["cables_icons"])
 
             if show_nodes:
-                layer_collection.nodes.append(self._create_node_layer(use_3d=use_3d))
+                layer_collection.nodes.append(self._create_node_layer(use_3d=use_3d, merge_node_ids=merge_node_ids))
 
             if show_segments:
                 # One shared loop builds slope + road layers, returned in
@@ -310,7 +315,7 @@ class MapRenderer:
     @staticmethod
     def _calculate_3d_view_for_entity(
         graph: ResortGraph,
-        entity: Any,
+        entity: "Slope | Road | Lift",
         label: str,
     ) -> tuple[float, float, float, int, float]:
         """Side-view camera for any start/end-node entity (slope, road, or lift).
@@ -405,8 +410,8 @@ class MapRenderer:
         # One record per segment, sorted into its owner's bucket by segment.kind.
         # Roads are flat brown; slopes are difficulty-colored. In-build segments
         # (no finished Slope/Road yet) stay segment-typed for clicks.
-        slope_records: list[dict] = []
-        road_records: list[dict] = []
+        slope_records: list[dict[str, object]] = []
+        road_records: list[dict[str, object]] = []
 
         for seg_id, segment in self.graph.segments.items():
             polygon_coords = segment.get_belt_polygon()
@@ -491,7 +496,7 @@ class MapRenderer:
             "roads": self._build_path_layers(road_records, id_prefix="roads", use_3d=use_3d),
         }
 
-    def _build_path_layers(self, records: list[dict], id_prefix: str, use_3d: bool) -> list[pdk.Layer]:
+    def _build_path_layers(self, records: list[dict[str, object]], id_prefix: str, use_3d: bool) -> list[pdk.Layer]:
         """Build belt/center-line/icon layers from segment records.
 
         Shared by slopes and roads so both render identically (belt polygon in
@@ -703,7 +708,7 @@ class MapRenderer:
     # NODE LAYER
     # =========================================================================
 
-    def _create_node_layer(self, use_3d: bool = False) -> pdk.Layer:
+    def _create_node_layer(self, use_3d: bool = False, merge_node_ids: list[str] | None = None) -> pdk.Layer:
         """Create layer for junction nodes.
 
         A node that is also a **parking node** (a road junction shared with a
@@ -711,8 +716,13 @@ class MapRenderer:
         with a "Parking place" tooltip — the parking marker IS the node marker,
         so it's always visible and hoverable (no separate under-layer).
 
+        A node in `merge_node_ids` (selected in the node-merge tool) renders RED and bigger, so the
+        user sees exactly which nodes will collapse. Merge-selection takes priority over the parking
+        style (a selected parking node still shows red while selected).
+
         Args:
             use_3d: If True, use terrain elevation. If False, use z-offset.
+            merge_node_ids: Node ids selected for merging (drawn red).
 
         Returns:
             ScatterplotLayer with nodes; per-point color/radius/name.
@@ -721,10 +731,24 @@ class MapRenderer:
             return pdk.Layer("ScatterplotLayer", [], id="nodes")
 
         parking_ids = {n.id for n in self.graph.get_parking_nodes()}
+        merge_ids = set(merge_node_ids or [])
 
         node_data = []
         for node_id, node in self.graph.nodes.items():
             is_parking = node_id in parking_ids
+            is_merge_selected = node_id in merge_ids
+            if is_merge_selected:
+                color = list(StyleConfig.MERGE_SELECTED_RGBA)
+                radius = ClickConfig.PARKING_MARKER_RADIUS
+                name = f"{StyleConfig.MERGE_ICON} Selected to merge — {node_id}"
+            elif is_parking:
+                color = list(StyleConfig.PARKING_COLOR_RGBA)
+                radius = ClickConfig.PARKING_MARKER_RADIUS
+                name = f"{StyleConfig.PARKING_ICON} Parking place — {node_id}"
+            else:
+                color = list(MarkerConfig.NODE_MARKER_COLOR)
+                radius = ClickConfig.NODE_MARKER_RADIUS
+                name = f"Node {node_id}"
             node_data.append(
                 {
                     "type": ClickConfig.TYPE_NODE,
@@ -737,13 +761,9 @@ class MapRenderer:
                         ),
                     ],
                     "elevation": node.elevation,
-                    "color": (
-                        list(StyleConfig.PARKING_COLOR_RGBA) if is_parking else list(MarkerConfig.NODE_MARKER_COLOR)
-                    ),
-                    "radius": (ClickConfig.PARKING_MARKER_RADIUS if is_parking else ClickConfig.NODE_MARKER_RADIUS),
-                    "name": (
-                        f"{StyleConfig.PARKING_ICON} Parking place — {node_id}" if is_parking else f"Node {node_id}"
-                    ),
+                    "color": color,
+                    "radius": radius,
+                    "name": name,
                 }
             )
 
@@ -781,9 +801,9 @@ class MapRenderer:
             is_custom_path: Whether this is a custom path (no endpoint markers).
             use_3d: If True, use real elevations. If False, use flat z offsets.
         """
-        path_data = []
-        endpoint_data = []
-        body_data = []
+        path_data: list[dict[str, object]] = []
+        endpoint_data: list[dict[str, object]] = []
+        body_data: list[dict[str, object]] = []
 
         # Proposals use marker z-offset for 2D mode
         z_offset_2d = MapConfig.Z_OFFSET_2D_MARKERS
@@ -889,7 +909,7 @@ class MapRenderer:
         if path_data:
             logger.info(
                 f"[RENDER] proposal layer: {len(path_data)} path(s), is_custom_path={is_custom_path}, "
-                f"first_color={path_data[0]['color']}, first_path_pts={len(path_data[0]['path'])}"
+                f"first_color={path_data[0]['color']}"
             )
             layers.append(
                 pdk.Layer(

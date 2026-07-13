@@ -8,7 +8,9 @@ Coordinate tracking prevents re-processing the same click on reruns.
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
+
+import streamlit as st
 
 from skiresort_planner.constants import ClickConfig
 from skiresort_planner.model.click_info import ClickInfo, MapClickType, MarkerType
@@ -26,6 +28,21 @@ assert {m.value for m in MarkerType} <= _CLICK_TYPE_TAGS, (
 )
 
 
+def _as_str(value: object) -> str | None:
+    """Narrow a picked-object field to str, or None if absent/wrong type."""
+    return value if isinstance(value, str) else None
+
+
+def _as_int(value: object) -> int | None:
+    """Narrow a picked-object field to int, or None if absent/wrong type."""
+    return value if isinstance(value, int) else None
+
+
+def _as_float(value: object) -> float | None:
+    """Narrow a picked-object numeric field to float, or None if absent/wrong type."""
+    return float(value) if isinstance(value, (int, float)) else None
+
+
 @dataclass
 class ClickDetector:
     """Detects clicks from Pydeck picked objects.
@@ -38,7 +55,7 @@ class ClickDetector:
 
     def detect(
         self,
-        clicked_object: dict[str, Any] | None,
+        clicked_object: dict[str, object] | None,
         clicked_coordinate: list[float] | None,
     ) -> ClickInfo | None:
         """Detect click from Pydeck event data.
@@ -73,33 +90,31 @@ class ClickDetector:
 
         return None
 
-    def _get_object_id(self, obj: dict[str, Any] | None) -> str | None:
+    def _get_object_id(self, obj: dict[str, object] | None) -> str | None:
         """Generate unique ID for object for deduplication."""
         if obj is None:
             return None
 
-        obj_type = obj.get("type", "")
-        obj_id = obj.get("id", "")
+        obj_type = _as_str(obj.get("type")) or ""
+        obj_id = _as_str(obj.get("id")) or ""
 
         if obj_type == ClickConfig.TYPE_PYLON:
-            lift_id = obj.get("lift_id", "")
-            pylon_idx = obj.get("pylon_index", 0)
+            lift_id = _as_str(obj.get("lift_id")) or ""
+            pylon_idx = _as_int(obj.get("pylon_index")) or 0
             return f"pylon_{lift_id}_{pylon_idx}"
 
         if obj_type in {ClickConfig.TYPE_PROPOSAL_BODY, ClickConfig.TYPE_PROPOSAL_ENDPOINT}:
             # Include map_version to make proposal IDs unique per generation
             # This ensures clicks work after proposals are regenerated
-            import streamlit as st
-
             map_version = st.session_state.get("map_version", 0)
-            proposal_idx = obj.get("proposal_index", 0)
+            proposal_idx = _as_int(obj.get("proposal_index")) or 0
             return f"{obj_type}_{proposal_idx}_v{map_version}"
 
         return f"{obj_type}_{obj_id}" if obj_id else obj_type
 
-    def _parse_object_click(self, obj: dict[str, Any]) -> ClickInfo | None:
+    def _parse_object_click(self, obj: dict[str, object]) -> ClickInfo | None:
         """Parse clicked object to ClickInfo."""
-        obj_type = obj.get("type")
+        obj_type = _as_str(obj.get("type"))
 
         if not obj_type:
             logger.warning(f"Object click without type field: {obj}")
@@ -108,7 +123,10 @@ class ClickDetector:
         # GeoJSON Feature: extract type from properties (for segment belts, etc.)
         if obj_type == "Feature":
             props = obj.get("properties", {})
-            obj_type = props.get("type")
+            if not isinstance(props, dict):
+                logger.debug(f"GeoJSON Feature with non-dict properties: {obj}")
+                return None
+            obj_type = _as_str(props.get("type"))
             if not obj_type:
                 logger.debug(f"GeoJSON Feature without properties.type: {obj}")
                 return None
@@ -120,8 +138,8 @@ class ClickDetector:
         # TERRAIN click (invisible ScatterplotLayer grid for terrain click detection)
         if obj_type == ClickConfig.TYPE_TERRAIN:
             # ScatterplotLayer points have direct lon/lat fields
-            lon = obj.get("lon")
-            lat = obj.get("lat")
+            lon = _as_float(obj.get("lon"))
+            lat = _as_float(obj.get("lat"))
             if lon is None or lat is None:
                 logger.debug(f"Terrain click missing lon/lat: {obj}")
                 return None
@@ -134,7 +152,7 @@ class ClickDetector:
 
         # NODE click
         if obj_type == ClickConfig.TYPE_NODE:
-            node_id = obj.get("id")
+            node_id = _as_str(obj.get("id"))
             assert node_id, f"node marker must carry an id (rendering bug): {obj}"
             return ClickInfo(
                 click_type=MapClickType.MARKER,
@@ -144,7 +162,7 @@ class ClickDetector:
 
         # SEGMENT click
         if obj_type == ClickConfig.TYPE_SEGMENT:
-            seg_id = obj.get("id")
+            seg_id = _as_str(obj.get("id"))
             assert seg_id, f"segment marker must carry an id (rendering bug): {obj}"
             return ClickInfo(
                 click_type=MapClickType.MARKER,
@@ -154,7 +172,7 @@ class ClickDetector:
 
         # SLOPE click (icon marker)
         if obj_type == ClickConfig.TYPE_SLOPE:
-            slope_id = obj.get("id")
+            slope_id = _as_str(obj.get("id"))
             assert slope_id, f"slope marker must carry an id (rendering bug): {obj}"
             return ClickInfo(
                 click_type=MapClickType.MARKER,
@@ -164,7 +182,7 @@ class ClickDetector:
 
         # LIFT click
         if obj_type == ClickConfig.TYPE_LIFT:
-            lift_id = obj.get("id")
+            lift_id = _as_str(obj.get("id"))
             assert lift_id, f"lift marker must carry an id (rendering bug): {obj}"
             return ClickInfo(
                 click_type=MapClickType.MARKER,
@@ -174,7 +192,7 @@ class ClickDetector:
 
         # ROAD click
         if obj_type == ClickConfig.TYPE_ROAD:
-            road_id = obj.get("id")
+            road_id = _as_str(obj.get("id"))
             assert road_id, f"road marker must carry an id (rendering bug): {obj}"
             return ClickInfo(
                 click_type=MapClickType.MARKER,
@@ -184,8 +202,8 @@ class ClickDetector:
 
         # PYLON click
         if obj_type == ClickConfig.TYPE_PYLON:
-            lift_id = obj.get("lift_id")
-            pylon_index = obj.get("pylon_index")
+            lift_id = _as_str(obj.get("lift_id"))
+            pylon_index = _as_int(obj.get("pylon_index"))
             assert lift_id and pylon_index is not None, f"pylon marker must carry lift_id + pylon_index: {obj}"
             return ClickInfo(
                 click_type=MapClickType.MARKER,
@@ -196,7 +214,7 @@ class ClickDetector:
 
         # PROPOSAL ENDPOINT click (commit)
         if obj_type == ClickConfig.TYPE_PROPOSAL_ENDPOINT:
-            proposal_index = obj.get("proposal_index")
+            proposal_index = _as_int(obj.get("proposal_index"))
             assert proposal_index is not None, f"proposal endpoint must carry proposal_index: {obj}"
             return ClickInfo(
                 click_type=MapClickType.MARKER,
@@ -206,7 +224,7 @@ class ClickDetector:
 
         # PROPOSAL BODY click (select)
         if obj_type == ClickConfig.TYPE_PROPOSAL_BODY:
-            proposal_index = obj.get("proposal_index")
+            proposal_index = _as_int(obj.get("proposal_index"))
             assert proposal_index is not None, f"proposal body must carry proposal_index: {obj}"
             return ClickInfo(
                 click_type=MapClickType.MARKER,

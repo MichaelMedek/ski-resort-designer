@@ -404,6 +404,21 @@ def enter_import_placing(ctx: PlannerContext) -> None:
     ctx.click_dedup.clear_marker()
 
 
+def enter_merge_placing(ctx: PlannerContext) -> None:
+    """Enter MERGE_PLACING: the user selects node markers to collapse (Single Point of Truth).
+
+    Reached from any idle state on entering merge mode, and re-entered on each node-toggle
+    (self-loop). The selected node ids live in ctx.merge.node_ids (toggled by the click handler) —
+    they must NOT be cleared here, or the self-loop would wipe the selection on every click.
+    Cancel clears it via before_cancel_merge; a confirmed merge clears it in complete_merge.
+
+    End state: Panel hidden, selected nodes drawn red, ready for confirm.
+    """
+    logger.debug("ENTER: merge_placing - hiding panel")
+    ctx.viewing.hide_panel()
+    ctx.click_dedup.clear_marker()
+
+
 # =============================================================================
 # 9. IDLE_VIEWING_ROAD - Panel showing road details
 # =============================================================================

@@ -19,6 +19,7 @@ Classes:
     NameConfig: Creative naming components
     ChartConfig: Chart rendering dimensions
     OSMConfig: OpenStreetMap import (Overpass query, aerialway→lift-type map)
+    MergeConfig: Manual node-merge tool
 """
 
 from pathlib import Path
@@ -393,7 +394,6 @@ class StyleConfig:
         "black": "#1F2937",  # gray-800
     }
     assert set(SLOPE_COLORS.keys()) == set(SlopeConfig.DIFFICULTIES)
-    SLOPE_ICON = "⛷️"
 
     # Slope colors - RGBA lists for Pydeck (GPU-compatible format)
     SLOPE_COLORS_RGBA = {
@@ -454,6 +454,14 @@ class StyleConfig:
 
     # OSM import mode icon (build-mode selector + placement markers)
     IMPORT_ICON = "🗺️"
+    # Node-merge mode icon (build-mode selector).
+    MERGE_ICON = "🔗"
+    # Generic sidebar-header icons: one "in-progress" glyph for every building/placing state, one for
+    # viewing a finished entity. Shared so all state headers stay consistent from one source.
+    BUILDING_ICON = "🏗️"
+    VIEWING_ICON = "👁️"
+    # Nodes selected for merging render solid red so the collapse set is unmistakable.
+    MERGE_SELECTED_RGBA = [239, 68, 68, 235]
     # OSM import overlay (RGBA for Pydeck): one blue for the box, one for the center dot.
     IMPORT_BOX_RGBA = [33, 150, 243, 60]  # translucent square (fill + outline)
     IMPORT_CENTER_RGBA = [33, 150, 243, 230]  # solid center dot (click to confirm)
@@ -621,6 +629,13 @@ class UndoConfig:
     MAX_UNDO_STACK_SIZE = 50
 
 
+class MergeConfig:
+    """Manual node-merge tool (collapse scattered station nodes into one)."""
+
+    # Refuse to merge if any two selected nodes are farther apart than this
+    MAX_SPAN_M = 500.0
+
+
 class OSMConfig:
     """OpenStreetMap import (generators/osm_importer.py).
 
@@ -634,6 +649,11 @@ class OSMConfig:
     OVERPASS_TIMEOUT_S = 30
     # Overpass returns HTTP 406 without a User-Agent (verified live) — always send one.
     USER_AGENT = "ski-resort-designer/0.1"
+
+    # Nominatim free-text place search (generators/geocoder.py) — powers the sidebar search box.
+    # Policy: max 1 req/s and a custom User-Agent (we send USER_AGENT); search-on-submit only.
+    NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+    NOMINATIM_TIMEOUT_S = 10
 
     # A lift/piste-only query is light, so the whole region is fetched in ONE query. Overpass gives
     # a few slots per IP; on a transient 429/504 we wait for a free slot (from /api/status) and retry

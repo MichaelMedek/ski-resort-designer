@@ -460,7 +460,8 @@ class TestStatsWithRoads:
 
 class TestNodeSharingDeletes:
     """Deleting one entity must NOT orphan a node another entity still uses (real-world: a
-    road and a slope meeting at a base node; delete one, the junction node must survive)."""
+    road and a slope meeting at a base node; delete one, the junction node must survive).
+    """
 
     def _slope_plus_road_sharing_top_node(self, graph, path_points_blue):
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
@@ -501,7 +502,8 @@ class TestNodeSharingDeletes:
 
 class TestMultipleSlopesFromOneNode:
     """'Multiple ways down' — several slopes fanning off ONE shared hub node (DETAILS_UI.md
-    Tips). The hub must count all connections and survive until its LAST user is deleted."""
+    Tips). The hub must count all connections and survive until its LAST user is deleted.
+    """
 
     def _three_slopes_from_hub(self, graph, dem):
         hub = PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
@@ -658,7 +660,7 @@ class TestFinishSmoothing:
         # Re-finishing an already-smoothed path is idempotent (sub-meter drift, non-accumulating).
         graph.finish_slope(segment_ids=seg_ids)
         after_second = [graph.segments[sid].max_slope_pct for sid in seg_ids]
-        for a, b in zip(after_first, after_second):
+        for a, b in zip(after_first, after_second, strict=False):
             assert abs(a - b) < 1.0, "re-finish must not drift max_slope_pct meaningfully"
 
     def test_road_finish_may_exceed_15pct_but_never_none(self, empty_graph, mock_dem_black_slope) -> None:
@@ -692,7 +694,8 @@ class TestFinishSmoothing:
 
 class TestImportOSMBatch:
     """An OSM import is ONE undoable batch: it adds many slopes+lifts under a single undo entry,
-    and one undo wipes the whole import (so the user can import a different selection)."""
+    and one undo wipes the whole import (so the user can import a different selection).
+    """
 
     def _pistes(self, dem, count):
         pistes = []
@@ -913,3 +916,106 @@ class TestUndoDispatchExhaustiveness:
         }
         missing = {name: gaps for name, gaps in missing.items() if gaps}
         assert not missing, f"undo dispatchers missing ActionType branches: {missing}"
+
+
+# =============================================================================
+# Node merge (median collapse) + undo
+# =============================================================================
+
+
+class TestMergeNodes:
+    """merge_nodes collapses several nodes to their median, repointing every segment/lift endpoint
+    onto the survivor, as ONE undoable action. Undo restores the graph exactly.
+    """
+
+    M = MapConfig.METERS_PER_DEGREE_EQUATOR
+
+    def _node(self, graph, dem, node_id, lon, lat):  # type: ignore[no-untyped-def]
+        graph.nodes[node_id] = Node(
+            id=node_id, location=PathPoint(lon=lon, lat=lat, elevation=dem.get_elevation_or_raise(lon=lon, lat=lat))
+        )
+
+    def test_merge_moves_survivor_to_median_and_deletes_others(self, empty_graph, mock_dem_blue_slope) -> None:
+        dem = mock_dem_blue_slope
+        # Three nodes a few metres apart (well within MAX_SPAN_M). A lift keeps the survivor from being
+        # cleaned up as isolated after the merge.
+        self._node(empty_graph, dem, "A", 0.0, 0.0)
+        self._node(empty_graph, dem, "B", 10 / self.M, 0.0)
+        self._node(empty_graph, dem, "C", 20 / self.M, 30 / self.M)
+        self._node(empty_graph, dem, "T", 0.0, -1000 / self.M)
+        empty_graph.add_lift(start_node_id="A", end_node_id="T", lift_type="chairlift", dem=dem)
+
+        empty_graph.merge_nodes(node_ids=["A", "B", "C"], dem=dem)
+
+        assert "B" not in empty_graph.nodes and "C" not in empty_graph.nodes, "merged-away nodes deleted"
+        assert "A" in empty_graph.nodes, "survivor (first id) remains"
+        survivor = empty_graph.nodes["A"]
+        # Median of lons {0,10,20}/M and lats {0,0,30}/M is the middle value each.
+        assert survivor.lon == pytest.approx(10 / self.M)
+        assert survivor.lat == pytest.approx(0.0)
+        # Elevation was re-sampled from the DEM at the median point.
+        assert survivor.elevation == pytest.approx(dem.get_elevation_or_raise(lon=10 / self.M, lat=0.0))
+
+    def test_merge_repoints_lift_endpoints_onto_survivor(self, empty_graph, mock_dem_blue_slope) -> None:
+        dem = mock_dem_blue_slope
+        # Bottom station split into two near-coincident nodes (A survivor, B merged); top is T.
+        self._node(empty_graph, dem, "A", 0.0, 0.0)
+        self._node(empty_graph, dem, "B", 5 / self.M, 0.0)
+        self._node(empty_graph, dem, "T", 0.0, -1000 / self.M)
+        lift = empty_graph.add_lift(start_node_id="B", end_node_id="T", lift_type="chairlift", dem=dem)
+
+        empty_graph.merge_nodes(node_ids=["A", "B"], dem=dem)
+
+        assert "B" not in empty_graph.nodes
+        assert empty_graph.lifts[lift.id].start_node_id == "A", "lift start repointed onto survivor"
+        assert empty_graph.lifts[lift.id].end_node_id == "T", "unrelated endpoint untouched"
+
+    def test_merge_records_single_undo_entry(self, empty_graph, mock_dem_blue_slope) -> None:
+        dem = mock_dem_blue_slope
+        self._node(empty_graph, dem, "A", 0.0, 0.0)
+        self._node(empty_graph, dem, "B", 8 / self.M, 0.0)
+        before = len(empty_graph.undo_stack)
+        empty_graph.merge_nodes(node_ids=["A", "B"], dem=dem)
+        assert len(empty_graph.undo_stack) == before + 1
+
+    def test_undo_restores_nodes_and_repointed_endpoints(self, empty_graph, mock_dem_blue_slope) -> None:
+        dem = mock_dem_blue_slope
+        self._node(empty_graph, dem, "A", 0.0, 0.0)
+        self._node(empty_graph, dem, "B", 6 / self.M, 0.0)
+        self._node(empty_graph, dem, "T", 0.0, -1000 / self.M)
+        lift = empty_graph.add_lift(start_node_id="B", end_node_id="T", lift_type="chairlift", dem=dem)
+        a_before = (empty_graph.nodes["A"].lon, empty_graph.nodes["A"].lat, empty_graph.nodes["A"].elevation)
+        b_before = (empty_graph.nodes["B"].lon, empty_graph.nodes["B"].lat)
+
+        empty_graph.merge_nodes(node_ids=["A", "B"], dem=dem)
+        empty_graph.undo_last()
+
+        assert set(empty_graph.nodes) >= {"A", "B", "T"}, "merged node restored"
+        assert (empty_graph.nodes["A"].lon, empty_graph.nodes["A"].lat, empty_graph.nodes["A"].elevation) == a_before
+        assert (empty_graph.nodes["B"].lon, empty_graph.nodes["B"].lat) == b_before
+        assert empty_graph.lifts[lift.id].start_node_id == "B", "lift endpoint repointed back onto B"
+
+    def test_merge_raises_when_nodes_too_far(self, empty_graph, mock_dem_blue_slope) -> None:
+        from skiresort_planner.constants import MergeConfig
+
+        dem = mock_dem_blue_slope
+        far = (MergeConfig.MAX_SPAN_M + 100) / self.M
+        self._node(empty_graph, dem, "A", 0.0, 0.0)
+        self._node(empty_graph, dem, "B", 0.0, -far)
+        with pytest.raises(ValueError, match="span"):
+            empty_graph.merge_nodes(node_ids=["A", "B"], dem=dem)
+        # No mutation on refusal.
+        assert set(empty_graph.nodes) == {"A", "B"}
+
+    def test_merge_raises_below_two_nodes(self, empty_graph, mock_dem_blue_slope) -> None:
+        dem = mock_dem_blue_slope
+        self._node(empty_graph, dem, "A", 0.0, 0.0)
+        with pytest.raises(ValueError, match="at least two"):
+            empty_graph.merge_nodes(node_ids=["A"], dem=dem)
+
+    def test_max_node_span_m(self, empty_graph, mock_dem_blue_slope) -> None:
+        dem = mock_dem_blue_slope
+        self._node(empty_graph, dem, "A", 0.0, 0.0)
+        self._node(empty_graph, dem, "B", 0.0, -100 / self.M)
+        span = empty_graph.max_node_span_m(["A", "B"])
+        assert span == pytest.approx(100.0, abs=1.0)

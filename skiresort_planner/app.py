@@ -8,6 +8,7 @@ Run: streamlit run skiresort_planner/app.py
 
 import logging
 import traceback
+import uuid
 from typing import TYPE_CHECKING
 
 import pydeck as pdk
@@ -43,12 +44,11 @@ from skiresort_planner.ui import (
     process_osm_import_deferred,
     process_path_generation_deferred,
     recompute_paths,
-    render_building_profile,
     render_control_panel,
-    render_viewing_profile,
     trigger_rerun,
     viewport_map_height,
 )
+from skiresort_planner.ui.mode_registry import BUILD_STATES
 from skiresort_planner.ui.pydeck_click_handler import render_pydeck_map
 from skiresort_planner.ui.terrain_layer import create_aws_terrain_layer
 
@@ -252,6 +252,8 @@ def _render_map_fragment_inner() -> None:
     graph: ResortGraph = st.session_state.graph
     renderer: MapRenderer = st.session_state.map_renderer
     terrain_analyzer: TerrainAnalyzer = st.session_state.path_factory.terrain_analyzer
+    dem: DEMService = st.session_state.dem_service
+    build_state = BUILD_STATES[sm.get_current_state_id()]
 
     map_version = st.session_state.get("map_version", 0)
     logger.info(f"[RENDER] Map fragment: state={sm.get_state_name()}, map_version={map_version}")
@@ -259,166 +261,34 @@ def _render_map_fragment_inner() -> None:
     # Determine 2D/3D mode early so all layers use consistent z-handling
     use_3d = ctx.viewing.view_3d
 
-    # Collect extra layers for overlays
-    extra_layers: list[pdk.Layer] = []
+    # The current state owns its whole map surface: overlay layers, camera framing, and profile.
+    extra_layers: list[pdk.Layer] = build_state.overlay_layers(
+        ctx=ctx, graph=graph, renderer=renderer, terrain_analyzer=terrain_analyzer, dem=dem, use_3d=use_3d
+    )
 
-    # Add orientation arrows in Building state.
-    sel = ctx.selection
-    if sm.is_any_slope_state and sel.lon is not None and sel.lat is not None and sel.elevation is not None:
-        orientation = terrain_analyzer.get_orientation(lon=sel.lon, lat=sel.lat)
-        if orientation:
-            arrow_layers = renderer.create_orientation_arrows_layers(
-                lat=sel.lat,
-                lon=sel.lon,
-                elevation=sel.elevation,
-                orientation=orientation,
-                use_3d=use_3d,
-            )
-            extra_layers.extend(arrow_layers)
-
-    # Add direction arrow while routing a custom-connect path (targeting a clicked point)
-    if ctx.custom_connect.force_mode and ctx.custom_connect.start_node:
-        start_node = graph.nodes.get(ctx.custom_connect.start_node)
-        if start_node:
-            gradient = terrain_analyzer.compute_gradient(lon=start_node.lon, lat=start_node.lat)
-            arrow_layer = renderer.create_direction_arrow_layer(
-                start_lat=start_node.lat,
-                start_lon=start_node.lon,
-                bearing_deg=gradient.bearing_deg,
-                direction="downhill",
-                use_3d=use_3d,
-            )
-            extra_layers.append(arrow_layer)
-
-    # Add lift marker in LiftPlacing state
-    if sm.is_lift_placing and (ctx.lift.start_node_id or ctx.lift.start_location):
-        if ctx.lift.start_node_id:
-            lift_start_node = graph.nodes.get(ctx.lift.start_node_id)
-            if lift_start_node is None:
-                raise ValueError(f"Lift start node {ctx.lift.start_node_id} not found in graph")
-            gradient = terrain_analyzer.compute_gradient(lon=lift_start_node.lon, lat=lift_start_node.lat)
-            lift_layers = renderer.create_pending_lift_marker_layers(
-                lat=lift_start_node.lat,
-                lon=lift_start_node.lon,
-                elevation=lift_start_node.elevation,
-                fall_line_bearing=gradient.bearing_deg,
-                use_3d=use_3d,
-            )
-            extra_layers.extend(lift_layers)
-        elif ctx.lift.start_location:
-            loc = ctx.lift.start_location
-            gradient = terrain_analyzer.compute_gradient(lon=loc.lon, lat=loc.lat)
-            lift_layers = renderer.create_pending_lift_marker_layers(
-                lat=loc.lat,
-                lon=loc.lon,
-                elevation=loc.elevation,
-                fall_line_bearing=gradient.bearing_deg,
-                use_3d=use_3d,
-            )
-            extra_layers.extend(lift_layers)
-
-    # Add road origin marker in RoadStarting state (no segments committed yet, so
-    # the click point needs a visible dot — like the lift bottom station, minus the
-    # direction arrow since a road has no fall-line orientation).
-    if sm.is_road_starting and (ctx.road_build.start_node_id or ctx.road_build.start_location):
-        if ctx.road_build.start_node_id:
-            road_start_node = graph.nodes.get(ctx.road_build.start_node_id)
-            if road_start_node is None:
-                raise ValueError(f"Road start node {ctx.road_build.start_node_id} not found in graph")
-            extra_layers.extend(
-                renderer.create_pending_road_marker_layers(
-                    lat=road_start_node.lat,
-                    lon=road_start_node.lon,
-                    elevation=road_start_node.elevation,
-                    use_3d=use_3d,
-                )
-            )
-        elif ctx.road_build.start_location:
-            loc = ctx.road_build.start_location
-            extra_layers.extend(
-                renderer.create_pending_road_marker_layers(
-                    lat=loc.lat,
-                    lon=loc.lon,
-                    elevation=loc.elevation,
-                    use_3d=use_3d,
-                )
-            )
-
-    # Add the OSM import box (rectangle + pickable center dot) while placing an import area.
-    if sm.is_import_placing and ctx.deferred.osm_import_center_lon is not None:
-        center_lon = ctx.deferred.osm_import_center_lon
-        center_lat = ctx.deferred.osm_import_center_lat
-        assert center_lat is not None  # set together with lon by start_import
-        dem_service: DEMService = st.session_state.dem_service
-        center_elev = dem_service.get_elevation(lon=center_lon, lat=center_lat) or 0.0
-        extra_layers.extend(
-            renderer.create_import_bbox_layers(
-                center_lon=center_lon,
-                center_lat=center_lat,
-                half_width_m=ctx.deferred.osm_import_half_width_km * 1000.0,
-                elevation=center_elev,
-                use_3d=use_3d,
-            )
-        )
-    # 3D mode: TerrainLayer with AWS tiles + OpenTopoMap texture
-    # 2D mode: No terrain_layer needed - render() uses OPENTOPOMAP_STYLE map_style dict
-    #          (TileLayer doesn't work because pydeck doesn't expose renderSubLayers)
+    # 3D mode: TerrainLayer with AWS tiles + OpenTopoMap texture. 2D mode: render() uses the
+    # OPENTOPOMAP_STYLE map_style dict (TileLayer can't — pydeck doesn't expose renderSubLayers).
     basemap_layer = create_aws_terrain_layer() if use_3d else None
 
-    # Calculate view state BEFORE creating deck (fixes inconsistent 2D/3D toggle)
-    # Update renderer's internal state so deck is created with correct values
-    if use_3d and sm.is_info_panel_visible:
-        # Calculate optimal 3D camera position for viewing slope/lift
-        if sm.is_idle_viewing_slope and ctx.viewing.slope_id:
-            view_lat, view_lon, view_bearing, view_zoom, view_pitch = MapRenderer.calculate_3d_view_for_slope(
-                graph=graph, slope_id=ctx.viewing.slope_id
-            )
-        elif sm.is_idle_viewing_lift and ctx.viewing.lift_id:
-            view_lat, view_lon, view_bearing, view_zoom, view_pitch = MapRenderer.calculate_3d_view_for_lift(
-                graph=graph, lift_id=ctx.viewing.lift_id
-            )
-        elif sm.is_idle_viewing_road and ctx.viewing.road_id:
-            view_lat, view_lon, view_bearing, view_zoom, view_pitch = MapRenderer.calculate_3d_view_for_road(
-                graph=graph, road_id=ctx.viewing.road_id
-            )
-        else:
-            # 3D enabled but not viewing - shouldn't happen, disable 3D
-            ctx.viewing.disable_3d()
-            view_lat, view_lon, view_bearing, view_zoom, view_pitch = (
-                ctx.map.lat,
-                ctx.map.lon,
-                ctx.map.bearing,
-                ctx.map.zoom,
-                ctx.map.pitch,
-            )
-    else:
-        # Normal 2D view - use stored view state
-        view_lat, view_lon, view_bearing, view_zoom, view_pitch = (
-            ctx.map.lat,
-            ctx.map.lon,
-            ctx.map.bearing,
-            ctx.map.zoom,
-            ctx.map.pitch,
-        )
+    # Camera framing for the current state (3D fit when viewing, else the stored 2D view).
+    view_lat, view_lon, view_bearing, view_zoom, view_pitch = build_state.view_state(
+        ctx=ctx, graph=graph, use_3d=use_3d
+    )
 
-    # SIMPLE view change detection: compare current state to last rendered state
-    # This replaces complex callback injection with direct comparison
+    # Detect a view change by comparing the current framing to the last rendered one.
     last_view_3d = st.session_state.get("last_rendered_view_3d", False)
     last_pitch = st.session_state.get("last_rendered_pitch", 0.0)
     last_bearing = st.session_state.get("last_rendered_bearing", 0.0)
-
     is_view_change = (
         use_3d != last_view_3d or abs(view_pitch - last_pitch) > 0.1 or abs(view_bearing - last_bearing) > 0.1
     )
 
     if is_view_change:
-        # UUID guarantees unique key - forces React to remount deck.gl component
-        import uuid
-
+        # A fresh UUID key forces React to remount the deck.gl component.
         new_key = str(uuid.uuid4())
         st.session_state.force_remount_key = new_key
         logger.info(
-            f"[REMOUNT] View change detected: 3D={last_view_3d}->{use_3d}, pitch={last_pitch:.1f}->{view_pitch:.1f}, key={new_key[:8]}..."
+            f"[REMOUNT] View change: 3D={last_view_3d}->{use_3d}, pitch={last_pitch:.1f}->{view_pitch:.1f}, key={new_key[:8]}..."
         )
 
     # Store current state for next comparison
@@ -429,74 +299,47 @@ def _render_map_fragment_inner() -> None:
     # Update renderer with calculated view state BEFORE creating deck
     renderer.update_view(lat=view_lat, lon=view_lon, zoom=view_zoom, pitch=view_pitch, bearing=view_bearing)
 
-    # Render deck with all layers - deck is created with correct view state
-    # Use spinner during view changes (2D/3D toggle, Reset View) to show progress
-    if is_view_change:
-        with st.spinner("🔄 Switching view..."):
-            deck = renderer.render(
-                proposals=ctx.proposals.paths,
-                selected_proposal_idx=ctx.proposals.selected_idx,
-                highlight_segment_ids=ctx.slope_build.segments,
-                is_custom_path=ctx.custom_connect.force_mode or sm.is_any_road_state,
-                extra_layers=extra_layers,
-                terrain_layer=basemap_layer,
-                use_3d=use_3d,
-            )
-    else:
-        deck = renderer.render(
+    def _build_deck() -> pdk.Deck:
+        return renderer.render(
             proposals=ctx.proposals.paths,
             selected_proposal_idx=ctx.proposals.selected_idx,
             highlight_segment_ids=ctx.slope_build.segments,
-            is_custom_path=ctx.custom_connect.force_mode or sm.is_any_road_state,
+            is_custom_path=build_state.renders_custom_path(ctx),
             extra_layers=extra_layers,
             terrain_layer=basemap_layer,
             use_3d=use_3d,
+            merge_node_ids=build_state.merge_highlight_node_ids(ctx),
         )
 
-    # One elevation profile renders directly below the map: the in-build profile while
-    # building a slope/road, or the finished entity's profile while viewing it. Reserve
-    # room for it so it stays visible without scrolling; idle mode lets the map fill all.
-    show_slope_profile = sm.is_any_slope_state and bool(ctx.slope_build.segments)
-    show_road_profile = sm.is_any_road_state and bool(ctx.road_build.segments)
-    viewing = sm.viewing_entity  # (EntityKind, id) or None
-    reserved = ChartConfig.PROFILE_HEIGHT_PX if (show_slope_profile or show_road_profile or viewing) else 0
+    # Spinner only during a view change (2D/3D toggle, Reset View).
+    if is_view_change:
+        with st.spinner("🔄 Switching view..."):
+            deck = _build_deck()
+    else:
+        deck = _build_deck()
 
-    # Map height that fills the browser window. None only on first load, before the
-    # js-eval round-trip resolves (cached thereafter, so reruns keep the size).
+    # One elevation profile renders below the map, chosen by the current state (in-build slope/road,
+    # viewed entity, or none). Reserve room only when there is one; else the map fills the viewport.
+    profile = build_state.bottom_profile(ctx=ctx, graph=graph)
+    reserved = ChartConfig.PROFILE_HEIGHT_PX if profile is not None else 0
+
+    # Map height that fills the browser window. None only on first load, before the js-eval
+    # round-trip resolves (cached thereafter, so reruns keep the size).
     height = viewport_map_height(reserved_below_px=reserved)
     if height is None:
         st.info("📐 Sizing map to your window…")
         return
 
-    # Render with click handling
-    # Include force_remount_key AND height in key: st_deckgl only applies height on
-    # first mount, so height must change the key to force a remount when it changes.
+    # force_remount_key AND height are in the key: st_deckgl only applies height on first mount, so
+    # height must change the key to force a remount when it changes.
     force_key = st.session_state.get("force_remount_key", "init")
     map_key = f"main_map_{st.session_state.map_version}_{force_key}_{'3d' if use_3d else '2d'}_h{height}"
-    click_result = render_pydeck_map(
-        deck=deck,
-        height=height,
-        key=map_key,
-    )
+    click_result = render_pydeck_map(deck=deck, height=height, key=map_key)
 
-    # The single profile below the map — building (kind-driven) or viewing (kind-driven).
-    # No else: idle-ready has no profile (matches `reserved == 0`); the map fills the viewport.
-    if show_slope_profile:
-        fig = render_building_profile(
-            building_segments=ctx.slope_build.segments, building_name=ctx.slope_build.name, graph=graph
-        )
-        st.plotly_chart(fig, width="stretch", key="combined_profile")
-    elif show_road_profile:
-        fig = render_building_profile(
-            building_segments=ctx.road_build.segments, building_name=ctx.road_build.name, graph=graph
-        )
-        st.plotly_chart(fig, width="stretch", key="combined_road_profile")
-    elif viewing is not None:
-        kind, entity_id = viewing
-        fig = render_viewing_profile(kind=kind, entity_id=entity_id, graph=graph)
-        st.plotly_chart(fig, width="stretch", key="viewing_profile")
+    if profile is not None:
+        st.plotly_chart(profile.fig, width="stretch", key=profile.key)
 
-    # Detect clicks from Pydeck result - disabled in 3D mode
+    # Clicks are disabled in 3D (deck.gl picking is unreliable under pitch); warn instead.
     if use_3d:
         # 3D mode: show warning if user clicks terrain
         if click_result.clicked_coordinate:

@@ -19,7 +19,6 @@ import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
 
 
 class MessageLevel(Enum):
@@ -289,6 +288,25 @@ class OSMImportErrorMessage(ToastMessage):
         return f"OSM import failed — {self.error}"
 
 
+@dataclass(frozen=True)
+class MergeTooFarMessage(ToastMessage):
+    """Selected nodes span too far to merge (any pair exceeds MergeConfig.MAX_SPAN_M)."""
+
+    span_m: float
+    max_span_m: float
+
+    @property
+    def icon(self) -> str:
+        return "📏"
+
+    @property
+    def message(self) -> str:
+        # Round the span UP to 0.1 m so it never renders equal to the max (this fires only when
+        # the span strictly exceeds the max, and ".0f" could show "500m (max: 500m)").
+        span_shown = math.ceil(self.span_m * 10) / 10
+        return f"Nodes Too Far Apart — {span_shown:.1f}m (max: {self.max_span_m:.0f}m)"
+
+
 # =============================================================================
 # CENTER (UNDER MAP) - Loading states (BLUE)
 # =============================================================================
@@ -320,9 +338,9 @@ class SlopeStartingContextMessage(Message):
     """
 
     slope_name: str
-    start_node_id: Optional[str] = None
-    start_lat: Optional[float] = None
-    start_lon: Optional[float] = None
+    start_node_id: str | None = None
+    start_lat: float | None = None
+    start_lon: float | None = None
 
     @property
     def level(self) -> MessageLevel:
@@ -379,9 +397,9 @@ class LiftPlacingContextMessage(Message):
 
     lift_type: str = "chairlift"
     lift_icon: str = "🚡"
-    bottom_node_id: Optional[str] = None
-    bottom_lat: Optional[float] = None
-    bottom_lon: Optional[float] = None
+    bottom_node_id: str | None = None
+    bottom_lat: float | None = None
+    bottom_lon: float | None = None
     bottom_elevation_m: float = 0.0
 
     @property
@@ -429,6 +447,28 @@ class ImportPlacingContextMessage(Message):
         )
 
 
+@dataclass(frozen=True)
+class MergePlacingContextMessage(Message):
+    """RIGHT panel: node-merge selection progress — shows how many nodes are selected + their span."""
+
+    selected_count: int = 0
+    span_m: float = 0.0
+
+    @property
+    def level(self) -> MessageLevel:
+        return MessageLevel.INFO
+
+    @property
+    def message(self) -> str:
+        if self.selected_count == 0:
+            return "🔗 **Merge Nodes** — Selecting\n\n- 👆 Click node markers to select them"
+        return (
+            "🔗 **Merge Nodes** — Selecting\n\n"
+            f"- ⚪ Selected: {self.selected_count} node(s)\n"
+            f"- 📏 Span: {self.span_m:.0f}m"
+        )
+
+
 # =============================================================================
 # RIGHT PANEL (CONTROL) - Action Instructions (YELLOW)
 # One message telling user exactly what to do NOW
@@ -458,7 +498,7 @@ class SlopeActionMessage(Message):
     start_elevation_m: float = 0.0
     end_elevation_m: float = 0.0
     is_connector: bool = False
-    target_node_id: Optional[str] = None
+    target_node_id: str | None = None
 
     @property
     def level(self) -> MessageLevel:
@@ -537,6 +577,31 @@ class ImportActionMessage(Message):
 
 
 @dataclass(frozen=True)
+class MergeActionMessage(Message):
+    """RIGHT panel: action instruction while selecting nodes to merge."""
+
+    selected_count: int = 0
+
+    @property
+    def level(self) -> MessageLevel:
+        return MessageLevel.WARNING
+
+    @property
+    def message(self) -> str:
+        if self.selected_count < 2:
+            return (
+                "🔗 **Select Nodes to Merge**\n\n"
+                "- 👆 Click **node markers** to select (click again to deselect)\n"
+                "- Select at least **2 nodes** to merge them into one"
+            )
+        return (
+            "🔗 **Merge the Selected Nodes**\n\n"
+            "- 👆 Click more **node markers** to add/remove\n"
+            "- ✅ Click **Confirm Merge** to collapse them to their median position"
+        )
+
+
+@dataclass(frozen=True)
 class RoadPlacingContextMessage(Message):
     """RIGHT panel: road building progress message.
 
@@ -544,9 +609,9 @@ class RoadPlacingContextMessage(Message):
     once building has started, how many segments have been committed.
     """
 
-    start_node_id: Optional[str] = None
-    start_lat: Optional[float] = None
-    start_lon: Optional[float] = None
+    start_node_id: str | None = None
+    start_lat: float | None = None
+    start_lon: float | None = None
     start_elevation_m: float = 0.0
     segment_count: int = 0
 

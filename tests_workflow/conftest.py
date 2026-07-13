@@ -121,6 +121,15 @@ class FakeStreamlit:
     def spinner(self, *args: object, **kwargs: object) -> _Ctx:
         return _Ctx()
 
+    def form(self, *args: object, **kwargs: object) -> _Ctx:
+        return _Ctx()
+
+    def form_submit_button(self, *args: object, **kwargs: object) -> bool:
+        # Like button(): fires only if its key was pre-registered. Forms often omit an explicit
+        # key, so also honour the label as a fallback key.
+        key = kwargs.get("key") or (args[0] if args else None)
+        return key in self.clicked_keys
+
     # --- dialog: decorator factory -> identity decorator ---
     def dialog(self, *dargs: object, **dkwargs: object):  # type: ignore[no-untyped-def]
         def decorator(func):  # type: ignore[no-untyped-def]

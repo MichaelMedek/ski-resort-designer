@@ -11,9 +11,9 @@ like a bridge/cut/fill.
 import logging
 from dataclasses import dataclass
 from math import cos, radians
-from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 from scipy.interpolate import splev, splprep
 
 from skiresort_planner.constants import MapConfig
@@ -26,12 +26,12 @@ logger = logging.getLogger(__name__)
 class _SplineFit:
     """A fitted cubic spline plus the local meter frame needed to evaluate it back to lon/lat."""
 
-    tck: tuple[Any, ...]
+    tck: tuple[object, ...]
     lon0: float
     lat0: float
     m_per_deg_lon: float
     m_per_deg: float
-    cumdist: np.ndarray  # per-input-point arc length (the spline parameter u)
+    cumdist: npt.NDArray[np.float64]  # per-input-point arc length (the spline parameter u)
 
 
 def _cumulative_distances(points: list[PathPoint]) -> list[float]:
@@ -43,7 +43,7 @@ def _cumulative_distances(points: list[PathPoint]) -> list[float]:
 
 
 def _fit_spline(
-    points: list[PathPoint], smoothing_factor: float, step_m: float, weights: np.ndarray | None
+    points: list[PathPoint], smoothing_factor: float, step_m: float, weights: npt.NDArray[np.float64] | None
 ) -> _SplineFit | None:
     """Fit a cubic smoothing spline in a LOCAL METER FRAME (lon/lat projected to meters
     about the first point) so all three dimensions share one scale — otherwise degree-scale
@@ -70,7 +70,7 @@ def _fit_spline(
     return _SplineFit(tck=tck, lon0=lon0, lat0=lat0, m_per_deg_lon=m_per_deg_lon, m_per_deg=m_per_deg, cumdist=cumdist)
 
 
-def _eval_spline(fit: _SplineFit, dists: np.ndarray) -> list[PathPoint]:
+def _eval_spline(fit: _SplineFit, dists: npt.NDArray[np.float64]) -> list[PathPoint]:
     """Evaluate a fitted spline at the given arc-length parameters, back in lon/lat/elev."""
     new_x, new_y, new_elev = splev(dists, fit.tck)
     return [
@@ -134,7 +134,7 @@ def smooth_joined_path(
     # Set the exact node coords at every boundary, then weight nodes heavily and corridor
     # points lightly so the fit is pulled onto the nodes but only softly toward the corridor.
     node_indices = [0, *junction_after, len(joined) - 1]
-    for idx, anchor in zip(node_indices, node_anchors):
+    for idx, anchor in zip(node_indices, node_anchors, strict=False):
         joined[idx] = anchor
     weights = np.full(len(joined), corridor_weight)
     weights[node_indices] = node_weight

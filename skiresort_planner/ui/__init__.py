@@ -17,7 +17,6 @@ UI workflow documented in DETAILS_UI.md.
 """
 
 from skiresort_planner.ui.actions import (
-    bump_map_version,
     cancel_current_road,
     cancel_current_slope,
     cancel_custom_path,
@@ -33,8 +32,6 @@ from skiresort_planner.ui.actions import (
     process_osm_import_deferred,
     process_path_generation_deferred,
     recompute_paths,
-    reload_map,
-    trigger_rerun,
     undo_last_action,
 )
 from skiresort_planner.ui.bottom_chart import (
@@ -44,18 +41,17 @@ from skiresort_planner.ui.bottom_chart import (
 )
 from skiresort_planner.ui.center_map import MapRenderer
 from skiresort_planner.ui.click_detector import ClickDetector
-from skiresort_planner.ui.click_handlers import dispatch_click
-from skiresort_planner.ui.infra import viewport_map_height
+from skiresort_planner.ui.context import PlannerContext
+from skiresort_planner.ui.infra import bump_map_version, reload_map, trigger_rerun, viewport_map_height
 from skiresort_planner.ui.left_panel import SidebarRenderer
+from skiresort_planner.ui.mode_registry import dispatch_click, render_control_panel
 from skiresort_planner.ui.pydeck_click_handler import PydeckClickResult, render_pydeck_map
 from skiresort_planner.ui.right_panel import (
     LiftStatsPanel,
     PathSelectionPanel,
     SlopeStatsPanel,
-    render_control_panel,
 )
 from skiresort_planner.ui.state_machine import (
-    PlannerContext,
     PlannerStateMachine,
     StreamlitUIListener,
 )

@@ -183,6 +183,7 @@ class BuildMode:
     AERIAL_TRAM = "aerial_tram"
     ROAD = "road"
     IMPORT = "import"
+    MERGE = "merge"
 
     assert CHAIRLIFT in LiftConfig.TYPES, f"Invalid lift type '{CHAIRLIFT}'."
     assert GONDOLA in LiftConfig.TYPES, f"Invalid lift type '{GONDOLA}'."
@@ -190,7 +191,10 @@ class BuildMode:
     assert AERIAL_TRAM in LiftConfig.TYPES, f"Invalid lift type '{AERIAL_TRAM}'."
 
     # All lift types for iteration (matches StyleConfig.LIFT_ICONS keys)
-    LIFT_TYPES = [CHAIRLIFT, GONDOLA, SURFACE_LIFT, AERIAL_TRAM]
+    LIFT_TYPES = [SURFACE_LIFT, CHAIRLIFT, GONDOLA, AERIAL_TRAM]
+
+    # Every build mode, in sidebar order — the source of truth for iterating all modes.
+    ALL = [SLOPE, ROAD, SURFACE_LIFT, CHAIRLIFT, GONDOLA, AERIAL_TRAM, IMPORT, MERGE]
 
     @staticmethod
     def is_slope(mode: str) -> bool:
@@ -213,6 +217,11 @@ class BuildMode:
         return mode == BuildMode.IMPORT
 
     @staticmethod
+    def is_merge(mode: str) -> bool:
+        """Check if mode is node merge (click-to-select nodes to collapse)."""
+        return mode == BuildMode.MERGE
+
+    @staticmethod
     def display_name(mode: str) -> str:
         """Human-friendly name for display."""
         from skiresort_planner.constants import StyleConfig
@@ -224,6 +233,8 @@ class BuildMode:
                 return "Road"
             case BuildMode.IMPORT:
                 return "Import"
+            case BuildMode.MERGE:
+                return "Node Merge"
             case BuildMode.CHAIRLIFT | BuildMode.GONDOLA | BuildMode.SURFACE_LIFT | BuildMode.AERIAL_TRAM:
                 return StyleConfig.LIFT_DISPLAY_NAMES[mode]
             case _:
@@ -241,6 +252,8 @@ class BuildMode:
                 return StyleConfig.ROAD_ICON
             case BuildMode.IMPORT:
                 return StyleConfig.IMPORT_ICON
+            case BuildMode.MERGE:
+                return StyleConfig.MERGE_ICON
             case BuildMode.CHAIRLIFT | BuildMode.GONDOLA | BuildMode.SURFACE_LIFT | BuildMode.AERIAL_TRAM:
                 return StyleConfig.LIFT_ICONS[mode]
             case _:
@@ -617,6 +630,27 @@ class DeferredContext(BaseContext):
 
 
 @dataclass
+class MergeContext(BaseContext):
+    """Selection state for the manual node-merge tool.
+
+    Holds the node ids the user has clicked while in merge_placing. Clicking a node toggles it
+    (re-click removes); on confirm the nodes collapse to their median position (see merge_nodes).
+    """
+
+    node_ids: list[str] = field(default_factory=list)
+
+    def toggle(self, node_id: str) -> None:
+        """Add the node to the selection, or remove it if already selected (re-click)."""
+        if node_id in self.node_ids:
+            self.node_ids.remove(node_id)
+        else:
+            self.node_ids.append(node_id)
+
+    def clear(self) -> None:
+        self.node_ids = []
+
+
+@dataclass
 class UIMessagesContext(BaseContext):
     """User-facing messages and errors."""
 
@@ -671,6 +705,7 @@ class PlannerContext:
     map: MapContext = field(default_factory=MapContext)
     click_dedup: ClickDeduplicationContext = field(default_factory=ClickDeduplicationContext)
     deferred: DeferredContext = field(default_factory=DeferredContext)
+    merge: MergeContext = field(default_factory=MergeContext)
     messages: UIMessagesContext = field(default_factory=UIMessagesContext)
     build_mode: BuildModeContext = field(default_factory=BuildModeContext)
 
@@ -701,6 +736,10 @@ class PlannerContext:
         """Clear custom connect mode."""
         self.custom_connect.clear()
         self.deferred.clear_custom_connect()
+
+    def clear_merge(self) -> None:
+        """Clear the node-merge selection."""
+        self.merge.clear()
 
     def set_selection(
         self,

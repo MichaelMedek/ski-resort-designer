@@ -309,8 +309,13 @@ As with slopes and lifts, you can view the road's elevation profile, switch to *
 ### Build Mode Selector
 
 - **⛷️ Slope** — Click terrain to start a new ski slope
-- **🪑🚡🎿🚠 Lift buttons** — Click terrain to place a lift
 - **🛣️ Road** — Build a gentle car road segment by segment
+- **🎿🪑🚡🚠 Lift buttons** — Click terrain to place a lift (Surface, Chair, Gondola, Aerial Tram)
+
+Below a divider sit two **utility** buttons:
+
+- **🗺️ Import (OSM)** — load real lifts & pistes for an area.
+- **🔗 Node Merge** — collapse selected junction nodes into one
 
 The currently active mode is highlighted.
 
@@ -320,7 +325,7 @@ The currently active mode is highlighted.
 |---------|--------|
 | **Segment Length Slider** | Adjust path length (100–1000m) |
 | **🏁 Finish Committed Slope** | Complete and name the current slope |
-| **✖️ Cancel Slope** | Discard all uncommitted segments |
+| **✖️ Cancel Full Slope** | Discard all uncommitted segments |
 
 ### During Lift Placement
 
@@ -335,10 +340,18 @@ The currently active mode is highlighted.
 | **🏁 Finish Committed Road** | Finalize the road (enabled after ≥1 segment) |
 | **✖️ Cancel Road** | Discard the whole in-progress road, return to idle |
 
+### Search for a Place
+
+In the **Always Available** controls (alongside Undo and Reset View) is a 🔍 search field. Type a
+place name — a ski resort, a town, a mountain, anything OpenStreetMap knows — and press **Enter**
+(or click the **🔍** button). The map jumps to the best match. If nothing is found you get a
+**"No place found"** notice and the map stays put.
+
 ### Always Available
 
 | Control | Action |
 |---------|--------|
+| **🔍 Search** | Type a place name + Enter to center the map on it |
 | **↩️ Undo Last Action** | Reverse the most recent change |
 | **📷 Reset View** | Return camera to default position |
 
@@ -359,16 +372,18 @@ The sidebar shows cumulative stats:
 
 ## Save and Load
 
+Save and load live under the **💾 Resort Data** expander in the sidebar.
+
 ### Saving Your Resort
 
-Click **💾 Save Resort** to download a JSON file containing:
+Click **💾 Save to File** to download a JSON file containing:
 - All slopes with segments and waypoints
 - All lifts with pylon positions
 - Node connections
 
 ### Loading a Resort
 
-Click **📂 Load Resort** and select a previously saved JSON file.
+Click **📂 Load from File** and select a previously saved JSON file.
 
 ### Export GPX
 
@@ -409,21 +424,14 @@ canvas, then keep editing with the normal tools.
 
 | Action | How |
 |--------|-----|
+| **Search** | Type a place name in the 🔍 sidebar field + Enter |
 | **Pan** | Click + drag the map |
 | **Zoom** | Mouse wheel or pinch |
 | **Reset View** | Click 📷 button in sidebar |
 
-### Good Starting Points
+> **Tip:** The fastest way to reach a real resort is the **🔍 search** at the top of the sidebar —
+> type e.g. "Zermatt" and press Enter instead of panning there by hand.
 
-✅ Mountain ridges and summits
-✅ Saddles between peaks
-✅ Areas with varied terrain steepness
-
-### Areas to Avoid
-
-❌ Valley floors (too flat)
-❌ Uniform plateaus (boring slopes)
-❌ Areas outside terrain coverage (no elevation data)
 
 ---
 
@@ -453,6 +461,7 @@ canvas, then keep editing with the normal tools.
 
 | Action | Input |
 |--------|-------|
+| Search a place | Type in 🔍 field + Enter |
 | Pan map | Click + drag |
 | Zoom in/out | Mouse wheel |
 | Start slope | Click terrain (Slope mode) |

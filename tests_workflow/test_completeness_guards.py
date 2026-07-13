@@ -17,7 +17,6 @@ import inspect
 
 from skiresort_planner.constants import PACKAGE_DIR
 
-
 # =============================================================================
 # 1. Serialization round-trip: every dataclass field survives to_dict → from_dict
 # =============================================================================
@@ -113,11 +112,13 @@ class TestEnumDispatchCompleteness:
         from skiresort_planner.model.click_info import ClickInfo, MarkerType
         from skiresort_planner.model.path_segment import SegmentKind
         from skiresort_planner.ui import bottom_chart, context
+        from skiresort_planner.ui.context import BuildMode, EntityKind
 
         marker_names = [m.name for m in MarkerType]
         segkind_names = [m.name for m in SegmentKind]
-        entity_names = ["SLOPE", "ROAD", "LIFT"]
-        buildmode_names = ["SLOPE", "ROAD", "CHAIRLIFT", "GONDOLA", "SURFACE_LIFT", "AERIAL_TRAM"]
+        entity_names = [m.name for m in EntityKind]
+        # BuildMode is a plain-attr class (not an Enum); BuildMode.ALL is its source-of-truth list.
+        buildmode_names = [m.upper() for m in BuildMode.ALL]
 
         # (label, function-or-source, qualifier, member-names)
         return [

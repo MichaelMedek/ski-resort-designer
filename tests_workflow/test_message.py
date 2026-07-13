@@ -111,3 +111,40 @@ class TestImportPlacingMessages:
 
         msg = ImportActionMessage().message
         assert "Confirm" in msg or "center dot" in msg
+
+
+class TestMergePlacingMessages:
+    def test_context_zero_selected_prompts_to_click(self) -> None:
+        from skiresort_planner.model.message import MergePlacingContextMessage
+
+        msg = MergePlacingContextMessage(selected_count=0, span_m=0.0).message
+        assert "Merge Nodes" in msg
+        assert "Click node markers" in msg
+
+    def test_context_shows_count_and_span(self) -> None:
+        from skiresort_planner.model.message import MergePlacingContextMessage
+
+        msg = MergePlacingContextMessage(selected_count=3, span_m=89.0).message
+        assert "3 node" in msg
+        assert "89m" in msg
+
+    def test_action_under_two_asks_for_more(self) -> None:
+        from skiresort_planner.model.message import MergeActionMessage
+
+        msg = MergeActionMessage(selected_count=1).message
+        assert "at least" in msg and "2" in msg
+
+    def test_action_two_or_more_offers_confirm(self) -> None:
+        from skiresort_planner.model.message import MergeActionMessage
+
+        msg = MergeActionMessage(selected_count=2).message
+        assert "Confirm Merge" in msg
+
+    def test_too_far_reads_strictly_above_max(self) -> None:
+        from skiresort_planner.model.message import MergeTooFarMessage
+
+        # Fires only when the span strictly exceeds the max; the shown span must read above it.
+        msg = MergeTooFarMessage(span_m=612.34, max_span_m=500.0).message
+        assert "Too Far" in msg and "max: 500m" in msg
+        shown = _first_number(msg)
+        assert shown > 500.0, f"span must read strictly above the max: {msg}"
