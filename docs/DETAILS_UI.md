@@ -13,7 +13,7 @@ Design ski resorts on real Alpine terrain with an interactive map-based tool.
 1. **Click** on the map to place a starting point → path proposals appear
 2. **Click** a dashed line to select it → stats appear in right panel
 3. **Click "✅ Commit"** → segment becomes solid, new proposals appear
-4. **Click "🏁 Finish Slope"** → slope is complete with a name and difficulty rating
+4. **Click "🏁 Finish Committed Slope"** → slope is complete with a name and difficulty rating
 
 ---
 
@@ -85,7 +85,7 @@ Repeat steps 2-3 to add more segments. The right panel shows cumulative stats:
 
 ![Finished Slope](images/2-FinishSlope.png)
 
-Click **"🏁 Finish Slope"** in the sidebar when done.
+Click **"🏁 Finish Committed Slope"** in the sidebar when done.
 
 - The slope receives an auto-generated name
 - Final difficulty = the steepest segment's rating
@@ -122,12 +122,14 @@ Click **"🏔️ View in 3D"** to see the slope from an angled perspective with 
 
 ## Custom Direction
 
-When the auto-generated proposals don't go where you want:
+When the auto-generated fan-out proposals don't go where you want, e.g. for connections to existing nodes, just **click the point you want to reach** exactly like roads:
 
-1. Click **"🎯 Custom Direction"** in the right panel
-2. Current proposals are hidden
-3. **Click anywhere downhill** on the map
-4. A path is generated using terrain-adaptive routing
+1. While building a slope, **click anywhere downhill** on the map (or on an existing node)
+2. The fan-out proposals are replaced by terrain-adaptive path(s) routed to that point
+3. Browse them with the **◀ ▶ arrows**, or click a proposal to select it
+4. Click the selected proposal again (or press **✅ Commit This Path**) to commit
+5. Click a **different** point to re-target — new proposals are traced to the new point
+6. Press **✖️ Cancel Custom Path** (or **✖️ Cancel Connection** when targeting a node) to discard targeting and return to the fan-out proposals
 
 ### Connecting to Existing Nodes
 
@@ -135,7 +137,7 @@ If you click **directly on a node marker** (white circle):
 - A connection path is generated to that node
 - Committing this path **auto-finishes the slope** (creates a junction)
 
-**Constraint:** Target must be within the segment length slider range (default 500m, max 1000m).
+**Constraint:** The target must be **downhill** and within **1000m** of the start point; a click outside that range is refused.
 
 ---
 
@@ -256,7 +258,7 @@ Click **"🏔️ View in 3D"** to see pylons and cable from an angled perspectiv
 
 Roads are **vehicle roads** — access roads and connectors between areas of the resort. Unlike a ski slope, a road may climb, descend, or run flat, but it always stays within a gentle **±15% gradient** so cars can drive it. Roads are drawn as a distinct **brown-orange** ribbon.
 
-Roads are built **segment by segment, just like slopes**: you click the next point, a gentle segment is traced to it, and you keep extending until you press **🏁 Finish Road**.
+Roads are built **segment by segment, just like slopes**: you click the next point, a gentle segment is traced to it, and you keep extending until you press **🏁 Finish Committed Road**.
 
 ### Step 1: Select Road mode
 
@@ -268,14 +270,14 @@ Click the road's **origin** — empty terrain or an existing **junction node** (
 
 ### Step 3: Extend segment by segment
 
-Click the **next point** the road should reach. Gentle route **proposals** are traced to it and drawn as **dashed translucent-brown** paths (just like slope custom-connect) — with **no endpoint dots**, since the proposals share the same target. Browse them with the **◀ ▶ arrows** in the right panel or by clicking a dashed proposal to highlight it, then press **✅ Commit Road Segment** to commit; the segment turns solid brown and you can extend further. Clicking an existing **node** targets that junction so the road joins it on commit.
+Click the **next point** the road should reach. Two gentle route **proposals** (green 7%/12% grades, signed for climb or descent) are traced to it and drawn as **dashed translucent-brown** paths (just like slope custom-connect) — with **no endpoint dots**, since the proposals share the same target. Browse them with the **◀ ▶ arrows** in the right panel or by clicking a dashed proposal to highlight it, then press **✅ Commit Road Segment** to commit; the segment turns solid brown and you can extend further. Clicking an existing **node** makes the proposal a **connector**: the button becomes **🏁 Finish → {node}** and committing joins that junction and **finishes the road** (exactly like slope custom-connect to a node).
 
 - If the terrain to your clicked point is too steep to stay within **±15%**, **no proposal** is offered and you get a message. Pick a closer point or route across gentler ground.
 - **Undo** removes the last committed segment (then the one before it), exactly like a slope.
 
 ### Step 4: Finish the road
 
-Press **🏁 Finish Road** in the sidebar. The road receives an auto-generated name and its details panel opens. Press **✖️ Cancel Road** to discard the whole in-progress road.
+Press **🏁 Finish Committed Road** in the sidebar. The road receives an auto-generated name and its details panel opens. Press **✖️ Cancel Road** to discard the whole in-progress road.
 
 ### Parking places
 
@@ -312,7 +314,7 @@ The currently active mode is highlighted.
 | Control | Action |
 |---------|--------|
 | **Segment Length Slider** | Adjust path length (100–1000m) |
-| **🏁 Finish Slope** | Complete and name the current slope |
+| **🏁 Finish Committed Slope** | Complete and name the current slope |
 | **✖️ Cancel Slope** | Discard all uncommitted segments |
 
 ### During Lift Placement
@@ -325,7 +327,7 @@ The currently active mode is highlighted.
 
 | Control | Action |
 |---------|--------|
-| **🏁 Finish Road** | Finalize the road (enabled after ≥1 segment) |
+| **🏁 Finish Committed Road** | Finalize the road (enabled after ≥1 segment) |
 | **✖️ Cancel Road** | Discard the whole in-progress road, return to idle |
 
 ### Always Available
@@ -401,7 +403,7 @@ Click **📤 Export GPX** to download GPS tracks of your slopes for use in other
 
 - **3-6 segments** per slope works well (300-800m vertical)
 - Mix difficulties by varying traverse angles
-- Use **Custom Direction** to connect slopes at junctions
+- Click an existing **node** to connect slopes at junctions
 
 ### Lift Design
 

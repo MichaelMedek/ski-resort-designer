@@ -20,13 +20,11 @@ from skiresort_planner.ui.actions import (
     bump_map_version,
     cancel_current_road,
     cancel_current_slope,
-    cancel_custom_direction_mode,
     cancel_custom_path,
     center_on_lift,
     center_on_road,
     center_on_slope,
     commit_selected_path,
-    enter_custom_direction_mode,
     finish_current_road,
     finish_current_slope,
     handle_fast_deferred_actions,
@@ -40,11 +38,12 @@ from skiresort_planner.ui.actions import (
 from skiresort_planner.ui.bottom_chart import (
     ProfileChart,
     render_building_profile,
-    render_proposal_preview,
+    render_viewing_profile,
 )
 from skiresort_planner.ui.center_map import MapRenderer
 from skiresort_planner.ui.click_detector import ClickDetector
 from skiresort_planner.ui.click_handlers import dispatch_click
+from skiresort_planner.ui.infra import viewport_map_height
 from skiresort_planner.ui.left_panel import SidebarRenderer
 from skiresort_planner.ui.pydeck_click_handler import PydeckClickResult, render_pydeck_map
 from skiresort_planner.ui.right_panel import (
@@ -66,7 +65,7 @@ __all__ = [
     "MapRenderer",
     "ProfileChart",
     "render_building_profile",
-    "render_proposal_preview",
+    "render_viewing_profile",
     "SidebarRenderer",
     "PathSelectionPanel",
     "SlopeStatsPanel",
@@ -78,12 +77,10 @@ __all__ = [
     "cancel_custom_path",
     "cancel_current_road",
     "cancel_current_slope",
-    "cancel_custom_direction_mode",
     "center_on_lift",
     "center_on_road",
     "center_on_slope",
     "commit_selected_path",
-    "enter_custom_direction_mode",
     "finish_current_road",
     "finish_current_slope",
     "handle_fast_deferred_actions",
@@ -93,6 +90,7 @@ __all__ = [
     "reload_map",
     "trigger_rerun",
     "undo_last_action",
+    "viewport_map_height",
     "PydeckClickResult",
     "render_pydeck_map",
 ]

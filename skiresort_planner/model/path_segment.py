@@ -20,6 +20,7 @@ from shapely.ops import transform as shapely_transform
 
 from skiresort_planner.constants import EarthworkConfig, SlopeConfig
 from skiresort_planner.core.terrain_analyzer import SideDirection
+from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.path_geometry import Path
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.warning import (
@@ -132,17 +133,19 @@ class PathSegment(Path):
 
     @property
     def width_m(self) -> float:
-        """Belt width in meters based on side slope steepness and difficulty.
+        """Belt width in meters.
 
-        Width is determined by side slope to keep excavation within threshold:
-        width = (EXCAVATOR_THRESHOLD_M * 200) / abs(side_slope_pct)
-
-        Width limits vary by difficulty.
+        Roads are a fixed-width vehicle ribbon. Slopes adapt width to side slope
+        to keep excavation within threshold: width = (EXCAVATOR_THRESHOLD_M * 200)
+        / abs(side_slope_pct), clamped to difficulty-specific limits.
 
         Returns:
-            Width in meters, clamped to difficulty-specific limits.
-            Returns max width for flat terrain (side slope < 1%).
+            Width in meters. Constant for roads; for slopes, clamped to difficulty
+            limits (max width on flat terrain, side slope < 1%).
         """
+        if enum_eq(self.kind, SegmentKind.ROAD):
+            return float(EarthworkConfig.ROAD_WIDTH_M)
+
         # Get difficulty-specific limits
         min_width, max_width = EarthworkConfig.BELT_WIDTH_LIMITS[self.difficulty]
 

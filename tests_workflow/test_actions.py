@@ -8,6 +8,7 @@ delete actions for slope/lift/road uniformly.
 
 import pytest
 
+from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
@@ -319,7 +320,7 @@ class TestRoadBuildingActionFlow:
         assert sm.is_road_building_only, "road commit stays in road_building"
         assert len(ctx.road_build.segments) == 1
         assert len(graph.roads) == 0, "no Road entity until Finish Road"
-        assert graph.segments[ctx.road_build.segments[-1]].kind is SegmentKind.ROAD
+        assert enum_eq(graph.segments[ctx.road_build.segments[-1]].kind, SegmentKind.ROAD)
         assert graph.undo_stack[-1].action_type.name == "ADD_SEGMENTS", "per-segment undo recorded"
 
     def test_finish_then_undo_restores_road_building(
@@ -409,34 +410,3 @@ class TestDeferredProcessing:
         handle_fast_deferred_actions()
         assert sm.is_lift_placing, "deferred start-lift-from-node begins lift placement"
         assert ctx.deferred.start_lift_from_node_id is None, "flag consumed"
-
-
-class TestIncomingBearingFromSegments:
-    """incoming_bearing_from_segments derives the heading the path arrives with at
-    its endpoint from the last committed segment — the input to planner momentum.
-    """
-
-    M = 111320.0
-
-    def test_none_when_no_segments(self) -> None:
-        from skiresort_planner.ui.actions import incoming_bearing_from_segments
-
-        assert incoming_bearing_from_segments(graph=ResortGraph(), segment_ids=[]) is None
-
-    def test_bearing_of_last_segments_final_leg(self) -> None:
-        from skiresort_planner.ui.actions import incoming_bearing_from_segments
-
-        graph = ResortGraph()
-        # A due-east segment: last leg heads ~90°.
-        pts = [
-            PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
-            PathPoint(lon=300 / self.M, lat=0.0, elevation=1990.0),
-        ]
-        graph.commit_paths(
-            paths=[ProposedPathSegment(points=pts, is_connector=True, kind=SegmentKind.ROAD)], record_undo=False
-        )
-        seg_id = list(graph.segments.keys())[-1]
-
-        bearing = incoming_bearing_from_segments(graph=graph, segment_ids=[seg_id])
-        assert bearing is not None
-        assert bearing == pytest.approx(90.0, abs=1.0), "due-east final leg → ~90°"

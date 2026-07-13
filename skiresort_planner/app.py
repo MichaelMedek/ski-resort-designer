@@ -29,16 +29,13 @@ from skiresort_planner.ui import (
     MapRenderer,
     PlannerContext,
     PlannerStateMachine,
-    ProfileChart,
     SidebarRenderer,
     bump_map_version,
     cancel_current_road,
     cancel_current_slope,
-    cancel_custom_direction_mode,
     cancel_custom_path,
     commit_selected_path,
     dispatch_click,
-    enter_custom_direction_mode,
     finish_current_road,
     finish_current_slope,
     handle_fast_deferred_actions,
@@ -47,8 +44,9 @@ from skiresort_planner.ui import (
     recompute_paths,
     render_building_profile,
     render_control_panel,
-    render_proposal_preview,
+    render_viewing_profile,
     trigger_rerun,
+    viewport_map_height,
 )
 from skiresort_planner.ui.pydeck_click_handler import render_pydeck_map
 from skiresort_planner.ui.terrain_layer import create_aws_terrain_layer
@@ -58,6 +56,21 @@ if TYPE_CHECKING:
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+# CSS to give the map the full window height. Streamlit exposes no API for any of these,
+# so injection is the only option (the standard community pattern). Each rule is load-bearing:
+_FULLSCREEN_CSS = """
+<style>
+/* Hide the top toolbar (Deploy/menu strip) — reclaims its height for the map. */
+header[data-testid="stHeader"] { display: none; }
+/* Collapse the default ~6rem top padding so the map starts near the top. */
+.block-container { padding-top: 1rem; padding-bottom: 0; }
+/* Hide the streamlit-js-eval helper iframe: it only reads the window height and should
+   occupy no space (this is the "blue bar"). Most version-fragile rule — keyed on its title. */
+div[data-testid="stElementContainer"]:has(iframe[title="streamlit_js_eval.streamlit_js_eval"]) { display: none; }
+</style>
+"""
 
 
 # =============================================================================
@@ -248,21 +261,22 @@ def _render_map_fragment_inner() -> None:
     # Collect extra layers for overlays
     extra_layers: list[pdk.Layer] = []
 
-    # Add orientation arrows in Building state
-    if sm.is_any_slope_state and ctx.selection.lon is not None and ctx.selection.lat is not None:
-        orientation = terrain_analyzer.get_orientation(lon=ctx.selection.lon, lat=ctx.selection.lat)
+    # Add orientation arrows in Building state.
+    sel = ctx.selection
+    if sm.is_any_slope_state and sel.lon is not None and sel.lat is not None and sel.elevation is not None:
+        orientation = terrain_analyzer.get_orientation(lon=sel.lon, lat=sel.lat)
         if orientation:
             arrow_layers = renderer.create_orientation_arrows_layers(
-                lat=ctx.selection.lat,
-                lon=ctx.selection.lon,
-                elevation=ctx.selection.elevation or 0.0,
+                lat=sel.lat,
+                lon=sel.lon,
+                elevation=sel.elevation,
                 orientation=orientation,
                 use_3d=use_3d,
             )
             extra_layers.extend(arrow_layers)
 
-    # Add direction arrow in custom connect mode
-    if ctx.custom_connect.enabled and ctx.custom_connect.start_node:
+    # Add direction arrow while routing a custom-connect path (targeting a clicked point)
+    if ctx.custom_connect.force_mode and ctx.custom_connect.start_node:
         start_node = graph.nodes.get(ctx.custom_connect.start_node)
         if start_node:
             gradient = terrain_analyzer.compute_gradient(lon=start_node.lon, lat=start_node.lat)
@@ -421,36 +435,48 @@ def _render_map_fragment_inner() -> None:
             use_3d=use_3d,
         )
 
+    # One elevation profile renders directly below the map: the in-build profile while
+    # building a slope/road, or the finished entity's profile while viewing it. Reserve
+    # room for it so it stays visible without scrolling; idle mode lets the map fill all.
+    show_slope_profile = sm.is_any_slope_state and bool(ctx.slope_build.segments)
+    show_road_profile = sm.is_any_road_state and bool(ctx.road_build.segments)
+    viewing = sm.viewing_entity  # (EntityKind, id) or None
+    reserved = ChartConfig.PROFILE_HEIGHT_PX if (show_slope_profile or show_road_profile or viewing) else 0
+
+    # Map height that fills the browser window. None only on first load, before the
+    # js-eval round-trip resolves (cached thereafter, so reruns keep the size).
+    height = viewport_map_height(reserved_below_px=reserved)
+    if height is None:
+        st.info("📐 Sizing map to your window…")
+        return
+
     # Render with click handling
-    # Include force_remount_key in key to force component hard remount on view changes
+    # Include force_remount_key AND height in key: st_deckgl only applies height on
+    # first mount, so height must change the key to force a remount when it changes.
     force_key = st.session_state.get("force_remount_key", "init")
-    map_key = f"main_map_{st.session_state.map_version}_{force_key}_{'3d' if use_3d else '2d'}"
+    map_key = f"main_map_{st.session_state.map_version}_{force_key}_{'3d' if use_3d else '2d'}_h{height}"
     click_result = render_pydeck_map(
         deck=deck,
-        height=ChartConfig.PROFILE_HEIGHT_LARGE,
+        height=height,
         key=map_key,
     )
 
-    # Elevation profiles below map — one function, kind-driven (slope or road).
-    if sm.is_any_slope_state and ctx.slope_build.segments:
+    # The single profile below the map — building (kind-driven) or viewing (kind-driven).
+    # No else: idle-ready has no profile (matches `reserved == 0`); the map fills the viewport.
+    if show_slope_profile:
         fig = render_building_profile(
-            building_segments=ctx.slope_build.segments,
-            building_name=ctx.slope_build.name,
-            graph=graph,
+            building_segments=ctx.slope_build.segments, building_name=ctx.slope_build.name, graph=graph
         )
         st.plotly_chart(fig, width="stretch", key="combined_profile")
-
-    if sm.is_any_road_state and ctx.road_build.segments:
+    elif show_road_profile:
         fig = render_building_profile(
-            building_segments=ctx.road_build.segments,
-            building_name=ctx.road_build.name,
-            graph=graph,
+            building_segments=ctx.road_build.segments, building_name=ctx.road_build.name, graph=graph
         )
         st.plotly_chart(fig, width="stretch", key="combined_road_profile")
-
-    if ctx.proposals.paths and ctx.proposals.selected_idx is not None:
-        fig = render_proposal_preview(proposals=ctx.proposals.paths, selected_idx=ctx.proposals.selected_idx)
-        st.plotly_chart(fig, width="stretch", key="preview_profile")
+    elif viewing is not None:
+        kind, entity_id = viewing
+        fig = render_viewing_profile(kind=kind, entity_id=entity_id, graph=graph)
+        st.plotly_chart(fig, width="stretch", key="viewing_profile")
 
     # Detect clicks from Pydeck result - disabled in 3D mode
     if use_3d:
@@ -477,7 +503,8 @@ def main() -> None:
     st.set_page_config(page_title=AppConfig.TITLE, page_icon=AppConfig.ICON, layout=AppConfig.LAYOUT)
     init_session_state()
 
-    st.title(AppConfig.TITLE)
+    # Streamlit has no API to reclaim vertical chrome, so a full-height map needs CSS.
+    st.markdown(_FULLSCREEN_CSS, unsafe_allow_html=True)
 
     # Block until DEM is loaded - shows loading message and prevents map interaction
     if not load_dem_data():
@@ -552,37 +579,8 @@ def _run_app_ui() -> None:
             ctx=ctx,
             graph=graph,
             on_commit=commit_selected_path,
-            on_custom_direction=enter_custom_direction_mode,
-            on_cancel_custom=cancel_custom_direction_mode,
             on_cancel_connection=cancel_custom_path,
         )
-
-    # Full-width profile for viewing slope
-    if sm.is_idle_viewing_slope and ctx.viewing.slope_id:
-        chart = ProfileChart(height=ChartConfig.PROFILE_HEIGHT_MEDIUM, width=ChartConfig.WIDE_WIDTH)
-        slope = graph.slopes.get(ctx.viewing.slope_id)
-        if slope is None:
-            raise ValueError(f"Slope {ctx.viewing.slope_id} must exist when panel shows slope")
-        fig = chart.render_slope(slope=slope, graph=graph)
-        st.plotly_chart(fig, key="slope_full_profile")
-
-    # Full-width profile for viewing lift
-    if sm.is_idle_viewing_lift and ctx.viewing.lift_id:
-        lift = graph.lifts.get(ctx.viewing.lift_id)
-        if lift is None:
-            raise ValueError(f"Lift {ctx.viewing.lift_id} must exist when panel shows lift")
-        chart = ProfileChart(height=ChartConfig.LIFT_PROFILE_HEIGHT, width=ChartConfig.WIDE_WIDTH)
-        fig = chart.render_lift(lift=lift, graph=graph)
-        st.plotly_chart(fig, key="lift_full_profile")
-
-    # Full-width profile for viewing road
-    if sm.is_idle_viewing_road and ctx.viewing.road_id:
-        road = graph.roads.get(ctx.viewing.road_id)
-        if road is None:
-            raise ValueError(f"Road {ctx.viewing.road_id} must exist when panel shows road")
-        chart = ProfileChart(height=ChartConfig.PROFILE_HEIGHT_MEDIUM, width=ChartConfig.WIDE_WIDTH)
-        fig = chart.render_road(road=road, graph=graph)
-        st.plotly_chart(fig, key="road_full_profile")
 
 
 if __name__ == "__main__":

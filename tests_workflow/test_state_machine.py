@@ -46,17 +46,17 @@ VALID_TRANSITIONS: list[tuple[str, list[str], str | None]] = [
     # From SLOPE_STARTING
     ("cancel_slope", ["slope_starting"], None),
     ("commit_path", ["slope_starting"], "setup_commit_first"),
-    ("enable_custom", ["slope_starting"], None),
+    ("select_custom_target", ["slope_starting"], None),
     # From SLOPE_BUILDING (with guards)
     ("cancel_slope", ["slope_building"], None),
     ("commit_path", ["slope_building"], "setup_commit_continue"),  # self-loop
-    ("enable_custom", ["slope_building"], None),
-    # From SLOPE_CUSTOM_PICKING
-    ("cancel_slope", ["slope_custom_picking"], None),
-    ("cancel_custom", ["slope_custom_picking"], None),
+    ("select_custom_target", ["slope_building"], None),
+    ("finish_slope", ["slope_building"], None),
     # From SLOPE_CUSTOM_PATH
     ("cancel_slope", ["slope_custom_path"], None),
     ("cancel_custom", ["slope_custom_path"], None),
+    ("select_custom_target", ["slope_custom_path"], None),  # self-loop (re-target)
+    ("finish_slope", ["slope_custom_path"], None),  # sidebar Finish during targeting
     # From LIFT_PLACING
     ("cancel_lift", ["lift_placing"], None),
     # From IDLE (road build entry) — road mirrors slope
@@ -67,6 +67,7 @@ VALID_TRANSITIONS: list[tuple[str, list[str], str | None]] = [
     ("commit_road", ["road_starting"], "setup_commit_road_first"),
     ("cancel_road", ["road_building"], None),
     ("commit_road", ["road_building"], "setup_commit_road_continue"),  # self-loop
+    ("commit_road_finish", ["road_starting", "road_building"], None),  # connector auto-finish
 ]
 
 
@@ -77,17 +78,17 @@ VALID_TRANSITIONS: list[tuple[str, list[str], str | None]] = [
 
 INVALID_TRANSITIONS: list[tuple[str, list[str]]] = [
     # Cannot start slope from building states
-    ("start_slope", ["slope_starting", "slope_building", "slope_custom_picking", "slope_custom_path", "lift_placing"]),
+    ("start_slope", ["slope_starting", "slope_building", "slope_custom_path", "lift_placing"]),
     # Cannot start lift from building states
-    ("start_lift", ["slope_starting", "slope_building", "slope_custom_picking", "slope_custom_path", "lift_placing"]),
+    ("start_lift", ["slope_starting", "slope_building", "slope_custom_path", "lift_placing"]),
     # Cannot view slope from building states
-    ("view_slope", ["slope_starting", "slope_building", "slope_custom_picking", "slope_custom_path", "lift_placing"]),
+    ("view_slope", ["slope_starting", "slope_building", "slope_custom_path", "lift_placing"]),
     # Cannot view lift from building states
-    ("view_lift", ["slope_starting", "slope_building", "slope_custom_picking", "slope_custom_path", "lift_placing"]),
+    ("view_lift", ["slope_starting", "slope_building", "slope_custom_path", "lift_placing"]),
     # Cannot close panel when no panel open
     (
         "close_panel",
-        ["idle_ready", "slope_starting", "slope_building", "slope_custom_picking", "slope_custom_path", "lift_placing"],
+        ["idle_ready", "slope_starting", "slope_building", "slope_custom_path", "lift_placing"],
     ),
     # Cannot cancel slope from non-slope states
     ("cancel_slope", ["idle_ready", "idle_viewing_slope", "idle_viewing_lift", "lift_placing"]),
@@ -103,20 +104,17 @@ INVALID_TRANSITIONS: list[tuple[str, list[str]]] = [
             "idle_ready",
             "idle_viewing_slope",
             "idle_viewing_lift",
-            "slope_custom_picking",
             "slope_custom_path",
             "lift_placing",
         ],
     ),
-    # Cannot enable custom from non-slope states
+    # Cannot select a custom target outside slope-building states
     (
-        "enable_custom",
+        "select_custom_target",
         [
             "idle_ready",
             "idle_viewing_slope",
             "idle_viewing_lift",
-            "slope_custom_picking",
-            "slope_custom_path",
             "lift_placing",
         ],
     ),
@@ -129,7 +127,6 @@ INVALID_TRANSITIONS: list[tuple[str, list[str]]] = [
             "idle_viewing_lift",
             "slope_starting",
             "slope_building",
-            "slope_custom_picking",
             "slope_custom_path",
         ],
     ),
@@ -142,6 +139,16 @@ INVALID_TRANSITIONS: list[tuple[str, list[str]]] = [
     (
         "commit_road",
         ["idle_ready", "idle_viewing_slope", "slope_starting", "slope_building", "lift_placing"],
+    ),
+    # Cannot fire the road connector-finish outside road-build states
+    (
+        "commit_road_finish",
+        ["idle_ready", "idle_viewing_slope", "slope_starting", "slope_building", "slope_custom_path", "lift_placing"],
+    ),
+    # Finish_slope is valid from slope_building + slope_custom_path only
+    (
+        "finish_slope",
+        ["idle_ready", "idle_viewing_slope", "idle_viewing_lift", "slope_starting", "lift_placing"],
     ),
 ]
 
@@ -230,8 +237,8 @@ class TestCancelCustomGuards:
         """Cancel custom with 0 segments returns to SLOPE_STARTING."""
         sm, ctx = sm_and_ctx
 
-        # Setup: Force to slope_custom_picking with no committed segments
-        _force_state(sm=sm, state_name="slope_custom_picking")
+        # Setup: Force to slope_custom_path with no committed segments
+        _force_state(sm=sm, state_name="slope_custom_path")
         ctx.slope_build.segments = []  # No segments committed
 
         # Act: Call cancel_custom event
@@ -244,8 +251,8 @@ class TestCancelCustomGuards:
         """Cancel custom with segments returns to SLOPE_BUILDING."""
         sm, ctx = sm_and_ctx
 
-        # Setup: Force to slope_custom_picking with committed segments
-        _force_state(sm=sm, state_name="slope_custom_picking")
+        # Setup: Force to slope_custom_path with committed segments
+        _force_state(sm=sm, state_name="slope_custom_path")
         ctx.slope_build.segments = ["S1"]  # Has committed segments
 
         # Act: Call cancel_custom event
@@ -253,3 +260,31 @@ class TestCancelCustomGuards:
 
         # Assert: Should transition to slope_building
         assert sm.current_state == sm.slope_building
+
+
+class TestViewingEntity:
+    """viewing_entity is the single (EntityKind, id) source for kind-dispatch."""
+
+    def test_none_when_not_viewing(self) -> None:
+        from skiresort_planner.model.resort_graph import ResortGraph
+
+        sm, _ = PlannerStateMachine.create(graph=ResortGraph(), add_ui_listener=False)
+        assert sm.viewing_entity is None  # idle_ready
+
+    def test_returns_kind_and_id_per_viewed_entity(self) -> None:
+        from skiresort_planner.model.resort_graph import ResortGraph
+        from skiresort_planner.ui.context import EntityKind
+
+        sm, ctx = PlannerStateMachine.create(graph=ResortGraph(), add_ui_listener=False)
+
+        _force_state(sm=sm, state_name="idle_viewing_slope")
+        ctx.viewing.set_slope_id(slope_id="SL1")
+        assert sm.viewing_entity == (EntityKind.SLOPE, "SL1")
+
+        _force_state(sm=sm, state_name="idle_viewing_road")
+        ctx.viewing.set_road_id(road_id="R2")
+        assert sm.viewing_entity == (EntityKind.ROAD, "R2")
+
+        _force_state(sm=sm, state_name="idle_viewing_lift")
+        ctx.viewing.set_lift_id(lift_id="L3")
+        assert sm.viewing_entity == (EntityKind.LIFT, "L3")

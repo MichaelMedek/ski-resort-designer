@@ -59,7 +59,7 @@ class TestRenderPydeckMapParsing:
 
     def _run(self, fake_st, monkeypatch, event, key="k"):
         monkeypatch.setattr(pch, "st_deckgl", _StubDeckgl(event))
-        return pch.render_pydeck_map(deck=object(), key=key)
+        return pch.render_pydeck_map(deck=object(), key=key, height=600)
 
     def test_no_event_is_empty(self, fake_st, monkeypatch) -> None:
         result = self._run(fake_st, monkeypatch, event=None)
@@ -88,7 +88,7 @@ class TestRenderPydeckMapParsing:
         event = {"type": "slope", "id": "SL1", "coordinate": [10.5, 46.5], "eventType": "click"}
         monkeypatch.setattr(pch, "st_deckgl", _StubDeckgl(event))
 
-        first = pch.render_pydeck_map(deck=object(), key="dup")
-        second = pch.render_pydeck_map(deck=object(), key="dup")  # same event again
+        first = pch.render_pydeck_map(deck=object(), key="dup", height=600)
+        second = pch.render_pydeck_map(deck=object(), key="dup", height=600)  # same event again
         assert first.is_object_click
         assert not second.is_object_click and not second.is_terrain_click  # deduped

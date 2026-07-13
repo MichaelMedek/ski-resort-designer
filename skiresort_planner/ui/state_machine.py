@@ -29,11 +29,10 @@ States (all explicit states)
     4. IDLE_VIEWING_ROAD: Panel showing road details (3D toggle available)
     5. SLOPE_STARTING: 0 segments committed, picking first direction
     6. SLOPE_BUILDING: 1+ segments committed, continuing slope
-    7. SLOPE_CUSTOM_PICKING: Waiting for custom target click
-    8. SLOPE_CUSTOM_PATH: Showing custom path options
-    9. LIFT_PLACING: Start selected, waiting for end station
-    10. ROAD_STARTING: 0 road segments committed, picking first target
-    11. ROAD_BUILDING: 1+ road segments committed, extending the road
+    7. SLOPE_CUSTOM_PATH: Showing custom path options routed to a clicked target
+    8. LIFT_PLACING: Start selected, waiting for end station
+    9. ROAD_STARTING: 0 road segments committed, picking first target
+    10. ROAD_BUILDING: 1+ road segments committed, extending the road
 
 Orthogonal State (flags, not formal states)
 -------------------------------------------
@@ -96,25 +95,26 @@ IMPORTANT: Direct transition calls are BLOCKED at runtime via __getattribute__.
         Resolves to:
         - cancel_from_starting: SLOPE_STARTING → IDLE_READY
         - cancel_from_building: SLOPE_BUILDING → IDLE_READY
-        - cancel_slope_from_custom_picking: SLOPE_CUSTOM_PICKING → IDLE_READY
         - cancel_slope_from_custom_path: SLOPE_CUSTOM_PATH → IDLE_READY
 
-    cancel_custom_connect - Cancel custom connect mode (return to normal building)
+    cancel_custom - Leave custom targeting, return to fan-out proposals
         Args: none
-        Hook: before_cancel_custom_connect (event-level only)
+        Hook: before_cancel_custom (event-level only, regenerates the fan)
         Guards: has_no_segments
         Resolves to:
-        - cancel_custom_to_starting: SLOPE_CUSTOM_PICKING → SLOPE_STARTING
-        - cancel_custom_to_building: SLOPE_CUSTOM_PICKING → SLOPE_BUILDING
         - cancel_path_to_starting: SLOPE_CUSTOM_PATH → SLOPE_STARTING
         - cancel_path_to_building: SLOPE_CUSTOM_PATH → SLOPE_BUILDING
+        (The cancel_custom_connect() method is a thin wrapper that sends this event.)
 
-    enable_custom - Enable custom connect mode
-        Args: none
-        Hook: before_enable_custom (event-level), plus transition-specific hooks
-        Resolves to:
-        - enable_custom_from_starting: SLOPE_STARTING → SLOPE_CUSTOM_PICKING
-        - enable_custom_from_building: SLOPE_BUILDING → SLOPE_CUSTOM_PICKING
+    select_custom_target - Route custom-connect proposals to a clicked target
+        Args: target_location, target_node
+        Hook: per-transition before hooks (NO event-level hook, to avoid double-fire)
+        Resolves to (based on active state):
+        - select_target_from_starting: SLOPE_STARTING → SLOPE_CUSTOM_PATH
+        - select_target_from_building: SLOPE_BUILDING → SLOPE_CUSTOM_PATH
+        - retarget_custom: SLOPE_CUSTOM_PATH → SLOPE_CUSTOM_PATH (self-loop, re-target)
+        Fired directly from the click handler on a VALID terrain/node target click;
+        there is no button — targeting is map-only, mirroring roads.
 
 Complete Transition Matrix (all states)
 ==================================================
@@ -124,106 +124,104 @@ Complete Transition Matrix (all states)
 # 1.1. → IDLE_READY: NOT ALLOWED (no-op, nothing to transition)
 # 1.2. → IDLE_VIEWING_SLOPE: view_slope [direct] (click slope icon/centerline)
 # 1.3. → IDLE_VIEWING_LIFT: view_lift [direct] (click lift icon/cable)
-# 1.4. → SLOPE_STARTING: start_slope [direct] (click terrain/node in slope mode)
-# 1.5. → SLOPE_BUILDING: NOT ALLOWED (must go through SLOPE_STARTING first)
-# 1.6. → SLOPE_CUSTOM_PICKING: NOT ALLOWED (must go through SLOPE_STARTING first)
-# 1.7. → SLOPE_CUSTOM_PATH: NOT ALLOWED (must go through SLOPE_CUSTOM_PICKING first)
-# 1.8. → LIFT_PLACING: start_lift [direct] (click terrain/node in lift mode)
+# 1.4. → IDLE_VIEWING_ROAD: view_road [direct] (click road)
+# 1.5. → SLOPE_STARTING: start_slope [direct] (click terrain/node in slope mode)
+# 1.6. → SLOPE_CUSTOM_PATH: NOT ALLOWED (must go through SLOPE_STARTING first)
+# 1.7. → LIFT_PLACING: start_lift [direct] (click terrain/node in lift mode)
+# 1.8. → ROAD_STARTING: start_road [direct] (click terrain/node in road mode)
 
 # 2. Transitions: From IDLE_VIEWING_SLOPE
 # ----------------------------------------
 # 2.1. → IDLE_READY: close_slope_panel [direct] (close button or click elsewhere)
 # 2.2. → IDLE_VIEWING_SLOPE: switch_slope [direct, self-loop] (click different slope)
 # 2.3. → IDLE_VIEWING_LIFT: switch_to_lift_view [direct] (click lift in panel or on map)
-# 2.4. → SLOPE_STARTING: start_slope_from_slope_view [direct] (click terrain/node)
-# 2.5. → SLOPE_BUILDING: NOT ALLOWED (must go through SLOPE_STARTING first)
-# 2.6. → SLOPE_CUSTOM_PICKING: NOT ALLOWED (must start slope first)
-# 2.7. → SLOPE_CUSTOM_PATH: NOT ALLOWED (must go through picking first)
-# 2.8. → LIFT_PLACING: start_lift_from_slope_view [direct] (click terrain/node in lift mode)
+# 2.4. → IDLE_VIEWING_ROAD: switch_slope_to_road_view [direct] (click a road)
+# 2.5. → SLOPE_STARTING: start_slope_from_slope_view [direct] (click terrain/node)
+# 2.6. → SLOPE_CUSTOM_PATH: NOT ALLOWED (must go through SLOPE_STARTING first)
+# 2.7. → LIFT_PLACING: start_lift_from_slope_view [direct] (click terrain/node in lift mode)
+# 2.8. → ROAD_STARTING: start_road_from_slope_view [direct] (click terrain/node in road mode)
 
 # 3. Transitions: From IDLE_VIEWING_LIFT
 # ---------------------------------------
 # 3.1. → IDLE_READY: close_lift_panel [direct] (close button or click elsewhere)
 # 3.2. → IDLE_VIEWING_SLOPE: switch_to_slope_view [direct] (click connected slope in panel)
 # 3.3. → IDLE_VIEWING_LIFT: switch_lift [direct, self-loop] (click different lift)
-# 3.4. → SLOPE_STARTING: start_slope_from_lift_view [direct] (click terrain/node)
-# 3.5. → SLOPE_BUILDING: NOT ALLOWED (must go through SLOPE_STARTING first)
-# 3.6. → SLOPE_CUSTOM_PICKING: NOT ALLOWED (must start slope first)
-# 3.7. → SLOPE_CUSTOM_PATH: NOT ALLOWED (must go through picking first)
-# 3.8. → LIFT_PLACING: start_lift_from_lift_view [direct] (click terrain/node in lift mode)
+# 3.4. → IDLE_VIEWING_ROAD: switch_lift_to_road_view [direct] (click a road)
+# 3.5. → SLOPE_STARTING: start_slope_from_lift_view [direct] (click terrain/node)
+# 3.6. → SLOPE_CUSTOM_PATH: NOT ALLOWED (must go through SLOPE_STARTING first)
+# 3.7. → LIFT_PLACING: start_lift_from_lift_view [direct] (click terrain/node in lift mode)
+# 3.8. → ROAD_STARTING: start_road_from_lift_view [direct] (click terrain/node in road mode)
+
+# 3b. Transitions: From IDLE_VIEWING_ROAD
+# ----------------------------------------
+# 3b.1. → IDLE_READY: close_road_panel [direct] (close button or click elsewhere)
+# 3b.2. → IDLE_VIEWING_SLOPE: switch_road_to_slope_view [direct] (click a slope)
+# 3b.3. → IDLE_VIEWING_LIFT: switch_road_to_lift_view [direct] (click a lift)
+# 3b.4. → IDLE_VIEWING_ROAD: switch_road [direct, self-loop] (click a different road)
+# 3b.5. → SLOPE_STARTING: start_slope_from_road_view [direct] (click terrain/node)
+# 3b.6. → LIFT_PLACING: start_lift_from_road_view [direct] (click terrain/node in lift mode)
+# 3b.7. → ROAD_STARTING: start_road_from_road_view [direct] (click terrain/node in road mode)
 
 # 4. Transitions: From SLOPE_STARTING
 # ------------------------------------
 # 4.1. → IDLE_READY: cancel_from_starting [event: cancel_slope] (cancel button)
 # 4.2. → IDLE_VIEWING_SLOPE: NOT ALLOWED (must commit or cancel first)
-# 4.3. → IDLE_VIEWING_LIFT: NOT ALLOWED (must commit or cancel first)
-# 4.4. → SLOPE_STARTING: NOT ALLOWED (no self-loop, proposal selection is internal)
-# 4.5. → SLOPE_BUILDING: commit_first_path [event: commit_path] (click proposal endpoint)
-# 4.6. → SLOPE_CUSTOM_PICKING: enable_custom_from_starting [event: enable_custom]
-# 4.7. → SLOPE_CUSTOM_PATH: NOT ALLOWED (must go through picking first)
-# 4.8. → LIFT_PLACING: NOT ALLOWED (must cancel slope first)
+# 4.3. → SLOPE_STARTING: NOT ALLOWED (no self-loop, proposal selection is internal)
+# 4.4. → SLOPE_BUILDING: commit_first_path [event: commit_path] (click proposal endpoint)
+# 4.5. → SLOPE_CUSTOM_PATH: select_target_from_starting [event: select_custom_target] (click a target)
+# 4.6. → LIFT_PLACING: NOT ALLOWED (must cancel slope first)
 
 # 5. Transitions: From SLOPE_BUILDING
 # ------------------------------------
 # 5.1. → IDLE_READY: cancel_from_building [event: cancel_slope] (cancel button)
 # 5.2. → IDLE_VIEWING_SLOPE: finish_slope [direct] (finish button)
-# 5.3. → IDLE_VIEWING_LIFT: NOT ALLOWED (must finish/cancel slope first)
-# 5.4. → SLOPE_STARTING: NOT ALLOWED (would lose committed segments)
-# 5.5. → SLOPE_BUILDING: commit_continue_path [event: commit_path, self-loop]
-# 5.6. → SLOPE_CUSTOM_PICKING: enable_custom_from_building [event: enable_custom]
-# 5.7. → SLOPE_CUSTOM_PATH: NOT ALLOWED (must go through picking first)
-# 5.8. → LIFT_PLACING: NOT ALLOWED (must finish/cancel slope first)
+# 5.3. → SLOPE_STARTING: NOT ALLOWED (would lose committed segments)
+# 5.4. → SLOPE_BUILDING: commit_continue_path [event: commit_path, self-loop]
+# 5.5. → SLOPE_CUSTOM_PATH: select_target_from_building [event: select_custom_target] (click a target)
+# 5.6. → LIFT_PLACING: NOT ALLOWED (must finish/cancel slope first)
 
-# 6. Transitions: From SLOPE_CUSTOM_PICKING
-# ------------------------------------------
-# 6.1. → IDLE_READY: cancel_slope_from_custom_picking [event: cancel_slope]
-# 6.2. → IDLE_VIEWING_SLOPE: NOT ALLOWED (must cancel or select first)
-# 6.3. → IDLE_VIEWING_LIFT: NOT ALLOWED (must cancel or select first)
-# 6.4. → SLOPE_STARTING: cancel_custom_to_starting [event: cancel_custom_connect, guard: has_no_segments]
-# 6.5. → SLOPE_BUILDING: cancel_custom_to_building [event: cancel_custom_connect, guard: !has_no_segments]
-# 6.6. → SLOPE_CUSTOM_PICKING: NOT ALLOWED (waiting for click, no self-loop)
-# 6.7. → SLOPE_CUSTOM_PATH: select_custom_target [direct] (click target location)
-# 6.8. → LIFT_PLACING: NOT ALLOWED (must cancel first)
-
-# 7. Transitions: From SLOPE_CUSTOM_PATH
+# 6. Transitions: From SLOPE_CUSTOM_PATH
 # ---------------------------------------
-# 7.1. → IDLE_READY: cancel_slope_from_custom_path [event: cancel_slope]
-# 7.2. → IDLE_VIEWING_SLOPE: commit_custom_finish [direct] (auto-finish when connecting to node)
-# 7.3. → IDLE_VIEWING_LIFT: NOT ALLOWED (must finish/cancel slope first)
-# 7.4. → SLOPE_STARTING: cancel_path_to_starting [event: cancel_custom_connect, guard: has_no_segments]
-# 7.5. → SLOPE_BUILDING: commit_custom_continue [direct] (commit and keep building),
-#                        cancel_path_to_building [event: cancel_custom_connect, guard: !has_no_segments]
-# 7.6. → SLOPE_CUSTOM_PICKING: NOT ALLOWED (can't go back to picking, must cancel)
-# 7.7. → SLOPE_CUSTOM_PATH: NOT ALLOWED (no self-loop, different target → cancel+repick)
-# 7.8. → LIFT_PLACING: NOT ALLOWED (must finish/cancel slope first)
+# 6.1. → IDLE_READY: cancel_slope_from_custom_path [event: cancel_slope]
+# 6.2. → IDLE_VIEWING_SLOPE: commit_custom_finish [direct] (auto-finish when connecting to node)
+# 6.3. → SLOPE_STARTING: cancel_path_to_starting [event: cancel_custom, guard: has_no_segments]
+# 6.4. → SLOPE_BUILDING: commit_custom_continue [direct] (commit and keep building),
+#                        cancel_path_to_building [event: cancel_custom, guard: !has_no_segments]
+# 6.5. → SLOPE_CUSTOM_PATH: retarget_custom [event: select_custom_target, self-loop] (click a new target)
+# 6.6. → LIFT_PLACING: NOT ALLOWED (must finish/cancel slope first)
 
-# 8. Transitions: From LIFT_PLACING
+# 7. Transitions: From LIFT_PLACING
 # ----------------------------------
-# 8.1. → IDLE_READY: cancel_lift [direct] (cancel button)
-# 8.2. → IDLE_VIEWING_SLOPE: NOT ALLOWED (must cancel or complete first)
-# 8.3. → IDLE_VIEWING_LIFT: complete_lift [direct] (click end station location)
-# 8.4. → SLOPE_STARTING: NOT ALLOWED (must cancel lift first)
-# 8.5. → SLOPE_BUILDING: NOT ALLOWED (must cancel lift first)
-# 8.6. → SLOPE_CUSTOM_PICKING: NOT ALLOWED (must cancel lift first)
-# 8.7. → SLOPE_CUSTOM_PATH: NOT ALLOWED (must cancel lift first)
-# 8.8. → LIFT_PLACING: NOT ALLOWED (no self-loop needed)
+# 7.1. → IDLE_READY: cancel_lift [direct] (cancel button)
+# 7.2. → IDLE_VIEWING_LIFT: complete_lift [direct] (click end station location)
+# 7.3. → any other state: NOT ALLOWED (must cancel or complete the lift first)
+
+# 9. Transitions: From ROAD_STARTING / ROAD_BUILDING
+# ---------------------------------------------------
+# 9.1. → IDLE_READY: cancel_road_from_starting / cancel_road_from_building [event: cancel_road]
+# 9.2. → IDLE_VIEWING_ROAD: finish_road [direct] (finish button, from ROAD_BUILDING)
+# 9.3. → ROAD_BUILDING: commit_road_first (from ROAD_STARTING) / commit_road_continue (self-loop) [event: commit_road]
 
 Transition Summary Table
 ------------------------
-    ALLOWED (20 transitions + 3 self-loops = 23 total):
-    - From IDLE_READY (4): view_slope, view_lift, start_slope, start_lift [all direct]
-    - From IDLE_VIEWING_SLOPE (4+1): close, switch_to_lift, start_slope, start_lift [all direct], switch_slope (loop)
-    - From IDLE_VIEWING_LIFT (4+1): close, switch_to_slope, start_slope, start_lift [all direct], switch_lift (loop)
-    - From SLOPE_STARTING (3): cancel [cancel_slope], commit_first_path [commit_path], enable_custom [enable_custom]
-    - From SLOPE_BUILDING (3+1): cancel [cancel_slope], finish [direct], enable_custom [enable_custom], commit_path (loop)
-    - From SLOPE_CUSTOM_PICKING (4): cancel_slope [cancel_slope], cancel_custom_to_* [cancel_custom_connect], select_target [direct]
-    - From SLOPE_CUSTOM_PATH (5): commit_continue [direct], commit_finish [direct], cancel_slope [cancel_slope], cancel_path_to_* [cancel_custom_connect]
+    Slopes are targeted map-only (click a downhill point/node) via the select_custom_target
+    event — there is no picking state and no enter button. Roads are always segment-by-segment.
+
+    - From IDLE_READY (5): view_slope, view_lift, view_road, start_slope, start_lift, start_road [all direct]
+    - From IDLE_VIEWING_SLOPE (5+1): close, switch_to_lift, switch_to_road, start_slope, start_lift, start_road, switch_slope (loop)
+    - From IDLE_VIEWING_LIFT (5+1): close, switch_to_slope, switch_to_road, start_slope, start_lift, start_road, switch_lift (loop)
+    - From IDLE_VIEWING_ROAD (5+1): close, switch_to_slope, switch_to_lift, start_slope, start_lift, start_road, switch_road (loop)
+    - From SLOPE_STARTING (3): cancel [cancel_slope], commit_first_path [commit_path], select_target [select_custom_target]
+    - From SLOPE_BUILDING (3+1): cancel [cancel_slope], finish [direct], select_target [select_custom_target], commit_path (loop)
+    - From SLOPE_CUSTOM_PATH (4+1): commit_continue [direct], commit_finish [direct], cancel_slope [cancel_slope], cancel_path_to_* [cancel_custom], retarget (loop) [select_custom_target]
     - From LIFT_PLACING (2): cancel [direct], complete [direct]
+    - From ROAD_STARTING (2): cancel [cancel_road], commit_road_first [commit_road]
+    - From ROAD_BUILDING (2+1): cancel [cancel_road], finish [direct], commit_road_continue (loop) [commit_road]
 
     Event-triggered transitions use [event_name] notation.
     Direct transitions are called by their transition name directly.
 
-    NOT ALLOWED (41 combinations): All other transitions that would bypass required workflow steps
+    All other (state, event) combinations are NOT ALLOWED — they would bypass required workflow steps.
 
     NOTE: Undo is handled via force_idle()/force_building() methods, NOT via transitions.
           See "Undo Architecture" section above.
@@ -261,6 +259,7 @@ from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.context import (
     BuildMode,
+    EntityKind,
     LonLatElev,
     PlannerContext,
 )
@@ -275,7 +274,6 @@ from skiresort_planner.ui.state_lifecycle import (
     enter_road_starting,
     enter_slope_building,
     enter_slope_custom_path,
-    enter_slope_custom_picking,
     enter_slope_starting,
     exit_idle_ready,
     exit_idle_viewing_lift,
@@ -286,7 +284,6 @@ from skiresort_planner.ui.state_lifecycle import (
     exit_road_starting,
     exit_slope_building,
     exit_slope_custom_path,
-    exit_slope_custom_picking,
     exit_slope_starting,
 )
 
@@ -365,8 +362,7 @@ class PlannerStateMachine(StateMachine):
         IDLE_VIEWING_ROAD: Panel showing road details
         SLOPE_STARTING: 0 segments, picking first direction
         SLOPE_BUILDING: 1+ segments, continuing
-        SLOPE_CUSTOM_PICKING: Waiting for custom target click
-        SLOPE_CUSTOM_PATH: Showing custom path options
+        SLOPE_CUSTOM_PATH: Showing custom path options routed to a clicked target
         LIFT_PLACING: Waiting for end station
         ROAD_STARTING: 0 road segments, picking first target
         ROAD_BUILDING: 1+ road segments, extending the road
@@ -376,7 +372,7 @@ class PlannerStateMachine(StateMachine):
     """
 
     # ==========================================================================
-    # State Definitions (11 explicit states)
+    # State Definitions (10 explicit states)
     # ==========================================================================
 
     # IDLE states (no building in progress)
@@ -388,7 +384,6 @@ class PlannerStateMachine(StateMachine):
     # SLOPE states (building in progress)
     slope_starting = State("SlopeStarting")
     slope_building = State("SlopeBuilding")
-    slope_custom_picking = State("SlopeCustomPicking")
     slope_custom_path = State("SlopeCustomPath")
 
     # LIFT state
@@ -471,73 +466,62 @@ class PlannerStateMachine(StateMachine):
     # ==========================================================================
     # 4. Transitions: From SLOPE_STARTING (0 segments)
     # ==========================================================================
-    # Events available: commit_path, cancel_slope, enable_custom
+    # Events available: commit_path, cancel_slope, select_custom_target
     # 4.1. cancel_from_starting [event: cancel_slope]: Cancel button
     # 4.5. commit_first_path [event: commit_path]: Click proposal endpoint
-    # 4.6. enable_custom_from_starting [event: enable_custom]: Custom connect button
+    # 4.6. select_target_from_starting [event: select_custom_target]: Click a target on the map
 
     commit_first_path = slope_starting.to(slope_building, event="commit_path")  # 4.5 [event: commit_path]
     cancel_from_starting = slope_starting.to(idle_ready, event="cancel_slope")  # 4.1 [event: cancel_slope]
-    enable_custom_from_starting = slope_starting.to(
-        slope_custom_picking, event="enable_custom", before="_enable_custom_from_starting"
-    )  # 4.6 [event: enable_custom]
+    select_target_from_starting = slope_starting.to(
+        slope_custom_path, event="select_custom_target", before="_before_target_from_starting"
+    )  # 4.6 [event: select_custom_target]
 
     # ==========================================================================
     # 5. Transitions: From SLOPE_BUILDING (1+ segments)
     # ==========================================================================
-    # Events available: commit_path, cancel_slope, enable_custom
+    # Events available: commit_path, cancel_slope, select_custom_target
     # NOTE: Undo is handled via force_idle()/force_building(), NOT transitions
     # 5.1. cancel_from_building [event: cancel_slope]: Cancel button (discard all)
     # 5.2. finish_slope [direct]: Finish button
     # 5.5. commit_continue_path [event: commit_path, self-loop]: Commit more segments
-    # 5.6. enable_custom_from_building [event: enable_custom]: Custom connect button
+    # 5.6. select_target_from_building [event: select_custom_target]: Click a target on the map
 
     commit_continue_path = slope_building.to(slope_building, event="commit_path")  # 5.5 [event: commit_path] self-loop
-    finish_slope = slope_building.to(idle_viewing_slope)  # 5.2 [direct]
+    finish_slope = slope_building.to(idle_viewing_slope, event="finish_slope")  # 5.2 [event: finish_slope]
     cancel_from_building = slope_building.to(idle_ready, event="cancel_slope")  # 5.1 [event: cancel_slope]
-    enable_custom_from_building = slope_building.to(
-        slope_custom_picking, event="enable_custom", before="_enable_custom_from_building"
-    )  # 5.6 [event: enable_custom]
+    select_target_from_building = slope_building.to(
+        slope_custom_path, event="select_custom_target", before="_before_target_from_building"
+    )  # 5.6 [event: select_custom_target]
 
     # ==========================================================================
-    # 6. Transitions: From SLOPE_CUSTOM_PICKING
+    # 6. Transitions: From SLOPE_CUSTOM_PATH
     # ==========================================================================
-    # Events available: cancel_custom, cancel_slope
-    # 6.1. cancel_slope_from_custom_picking [event: cancel_slope]: Cancel entire slope
-    # 6.4. cancel_custom_to_starting [event: cancel_custom, guard]: Cancel when has_no_segments
-    # 6.5. cancel_custom_to_building [event: cancel_custom, guard]: Cancel when has segments
-    # 6.7. select_custom_target [direct]: Click target location
+    # Events available: cancel_custom, cancel_slope, select_custom_target (self-loop), finish_slope
+    # 6.1. cancel_slope_from_custom_path [event: cancel_slope]: Cancel entire slope
+    # 6.2. commit_custom_finish [direct]: Auto-finish when connecting to existing node
+    # 6.3. commit_custom_continue [direct]: Commit and keep building
+    # 6.4. cancel_path_to_starting [event: cancel_custom, guard]: Back to fan-out when has_no_segments
+    # 6.5. cancel_path_to_building [event: cancel_custom, guard]: Back to fan-out when has segments
+    # 6.6. retarget_custom [event: select_custom_target, self-loop]: Click a new target → re-route
+    # 6.7. finish_slope_from_custom [event: finish_slope]: Sidebar Finish during targeting —
+    #      finalize committed segments, drop the in-progress proposal
 
-    select_custom_target = slope_custom_picking.to(slope_custom_path)  # 6.7 [direct]
-    cancel_custom_to_starting = slope_custom_picking.to(
-        slope_starting, cond="has_no_segments", event="cancel_custom"
-    )  # 6.4 [event: cancel_custom, guard]
-    cancel_custom_to_building = slope_custom_picking.to(
-        slope_building, unless="has_no_segments", event="cancel_custom"
-    )  # 6.5 [event: cancel_custom, guard]
-    cancel_slope_from_custom_picking = slope_custom_picking.to(
-        idle_ready, event="cancel_slope"
-    )  # 6.1 [event: cancel_slope]
-
-    # ==========================================================================
-    # 7. Transitions: From SLOPE_CUSTOM_PATH
-    # ==========================================================================
-    # Events available: cancel_custom, cancel_slope
-    # 7.1. cancel_slope_from_custom_path [event: cancel_slope]: Cancel entire slope
-    # 7.2. commit_custom_finish [direct]: Auto-finish when connecting to existing node
-    # 7.4. cancel_path_to_starting [event: cancel_custom, guard]: Cancel when has_no_segments
-    # 7.5. commit_custom_continue [direct]: Commit and keep building
-    # 7.5. cancel_path_to_building [event: cancel_custom, guard]: Cancel when has segments
-
-    commit_custom_continue = slope_custom_path.to(slope_building)  # 7.5 [direct]
-    commit_custom_finish = slope_custom_path.to(idle_viewing_slope)  # 7.2 [direct] auto-finish connector
+    commit_custom_continue = slope_custom_path.to(slope_building)  # 6.3 [direct]
+    commit_custom_finish = slope_custom_path.to(idle_viewing_slope)  # 6.2 [direct] auto-finish connector
+    retarget_custom = slope_custom_path.to(
+        slope_custom_path, event="select_custom_target", before="_before_retarget_custom"
+    )  # 6.6 [event: select_custom_target] self-loop
+    finish_slope_from_custom = slope_custom_path.to(
+        idle_viewing_slope, event="finish_slope", before="_before_finish_slope_from_custom"
+    )  # 6.7 [event: finish_slope]
     cancel_path_to_starting = slope_custom_path.to(
         slope_starting, cond="has_no_segments", event="cancel_custom"
-    )  # 7.4 [event: cancel_custom, guard]
+    )  # 6.4 [event: cancel_custom, guard]
     cancel_path_to_building = slope_custom_path.to(
         slope_building, unless="has_no_segments", event="cancel_custom"
-    )  # 7.5 [event: cancel_custom, guard]
-    cancel_slope_from_custom_path = slope_custom_path.to(idle_ready, event="cancel_slope")  # 7.1 [event: cancel_slope]
+    )  # 6.5 [event: cancel_custom, guard]
+    cancel_slope_from_custom_path = slope_custom_path.to(idle_ready, event="cancel_slope")  # 6.1 [event: cancel_slope]
 
     # ==========================================================================
     # 8. Transitions: From LIFT_PLACING
@@ -559,10 +543,18 @@ class PlannerStateMachine(StateMachine):
     # 9.4. commit_road_first [event: commit_road]: first traced segment
     # 9.5. commit_road_continue [event: commit_road, self-loop]: extend the road
     # 9.2. finish_road [direct]: Finish button
+    # 9.6. commit_road_finish [event: commit_road_finish]: a connector segment (target is an
+    #      existing node) ends the road immediately, from either state. Mirrors commit_custom_finish.
 
     commit_road_first = road_starting.to(road_building, event="commit_road")  # 9.4 [event: commit_road]
     commit_road_continue = road_building.to(road_building, event="commit_road")  # 9.5 [event: commit_road] self-loop
     finish_road = road_building.to(idle_viewing_road)  # 9.2 [direct]
+    commit_road_finish_from_starting = road_starting.to(
+        idle_viewing_road, event="commit_road_finish"
+    )  # 9.6 [event: commit_road_finish]
+    commit_road_finish_from_building = road_building.to(
+        idle_viewing_road, event="commit_road_finish"
+    )  # 9.6 [event: commit_road_finish]
     cancel_road_from_starting = road_starting.to(idle_ready, event="cancel_road")  # 9.1 [event: cancel_road]
     cancel_road_from_building = road_building.to(idle_ready, event="cancel_road")  # 9.1 [event: cancel_road]
 
@@ -592,25 +584,27 @@ class PlannerStateMachine(StateMachine):
             # commit_road event
             "commit_road_first",
             "commit_road_continue",
+            # commit_road_finish event
+            "commit_road_finish_from_starting",
+            "commit_road_finish_from_building",
             # cancel_slope event
             "cancel_from_starting",
             "cancel_from_building",
-            "cancel_slope_from_custom_picking",
             "cancel_slope_from_custom_path",
             # cancel_road event
             "cancel_road_from_starting",
             "cancel_road_from_building",
-            # cancel_custom_connect event
-            "cancel_custom_to_starting",
-            "cancel_custom_to_building",
+            # cancel_custom event
             "cancel_path_to_starting",
             "cancel_path_to_building",
-            # enable_custom event
-            "enable_custom_from_starting",
-            "enable_custom_from_building",
+            # select_custom_target event
+            "select_target_from_starting",
+            "select_target_from_building",
+            "retarget_custom",
             # start_slope event (NOT start_slope - that IS the event entry point)
             "start_slope_from_slope_view",
             "start_slope_from_lift_view",
+            "start_slope_from_road_view",
             # start_lift event (NOT start_lift - that IS the event entry point)
             "start_lift_from_slope_view",
             "start_lift_from_lift_view",
@@ -680,11 +674,6 @@ class PlannerStateMachine(StateMachine):
         return bool(self.slope_building.is_active)
 
     @property
-    def is_slope_custom_picking(self) -> bool:
-        """Check if picking custom target."""
-        return bool(self.slope_custom_picking.is_active)
-
-    @property
     def is_slope_custom_path(self) -> bool:
         """Check if showing custom path options."""
         return bool(self.slope_custom_path.is_active)
@@ -714,19 +703,26 @@ class PlannerStateMachine(StateMachine):
     def is_any_slope_state(self) -> bool:
         """Check if in any slope-related state.
 
-        Returns True for: slope_starting, slope_building, slope_custom_picking, slope_custom_path
+        Returns True for: slope_starting, slope_building, slope_custom_path
         """
-        return (
-            self.is_slope_starting
-            or self.is_slope_building_only
-            or self.is_slope_custom_picking
-            or self.is_slope_custom_path
-        )
+        return self.is_slope_starting or self.is_slope_building_only or self.is_slope_custom_path
 
     @property
     def is_info_panel_visible(self) -> bool:
         """Check if info panel is visible (viewing slope, lift, or road)."""
         return self.is_idle_viewing_slope or self.is_idle_viewing_lift or self.is_idle_viewing_road
+
+    @property
+    def viewing_entity(self) -> tuple[EntityKind, str] | None:
+        """The (kind, id) of the slope/road/lift being viewed, or None if not viewing."""
+        v = self.context.viewing
+        if self.is_idle_viewing_slope and v.slope_id:
+            return EntityKind.SLOPE, v.slope_id
+        if self.is_idle_viewing_road and v.road_id:
+            return EntityKind.ROAD, v.road_id
+        if self.is_idle_viewing_lift and v.lift_id:
+            return EntityKind.LIFT, v.lift_id
+        return None
 
     def is_slope_mode(self) -> bool:
         """Check if build mode is set to slope."""
@@ -767,10 +763,6 @@ class PlannerStateMachine(StateMachine):
     def on_enter_slope_building(self) -> None:
         """Hook: Entering slope building state."""
         enter_slope_building(self.context)
-
-    def on_enter_slope_custom_picking(self) -> None:
-        """Hook: Entering custom picking state."""
-        enter_slope_custom_picking(self.context)
 
     def on_enter_slope_custom_path(self) -> None:
         """Hook: Entering custom path state."""
@@ -816,10 +808,6 @@ class PlannerStateMachine(StateMachine):
         """Hook: Exiting slope building state."""
         exit_slope_building(self.context)
 
-    def on_exit_slope_custom_picking(self) -> None:
-        """Hook: Exiting custom picking state."""
-        exit_slope_custom_picking(self.context)
-
     def on_exit_slope_custom_path(self) -> None:
         """Hook: Exiting custom path state."""
         exit_slope_custom_path(self.context)
@@ -839,6 +827,12 @@ class PlannerStateMachine(StateMachine):
     # ==========================================================================
     # Transition Actions (before_* hooks)
     # ==========================================================================
+    # Naming convention (enforced repo-wide):
+    #   before_<event>   → auto-discovered event-level hook; fires for EVERY transition
+    #                      of that event. Use when all transitions share one action.
+    #   _before_<name>   → private; wired explicitly via before="..." on ONE transition.
+    #                      Use when transitions sharing an event need DIFFERENT actions
+    #                      (e.g. select_custom_target: starting vs building vs retarget).
 
     def before_start_slope(
         self,
@@ -891,6 +885,23 @@ class PlannerStateMachine(StateMachine):
             self.context.slope_build.segments.append(segment_id)
         self.context.viewing.set_slope_id(slope_id=slope_id)
         self.context.custom_connect.clear()
+
+    def before_commit_road_finish(self, segment_id: str, road_id: str) -> None:
+        """Road connector auto-finish (mirrors before_commit_custom_finish).
+
+        Idempotent on segment_id (caller appends before graph.finish_road()).
+        enter_idle_viewing_road clears road_build, so no clear here.
+        """
+        if segment_id not in self.context.road_build.segments:
+            self.context.road_build.segments.append(segment_id)
+        self.context.viewing.set_road_id(road_id=road_id)
+
+    def _before_finish_slope_from_custom(self, slope_id: str) -> None:
+        """Sidebar Finish during targeting: drop the in-progress proposal (never in
+        segments) and clear custom-connect + proposals. set_slope_id via before_finish_slope.
+        """
+        self.context.clear_custom_connect()
+        self.context.clear_proposals()
 
     def before_finish_slope(self, slope_id: str) -> None:
         """Action before finishing a slope."""
@@ -973,15 +984,16 @@ class PlannerStateMachine(StateMachine):
     # Custom Connect Transitions (Single Source of Truth for ctx.custom_connect.*)
     # ──────────────────────────────────────────────────────────────────────────────
     # All custom_connect state mutations happen ONLY in these hooks:
-    # - _enable_custom_from_*: Attached via before= in .to() for path-specific logic
-    # - select_custom_target: Sets target_location, enabled=False, force_mode=True
-    # - cancel_custom/cancel_path: Clears state via clear_custom_connect() or field resets
+    # - _before_target_from_*: per-transition before= hooks for select_custom_target (set
+    #   start_node/target/force_mode). NO event-level hook — it would double-fire on top.
+    # - cancel_custom/cancel_slope: Clears state via clear_custom_connect().
     # ──────────────────────────────────────────────────────────────────────────────
 
-    def _enable_custom_from_starting(self) -> None:
-        """Transition action: From STARTING, get or create start node, enable custom connect.
+    def _before_target_from_starting(self, target_location: LonLatElev, target_node: str | None = None) -> None:
+        """From SLOPE_STARTING: get-or-create the origin node, then route to the target.
 
-        Attached via before= parameter to enable_custom_from_starting transition.
+        Attached via before= to select_target_from_starting. The origin has no
+        committed segment yet, so materialise it from the current selection.
         """
         start_node_id = self.context.slope_build.start_node_id
         if start_node_id is None:
@@ -989,27 +1001,30 @@ class PlannerStateMachine(StateMachine):
             node, _ = self._resort_graph.get_or_create_node(lon=sel.lon, lat=sel.lat, elevation=sel.elevation)
             start_node_id = node.id
             self.context.slope_build.start_node_id = start_node_id
-        self.context.custom_connect.enabled = True
         self.context.custom_connect.start_node = start_node_id
+        self.context.custom_connect.target_location = target_location
+        self.context.custom_connect.target_node = target_node
+        self.context.custom_connect.force_mode = True
 
-    def _enable_custom_from_building(self) -> None:
-        """Transition action: From BUILDING, use current endpoint, enable custom connect.
+    def _before_target_from_building(self, target_location: LonLatElev, target_node: str | None = None) -> None:
+        """From SLOPE_BUILDING: route from the current endpoint to the clicked target.
 
-        Attached via before= parameter to enable_custom_from_building transition.
+        Attached via before= to select_target_from_building.
         """
-        self.context.custom_connect.enabled = True
-        if self.context.slope_build.endpoints:
-            self.context.custom_connect.start_node = self.context.slope_build.endpoints[0]
+        self.context.custom_connect.start_node = self.context.slope_build.endpoints[0]
+        self.context.custom_connect.target_location = target_location
+        self.context.custom_connect.target_node = target_node
+        self.context.custom_connect.force_mode = True
 
-    def before_select_custom_target(self, target_location: LonLatElev, target_node: str | None = None) -> None:
-        """Action before selecting custom target.
+    def _before_retarget_custom(self, target_location: LonLatElev, target_node: str | None = None) -> None:
+        """From SLOPE_CUSTOM_PATH: re-route to a newly clicked target (self-loop).
 
-        target_node is the clicked node's id when the target is an EXISTING node, so
-        commit reuses it exactly (identity, not proximity); None for a terrain target.
+        Attached via before= to retarget_custom. The start node is unchanged; only
+        the target moves. enter_slope_custom_path (fired on the self-loop) regenerates
+        proposals, so no deferred flag is set here.
         """
         self.context.custom_connect.target_location = target_location
         self.context.custom_connect.target_node = target_node
-        self.context.custom_connect.enabled = False
         self.context.custom_connect.force_mode = True
 
     def before_cancel_custom(self) -> None:
@@ -1075,7 +1090,6 @@ class PlannerStateMachine(StateMachine):
         "idle_viewing_road": exit_idle_viewing_road,
         "slope_starting": exit_slope_starting,
         "slope_building": exit_slope_building,
-        "slope_custom_picking": exit_slope_custom_picking,
         "slope_custom_path": exit_slope_custom_path,
         "lift_placing": exit_lift_placing,
         "road_starting": exit_road_starting,
@@ -1247,12 +1261,8 @@ class PlannerStateMachine(StateMachine):
 
     # NOTE: undo_segment() removed - undo handled via force_idle()/force_building()
 
-    def enable_custom_connect(self) -> None:
-        """Enable custom connect mode. SM resolves based on current state."""
-        self.enable_custom()
-
     def cancel_custom_connect(self) -> None:
-        """Cancel custom connect mode. SM resolves based on current state and guards."""
+        """Leave custom targeting, back to fan-out. SM resolves based on guards."""
         self.cancel_custom()
 
     @staticmethod

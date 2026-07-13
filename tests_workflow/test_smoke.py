@@ -122,7 +122,6 @@ class TestStateMachineConfiguration:
             "idle_viewing_road",
             "slope_starting",
             "slope_building",
-            "slope_custom_picking",
             "slope_custom_path",
             "lift_placing",
             "road_starting",

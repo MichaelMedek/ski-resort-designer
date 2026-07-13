@@ -135,27 +135,30 @@ class TestForceStateMethods:
         assert sm.current_state_value == "idle_ready"
         assert len(ctx.slope_build.segments) == 0, "Building context should be cleared"
 
-    def test_force_building_from_custom_picking(self, workflow_setup: WorkflowSetup) -> None:
-        """force_building() from SlopeCustomPicking goes to SlopeBuilding."""
+    def test_force_building_from_custom_path(self, workflow_setup: WorkflowSetup) -> None:
+        """force_building() from SlopeCustomPath goes to SlopeBuilding."""
         sm, ctx, graph, factory, dem = workflow_setup
 
         start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
         sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
 
-        # Commit segment and enable custom mode
+        # Commit a segment, then click a target to enter custom path.
         proposals = list(factory.generate_fan(lon=0.0, lat=0.0, elevation=start_elev))
         endpoint_ids = graph.commit_paths(paths=[proposals[0]])
         seg1_id = list(graph.segments.keys())[0]
         sm.commit_path(segment_id=seg1_id, endpoint_node_id=endpoint_ids[0])
-        sm.enable_custom()
+        from skiresort_planner.constants import MapConfig
 
-        assert sm.current_state_value == "slope_custom_picking"
+        m = MapConfig.METERS_PER_DEGREE_EQUATOR
+        sm.select_custom_target(target_location=(0.0, -500 / m, dem.get_elevation_or_raise(lon=0.0, lat=-500 / m)))
 
-        # Force back to building (simulates undo while in custom picking)
+        assert sm.current_state_value == "slope_custom_path"
+
+        # Force back to building (simulates undo while in custom path)
         sm.force_building()
 
         assert sm.current_state_value == "slope_building"
-        assert ctx.custom_connect.enabled is False, "Custom connect should be cleared"
+        assert ctx.custom_connect.force_mode is False, "Custom connect should be cleared"
 
     def test_force_idle_from_lift_placing_clears_lift_context(self, workflow_setup: WorkflowSetup) -> None:
         """force_idle() from LiftPlacing calls exit_lift_placing which clears lift context."""

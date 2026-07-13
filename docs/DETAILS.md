@@ -315,6 +315,16 @@ This creates **natural curving**:
 - On convex hills: paths curve outward
 - On concave valleys: paths curve inward
 
+### 5.8 Whole-Path Smoothing on Finish
+
+Each segment is spline-smoothed independently at trace time, so two segments meet at a shared junction node with different tangents — a visible **kink**. When a slope or road is **finished**, the whole path is smoothed in one pass by a single cubic smoothing spline fitted over the full polyline (parametrised by cumulative distance, resampled every `RESAMPLE_STEP_M` ≈ 7 m), then re-sliced back to the original segments so the ribbon is continuous across junctions.
+
+- The fit is a **weighted least-squares spline**: the boundary **nodes** get a moderately higher weight (`NODE_WEIGHT`) than the raw planner **corridor points** (`CORRIDOR_WEIGHT`), with a smoothing budget scaled by the point count. The planner's grid path is a staircase; at a switchback it reverses across sub-metre jitter. A *smoothing* spline averages that jitter into a real turn **radius**. The node weight is deliberately **moderate** (≈10, not huge): an extreme node weight makes the fit near-singular at the pinned point and manufactures a cusp there.
+- **Roads and slopes smooth differently.** Roads use `ROAD_SMOOTHING_FACTOR` (≈50) — cars need broad, smooth curves and roads accept the earthwork. Slopes use the lower `SLOPE_SMOOTHING_FACTOR` (≈15) so the ribbon **hugs the terrain** more: skiers are flexible, and a slope should follow the ground rather than build up large cut/fill.
+- **Outer endpoints are pinned exactly** (the entity termini, shared with other slopes/lifts/roads). **Internal junctions** are left where the weighted spline places them — about half a metre from the node, shared by value between the two adjacent segments — so the node marker still sits on the ribbon and any node can be a branch point, without snapping a switchback back into a kink.
+- Elevation is **smoothed along the spline, not re-sampled from the DEM**. A finished deck may therefore float slightly off the ground between nodes — treat it as a bridge / cut / fill.
+- Finish smoothing **never rejects** a path and does **not** re-apply the ±15% road cap (§7.3). Rounding a corner can nudge a road's steepest 300 m section; a finished road is allowed to exceed the build cap (bridge/cut/fill).
+
 ---
 
 ## 6. Difficulty Classification
@@ -340,7 +350,7 @@ The final slope classification is determined by the **steepest section among all
 
 ## 7. Custom Direction / Connect Paths
 
-When the automatically generated fan paths don't include the direction you want, the **Custom Direction** feature lets you click anywhere downhill to set a target.
+When the automatically generated fan paths don't include the direction you want, just **click the point you want to reach** while building the slope — terrain-adaptive path(s) are routed to that target. Clicking an existing node routes a connector that auto-finishes the slope on commit.
 
 ### 7.1 Multi-Grade Path Search
 
@@ -390,13 +400,17 @@ Where:
 
 A **Road** is a vehicle road built **segment-by-segment**, exactly like a custom-connect slope minus the fan-out (roads are "always custom-connect").
 
-Road tracing reuses the exact same grid-Dijkstra planner as custom slope connections (§7.2) — the only change is the edge cost, selected by passing a signed **gradient band** to the planner:
+A road is traced by the same grid-Dijkstra algorithm and the same cost function as §7.2. A road holds a **target grade** exactly the way a slope holds its difficulty target; the two behavioral differences are how that target grade is chosen and that a road may climb.
 
-$$\text{cost}_{\text{road}} = d \times \exp\left(\frac{\max(0,\; |\text{slope}_{\text{actual}}| - g_{\text{soft}})}{\sigma}\right)$$
+**Target grade.** A road reuses the **green** slope targets (7% gentle, 12% steep, from `SlopeConfig.DIFFICULTY_TARGETS["green"]`), signed by the endpoints' direction. With $H = z_{\text{start}} - z_{\text{target}}$ the signed drop (positive = descent):
 
-with a **soft comfort knee** $g_{\text{soft}} = 12\%$ (`ROAD_SOFT_GRADIENT_PCT`) and a **hard cap** $g_{\max} = 15\%$ (`ROAD_MAX_GRADIENT_PCT`) — both single-sourced, no hardcoded percentages in code or UI. The cost is **flat up to the 12% comfort knee** ($\exp(0)=1$) and ramps exponentially between 12% and the hard cap, so the planner *prefers* gentler lines and fewer near-limit routes get traced only to be refused. Road mode applies **no uphill penalty**: a car road may climb, descend, or run flat with equal preference. Slope mode (no band passed) is unchanged.
+$$g_{\text{target}} \in \{\operatorname{sign}(H)\cdot 7,\; \operatorname{sign}(H)\cdot 12\}$$
 
-**±15% is a HARD cap at build time.** The exponential term above is only a *soft* Dijkstra preference (ramping from 12%); the click handler additionally **hard-caps** every proposal at `ROAD_MAX_GRADIENT_PCT` and refuses to propose anything steeper ("No car road within ±15% is possible to that point"). A committed road therefore never exceeds the hard cap.
+So a road is planned exactly like a **green slope** — the only difference is the sign (a road may aim uphill). On gentle ground both targets exceed the direct grade and collapse to one straight route; on steep ground each serpentines to hold its grade, giving two proposals (gentle vs steeper green).
+
+**Cost function.** Every edge is scored by the identical grade-deviation penalty and the identical against-direction monotonicity penalty as §7.2, against $g_{\text{target}}$. A road picks its `GradientMode` from the endpoints — `DOWNHILL` when it descends, `UPHILL` when it climbs — and the monotonicity penalty then keeps the segment one-way (no looping), exactly as it does for a descent-only slope. There is no road-specific relaxation of the cost.
+
+**±15% is a HARD cap at build time.** The exponential term is only a *soft* preference; every finished proposal is additionally **hard-capped** at $g_{\max} = 15\%$ (`ROAD_MAX_GRADIENT_PCT`) by the caller and a steeper route is refused ("No car road within ±15% is possible to that point"). A committed road therefore never exceeds the hard cap. The green targets and $g_{\max}$ are single-sourced constants — no hardcoded percentages.
 
 ---
 

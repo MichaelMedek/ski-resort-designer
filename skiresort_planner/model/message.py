@@ -15,6 +15,7 @@ All data (elevations, node names, stats) must be preserved in the consolidated m
 """
 
 import logging
+import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
@@ -116,6 +117,32 @@ class InvalidClickMessage(ToastMessage):
 
 
 @dataclass(frozen=True)
+class RoadTooSteepMessage(ToastMessage):
+    """No road proposal fits within the ±max-grade band to the clicked point.
+
+    Reports the gentlest gradient that COULD be found.
+    """
+
+    gentlest_pct: float | None  # magnitude of the gentlest route found, or None if no route
+    max_grade_pct: float
+
+    @property
+    def icon(self) -> str:
+        return "⚠️"
+
+    @property
+    def message(self) -> str:
+        if self.gentlest_pct is None:
+            return f"Too steep for a car road — no route to that point within ±{self.max_grade_pct:.0f}%."
+        # Round the gentlest UP to 0.1% so it never renders equal to the cap
+        gentlest_shown = math.ceil(self.gentlest_pct * 10) / 10
+        return (
+            f"Too steep for a car road — gentlest possible is {gentlest_shown:.1f}%, "
+            f"over the ±{self.max_grade_pct:.0f}% limit."
+        )
+
+
+@dataclass(frozen=True)
 class OutsideTerrainMessage(ToastMessage):
     """User clicked outside DEM/terrain coverage."""
 
@@ -144,8 +171,11 @@ class LiftMustGoUphillMessage(ToastMessage):
 
     @property
     def message(self) -> str:
-        diff = self.end_elevation_m - self.start_elevation_m
-        return f"Lift Must Go Uphill — {self.start_elevation_m:.0f}m → {self.end_elevation_m:.0f}m ({diff:+.0f}m)"
+        # Fires only when end <= start. Show 1-decimal elevations so a sub-metre downhill is
+        # visible (integer metres would render an identical-looking "2500m → 2500m") and the
+        # diff stays arithmetically consistent with the two shown numbers.
+        start, end = round(self.start_elevation_m, 1), round(self.end_elevation_m, 1)
+        return f"Lift Must Go Uphill — {start:.1f}m → {end:.1f}m ({end - start:+.1f}m)"
 
 
 @dataclass(frozen=True)
@@ -174,7 +204,10 @@ class TargetTooFarMessage(ToastMessage):
 
     @property
     def message(self) -> str:
-        return f"Target Too Far — {self.distance_m:.0f}m (max: {self.max_distance_m:.0f}m)"
+        # Round the distance UP to 0.1 m so it never renders equal to the max: this fires
+        # only when distance strictly exceeds the max, and ".0f" could show "1000m (max: 1000m)".
+        distance_shown = math.ceil(self.distance_m * 10) / 10
+        return f"Target Too Far — {distance_shown:.1f}m (max: {self.max_distance_m:.0f}m)"
 
 
 @dataclass(frozen=True)
@@ -196,7 +229,10 @@ class TargetNotDownhillMessage(ToastMessage):
             drop_explainer = f" (Target is {abs(drop):.0f}m above your current point)"
         else:
             drop_explainer = ""
-        return f"Not Downhill Enough — drop: {drop:.0f}m, need at least {self.min_drop_m:.0f}m" + drop_explainer
+        # Round the drop DOWN to 0.1 m so it never renders equal to the minimum: this fires
+        # only when drop is strictly under min_drop_m, and ".0f" could show "drop: 5m, need at least 5m".
+        drop_shown = math.floor(drop * 10) / 10
+        return f"Not Downhill Enough — drop: {drop_shown:.1f}m, need at least {self.min_drop_m:.0f}m" + drop_explainer
 
 
 @dataclass(frozen=True)
@@ -342,12 +378,11 @@ class LiftPlacingContextMessage(Message):
 class SlopeActionMessage(Message):
     """RIGHT panel: Specific action instruction for slope building.
 
-    Covers: path selection, custom direction mode
+    Covers: path selection (fan-out and custom-connect proposals).
     """
 
     # Action state flags
     is_selecting_path: bool = False
-    is_custom_direction: bool = False
     is_custom_path: bool = False  # True if proposals came from custom connection
 
     # Path selection info (when is_selecting_path=True)
@@ -370,13 +405,6 @@ class SlopeActionMessage(Message):
 
     @property
     def message(self) -> str:
-        if self.is_custom_direction:
-            return (
-                "🎯 **Select Target**\n\n"
-                "- 👆 Click **downhill** to set target direction\n"
-                "- ⚪ Click near **node** to connect & finish slope"
-            )
-
         if self.is_selecting_path:
             is_conn = self.is_connector and self.target_node_id
             path_label = "Custom Proposal" if self.is_custom_path else "Proposed Segment"
@@ -396,7 +424,11 @@ class SlopeActionMessage(Message):
             )
 
         # No flags set - show fallback message for empty paths (terrain too steep, etc.)
-        return "⚠️ **No Paths Available**\n\n- Try 🎯 **Custom Direction** to pick a target\n- Or ↩️ **Undo** to go back"
+        return (
+            "⚠️ **No Paths Available**\n\n"
+            "- 👆 Click a **downhill** point or **node** to route a path to it\n"
+            "- Or ↩️ **Undo** to go back"
+        )
 
 
 @dataclass(frozen=True)

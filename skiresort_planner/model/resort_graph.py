@@ -18,13 +18,15 @@ from datetime import datetime
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, Optional, cast
 
-from skiresort_planner.constants import EntityPrefixes, PathConfig, UndoConfig
+from skiresort_planner.constants import EntityPrefixes, GeometricTuningConfig, UndoConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
+from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import PathSegment, SegmentKind
+from skiresort_planner.model.path_smoothing import smooth_joined_path
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.road import Road
 from skiresort_planner.model.slope import Slope
@@ -231,7 +233,7 @@ class ResortGraph:
         self,
         lon: float,
         lat: float,
-        threshold_m: float = PathConfig.STEP_SIZE_M,
+        threshold_m: float = GeometricTuningConfig.STEP_SIZE_M,
     ) -> Optional[Node]:
         """Find nearest node within threshold distance.
 
@@ -332,7 +334,7 @@ class ResortGraph:
 
             # Get start node.
             # If the proposal extends from an existing node, reuse it EXACTLY.
-            # Spline smoothing + momentum could drift the traced start point.
+            # Spline smoothing could drift the traced start point.
             # Same fix the end uses via target_node_id.
             start_pt = path.start
             assert start_pt is not None  # Guaranteed by `if not path.points: continue` check
@@ -445,6 +447,36 @@ class ResortGraph:
         )
         return first_seg, last_seg, start_node, end_node, avg_bearing
 
+    def _smooth_finished_path(self, segment_ids: list[str], smoothing_factor: float) -> None:
+        """Whole-path smooth a finished entity across its junctions, in place.
+
+        No-op for a single segment. EVERY node on the path (outer endpoints + every junction)
+        stays pinned exactly on the ribbon, so markers sit on the path and any node can be a
+        branch point; only the shape between nodes rounds. Never rejects — a road may drift
+        over the ±15% build cap here (bridge/cut/fill), which is intentional; not re-applied.
+
+        smoothing_factor: higher = smoother (roads); lower hugs terrain (slopes).
+        """
+        if len(segment_ids) < 2:
+            return  # single-segment path has no junction to smooth
+        segments = [self.segments[sid] for sid in segment_ids]
+        # Boundary nodes: start of the first segment, then each segment's end node.
+        boundary_node_ids = [segments[0].start_node_id, *(seg.end_node_id for seg in segments)]
+
+        before = max(seg.max_slope_pct for seg in segments)
+        smoothed = smooth_joined_path(
+            segment_point_lists=[seg.points for seg in segments],
+            node_anchors=[self.nodes[nid].location for nid in boundary_node_ids],
+            step_m=GeometricTuningConfig.RESAMPLE_STEP_M,
+            smoothing_factor=smoothing_factor,
+            node_weight=GeometricTuningConfig.NODE_WEIGHT,
+            corridor_weight=GeometricTuningConfig.CORRIDOR_WEIGHT,
+        )
+        for seg, pts in zip(segments, smoothed):
+            seg.points = pts
+        after = max(seg.max_slope_pct for seg in segments)
+        logger.info(f"Smoothed finished path {segment_ids}: max_slope_pct {before:.1f}% -> {after:.1f}%")
+
     # =========================================================================
     # Slope Operations
     # =========================================================================
@@ -463,6 +495,9 @@ class ResortGraph:
         Returns:
             Created Slope or None if invalid.
         """
+        self._smooth_finished_path(
+            segment_ids=segment_ids, smoothing_factor=GeometricTuningConfig.SLOPE_SMOOTHING_FACTOR
+        )
         resolved = self._resolve_finish_endpoints(segment_ids=segment_ids)
         if resolved is None:
             return None
@@ -523,6 +558,9 @@ class ResortGraph:
         Returns:
             Created Road or None if invalid.
         """
+        self._smooth_finished_path(
+            segment_ids=segment_ids, smoothing_factor=GeometricTuningConfig.ROAD_SMOOTHING_FACTOR
+        )
         resolved = self._resolve_finish_endpoints(segment_ids=segment_ids)
         if resolved is None:
             return None
@@ -646,23 +684,23 @@ class ResortGraph:
 
         action = self.undo_stack.pop()
 
-        # Compare by .name (both sides): ActionType is a plain Enum, and the
-        # undo_stack lives in st.session_state holding OLD-class references after a
-        # Streamlit reload — plain-enum `==` is identity-based and would fail.
-        action_name = action.action_type.name
+        # Dispatch via enum_eq (reload-safe): ActionType is a plain Enum and the undo_stack
+        # lives in st.session_state holding OLD-class references after a Streamlit reload,
+        # so plain-enum `is`/`==` would fail. enum_eq compares the stable string form.
+        action_type = action.action_type
 
-        if action_name == ActionType.ADD_SEGMENTS.name:
+        if enum_eq(action_type, ActionType.ADD_SEGMENTS):
             add_seg = cast(AddSegmentsAction, action)
             for seg_id in add_seg.segment_ids:
                 self.segments.pop(seg_id, None)
             self.cleanup_isolated_nodes()  # Remove orphaned nodes from segment removal
 
-        elif action_name == ActionType.ADD_LIFT.name:
+        elif enum_eq(action_type, ActionType.ADD_LIFT):
             add_lift = cast(AddLiftAction, action)
             self.lifts.pop(add_lift.lift_id, None)
             self.cleanup_isolated_nodes()  # Remove orphaned station nodes
 
-        elif action_name == ActionType.FINISH_SLOPE.name:
+        elif enum_eq(action_type, ActionType.FINISH_SLOPE):
             # Ungroup the slope but keep its segments; their own AddSegmentsAction
             # entries handle per-segment removal on further undo.
             finish = cast(FinishSlopeAction, action)
@@ -670,14 +708,14 @@ class ResortGraph:
             for seg_id in finish.segment_ids:
                 self.segments[seg_id].name = f"Segment {seg_id[1:]}"
 
-        elif action_name == ActionType.FINISH_ROAD.name:
+        elif enum_eq(action_type, ActionType.FINISH_ROAD):
             # Mirror FINISH_SLOPE: ungroup the road, keep its segments.
             finish_road = cast(FinishRoadAction, action)
             self.roads.pop(finish_road.road_id, None)
             for seg_id in finish_road.segment_ids:
                 self.segments[seg_id].name = f"Segment {seg_id[1:]}"
 
-        elif action_name == ActionType.DELETE_SLOPE.name:
+        elif enum_eq(action_type, ActionType.DELETE_SLOPE):
             del_slope = cast(DeleteSlopeAction, action)
             # Restore orphaned nodes first (they're needed by segments)
             for node in del_slope.deleted_nodes:
@@ -691,7 +729,7 @@ class ResortGraph:
                 f"and {len(del_slope.deleted_nodes)} nodes"
             )
 
-        elif action_name == ActionType.DELETE_LIFT.name:
+        elif enum_eq(action_type, ActionType.DELETE_LIFT):
             del_lift = cast(DeleteLiftAction, action)
             # Restore orphaned nodes first (they're needed by lift)
             for node in del_lift.deleted_nodes:
@@ -700,7 +738,7 @@ class ResortGraph:
             self.lifts[del_lift.lift_id] = del_lift.deleted_lift
             logger.info(f"Restored lift {del_lift.lift_id} with {len(del_lift.deleted_nodes)} nodes")
 
-        elif action_name == ActionType.DELETE_ROAD.name:
+        elif enum_eq(action_type, ActionType.DELETE_ROAD):
             del_road = cast(DeleteRoadAction, action)
             # Restore orphaned nodes first (they're needed by segments)
             for node in del_road.deleted_nodes:
@@ -714,7 +752,7 @@ class ResortGraph:
             )
 
         else:
-            raise RuntimeError(f"Unknown action type in undo_last: {action_name}")
+            raise RuntimeError(f"Unknown action type in undo_last: {action_type}")
 
         return action
 
@@ -1012,7 +1050,7 @@ class ResortGraph:
         for road in graph.roads.values():
             for seg_id in road.segment_ids:
                 seg = graph.segments.get(seg_id)
-                assert seg is not None and seg.kind == SegmentKind.ROAD, (
+                assert seg is not None and enum_eq(seg.kind, SegmentKind.ROAD), (
                     f"road {road.id} owns segment {seg_id} with kind "
                     f"{seg.kind if seg else 'MISSING'} — expected ROAD (corrupt/stale save)"
                 )

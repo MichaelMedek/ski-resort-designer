@@ -6,6 +6,8 @@ Focus on _are_paths_similar and _deduplicate_paths which are mathematical compar
 
 import pytest
 
+from skiresort_planner.enum_utils import enum_eq
+from skiresort_planner.constants import SlopeConfig
 from skiresort_planner.generators.path_factory import GradeConfig, PathFactory, Side
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.proposed_path import ProposedPathSegment
@@ -250,8 +252,24 @@ class TestPathDeduplication:
         assert slopes == [15.0, 20.0]
 
 
+class TestRoadTargetGrade:
+    """A road aims for the GREEN grades (7%/12%), signed by the endpoints' direction
+    (descend → +, climb → −). Same magnitudes as a green slope; sign is the only difference.
+    """
+
+    def test_descent_aims_positive_green_grades(self) -> None:
+        """A net descent (positive signed_drop) targets +7 and +12."""
+        green = SlopeConfig.DIFFICULTY_TARGETS["green"]
+        assert PathFactory._road_target_grades(signed_drop=100.0) == [green["gentle"], green["steep"]]
+
+    def test_climb_aims_negative_green_grades(self) -> None:
+        """A net climb (negative signed_drop) targets −7 and −12 (sign preserved)."""
+        green = SlopeConfig.DIFFICULTY_TARGETS["green"]
+        assert PathFactory._road_target_grades(signed_drop=-100.0) == [-green["gentle"], -green["steep"]]
+
+
 class TestRoadModeNoStraightLineFallback:
-    """Road mode (gradient_band set) must NOT fabricate a straight-line fallback.
+    """Road mode (road_mode=True) must NOT fabricate a straight-line fallback.
 
     Slope mode always creates a straight-line result when Dijkstra finds nothing,
     so two points always connect. Road mode does not fabricate one.
@@ -275,7 +293,7 @@ class TestRoadModeNoStraightLineFallback:
                 target_lon=300 / M,
                 target_lat=0.0,
                 target_elevation=path_factory.dem_service.get_elevation_or_raise(lon=300 / M, lat=0.0),
-                gradient_band=(-12.0, 12.0),
+                road_mode=True,
             )
         )
         assert paths, "a gentle reachable target should yield a road path"
@@ -285,7 +303,7 @@ class TestRoadModeNoStraightLineFallback:
         # Road-mode proposals carry the ROAD kind so the committed segment is a road.
         from skiresort_planner.model.path_segment import SegmentKind
 
-        assert all(p.kind is SegmentKind.ROAD for p in paths)
+        assert all(enum_eq(p.kind, SegmentKind.ROAD) for p in paths)
 
     def test_slope_mode_still_falls_back_to_straight_line(self, path_factory) -> None:
         # Slope mode always connects, emitting the straight-line fallback result.
@@ -300,8 +318,8 @@ class TestRoadModeNoStraightLineFallback:
                 target_lon=0.0,
                 target_lat=-250 / M,
                 target_elevation=path_factory.dem_service.get_elevation_or_raise(lon=0.0, lat=-250 / M),
-                gradient_band=None,
+                road_mode=False,
             )
         )
         assert len(paths) >= 1, "slope mode always connects (straight-line fallback)"
-        assert all(p.kind is SegmentKind.SLOPE for p in paths), "slope-mode proposals are SLOPE kind"
+        assert all(enum_eq(p.kind, SegmentKind.SLOPE) for p in paths), "slope-mode proposals are SLOPE kind"

@@ -8,10 +8,11 @@ Classes:
     MapConfig: Default map view parameters
     DEMConfig: Elevation data file paths
     SlopeConfig: Difficulty thresholds and targets
-    PathConfig: Path generation algorithm parameters
+    PathConfig: Path generation domain values (segment length, road cap)
+    GeometricTuningConfig: Machine-tunable knobs shaping generated route geometry
     EarthworkConfig: Excavation warning thresholds and belt width limits
     ConnectionConfig: Connection path parameters
-    PlannerConfig: Grid-based Dijkstra path planner parameters
+    PlannerConfig: Grid-based Dijkstra grid connectivity
     MarkerConfig: Map marker styling
     LiftConfig: Lift types and catenary parameters
     StyleConfig: Visual colors and styling
@@ -41,7 +42,7 @@ BACKUP_DIR = PROJECT_ROOT / "backups"
 class AppConfig:
     """UI application settings."""
 
-    TITLE = "Ski Resort Planner - Design Your Dream Resort"
+    TITLE = "Ski Resort Planner"
     ICON = "⛷️"
     LAYOUT: Literal["centered", "wide"] = "wide"
 
@@ -159,42 +160,53 @@ assert all(
 
 
 class PathConfig:
-    """Path generation algorithm parameters."""
-
-    # Step size for path tracing (meters)
-    STEP_SIZE_M = 30  # Smaller = smoother paths, larger = faster computation
+    """Path generation domain values the user owns (not algorithm tuning knobs)."""
 
     # Segment length controls (slider range in UI)
     SEGMENT_LENGTH_MIN_M = 100
     SEGMENT_LENGTH_MAX_M = 1000
     SEGMENT_LENGTH_DEFAULT_M = 500
 
-    # Traverse angle limits (degrees)
-    MIN_TRAVERSE_ANGLE_DEG = 2  # Ensures left/right paths diverge on gentle terrain
-    MAX_TRAVERSE_ANGLE_DEG = 89  # Physical limit (near-horizontal traverse)
-
-    # Center-stop rule: stop after this many center paths (DETAILS.md Section 5.4)
-    MAX_CENTER_PATHS = 4
-
     # Minimum path points for valid path (less = terrain edge or error)
     MIN_PATH_POINTS = 4
 
-    # Path tracing behavior parameters (self-intersection and smoothing)
-    MAX_TURN_PER_STEP_DEG = 40.0  # Max angular change per step to prevent self-intersection
-    BEARING_SMOOTHING_WINDOW = 4  # Number of recent bearings to average for momentum
-    FLAT_TERRAIN_THRESHOLD_PCT = 15.0  # Below this slope %, use momentum-based bearing smoothing
-    MOMENTUM_WEIGHT_FACTOR = 0.8  # Weight factor for momentum bearing on flat terrain
-
-    # Roads for cars: gentle gradient band the routing must stay within.
-    # Cars may climb, descend, or run flat, but never exceed this steepness.
+    # Roads for cars: the hard gradient cap enforced at build time.
+    # Cars may climb, descend, or run flat, but a proposal over this is refused.
+    # (Roads AIM for the green grades 7%/12% — see PathFactory.generate_manual_paths.)
     ROAD_MAX_GRADIENT_PCT = 15
-    # Soft comfort threshold (< hard cap): the Dijkstra cost stays flat up to this
-    # gradient and ramps gently between here and the hard cap, so the planner
-    # prefers gentler routes. The hard cap (above) is what actually refuses a road.
-    ROAD_SOFT_GRADIENT_PCT = 12
 
 
-assert PathConfig.ROAD_SOFT_GRADIENT_PCT < PathConfig.ROAD_MAX_GRADIENT_PCT
+class GeometricTuningConfig:
+    """Machine-tunable knobs that shape generated route geometry."""
+
+    # --- Grid-Dijkstra planner (connection_planners.py) ---
+    GRID_RESOLUTION_M = 15.0  # Grid cell size in meters
+    GRID_BUFFER_FACTOR = 1.0  # Lateral room around the direct start→target line, as a fraction of that distance
+    MAX_GRID_SIZE = 100  # Maximum grid cells per dimension (performance cap)
+    COST_SIGMA = 8.0  # Slope-deviation sensitivity in the edge cost (lower = stricter grade matching)
+    PATH_SIMILARITY_TOLERANCE = 0.0001  # Overlap-dedup tolerance (~0.0001° ≈ 10m at mid-latitudes)
+
+    # --- Fan tracer (path_tracer.py) + fan breadth (path_factory.py) ---
+    STEP_SIZE_M = 30  # Path trace / terrain-sample / node-snap step (smaller = smoother, slower)
+    MIN_TRAVERSE_ANGLE_DEG = 2  # Ensures left/right paths diverge on gentle terrain
+    MAX_TRAVERSE_ANGLE_DEG = 89  # Physical limit (near-horizontal traverse)
+    MAX_TURN_PER_STEP_DEG = 40.0  # Max angular change per step to prevent self-intersection
+    BEARING_SMOOTHING_WINDOW = 4  # Number of recent bearings to average when smoothing
+    FLAT_TERRAIN_THRESHOLD_PCT = 15.0  # Below this slope %, use bearing smoothing (no clear fall line)
+    BEARING_SMOOTHING_WEIGHT = 0.8  # Weight of the averaged bearing vs terrain bearing on flat terrain
+    MAX_CENTER_PATHS = 4  # Center-stop rule: stop after this many center paths (DETAILS.md §5.4)
+    TRACER_NOISE_BASE = 5.0  # Base Gaussian bearing noise (deg), scaled down by traverse angle
+    STEP_TARGET_CLAMP_FACTOR = 2.5  # Upper clamp on per-step target grade = FACTOR × target (self-correction bound)
+
+    # --- Whole-path finish smoothing (path_smoothing.py) ---
+    RESAMPLE_STEP_M = 7.0  # Output point spacing of the smoothed polyline (tuned: 10m+ aliases sharp turns)
+    # splprep s = FACTOR * point_count; higher averages corridor jitter into a broad radius
+    # Roads need smooth curves for cars; slopes hug terrain more so they smooth less.
+    ROAD_SMOOTHING_FACTOR = 50.0
+    SLOPE_SMOOTHING_FACTOR = 15.0
+    # Node weight vs corridor weight in the weighted spline fit.
+    NODE_WEIGHT = 10.0  # Smooth spline should mathc very well at nodes
+    CORRIDOR_WEIGHT = 1.0  # In between path points are less stricly used for attraction
 
 
 class EarthworkConfig:
@@ -204,11 +216,6 @@ class EarthworkConfig:
     # H_edge = (S_side × W_belt) / 200 > threshold triggers warning
     EXCAVATOR_THRESHOLD_M = 2.5
 
-    # Road earthwork allowance: a road may sit up to this many metres above (fill)
-    # or below (cut) the natural ground, so it can hold a gentler grade than the raw
-    # terrain allows. Slopes pass 0 (they lie on the snow surface).
-    ROAD_EARTHWORK_TOLERANCE_M = 15.0
-
     # Belt width limits per difficulty (min_m, max_m)
     # Varies by difficulty to match typical ski run widths
     BELT_WIDTH_LIMITS = {
@@ -217,6 +224,9 @@ class EarthworkConfig:
         "red": (25, 40),  # Wide advanced runs for carving
         "black": (20, 35),  # Narrower expert terrain
     }
+
+    # Roads are a fixed-width vehicle ribbon — unlike ski pistes
+    ROAD_WIDTH_M = 12
 
 
 assert set(EarthworkConfig.BELT_WIDTH_LIMITS.keys()) == set(SlopeConfig.DIFFICULTIES)
@@ -237,50 +247,10 @@ class ConnectionConfig:
 
 
 class PlannerConfig:
-    """Grid-based Dijkstra path planner configuration parameters.
-
-    Controls the grid-based path planning algorithm that finds optimal
-    routes considering slope preferences and terrain features.
-
-    Uses SciPy's C-optimized Dijkstra followed by cubic spline smoothing.
+    """Structural constants for the grid-based Dijkstra planner.
 
     Reference: DETAILS.md Section 7 for algorithm details.
     """
-
-    # Grid search parameters
-    GRID_RESOLUTION_M = 15.0  # Grid cell size in meters
-    GRID_BUFFER_FACTOR = 0.5  # Extra buffer around start-target line (as fraction)
-    MAX_GRID_SIZE = 100  # Maximum grid cells per dimension (performance cap)
-
-    # Cost function parameters
-    # Cost = distance × exp(slope_deviation / COST_SIGMA) × uphill_penalty
-    COST_SIGMA = 12.0  # Slope deviation sensitivity (lower = stricter matching)
-
-    # Momentum: when extending a path from a node, a distance-decaying turn penalty
-    # biases the first stretch to leave the node roughly in-line with the incoming
-    # heading (no sharp kink at junctions). DECAY is the dominant lever: it must be a
-    # meaningful fraction of a segment or the path just absorbs the penalty;
-    # keep WEIGHT modest so it never routes around a cliff (high weight over-detours).
-    MOMENTUM_TURN_WEIGHT = 2.0  # Turn-penalty strength near the start node (0 = off)
-    MOMENTUM_DECAY_M = 450.0  # Turn penalty fades linearly to 0 over this distance from start
-
-    # Momentum — POSITION pin: on top of the bearing (turn) penalty above, penalize
-    # lateral drift away from the incoming line right at the node. Stronger
-    # weight but a MUCH faster fade than the turn term — it must nail the first few
-    # metres then release to terrain-following.
-    MOMENTUM_POS_WEIGHT = 4.0  # Cross-track (position) penalty strength at the node
-    MOMENTUM_POS_DECAY_M = 120.0  # Position pin fades linearly to 0 over this (≪ turn decay)
-    MOMENTUM_POS_SCALE_M = 15.0  # Lateral offset (m) that costs one unit of weight (~1 grid cell)
-
-    # Road earthwork profile smoothing (see ROAD_EARTHWORK_TOLERANCE_M).
-    # The interior road elevation is pulled toward the straight line between the endpoints,
-    # clamped to ±tolerance of the real ground; the budget tapers to 0 at each end (over
-    # dist_from_end / EARTHWORK_TAPER_RATIO) so the endpoints stay exactly on the ground.
-    EARTHWORK_TAPER_RATIO = 3.0  # Larger = cut/fill eases in/out over a longer stretch
-
-    # Path deduplication for overlapping path removal
-    # ~0.0001 degrees ≈ ~10 meters at mid-latitudes
-    PATH_SIMILARITY_TOLERANCE = 0.0001
 
     # 8-connected grid neighbor directions
     NEIGHBORS_8 = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
@@ -616,18 +586,17 @@ class NameConfig:
 class ChartConfig:
     """Chart rendering dimensions and settings."""
 
-    # Profile chart heights for different contexts
-    PROFILE_HEIGHT_LARGE = 550  # Full-width main panel
-    PROFILE_HEIGHT_MEDIUM = 320  # Side panel
-    PROFILE_HEIGHT_SMALL = 250  # Compact view
-    PROFILE_HEIGHT_MINI = 200  # Minimal view
+    # The one elevation-profile chart below the map — same height whether building or
+    # viewing a slope/road/lift (it is the same chart in the same place).
+    PROFILE_HEIGHT_PX = 260
 
-    # Lift profile specific
-    LIFT_PROFILE_HEIGHT = 320
+    # Plot margin shared by every profile figure (slope/road/lift) — one look for all.
+    PROFILE_MARGIN = dict(l=50, r=30, t=50, b=50)
 
-    # Chart widths
-    DEFAULT_WIDTH = 800  # Default chart width
-    WIDE_WIDTH = 1000  # Wide layout width
+    # Map height = browser window (parent.innerHeight) minus the chrome above the map,
+    # minus the profile's own height when a profile is shown below it.
+    MAP_TOP_OFFSET_PX = 40  # Where the map starts: Streamlit block padding + column gap
+    MAP_MIN_HEIGHT_PX = 400  # Never shrink the map below this, even on short windows
 
     # Y-axis padding settings
     ELEVATION_PADDING_FACTOR = 0.1  # 10% padding above/below

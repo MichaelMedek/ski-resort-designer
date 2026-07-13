@@ -17,7 +17,7 @@ from math import atan2, cos, degrees, radians, sin, sqrt
 from typing import Optional
 
 from skiresort_planner.constants import (
-    PathConfig,
+    GeometricTuningConfig,
     SlopeConfig,
     StyleConfig,
 )
@@ -227,8 +227,8 @@ class TerrainAnalyzer:
         samples_y: list[float] = []  # North-South gradient contributions
         total_weight = 0.0
 
-        inner_radius = 0.5 * PathConfig.STEP_SIZE_M  # 15m with 30m step
-        outer_radius = 1.0 * PathConfig.STEP_SIZE_M  # 30m with 30m step
+        inner_radius = 0.5 * GeometricTuningConfig.STEP_SIZE_M  # 15m with 30m step
+        outer_radius = 1.0 * GeometricTuningConfig.STEP_SIZE_M  # 30m with 30m step
 
         ring_configs = [
             (inner_radius, 2.0),

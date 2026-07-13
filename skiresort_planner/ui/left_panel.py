@@ -23,10 +23,10 @@ from skiresort_planner.constants import (
     SlopeConfig,
     StyleConfig,
 )
+from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.message import (
     FileLoadErrorMessage,
 )
-from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.resort_graph import (
     ActionType,
     AddLiftAction,
@@ -41,6 +41,7 @@ from skiresort_planner.model.resort_graph import (
 )
 from skiresort_planner.persistence import backup_store
 from skiresort_planner.ui.actions import bump_map_version, reload_map, trigger_rerun, undo_last_action
+from skiresort_planner.ui.context import EntityKind
 from skiresort_planner.ui.state_machine import (
     BuildMode,
     PlannerContext,
@@ -53,52 +54,43 @@ logger = logging.getLogger(__name__)
 def _describe_undo_action(action: UndoAction, graph: ResortGraph) -> str:
     """Generate human-readable description of what undo will do.
 
-    IMPORTANT: We compare by .name (string) instead of direct enum equality because
-    Streamlit's module reloading creates NEW enum class instances on each rerun.
-    Objects in st.session_state.graph.undo_stack hold references to the OLD enum
-    values, which fail `==` comparison against the NEW enum class values.
-    Using .name ensures stable comparison across module reloads.
+    Dispatch via enum_eq (reload-safe): Streamlit's module reloading creates NEW enum
+    class instances each rerun, and undo_stack holds OLD ActionType values, so `is`/`==`
+    fail. enum_eq compares the stable string form and is reload-safe.
     """
-    if action.action_type.name == ActionType.ADD_SEGMENTS.name:
+    if enum_eq(action.action_type, ActionType.ADD_SEGMENTS):
         act = cast(AddSegmentsAction, action)
         n_segments = len(act.segment_ids)
-        # Roads commit via the same AddSegmentsAction path — say slope/road by kind.
+        # Roads commit via the same AddSegmentsAction path — name slope/road by kind.
         first_seg = graph.segments.get(act.segment_ids[0]) if act.segment_ids else None
         if first_seg is None:
             raise RuntimeError(f"AddSegmentsAction references missing segment {act.segment_ids}")
-        # Compare by == not `is`: Streamlit module reloads make identity checks
-        # unreliable across a fresh SegmentKind class (str-Enum equality is by value).
-        if first_seg.kind == SegmentKind.ROAD:
-            what = "road"
-        elif first_seg.kind == SegmentKind.SLOPE:
-            what = "slope"
-        else:
-            raise RuntimeError(f"Unknown segment kind {first_seg.kind} for {first_seg.id}")
-        return f"Remove {n_segments} segment(s) from current {what}"
+        # SegmentKind is a str-Enum, so .value ("slope"/"road") is reload-safe.
+        return f"Remove {n_segments} segment(s) from current {first_seg.kind.value}"
 
-    elif action.action_type.name == ActionType.FINISH_SLOPE.name:
+    elif enum_eq(action.action_type, ActionType.FINISH_SLOPE):
         act = cast(FinishSlopeAction, action)
         return f"Restore slope **{act.slope_name}** to building mode"
 
-    elif action.action_type.name == ActionType.ADD_LIFT.name:
+    elif enum_eq(action.action_type, ActionType.ADD_LIFT):
         act = cast(AddLiftAction, action)
         lift = graph.lifts.get(act.lift_id)
         name = lift.name if lift else act.lift_id
         return f"Delete lift **{name}**"
 
-    elif action.action_type.name == ActionType.FINISH_ROAD.name:
+    elif enum_eq(action.action_type, ActionType.FINISH_ROAD):
         act = cast(FinishRoadAction, action)
         return f"Restore road **{act.road_name}** to building mode"
 
-    elif action.action_type.name == ActionType.DELETE_SLOPE.name:
+    elif enum_eq(action.action_type, ActionType.DELETE_SLOPE):
         act = cast(DeleteSlopeAction, action)
         return f"Restore deleted slope **{act.deleted_slope.name}**"
 
-    elif action.action_type.name == ActionType.DELETE_LIFT.name:
+    elif enum_eq(action.action_type, ActionType.DELETE_LIFT):
         act = cast(DeleteLiftAction, action)
         return f"Restore deleted lift **{act.deleted_lift.name}**"
 
-    elif action.action_type.name == ActionType.DELETE_ROAD.name:
+    elif enum_eq(action.action_type, ActionType.DELETE_ROAD):
         act = cast(DeleteRoadAction, action)
         return f"Restore deleted road **{act.deleted_road.name}**"
 
@@ -318,11 +310,15 @@ class SidebarRenderer:
         has_segments = self.ctx.road_build.has_committed_segments()
 
         finish_road = st.button(
-            "🏁 Finish Road",
+            "🏁 Finish Committed Road",
             type="primary",
             width="stretch",
             disabled=not has_segments,
-            help="Add at least one segment before finishing" if not has_segments else "Finalize this road",
+            help=(
+                "Add at least one segment before finishing"
+                if not has_segments
+                else "Finalize the committed segments (any unconfirmed proposal is discarded)"
+            ),
         )
         cancel_road = st.button(
             "✖️ Cancel Road",
@@ -372,12 +368,12 @@ class SidebarRenderer:
         viewing_lift = self.sm.is_idle_viewing_lift
         viewing_road = self.sm.is_idle_viewing_road
 
-        if viewing_slope:
-            st.markdown("### 👁️ Viewing Slope")
-        elif viewing_lift:
-            st.markdown("### 👁️ Viewing Lift")
-        elif viewing_road:
-            st.markdown("### 👁️ Viewing Road")
+        # Header + body both derive from this one entity so a viewed kind can't drift.
+        viewing = self.sm.viewing_entity  # (EntityKind, id) or None
+        viewing_kind = viewing[0] if viewing is not None else None
+
+        if viewing_kind is not None:
+            st.markdown(f"### 👁️ Viewing {viewing_kind.value.capitalize()}")
         elif self.sm.is_any_slope_state:
             st.markdown("### 🏗️ Building Slope...")
         elif self.sm.is_lift_placing:
@@ -386,29 +382,29 @@ class SidebarRenderer:
             st.markdown("### 🏗️ Building Road...")
         else:
             # All Idle* states (IdleReady, IdleViewing*)
-            st.markdown("### ⛷️🚡 Ready to Build")
+            st.markdown(
+                f"### {StyleConfig.SLOPE_ICON}{StyleConfig.ROAD_ICON}{StyleConfig.LIFT_ICONS['gondola']} Ready to Build"
+            )
 
         # Buttons disabled during building/placing
         buttons_disabled = self.sm.is_any_slope_state or self.sm.is_lift_placing or self.sm.is_any_road_state
         current_mode = self.ctx.build_mode.mode
 
-        # Note: viewing_slope and viewing_lift already computed above for header
         if buttons_disabled:
             st.caption("⏳ Complete or cancel current build to change type")
-        elif viewing_slope:
-            st.markdown("- ✖️ **Close** the right panel to return\n- 🗺️ Click terrain/node → new slope")
-        elif viewing_lift:
-            st.markdown(
-                "- 🔄 Use lift buttons to change type\n"
-                "- ✖️ **Close** the right panel to return\n"
-                "- 🗺️ Click terrain/node → new lift"
-            )
+        elif viewing_kind is not None:
+            # Same body for every viewed kind; only lifts add a change-type line.
+            # enum_eq is reload-safe: EntityKind survives Streamlit reloads while the class is redefined.
+            lines = ["- 🔄 Use lift buttons to change type"] if enum_eq(viewing_kind, EntityKind.LIFT) else []
+            lines.append("- ✖️ **Close** the right panel to return")
+            lines.append(f"- 🗺️ Click terrain/node → new {viewing_kind.value}")
+            st.markdown("\n".join(lines))
         else:
             # All Idle* states without viewing panel
             st.markdown(
                 "- 🔘 Select **Slope**, **Road** or **Lift** type below\n"
                 "- 🗺️ Click terrain/node → start building\n"
-                "- 👁️ Click existing slope/lift → view stats"
+                "- 👁️ Click existing slope/road/lift → view stats"
             )
 
         # Build type options for lifts (2x2 grid)
@@ -602,11 +598,15 @@ class SidebarRenderer:
 
         # Action buttons
         finish_slope = st.button(
-            "🏁 Finish Slope",
+            "🏁 Finish Committed Slope",
             type="primary",
             width="stretch",
             disabled=not has_segments,
-            help="Commit at least one segment before finishing" if not has_segments else "Finalize this slope",
+            help=(
+                "Commit at least one segment before finishing"
+                if not has_segments
+                else "Finalize the committed segments (any unconfirmed proposal is discarded)"
+            ),
         )
 
         # Cancel slope - immediate action (no confirmation)
@@ -618,28 +618,31 @@ class SidebarRenderer:
         if cancel_slope:
             logger.info(f"UI: Cancel slope requested for {self.ctx.slope_build.name}")
 
-        # Path generation settings
-        st.markdown("**⚙️ Path Settings**")
-        segment_length = st.slider(
-            "Segment Length (m)",
-            min_value=PathConfig.SEGMENT_LENGTH_MIN_M,
-            max_value=PathConfig.SEGMENT_LENGTH_MAX_M,
-            value=self.ctx.segment_length_m,
-            step=50,
-            help="Target length for generated path segments",
-            key="segment_length_slider",
-        )
+        # Path settings apply only to fan-out proposals; hide the whole block while
+        # routing a custom-connect path to a clicked target (force_mode).
+        recompute = False
+        if not self.ctx.custom_connect.force_mode:
+            st.markdown("**⚙️ Path Settings**")
+            segment_length = st.slider(
+                "Segment Length (m)",
+                min_value=PathConfig.SEGMENT_LENGTH_MIN_M,
+                max_value=PathConfig.SEGMENT_LENGTH_MAX_M,
+                value=self.ctx.segment_length_m,
+                step=50,
+                help="Target length for generated path segments",
+                key="segment_length_slider",
+            )
 
-        if segment_length != self.ctx.segment_length_m:
-            logger.info(f"UI: Segment length changed to {segment_length}m")
-            self.ctx.segment_length_m = segment_length
-            self.ctx.click_dedup.pending_recompute = True
+            if segment_length != self.ctx.segment_length_m:
+                logger.info(f"UI: Segment length changed to {segment_length}m")
+                self.ctx.segment_length_m = segment_length
+                self.ctx.click_dedup.pending_recompute = True
 
-        recompute = st.button(
-            "🔄 Recompute Paths",
-            width="stretch",
-            help="Generate new path variations",
-        )
+            recompute = st.button(
+                "🔄 Recompute Paths",
+                width="stretch",
+                help="Generate new path variations",
+            )
 
         return {
             "finish_slope": finish_slope,

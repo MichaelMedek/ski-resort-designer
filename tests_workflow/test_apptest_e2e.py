@@ -101,8 +101,7 @@ def create_command_executor() -> None:
         ("cancel_slope",) → cancel_current_slope()
 
     Custom connect (actions.py):
-        ("enter_custom",) → enter_custom_direction_mode()
-        ("cancel_custom",) → cancel_custom_direction_mode()
+        ("cancel_custom",) → cancel_custom_path()
         ("select_custom_target", lon, lat) → sm.select_custom_target()
 
     Delete operations (actions.py):
@@ -128,9 +127,8 @@ def create_command_executor() -> None:
         cancel_current_slope,
         finish_current_road,
         cancel_current_road,
-        cancel_custom_direction_mode,
+        cancel_custom_path,
         undo_last_action,
-        enter_custom_direction_mode,
         handle_fast_deferred_actions,
         process_custom_connect_deferred,
         process_path_generation_deferred,
@@ -256,12 +254,11 @@ def create_command_executor() -> None:
 
         # -------------------------------------------------------------------------
         # Custom connect (actions.py) - THE ENDBOSS LOGIC!
+        # Targeting is map-only now: a click fires select_custom_target directly
+        # (no enter button, no picking state). Cancel Connection returns to fan-out.
         # -------------------------------------------------------------------------
-        elif cmd_type == "enter_custom":
-            enter_custom_direction_mode()
-
         elif cmd_type == "cancel_custom":
-            cancel_custom_direction_mode()
+            cancel_custom_path()
 
         elif cmd_type == "select_custom_target":
             _, lon, lat = cmd
@@ -340,12 +337,10 @@ def create_command_executor() -> None:
                 finish_current_slope()
             if st.button("Cancel Slope", key="btn_cancel_slope"):
                 cancel_current_slope()
-            if not ctx.custom_connect.enabled and not ctx.custom_connect.force_mode:
-                if st.button("Custom Connect", key="btn_custom_connect"):
-                    enter_custom_direction_mode()
-            if ctx.custom_connect.enabled:
-                if st.button("Cancel Custom", key="btn_cancel_custom"):
-                    cancel_custom_direction_mode()
+            # While showing custom-connect proposals, offer a way back to fan-out.
+            if ctx.custom_connect.force_mode:
+                if st.button("Cancel Connection", key="btn_cancel_custom"):
+                    cancel_custom_path()
 
         # Undo button (always visible if undo stack)
         if graph.undo_stack:
@@ -394,7 +389,7 @@ class TestGrandResortTour:
         - commit_selected_path() for path commits (actions.py)
         - finish_current_slope() for finishing (actions.py)
         - undo_last_action() for undo (actions.py)
-        - enter_custom_direction_mode() for custom connect (actions.py)
+        - sm.select_custom_target() for custom-connect targeting (map-only)
         - delete_slope_action/delete_lift_action for deletions (actions.py)
 
         PHASE 1: SLOPE_1 (Terrain → Terrain)
@@ -689,17 +684,8 @@ class TestGrandResortTour:
         at.session_state["command_queue"] = [("handle_deferred",)]
         at.run()
 
-        # Enter custom direction mode
-        at.session_state["command_queue"] = [("enter_custom",)]
-        at.run()
-
-        ctx = at.session_state["context"]
-        assert ctx.custom_connect.enabled, "Custom connect should be enabled"
-
-        sm = at.session_state["state_machine"]
-        assert sm.is_slope_custom_picking, f"Should be in custom picking state, got {sm.get_state_name()}"
-
-        # Select custom target (downhill = south)
+        # Select custom target (downhill = south). A click routes a custom-connect
+        # path straight to it — no enter button, no picking state.
         custom_target_lat = 800 / M  # 200m south of start (lower)
         custom_target_lon = custom_start_lon + 0.001  # Slightly east
         at.session_state["command_queue"] = [("select_custom_target", custom_target_lon, custom_target_lat)]
@@ -707,6 +693,9 @@ class TestGrandResortTour:
 
         sm = at.session_state["state_machine"]
         assert sm.is_slope_custom_path, f"Should be in custom path state, got {sm.get_state_name()}"
+
+        ctx = at.session_state["context"]
+        assert ctx.custom_connect.force_mode, "force_mode set while showing custom proposals"
 
         # Handle deferred custom connect path generation
         at.session_state["command_queue"] = [("handle_deferred",)]
@@ -901,7 +890,7 @@ class TestCancelOperations:
         apptest_graph: ResortGraph,
         apptest_factory: PathFactory,
     ) -> None:
-        """Test canceling custom direction mode."""
+        """Test canceling custom targeting (Cancel Connection → back to fan-out)."""
         at = AppTest.from_function(create_command_executor, default_timeout=30)
 
         at.session_state["graph"] = apptest_graph
@@ -919,19 +908,20 @@ class TestCancelOperations:
         at.session_state["command_queue"] = [("handle_deferred",)]
         at.run()
 
-        # Enter custom mode
-        at.session_state["command_queue"] = [("enter_custom",)]
+        # Click a downhill target (south) → routes a custom-connect path (no button).
+        M = 111_320.0
+        at.session_state["command_queue"] = [("select_custom_target", 0.0, -400 / M)]
         at.run()
 
         ctx = at.session_state["context"]
-        assert ctx.custom_connect.enabled, "Custom connect should be enabled"
+        assert ctx.custom_connect.force_mode, "Custom targeting active (force_mode set)"
 
-        # Cancel custom mode
+        # Cancel Connection → back to fan-out.
         at.session_state["command_queue"] = [("cancel_custom",)]
         at.run()
 
         ctx = at.session_state["context"]
-        assert not ctx.custom_connect.enabled, "Custom connect should be disabled after cancel"
+        assert not ctx.custom_connect.force_mode, "Custom targeting cleared after cancel"
 
         sm = at.session_state["state_machine"]
         assert sm.is_any_slope_state, f"Should still be in slope state, got {sm.get_state_name()}"

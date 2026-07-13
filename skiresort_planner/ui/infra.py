@@ -15,7 +15,9 @@ import logging
 from collections.abc import Callable
 
 import streamlit as st
+from streamlit_js_eval import streamlit_js_eval  # type: ignore[import-untyped]
 
+from skiresort_planner.constants import ChartConfig
 from skiresort_planner.persistence import backup_store
 
 logger = logging.getLogger(__name__)
@@ -107,3 +109,27 @@ def reload_map(before: Callable[[], None] | None = None) -> None:
         before()
     bump_map_version()
     trigger_rerun()
+
+
+def viewport_map_height(reserved_below_px: int = 0) -> int | None:
+    """Map height in px that fills the browser window, or None only on first load.
+
+    The  JS component reports parent.innerHeight (the real browser window), and only on
+    the render its round-trip resolved — every other rerun returns None. We cache the
+    last real value so the map never blanks on the constant reruns a stateful app makes.
+
+    Args:
+        reserved_below_px: Height to leave free below the map (e.g. an elevation
+            profile chart) so it stays visible without scrolling. 0 = map fills all.
+
+    Returns None only before the very first successful read (caller shows a placeholder);
+    thereafter the cached viewport height minus reserved space, floored at a minimum.
+    """
+    value = streamlit_js_eval(js_expressions="parent.innerHeight", key="window_inner_height")
+    if isinstance(value, (int, float)):
+        st.session_state.window_height_px = int(value)
+    window_height = st.session_state.get("window_height_px")
+    if window_height is None:
+        return None
+    available = window_height - ChartConfig.MAP_TOP_OFFSET_PX - reserved_below_px
+    return max(available, ChartConfig.MAP_MIN_HEIGHT_PX)

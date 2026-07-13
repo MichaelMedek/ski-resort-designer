@@ -12,6 +12,7 @@ Road graph-ops / parking / stats classes are added here in the road dissection.
 import pytest
 
 from skiresort_planner.constants import MapConfig
+from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
@@ -173,7 +174,7 @@ class TestConnectorGeometrySnapping:
 
     def test_start_node_id_reuses_node_and_never_duplicates(self, empty_graph, mock_dem_blue_slope) -> None:
         """A path carrying start_node_id reuses that exact node — even when the traced
-        start point has drifted well past the snap threshold (momentum/smoothing can do
+        start point has drifted well past the snap threshold (spline smoothing can do
         this). Regression: extending from an existing node must NEVER spawn a duplicate.
         """
         graph = empty_graph
@@ -455,3 +456,235 @@ class TestStatsWithRoads:
         stats = empty_graph.get_stats()
         assert stats["total_roads"] == 1
         assert stats["total_road_length_m"] > 0
+
+
+class TestNodeSharingDeletes:
+    """Deleting one entity must NOT orphan a node another entity still uses (real-world: a
+    road and a slope meeting at a base node; delete one, the junction node must survive)."""
+
+    def _slope_plus_road_sharing_top_node(self, graph, path_points_blue):
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        shared = path_points_blue[0]
+        road_points = [
+            PathPoint(lon=shared.lon, lat=shared.lat, elevation=shared.elevation),
+            PathPoint(lon=300 / M, lat=shared.lat, elevation=shared.elevation),
+        ]
+        road = _commit_road(graph, road_points)
+        shared_node_id = graph.segments[slope.segment_ids[0]].start_node_id
+        return slope, road, shared_node_id
+
+    def test_delete_slope_keeps_node_shared_with_road(self, empty_graph, path_points_blue) -> None:
+        slope, road, shared_id = self._slope_plus_road_sharing_top_node(empty_graph, path_points_blue)
+        assert empty_graph.get_connection_count(node_id=shared_id) >= 2  # slope seg + road seg
+
+        assert empty_graph.delete_slope(slope_id=slope.id) is True
+
+        assert shared_id in empty_graph.nodes, "node shared with the road must survive slope deletion"
+        assert road.id in empty_graph.roads, "road is untouched by slope deletion"
+        assert empty_graph.get_connection_count(node_id=shared_id) == 1, "only the road connection remains"
+
+    def test_delete_both_entities_cleans_shared_node(self, empty_graph, path_points_blue) -> None:
+        slope, road, shared_id = self._slope_plus_road_sharing_top_node(empty_graph, path_points_blue)
+        empty_graph.delete_slope(slope_id=slope.id)
+        empty_graph.delete_road(road_id=road.id)
+        assert shared_id not in empty_graph.nodes, "node is orphaned once BOTH users are gone"
+
+    def test_undo_slope_delete_restores_without_duplicating_shared_node(self, empty_graph, path_points_blue) -> None:
+        slope, road, shared_id = self._slope_plus_road_sharing_top_node(empty_graph, path_points_blue)
+        node_count_before = len(empty_graph.nodes)
+        empty_graph.delete_slope(slope_id=slope.id)
+        empty_graph.undo_last()
+        assert slope.id in empty_graph.slopes, "slope restored"
+        assert len(empty_graph.nodes) == node_count_before, "no duplicate node created on restore"
+
+
+class TestMultipleSlopesFromOneNode:
+    """'Multiple ways down' — several slopes fanning off ONE shared hub node (DETAILS_UI.md
+    Tips). The hub must count all connections and survive until its LAST user is deleted."""
+
+    def _three_slopes_from_hub(self, graph, dem):
+        hub = PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
+        slope_ids = []
+        # Ends 200 m apart in lon so no end-node snapping — each slope keeps a distinct end.
+        for dlon in (0.0, 200 / M, 400 / M):
+            end_lat = -500 / M
+            start = PathPoint(lon=hub.lon, lat=hub.lat, elevation=hub.elevation)
+            end = PathPoint(lon=dlon, lat=end_lat, elevation=dem.get_elevation_or_raise(lon=dlon, lat=end_lat))
+            graph.commit_paths(paths=[ProposedPathSegment(points=[start, end], target_difficulty="blue")])
+            slope = graph.finish_slope(segment_ids=[list(graph.segments.keys())[-1]])
+            slope_ids.append(slope.id)
+        hub_id = graph.segments[graph.slopes[slope_ids[0]].segment_ids[0]].start_node_id
+        return slope_ids, hub_id
+
+    def test_hub_counts_all_three_slopes(self, empty_graph, mock_dem_blue_slope) -> None:
+        graph = empty_graph
+        slope_ids, hub_id = self._three_slopes_from_hub(graph, mock_dem_blue_slope)
+        assert len(graph.slopes) == 3
+        assert len(graph.nodes) == 4, "one shared hub + three distinct ends"
+        assert graph.get_connection_count(node_id=hub_id) == 3, "hub carries all three slope starts"
+
+    def test_deleting_one_slope_keeps_hub_for_the_others(self, empty_graph, mock_dem_blue_slope) -> None:
+        graph = empty_graph
+        slope_ids, hub_id = self._three_slopes_from_hub(graph, mock_dem_blue_slope)
+
+        graph.delete_slope(slope_id=slope_ids[0])
+        assert hub_id in graph.nodes, "hub survives — two other slopes still use it"
+        assert graph.get_connection_count(node_id=hub_id) == 2
+
+        graph.delete_slope(slope_id=slope_ids[1])
+        graph.delete_slope(slope_id=slope_ids[2])
+        assert hub_id not in graph.nodes, "hub orphaned only once its LAST slope is gone"
+
+
+class TestLiftMetricsInvariants:
+    def test_vertical_rise_raises_on_missing_node(self, empty_graph, mock_dem_blue_slope) -> None:
+        # A committed lift's endpoint nodes are a graph invariant; a missing one is a real bug,
+        # so get_vertical_rise must raise (not silently return 0.0) — matches get_length_m.
+        lift = _add_lift(empty_graph, mock_dem_blue_slope)
+        with pytest.raises(ValueError):
+            lift.get_vertical_rise(nodes={})
+
+
+# =============================================================================
+# Whole-path smoothing on finish (DETAILS.md §5.8)
+# =============================================================================
+
+
+def _leg(lon0, lat0, d_lon, d_lat, n, dem):
+    """A straight leg of n points stepping (d_lon, d_lat) metres/point, elevation from DEM."""
+    pts = []
+    for i in range(n):
+        lon = lon0 + d_lon * i / M
+        lat = lat0 + d_lat * i / M
+        pts.append(PathPoint(lon=lon, lat=lat, elevation=dem.get_elevation_or_raise(lon=lon, lat=lat)))
+    return pts
+
+
+def _turn_deg(a, b, c):
+    """Absolute heading change (deg) at b for the polyline a->b->c."""
+    h1 = GeoCalculator.initial_bearing_deg(lon1=a.lon, lat1=a.lat, lon2=b.lon, lat2=b.lat)
+    h2 = GeoCalculator.initial_bearing_deg(lon1=b.lon, lat1=b.lat, lon2=c.lon, lat2=c.lat)
+    d = abs(h1 - h2) % 360
+    return d if d <= 180 else 360 - d
+
+
+def _commit_L_slope(graph, dem):
+    """Commit two descending segments meeting at a sharp ~45° junction; return their ids.
+
+    Leg 1 heads due south, leg 2 turns south-east from the shared junction node. Both
+    descend on the south-facing DEM, so finish_slope accepts them.
+    """
+    leg1 = _leg(0.0, 0.0, 0.0, -20.0, 25, dem)  # 480m south
+    graph.commit_paths(paths=[ProposedPathSegment(points=leg1, target_difficulty="blue")])
+    j = leg1[-1]
+    leg2 = _leg(j.lon, j.lat, 20.0, -20.0, 25, dem)  # 480m south-east from the junction
+    graph.commit_paths(paths=[ProposedPathSegment(points=leg2, target_difficulty="blue")])
+    return list(graph.segments.keys())
+
+
+class TestFinishSmoothing:
+    """Whole-path smoothing runs on finish, rounding junction kinks without rejecting."""
+
+    def test_finish_reduces_junction_turn_angle(self, empty_graph, mock_dem_blue_slope) -> None:
+        graph = empty_graph
+        seg_ids = _commit_L_slope(graph, mock_dem_blue_slope)
+        s1, s2 = graph.segments[seg_ids[0]], graph.segments[seg_ids[1]]
+        raw_turn = _turn_deg(s1.points[-2], s1.points[-1], s2.points[1])
+        assert raw_turn > 30, "fixture should start with a sharp junction"
+
+        graph.finish_slope(segment_ids=seg_ids)
+
+        joined = graph.slopes[list(graph.slopes)[0]].get_all_points(segments=graph.segments)
+        max_turn = max(_turn_deg(joined[i - 1], joined[i], joined[i + 1]) for i in range(1, len(joined) - 1))
+        assert max_turn < raw_turn, f"junction should round (raw {raw_turn:.1f} -> {max_turn:.1f})"
+        assert max_turn < 20, f"rounded junction should be gentle, got {max_turn:.1f}"
+
+    def test_finish_endpoints_exact_junction_near_and_shared(self, empty_graph, mock_dem_blue_slope) -> None:
+        # Outer endpoints land exactly on their nodes (entity termini). The internal junction
+        # is shared by value between the two segments and stays within a few metres of its node
+        # — NOT snapped back exactly, so a switchback stays a smooth radius rather than a cusp.
+        graph = empty_graph
+        seg_ids = _commit_L_slope(graph, mock_dem_blue_slope)
+        start_node = graph.nodes[graph.segments[seg_ids[0]].start_node_id]
+        junction_node = graph.nodes[graph.segments[seg_ids[0]].end_node_id]
+        end_node = graph.nodes[graph.segments[seg_ids[-1]].end_node_id]
+
+        graph.finish_slope(segment_ids=seg_ids)
+
+        first_pt = graph.segments[seg_ids[0]].points[0]
+        junction_pt = graph.segments[seg_ids[0]].points[-1]
+        last_pt = graph.segments[seg_ids[-1]].points[-1]
+        assert (first_pt.lon, first_pt.lat, first_pt.elevation) == (
+            start_node.lon,
+            start_node.lat,
+            start_node.elevation,
+        )
+        assert (last_pt.lon, last_pt.lat, last_pt.elevation) == (end_node.lon, end_node.lat, end_node.elevation)
+        assert junction_pt == graph.segments[seg_ids[1]].points[0], "junction shared by value across segments"
+        assert junction_pt.distance_to(other=junction_node.location) < 15.0, "junction stays near its node"
+
+    def test_finish_preserves_segment_count_and_ids(self, empty_graph, mock_dem_blue_slope) -> None:
+        graph = empty_graph
+        seg_ids = _commit_L_slope(graph, mock_dem_blue_slope)
+
+        graph.finish_slope(segment_ids=seg_ids)
+
+        assert list(graph.segments.keys()) == seg_ids, "same segment ids after smoothing"
+        for sid in seg_ids:
+            assert len(graph.segments[sid].points) >= 2, "each segment keeps >=2 points"
+
+    def test_get_all_points_contiguous_after_finish(self, empty_graph, mock_dem_blue_slope) -> None:
+        graph = empty_graph
+        seg_ids = _commit_L_slope(graph, mock_dem_blue_slope)
+
+        graph.finish_slope(segment_ids=seg_ids)
+
+        s1, s2 = graph.segments[seg_ids[0]], graph.segments[seg_ids[1]]
+        assert s1.points[-1] == s2.points[0], "adjacent segments must share the junction by value"
+        slope = graph.slopes[list(graph.slopes)[0]]
+        slope.get_all_points(segments=graph.segments)  # must not raise on the dedup
+
+    def test_undo_after_smoothed_finish_keeps_segments(self, empty_graph, mock_dem_blue_slope) -> None:
+        graph = empty_graph
+        seg_ids = _commit_L_slope(graph, mock_dem_blue_slope)
+        graph.finish_slope(segment_ids=seg_ids)
+        after_first = [graph.segments[sid].max_slope_pct for sid in seg_ids]
+
+        undone = graph.undo_last()
+
+        assert isinstance(undone, FinishSlopeAction)
+        assert list(graph.segments.keys()) == seg_ids, "segments survive finish-undo"
+        # Re-finishing an already-smoothed path is idempotent (sub-meter drift, non-accumulating).
+        graph.finish_slope(segment_ids=seg_ids)
+        after_second = [graph.segments[sid].max_slope_pct for sid in seg_ids]
+        for a, b in zip(after_first, after_second):
+            assert abs(a - b) < 1.0, "re-finish must not drift max_slope_pct meaningfully"
+
+    def test_road_finish_may_exceed_15pct_but_never_none(self, empty_graph, mock_dem_black_slope) -> None:
+        # Black terrain (45%) → smoothing a road's junction can push its steepest section
+        # over the ±15% build cap. A finished road is allowed to exceed it and must not vanish.
+        graph = empty_graph
+        dem = mock_dem_black_slope
+        leg1 = _leg(0.0, 0.0, 0.0, -20.0, 25, dem)
+        graph.commit_paths(paths=[ProposedPathSegment(points=leg1, is_connector=True, kind=SegmentKind.ROAD)])
+        j = leg1[-1]
+        leg2 = _leg(j.lon, j.lat, 20.0, -20.0, 25, dem)
+        graph.commit_paths(paths=[ProposedPathSegment(points=leg2, is_connector=True, kind=SegmentKind.ROAD)])
+        seg_ids = list(graph.segments.keys())
+
+        road = graph.finish_road(segment_ids=seg_ids)
+
+        assert road is not None, "a finished road must never be rejected by smoothing"
+        assert max(graph.segments[sid].max_slope_pct for sid in seg_ids) > 15.0
+
+    def test_single_segment_finish_is_noop(self, empty_graph, path_points_blue) -> None:
+        graph = empty_graph
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        seg_id = list(graph.segments.keys())[0]
+        before = list(graph.segments[seg_id].points)
+
+        slope = graph.finish_slope(segment_ids=[seg_id])
+
+        assert slope is not None
+        assert graph.segments[seg_id].points == before, "single-segment path is not smoothed"

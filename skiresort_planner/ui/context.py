@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import TYPE_CHECKING
 
 from skiresort_planner.constants import ClickConfig, LiftConfig, MapConfig, PathConfig
@@ -35,6 +36,18 @@ from skiresort_planner.constants import ClickConfig, LiftConfig, MapConfig, Path
 if TYPE_CHECKING:
     from skiresort_planner.model.path_point import PathPoint
     from skiresort_planner.model.proposed_path import ProposedPathSegment
+
+
+class EntityKind(str, Enum):
+    """A viewable resort entity: a ski slope, a vehicle road, or a lift.
+
+    The single vocabulary for kind-dispatch in the UI (viewing header/body, the
+    profile below the map, the 3D-toggle centering). `.value` is the display noun.
+    """
+
+    SLOPE = "slope"
+    ROAD = "road"
+    LIFT = "lift"
 
 
 # Coordinate type aliases for clarity
@@ -382,14 +395,12 @@ class ViewingContext(BaseContext):
 class CustomConnectContext(BaseContext):
     """Custom connect mode state."""
 
-    enabled: bool = False
     start_node: str | None = None
     force_mode: bool = False
     target_location: LonLatElev | None = None  # (lon, lat, elev)
     target_node: str | None = None  # Set when the target is an EXISTING node → reuse it by id (no proximity guess)
 
     def clear(self) -> None:
-        self.enabled = False
         self.start_node = None
         self.force_mode = False
         self.target_location = None

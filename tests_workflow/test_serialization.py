@@ -7,6 +7,8 @@ import json
 import tempfile
 from pathlib import Path
 
+from skiresort_planner.enum_utils import enum_eq
+
 
 class TestResortGraphSerialization:
     """Tests for ResortGraph save/load operations."""
@@ -124,6 +126,35 @@ class TestFileSaveLoad:
             assert len(loaded.slopes) == len(graph.slopes)
         finally:
             filepath.unlink()  # Clean up
+
+    def test_reload_then_continue_building_reuses_node_and_ids(self, empty_graph, path_points_blue) -> None:
+        """Save → reload → keep building: a real multi-session resume. The new slope must
+        reuse the shared node (not duplicate it) and get a fresh, non-colliding segment id.
+        """
+        from skiresort_planner.constants import MapConfig
+        from skiresort_planner.model.path_point import PathPoint
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
+        from skiresort_planner.model.resort_graph import ResortGraph
+
+        M = MapConfig.METERS_PER_DEGREE_EQUATOR
+        graph = empty_graph
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        graph.finish_slope(segment_ids=list(graph.segments.keys()))
+
+        loaded = ResortGraph.from_dict(data=graph.to_dict())
+        assert len(loaded.nodes) == 2 and len(loaded.segments) == 1
+
+        # Continue from the finished slope's bottom node, heading further downhill.
+        bottom = path_points_blue[-1]
+        cont = [
+            PathPoint(lon=bottom.lon, lat=bottom.lat, elevation=bottom.elevation),
+            PathPoint(lon=bottom.lon, lat=bottom.lat - 500 / M, elevation=bottom.elevation - 100.0),
+        ]
+        loaded.commit_paths(paths=[ProposedPathSegment(points=cont, target_difficulty="blue")])
+
+        assert len(loaded.segments) == 2, "second segment committed on the reloaded graph"
+        assert len(loaded.nodes) == 3, "shared bottom node reused, not duplicated (would be 4)"
+        assert len(set(loaded.segments.keys())) == 2, "segment ids must not collide after reload"
 
 
 class TestLiftSerialization:
@@ -274,7 +305,7 @@ class TestRoadSerialization:
         assert restored.roads[road.id].name == road.name
         assert restored._road_counter == empty_graph._road_counter
         # The segment's road kind survives the round-trip (persisted, not recomputed).
-        assert restored.segments[road_seg_id].kind is SegmentKind.ROAD
+        assert enum_eq(restored.segments[road_seg_id].kind, SegmentKind.ROAD)
 
     def test_road_owned_slope_kind_segment_raises(self, empty_graph, path_points_blue) -> None:
         """A road owning a kind=SLOPE segment (corrupt/stale save) fails loudly on load."""

@@ -27,13 +27,14 @@ Reference: DETAILS.md Section 7 for algorithm details
 """
 
 import logging
+import math
 from dataclasses import dataclass
 from enum import Enum
 from typing import Iterator, Optional
 
 from skiresort_planner.constants import (
+    GeometricTuningConfig,
     PathConfig,
-    PlannerConfig,
     SlopeConfig,
     StyleConfig,
 )
@@ -41,7 +42,7 @@ from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.path_tracer import PathTracer
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
-from skiresort_planner.generators.connection_planners import LeastCostPathPlanner
+from skiresort_planner.generators.connection_planners import GradientMode, LeastCostPathPlanner
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 
@@ -64,13 +65,14 @@ class GradeConfig:
         difficulty: Slope difficulty (green/blue/red/black)
         grade: Steepness variant (gentle/steep)
         target_slope_pct: Target slope percentage
-        side: Traverse direction (left/right/center)
+        side: Traverse direction — only meaningful for the fan (trace_downhill). The
+            grid planner ignores side, so planner-path configs leave it at CENTER.
     """
 
     difficulty: str
     grade: str
     target_slope_pct: float
-    side: Side
+    side: Side = Side.CENTER
 
     @property
     def name(self) -> str:
@@ -105,7 +107,7 @@ class PathFactory:
         for path in factory.generate_manual_paths(...):
             print(f"Slope: {path.avg_slope_pct}%")
 
-    Configuration: See PlannerConfig in constants.py for tunable parameters.
+    Configuration: See GeometricTuningConfig in constants.py for tunable parameters.
     """
 
     def __init__(
@@ -198,7 +200,7 @@ class PathFactory:
                     center_count += 1
                     # Stop if we've generated paths at all but the hardest difficulty AND hit limit
                     all_diffs_seen = all(count_by_diff[d] > 0 for d in SlopeConfig.DIFFICULTIES[:-1])
-                    if center_count > PathConfig.MAX_CENTER_PATHS and all_diffs_seen:
+                    if center_count > GeometricTuningConfig.MAX_CENTER_PATHS and all_diffs_seen:
                         stop_generation = True
                     side_variants = [Side.CENTER]
                 else:
@@ -289,7 +291,7 @@ class PathFactory:
             total_distance += (p1.lon - p2.lon) ** 2 + (p1.lat - p2.lat) ** 2
 
         avg_distance = total_distance / len(percentiles)
-        threshold_sq = PlannerConfig.PATH_SIMILARITY_TOLERANCE**2
+        threshold_sq = GeometricTuningConfig.PATH_SIMILARITY_TOLERANCE**2
         return avg_distance < threshold_sq
 
     def _deduplicate_paths(self, paths: list[ProposedPathSegment]) -> list[ProposedPathSegment]:
@@ -329,6 +331,15 @@ class PathFactory:
 
         return unique
 
+    @staticmethod
+    def _road_target_grades(signed_drop: float) -> list[float]:
+        """The signed GREEN grades a road may hold, sign from signed_drop.
+
+        signed_drop = start_elev − target_elev (+ descent, − climb). Same magnitudes as
+        a green slope; sign is the only road-vs-slope difference.
+        """
+        return [math.copysign(target, signed_drop) for target in SlopeConfig.DIFFICULTY_TARGETS["green"].values()]
+
     def generate_manual_paths(
         self,
         start_lon: float,
@@ -337,36 +348,25 @@ class PathFactory:
         target_lon: float,
         target_lat: float,
         target_elevation: Optional[float] = None,
-        gradient_band: Optional[tuple[float, float]] = None,
-        incoming_bearing: Optional[float] = None,
-        earthwork_tolerance_m: float = 0.0,
+        road_mode: bool = False,
     ) -> Iterator[ProposedPathSegment]:
         """Generate paths connecting the start to a user-clicked target.
 
-        Slope mode (gradient_band is None): tries all difficulty-grade
-        combinations to find viable ski routes, deduplicated to keep the
-        gentlest measured slope per trajectory.
+        Slope mode (road_mode=False): tries all difficulty-grade combinations to find
+        viable ski routes, deduplicated to keep the gentlest measured slope per
+        trajectory. Falls back to a straight line when nothing viable is found.
 
-        Road mode (gradient_band = (min_pct, max_pct)): a vehicle road that
-        keeps its gradient inside the band (cars may climb/descend/run flat,
-        never steep). Uses the same grid Dijkstra planner with the signed
-        band passed through — no uphill penalty, no duplicated planner.
-
-        Either way a straight-line result is the planner's honest answer when
-        no viable route exists, so the user can always connect two points.
+        Road mode (road_mode=True): a vehicle road holding a GREEN grade (7%/12%),
+        signed for the endpoints' direction so it may climb or descend, serpentining
+        on steep ground. No straight-line fallback: a straight line across steep ground
+        is not a valid road.
 
         Args:
-            start_lon, start_lat, start_elevation: Starting point
-            target_lon, target_lat: Target coordinates (user click)
-            target_elevation: Target elevation (queries DEM if None)
-            gradient_band: Optional signed (min, max) gradient band → road mode.
-            incoming_bearing: Optional heading (deg) the path arrives at the start
-                with, from the previous committed segment. Forwarded to the planner
-                for momentum (segments continue in-line across a node). None on the
-                first segment / slope fan → unchanged behavior.
-            earthwork_tolerance_m: Max cut/fill (m) a road may use to gentle its grade;
-                forwarded to the planner. 0 for slopes (on-ground). See
-                EarthworkConfig.ROAD_EARTHWORK_TOLERANCE_M.
+            start_lon, start_lat, start_elevation: Starting point.
+            target_lon, target_lat: Target coordinates (user click).
+            target_elevation: Target elevation (queries DEM if None).
+            road_mode: True for a vehicle road (may climb, holds a green grade), False
+                for a ski path (descent-only, difficulty-grade fan).
 
         Yields:
             ProposedPathSegment for each unique path, sorted by avg_slope_pct.
@@ -377,27 +377,24 @@ class PathFactory:
             logger.warning(f"No elevation at target ({target_lon}, {target_lat})")
             return
 
-        # Road mode traces one gentle route per side within the band; slope mode
-        # sweeps all difficulty-grade targets. Both feed the same planner + dedup.
-
-        # FIXME(side-bias): `side` is currently DEAD in the road planner —
-        # LeastCostPathPlanner._calc_edge_cost ignores it in road mode, so LEFT and
-        # RIGHT trace the identical least-cost route and dedup to one. Rather than
-        # emit a fake duplicate, road mode generates a single LEFT proposal. When a
-        # side-aware cost (signed cross-track bias) or an any-angle/heading-aware
-        # planner is added, restore a second RIGHT config here so roads offer a real
-        # left/right choice like the slope fan does.
-        if gradient_band is not None:
+        # The grid planner ignores `side` (grade-only cost), so both modes leave
+        # GradeConfig.side at its CENTER default — no dead LEFT/RIGHT duplication here.
+        if road_mode:
+            # A road holds a GREEN grade, signed by the endpoints' direction (climb or
+            # descend). Same routing as a green slope; sign is the only difference. On
+            # steep ground the planner serpentines to hold it (§7.3).
+            signed_drop = start_elevation - target_elevation
+            gradient_mode = GradientMode.DOWNHILL if signed_drop >= 0 else GradientMode.UPHILL
             configs: list[GradeConfig] = [
-                GradeConfig(difficulty="", grade="road", target_slope_pct=0.0, side=Side.LEFT),
-                GradeConfig(difficulty="", grade="road", target_slope_pct=0.0, side=Side.RIGHT),
+                GradeConfig(difficulty="", grade="road", target_slope_pct=grade)
+                for grade in self._road_target_grades(signed_drop=signed_drop)
             ]
         else:
+            gradient_mode = GradientMode.DOWNHILL  # slopes always descend
             configs = [
-                GradeConfig(difficulty=difficulty, grade=grade_name, target_slope_pct=target_slope, side=side_enum)
+                GradeConfig(difficulty=difficulty, grade=grade_name, target_slope_pct=target_slope)
                 for difficulty in SlopeConfig.DIFFICULTIES
                 for grade_name, target_slope in SlopeConfig.DIFFICULTY_TARGETS[difficulty].items()
-                for side_enum in [Side.LEFT, Side.RIGHT]
             ]
 
         all_paths: list[ProposedPathSegment] = []
@@ -409,20 +406,17 @@ class PathFactory:
                 target_lon=target_lon,
                 target_lat=target_lat,
                 target_elevation=target_elevation,
-                target_slope_pct=config.target_slope_pct,
-                side=config.side.value,
-                gradient_band=gradient_band,
-                incoming_bearing=incoming_bearing,
-                earthwork_tolerance_m=earthwork_tolerance_m,
+                target_grade_pct=config.target_slope_pct,
+                gradient_mode=gradient_mode,
             )
             if path is None:
                 continue
-            if gradient_band is None:
+            if road_mode:
+                path.sector_name = f"{StyleConfig.ROAD_ICON} Road"
+                path.kind = SegmentKind.ROAD
+            else:
                 path.target_difficulty = config.difficulty
                 path.sector_name = f"🎯 {config.name}"
-            else:
-                path.sector_name = "🛣️ Road"
-                path.kind = SegmentKind.ROAD
             all_paths.append(path)
 
         # Deduplicate paths (keep gentlest slope for overlapping paths)
@@ -433,7 +427,7 @@ class PathFactory:
         # No optimized path found. In SLOPE mode, fall back to a straight line so
         # the user can always connect two points. In ROAD mode there is NO
         # fallback: a straight line across steep ground is not a valid car road.
-        if not unique_paths and gradient_band is None:
+        if not unique_paths and not road_mode:
             logger.info("No optimized path found, creating straight-line result")
             straight = self._create_straight_line_path(
                 start_lon=start_lon,

@@ -127,8 +127,7 @@ class TestPathGenerationOnRealTerrain:
             target_lon=lon,
             target_lat=target_lat,
             target_elevation=target_elev,
-            target_slope_pct=20.0,
-            side="left",
+            target_grade_pct=20.0,
         )
 
         # With guaranteed descent over 500m of real terrain, a path must exist and

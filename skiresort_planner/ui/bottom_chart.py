@@ -18,13 +18,14 @@ import plotly.graph_objects as go
 from skiresort_planner.constants import ChartConfig, LiftConfig, StyleConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
+from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.path_segment import PathSegment, SegmentKind
-from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.model.road import Road
-from skiresort_planner.model.segment_path import SegmentPath
+from skiresort_planner.model.segment_path import SegmentPath, steepest_section_pct
 from skiresort_planner.model.slope import Slope
+from skiresort_planner.ui.context import EntityKind
 
 logger = logging.getLogger(__name__)
 
@@ -33,129 +34,14 @@ class ProfileChart:
     """Renders elevation profiles using Plotly.
 
     Example:
-        chart = ProfileChart()
-        fig = chart.render_proposal(proposal=proposal)
-        st.plotly_chart(fig)
+        chart = ProfileChart(height=260)
+        fig = chart.render_slope(slope=slope, graph=graph)
+        st.plotly_chart(fig, width="stretch")
     """
 
-    def __init__(
-        self,
-        width: int,
-        height: int,
-    ) -> None:
-        """Initialize profile chart renderer.
-
-        Args:
-            width: Chart width in pixels
-            height: Chart height in pixels
-        """
-        self.width = width
+    def __init__(self, height: int) -> None:
+        """Initialize profile chart renderer with a pixel height."""
         self.height = height
-
-    def render_proposal(
-        self,
-        proposal: ProposedPathSegment,
-        proposed_segment_title: str,
-    ) -> go.Figure:
-        """Render elevation profile for a proposed slope segment.
-
-        Args:
-            proposal: Proposed path to visualize
-            proposed_segment_title: Chart title for the proposed segment
-
-        Returns:
-            Plotly Figure object.
-        """
-        points = proposal.points
-        if not points:
-            raise ValueError("Proposal must have points to render")
-
-        # Calculate cumulative distances
-        distances = [0.0]
-        for i in range(1, len(points)):
-            dist = GeoCalculator.haversine_distance_m(
-                lat1=points[i - 1].lat,
-                lon1=points[i - 1].lon,
-                lat2=points[i].lat,
-                lon2=points[i].lon,
-            )
-            distances.append(distances[-1] + dist)
-
-        elevations = [p.elevation for p in points]
-
-        # Calculate Y-axis range (not starting from 0)
-        min_elev = min(elevations)
-        max_elev = max(elevations)
-        padding = max(
-            (max_elev - min_elev) * ChartConfig.ELEVATION_PADDING_FACTOR,
-            ChartConfig.ELEVATION_PADDING_MIN_M,
-        )
-
-        # Use FINAL difficulty for color, not target
-        difficulty = proposal.difficulty
-        color = StyleConfig.SLOPE_COLORS[difficulty]
-
-        fig = go.Figure()
-
-        # Area fill under profile
-        fig.add_trace(
-            go.Scatter(
-                x=distances,
-                y=elevations,
-                fill="tozeroy",
-                fillcolor=f"rgba{self._hex_to_rgba(hex_color=color, alpha=0.3)}",
-                line=dict(color=color, width=2),
-                name="Elevation",
-                hovertemplate="Distance: %{x:.0f}m<br>Elevation: %{y:.0f}m<extra></extra>",
-            )
-        )
-
-        # Add gradient coloring segments
-        self._add_gradient_segments(
-            fig=fig,
-            distances=distances,
-            elevations=elevations,
-        )
-
-        # Configure layout - use FINAL difficulty in title
-        fig.update_layout(
-            title=dict(text=proposed_segment_title, x=0.5),
-            xaxis=dict(
-                title="Distance (m)",
-                showgrid=True,
-                gridcolor="rgba(200, 200, 200, 0.3)",
-            ),
-            yaxis=dict(
-                title="Elevation (m)",
-                showgrid=True,
-                gridcolor="rgba(200, 200, 200, 0.3)",
-                range=[min_elev - padding, max_elev + padding],
-            ),
-            showlegend=False,
-            width=self.width,
-            height=self.height,
-            margin=dict(l=50, r=30, t=50, b=50),
-            plot_bgcolor="white",
-        )
-
-        # Add stats annotation
-        stats_text = (
-            f"Length: {proposal.length_m:.0f}m | "
-            f"Drop: {proposal.total_drop_m:.0f}m | "
-            f"Drop Avg Slope: {proposal.avg_slope_pct:.0f}%"
-        )
-
-        fig.add_annotation(
-            xref="paper",
-            yref="paper",
-            x=0.5,
-            y=-0.15,
-            text=stats_text,
-            showarrow=False,
-            font=dict(size=11),
-        )
-
-        return fig
 
     def render_segment(
         self,
@@ -228,9 +114,8 @@ class ProfileChart:
                 range=[min_elev - padding, max_elev + padding],
             ),
             showlegend=False,
-            width=self.width,
             height=self.height,
-            margin=dict(l=50, r=30, t=50, b=50),
+            margin=ChartConfig.PROFILE_MARGIN,
             plot_bgcolor="white",
         )
 
@@ -369,9 +254,8 @@ class ProfileChart:
                 range=[min_elev - padding, max_elev + padding],
             ),
             showlegend=False,
-            width=self.width,
             height=self.height,
-            margin=dict(l=50, r=30, t=50, b=50),
+            margin=ChartConfig.PROFILE_MARGIN,
             plot_bgcolor="white",
         )
 
@@ -387,112 +271,6 @@ class ProfileChart:
 
         return fig
 
-    def render_comparison(
-        self,
-        proposals: list[ProposedPathSegment],
-        title: str = "Path Comparison",
-    ) -> go.Figure:
-        """Render multiple proposals overlaid for comparison.
-
-        Args:
-            proposals: List of proposals to compare
-            title: Chart title
-
-        Returns:
-            Plotly Figure object.
-        """
-        if not proposals:
-            raise ValueError("Proposals list must not be empty for render_combined")
-
-        fig = go.Figure()
-
-        for i, proposal in enumerate(proposals):
-            if not proposal.points:
-                raise ValueError(f"Proposal {i} must have points to render")
-
-            distances = [0.0]
-            for j in range(1, len(proposal.points)):
-                dist = GeoCalculator.haversine_distance_m(
-                    lat1=proposal.points[j - 1].lat,
-                    lon1=proposal.points[j - 1].lon,
-                    lat2=proposal.points[j].lat,
-                    lon2=proposal.points[j].lon,
-                )
-                distances.append(distances[-1] + dist)
-
-            elevations = [p.elevation for p in proposal.points]
-            # Use FINAL difficulty for color, not target
-            difficulty = proposal.difficulty
-            color = StyleConfig.SLOPE_COLORS[difficulty]
-            name = f"{proposal.difficulty.capitalize()} ({proposal.avg_slope_pct:.0f}%)"
-
-            fig.add_trace(
-                go.Scatter(
-                    x=distances,
-                    y=elevations,
-                    mode="lines",
-                    line=dict(color=color, width=2),
-                    name=name,
-                    hovertemplate=f"{name}<br>Distance: %{{x:.0f}}m<br>Elevation: %{{y:.0f}}m<extra></extra>",
-                )
-            )
-
-        fig.update_layout(
-            title=dict(text=title, x=0.5),
-            xaxis=dict(
-                title="Distance (m)",
-                showgrid=True,
-                gridcolor="rgba(200, 200, 200, 0.3)",
-            ),
-            yaxis=dict(
-                title="Elevation (m)",
-                showgrid=True,
-                gridcolor="rgba(200, 200, 200, 0.3)",
-            ),
-            showlegend=True,
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.02,
-                xanchor="center",
-                x=0.5,
-            ),
-            width=self.width,
-            height=self.height,
-            margin=dict(l=50, r=30, t=80, b=50),
-            plot_bgcolor="white",
-        )
-
-        return fig
-
-    def _add_gradient_segments(
-        self,
-        fig: go.Figure,
-        distances: list[float],
-        elevations: list[float],
-    ) -> None:
-        """Add gradient-colored segments to profile."""
-        for i in range(1, len(distances)):
-            dx = distances[i] - distances[i - 1]
-            dy = elevations[i - 1] - elevations[i]  # Drop is positive downhill
-
-            if dx > 0:
-                slope_pct = (dy / dx) * 100
-                difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=slope_pct)
-                color = StyleConfig.SLOPE_COLORS[difficulty]
-
-                # Add colored segment marker at bottom
-                fig.add_trace(
-                    go.Scatter(
-                        x=[distances[i - 1], distances[i]],
-                        y=[min(elevations) - 5] * 2,
-                        mode="lines",
-                        line=dict(color=color, width=6),
-                        showlegend=False,
-                        hoverinfo="skip",
-                    )
-                )
-
     def _empty_figure(self, message: str) -> go.Figure:
         """Create empty figure with message."""
         fig = go.Figure()
@@ -506,7 +284,6 @@ class ProfileChart:
             font=dict(size=14, color="gray"),
         )
         fig.update_layout(
-            width=self.width,
             height=self.height,
             xaxis=dict(visible=False),
             yaxis=dict(visible=False),
@@ -706,8 +483,8 @@ class ProfileChart:
         )
 
         fig.update_layout(
-            height=ChartConfig.LIFT_PROFILE_HEIGHT,
-            margin=dict(l=50, r=20, t=40, b=40),
+            height=self.height,
+            margin=ChartConfig.PROFILE_MARGIN,
             xaxis_title="Distance (m)",
             yaxis_title="Elevation (m)",
             yaxis=dict(range=[min_elev - padding, max_elev + padding]),
@@ -754,25 +531,18 @@ def render_building_profile(
     if not building_segments:
         raise ValueError("building_segments must not be empty - check before calling")
 
-    all_points = []
-    max_avg_slope = 0.0
-    for seg_id in building_segments:
-        seg = graph.segments.get(seg_id)
-        if seg and seg.points:
-            all_points.extend(seg.points)
-            max_avg_slope = max(max_avg_slope, seg.avg_slope_pct)
+    segs = [graph.segments[sid] for sid in building_segments if sid in graph.segments and graph.segments[sid].points]
+    all_points = [p for seg in segs for p in seg.points]
 
     if not all_points:
         raise ValueError(f"Segments {building_segments} have no points - data integrity issue")
 
-    chart = ProfileChart(width=ChartConfig.DEFAULT_WIDTH, height=ChartConfig.PROFILE_HEIGHT_SMALL)
+    chart = ProfileChart(height=ChartConfig.PROFILE_HEIGHT_PX)
 
     first_seg = graph.segments[building_segments[0]]
-    # Compare by == not `is`: Streamlit module reloads create a fresh SegmentKind
-    # class, so `is` (identity) fails on segments built under the old class. Because
-    # SegmentKind is a str-Enum, == compares the underlying string value and is
-    # reload-safe. (Plain enums like ActionType lack this and must dispatch by .name.)
-    if first_seg.kind == SegmentKind.ROAD:
+    # enum_eq (reload-safe str compare): Streamlit reloads create a fresh SegmentKind class,
+    # so `is` fails on segments built under the old class.
+    if enum_eq(first_seg.kind, SegmentKind.ROAD):
         combined_road = Road(
             id="combined",
             name=building_name or "Current Road",
@@ -781,9 +551,10 @@ def render_building_profile(
             end_node_id="",
         )
         return chart.render_road(road=combined_road, graph=graph, title="Current committed Road Progress")
-    elif first_seg.kind == SegmentKind.SLOPE:
-        # Slope: color by the steepest segment's difficulty.
-        max_difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=max_avg_slope)
+    elif enum_eq(first_seg.kind, SegmentKind.SLOPE):
+        # Color by the steepest section — the SAME metric as the map marker and the
+        # finished slope, so the progress color never disagrees with them.
+        max_difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=steepest_section_pct(segments=segs))
         combined = PathSegment(id="combined", name=building_name or "Current Slope", points=all_points)
         return chart.render_segment(
             segment=combined, difficulty=max_difficulty, title="Current committed Slope Progress"
@@ -792,28 +563,22 @@ def render_building_profile(
         raise RuntimeError(f"Unknown segment kind {first_seg.kind} for {first_seg.id}")
 
 
-def render_proposal_preview(
-    proposals: list[ProposedPathSegment],
-    selected_idx: int,
-) -> go.Figure:
-    """Render elevation profile preview for selected proposal.
-
-    Args:
-        proposals: List of proposed path segments (must not be empty)
-        selected_idx: Index of currently selected proposal (must be valid)
-
-    Returns:
-        Plotly figure.
-
-    Raises:
-        ValueError: If proposals is empty or selected_idx is out of bounds.
-    """
-    if not proposals:
-        raise ValueError("proposals must not be empty - check before calling")
-    if not (0 <= selected_idx < len(proposals)):
-        raise ValueError(f"selected_idx {selected_idx} out of bounds for {len(proposals)} proposals")
-
-    proposal = proposals[selected_idx]
-    title = f"Proposed Segment — {proposal.difficulty.capitalize()} ({proposal.avg_slope_pct:.0f}%)"
-    chart = ProfileChart(width=ChartConfig.DEFAULT_WIDTH, height=ChartConfig.PROFILE_HEIGHT_MINI)
-    return chart.render_proposal(proposal=proposal, proposed_segment_title=title)
+def render_viewing_profile(kind: EntityKind, entity_id: str, graph: ResortGraph) -> go.Figure:
+    """Render the elevation profile of a finished slope / road / lift being viewed."""
+    chart = ProfileChart(height=ChartConfig.PROFILE_HEIGHT_PX)
+    if enum_eq(kind, EntityKind.SLOPE):
+        slope = graph.slopes.get(entity_id)
+        if slope is None:
+            raise ValueError(f"Slope {entity_id} must exist when panel shows slope")
+        return chart.render_slope(slope=slope, graph=graph)
+    if enum_eq(kind, EntityKind.ROAD):
+        road = graph.roads.get(entity_id)
+        if road is None:
+            raise ValueError(f"Road {entity_id} must exist when panel shows road")
+        return chart.render_road(road=road, graph=graph)
+    if enum_eq(kind, EntityKind.LIFT):
+        lift = graph.lifts.get(entity_id)
+        if lift is None:
+            raise ValueError(f"Lift {entity_id} must exist when panel shows lift")
+        return chart.render_lift(lift=lift, graph=graph)
+    raise RuntimeError(f"Unknown viewing kind {kind!r}")

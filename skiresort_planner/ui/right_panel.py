@@ -19,6 +19,7 @@ import streamlit as st
 
 from skiresort_planner.constants import MapConfig, SlopeConfig, StyleConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
+from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.message import (
     LiftActionMessage,
     LiftPlacingContextMessage,
@@ -38,14 +39,26 @@ from skiresort_planner.ui.actions import (
     reload_map,
     trigger_rerun,
 )
+from skiresort_planner.ui.context import EntityKind
 from skiresort_planner.ui.state_machine import PlannerContext, PlannerStateMachine
 
 if TYPE_CHECKING:
     from skiresort_planner.model.lift import Lift
+    from skiresort_planner.model.proposed_path import ProposedPathSegment
     from skiresort_planner.model.road import Road
     from skiresort_planner.model.slope import Slope
 
 logger = logging.getLogger(__name__)
+
+
+def _commit_button_label(path: "ProposedPathSegment", *, continue_label: str, continue_help: str) -> tuple[str, str]:
+    """(label, help) for the primary commit button, shared by slope + road panels.
+
+    A connector (target is an existing node) finishes the entity; otherwise continue.
+    """
+    if path.is_connector and path.target_node_id:
+        return f"🏁 Finish → {path.target_node_id}", f"Connect to {path.target_node_id} and finish"
+    return continue_label, continue_help
 
 
 # =============================================================================
@@ -55,12 +68,12 @@ logger = logging.getLogger(__name__)
 
 @st.dialog("Confirm Delete")
 def _confirm_delete_dialog(
-    entity_type: str,
+    kind: EntityKind,
     entity_name: str,
     entity_id: str,
     delete_fn: Callable[[str], bool],
 ) -> None:
-    """Show confirmation dialog before deleting a slope or lift."""
+    """Show confirmation dialog before deleting a slope, road, or lift."""
     st.write(f"Are you sure you want to delete **{entity_name}**?")
     st.caption("This action can be undone using the Undo button.")
 
@@ -68,7 +81,7 @@ def _confirm_delete_dialog(
     with col_yes:
         if st.button("🗑️ Yes, Delete", type="primary", use_container_width=True):
             if delete_fn(entity_id):
-                logger.info(f"Deleted {entity_type} {entity_name} (id={entity_id})")
+                logger.info(f"Deleted {kind.value} {entity_name} (id={entity_id})")
             # Action functions handle state transition and map version bump
             trigger_rerun()
     with col_no:
@@ -81,26 +94,23 @@ def _confirm_delete_dialog(
 # =============================================================================
 
 
-def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, entity_type: str, entity_id: str) -> None:
+def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, kind: EntityKind, entity_id: str) -> None:
     """Render 3D/2D view toggle button. Calls reload_map() if button is clicked."""
+    noun = kind.value
     if ctx.viewing.view_3d:
-        if st.button("🗺️ Return to 2D View", key=f"{entity_type}_2d_view", use_container_width=True):
-            logger.info(f"Switching to 2D view from {entity_type} {entity_id}")
+        if st.button("🗺️ Return to 2D View", key=f"{noun}_2d_view", use_container_width=True):
+            logger.info(f"Switching to 2D view from {noun} {entity_id}")
             ctx.viewing.disable_3d()
             # Reset pitch, bearing, and zoom to top-down 2D view
             ctx.map.pitch = MapConfig.DEFAULT_PITCH
             ctx.map.bearing = MapConfig.DEFAULT_BEARING
             ctx.map.zoom = MapConfig.DEFAULT_ZOOM
             # Update map center to entity center so we don't jump to stale position.
-            # The viewed entity is guaranteed to exist (caller validated it).
-            if entity_type in ("slope", "road"):
+            # The viewed entity is guaranteed to exist (caller validated it). enum_eq is
+            # reload-safe: EntityKind survives Streamlit reloads while the class is redefined.
+            if enum_eq(kind, EntityKind.SLOPE) or enum_eq(kind, EntityKind.ROAD):
                 # Both are segment groups → center on their segment endpoints.
-                if entity_type == "slope":
-                    owner = graph.slopes[entity_id]
-                elif entity_type == "road":
-                    owner = graph.roads[entity_id]
-                else:
-                    raise ValueError(f"Unknown {entity_type=}")
+                owner = graph.slopes[entity_id] if enum_eq(kind, EntityKind.SLOPE) else graph.roads[entity_id]
                 lats, lons = [], []
                 for seg_id in owner.segment_ids:
                     seg = graph.segments[seg_id]
@@ -110,23 +120,23 @@ def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, entity_typ
                     lons.append(seg.points[-1].lon)
                 ctx.map.lat = sum(lats) / len(lats)
                 ctx.map.lon = sum(lons) / len(lons)
-            elif entity_type == "lift":
+            elif enum_eq(kind, EntityKind.LIFT):
                 lift = graph.lifts[entity_id]
                 start_node = graph.nodes[lift.start_node_id]
                 end_node = graph.nodes[lift.end_node_id]
                 ctx.map.lat = (start_node.lat + end_node.lat) / 2
                 ctx.map.lon = (start_node.lon + end_node.lon) / 2
             else:
-                raise ValueError(f"Unknown {entity_type=}")
+                raise ValueError(f"Unknown {kind=}")
             reload_map()  # Never returns - raises StopExecution
     else:
         if st.button(
             "🏔️ View in 3D",
-            key=f"{entity_type}_3d_view",
+            key=f"{noun}_3d_view",
             use_container_width=True,
-            help=f"View {entity_type} from the side with terrain",
+            help=f"View {noun} from the side with terrain",
         ):
-            logger.info(f"Switching to 3D view for {entity_type} {entity_id}")
+            logger.info(f"Switching to 3D view for {noun} {entity_id}")
             ctx.viewing.enable_3d()
             reload_map()  # Never returns - raises StopExecution
 
@@ -135,20 +145,21 @@ def _render_close_delete_buttons(
     sm: PlannerStateMachine,
     ctx: PlannerContext,
     graph: ResortGraph,
-    entity_type: str,
+    kind: EntityKind,
     entity_id: str,
     entity: "Slope | Lift | Road",
     delete_fn: Callable[[str], bool],
 ) -> None:
     """Render close and delete buttons. Triggers state transition or opens dialog."""
+    noun = kind.value
     col_close, col_delete = st.columns(2)
     with col_close:
         if st.button(
             "✖️ Close",
-            key=f"close_{entity_type}",
+            key=f"close_{noun}",
             help="Close this panel to start building new slopes and lifts",
         ):
-            logger.info(f"Closing {entity_type} panel for {entity_id}")
+            logger.info(f"Closing {noun} panel for {entity_id}")
             ctx.viewing.disable_3d()
             # Reset pitch and bearing to top-down view (preserve zoom level)
             ctx.map.pitch = MapConfig.DEFAULT_PITCH
@@ -161,11 +172,11 @@ def _render_close_delete_buttons(
         if st.button(
             "🗑️ Delete",
             type="secondary",
-            key=f"delete_{entity_type}",
-            help=f"Permanently remove this {entity_type}",
+            key=f"delete_{noun}",
+            help=f"Permanently remove this {noun}",
         ):
             _confirm_delete_dialog(
-                entity_type=entity_type,
+                kind=kind,
                 entity_name=entity.name,
                 entity_id=entity_id,
                 delete_fn=delete_fn,
@@ -177,13 +188,37 @@ def _render_close_delete_buttons(
 # =============================================================================
 
 
+def _render_proposal_browser(ctx: PlannerContext, *, key_prefix: str, noun: str) -> None:
+    """Render the ◀ ▶ proposal browser shared by the slope and road panels.
+
+    Cycles ctx.proposals.selected_idx and refreshes the map on each arrow. Only
+    drawn when there is more than one proposal; a single proposal needs no browser.
+    `noun` is the browsed unit ("paths" / "options"); `key_prefix` scopes the
+    Streamlit widget keys so slope and road browsers don't collide.
+    """
+    num_paths = len(ctx.proposals.paths)
+    if num_paths <= 1:
+        return
+    selected_idx = ctx.proposals.selected_idx if ctx.proposals.selected_idx is not None else 0
+
+    col_prev, col_nav_label, col_next = st.columns([1, 2, 1])
+    with col_prev:
+        if st.button("◀", key=f"prev_{key_prefix}", width="stretch", help="Previous"):
+            ctx.proposals.selected_idx = (selected_idx - 1) % num_paths
+            reload_map()
+    with col_nav_label:
+        st.markdown(f"**◀ ▶ Browse {num_paths} {noun}**")
+    with col_next:
+        if st.button("▶", key=f"next_{key_prefix}", width="stretch", help="Next"):
+            ctx.proposals.selected_idx = (selected_idx + 1) % num_paths
+            reload_map()
+
+
 def render_control_panel(
     sm: PlannerStateMachine,
     ctx: PlannerContext,
     graph: ResortGraph,
     on_commit: Callable[[int], None],
-    on_custom_direction: Callable[[], None],
-    on_cancel_custom: Callable[[], None],
     on_cancel_connection: Callable[[], None],
 ) -> None:
     """Render the appropriate control panel for the current state.
@@ -214,8 +249,6 @@ def render_control_panel(
         ctx=ctx,
         graph=graph,
         on_commit=on_commit,
-        on_custom_direction=on_custom_direction,
-        on_cancel_custom=on_cancel_custom,
         on_cancel_connection=on_cancel_connection,
     )
 
@@ -225,8 +258,6 @@ def _render_idle_panel(
     ctx: PlannerContext,
     graph: ResortGraph,
     on_commit: Callable[[int], None],
-    on_custom_direction: Callable[[], None],
-    on_cancel_custom: Callable[[], None],
     on_cancel_connection: Callable[[], None],
 ) -> None:
     """Render control panel for IDLE state.
@@ -247,8 +278,6 @@ def _render_slope_building_panel(
     ctx: PlannerContext,
     graph: ResortGraph,
     on_commit: Callable[[int], None],
-    on_custom_direction: Callable[[], None],
-    on_cancel_custom: Callable[[], None],
     on_cancel_connection: Callable[[], None],
 ) -> None:
     """Render control panel for SLOPE_BUILDING state - progress + path selection."""
@@ -260,8 +289,6 @@ def _render_slope_building_panel(
         context=ctx,
         graph=graph,
         on_commit=on_commit,
-        on_custom_direction=on_custom_direction,
-        on_cancel_custom=on_cancel_custom,
         on_cancel_connection=on_cancel_connection,
     ).render()
 
@@ -298,8 +325,6 @@ def _render_lift_placing_panel(
     ctx: PlannerContext,
     graph: ResortGraph,
     on_commit: Callable[[int], None],
-    on_custom_direction: Callable[[], None],
-    on_cancel_custom: Callable[[], None],
     on_cancel_connection: Callable[[], None],
 ) -> None:
     """Render control panel for LIFT_PLACING state - progress + action."""
@@ -343,8 +368,6 @@ def _render_road_building_panel(
     ctx: PlannerContext,
     graph: ResortGraph,
     on_commit: Callable[[int], None],
-    on_custom_direction: Callable[[], None],
-    on_cancel_custom: Callable[[], None],
     on_cancel_connection: Callable[[], None],
 ) -> None:
     """Render control panel while building a road (ROAD_STARTING / ROAD_BUILDING).
@@ -388,26 +411,15 @@ def _render_road_building_panel(
 
     selected_idx = ctx.proposals.selected_idx if ctx.proposals.selected_idx is not None else 0
 
-    if num_paths > 1:
-        col_prev, col_nav_label, col_next = st.columns([1, 2, 1])
-        with col_prev:
-            if st.button("◀", key="prev_road_path", width="stretch", help="Previous road option"):
-                ctx.proposals.selected_idx = (selected_idx - 1) % num_paths
-                reload_map()
-        with col_nav_label:
-            st.markdown(f"**◀ ▶ Browse {num_paths} options**")
-        with col_next:
-            if st.button("▶", key="next_road_path", width="stretch", help="Next road option"):
-                ctx.proposals.selected_idx = (selected_idx + 1) % num_paths
-                reload_map()
+    _render_proposal_browser(ctx=ctx, key_prefix="road_path", noun="options")
 
-    if st.button(
-        "✅ Commit Road Segment",
-        type="primary",
-        width="stretch",
-        help="Add this segment and keep extending the road",
-    ):
-        logger.info(f"UI: Commit road segment clicked for proposal {selected_idx}")
+    label, help_text = _commit_button_label(
+        ctx.proposals.paths[selected_idx],
+        continue_label="✅ Commit Road Segment",
+        continue_help="Add this segment and keep extending the road",
+    )
+    if st.button(label, type="primary", width="stretch", help=help_text):
+        logger.info(f"UI: Commit road clicked for proposal {selected_idx}")
         on_commit(selected_idx)
 
 
@@ -427,13 +439,13 @@ def _render_slope_info_panel(
 
     SlopeStatsPanel(graph=graph).render(slope_id=slope_id)
 
-    _render_3d_toggle_button(ctx=ctx, graph=graph, entity_type="slope", entity_id=slope_id)
+    _render_3d_toggle_button(ctx=ctx, graph=graph, kind=EntityKind.SLOPE, entity_id=slope_id)
 
     _render_close_delete_buttons(
         sm=sm,
         ctx=ctx,
         graph=graph,
-        entity_type="slope",
+        kind=EntityKind.SLOPE,
         entity_id=slope_id,
         entity=slope,
         delete_fn=delete_slope_action,
@@ -456,13 +468,13 @@ def _render_lift_info_panel(
 
     LiftStatsPanel(graph=graph).render(lift_id=lift_id)
 
-    _render_3d_toggle_button(ctx=ctx, graph=graph, entity_type="lift", entity_id=lift_id)
+    _render_3d_toggle_button(ctx=ctx, graph=graph, kind=EntityKind.LIFT, entity_id=lift_id)
 
     _render_close_delete_buttons(
         sm=sm,
         ctx=ctx,
         graph=graph,
-        entity_type="lift",
+        kind=EntityKind.LIFT,
         entity_id=lift_id,
         entity=lift,
         delete_fn=delete_lift_action,
@@ -485,13 +497,13 @@ def _render_road_info_panel(
 
     RoadStatsPanel(graph=graph).render(road_id=road_id)
 
-    _render_3d_toggle_button(ctx=ctx, graph=graph, entity_type="road", entity_id=road_id)
+    _render_3d_toggle_button(ctx=ctx, graph=graph, kind=EntityKind.ROAD, entity_id=road_id)
 
     _render_close_delete_buttons(
         sm=sm,
         ctx=ctx,
         graph=graph,
-        entity_type="road",
+        kind=EntityKind.ROAD,
         entity_id=road_id,
         entity=road,
         delete_fn=delete_road_action,
@@ -511,46 +523,23 @@ class PathSelectionPanel:
         context: PlannerContext,
         graph: ResortGraph,
         on_commit: Callable[[int], None],
-        on_custom_direction: Callable[[], None],
-        on_cancel_custom: Callable[[], None],
         on_cancel_connection: Callable[[], None],
     ) -> None:
         self.ctx = context
         self.graph = graph
         self.on_commit = on_commit
-        self.on_custom_direction = on_custom_direction
-        self.on_cancel_custom = on_cancel_custom
         self.on_cancel_connection = on_cancel_connection
 
     def render(self) -> None:
         """Render the path selection panel."""
-        if self.ctx.custom_connect.enabled:
-            SlopeActionMessage(is_custom_direction=True).display()
-            if st.button(
-                "✖️ Cancel Custom Direction",
-                width="stretch",
-                help="Return to regular path proposals",
-            ):
-                logger.info("UI: Cancel Custom Direction clicked")
-                self.on_cancel_custom()
-            return
-
         if not self.ctx.proposals.paths:
             SlopeActionMessage().display()
             return
 
-        selected_idx = self.ctx.proposals.selected_idx
         num_paths = len(self.ctx.proposals.paths)
-
-        if selected_idx is None or selected_idx >= num_paths:
-            SlopeActionMessage(
-                is_selecting_path=True,
-                num_paths=num_paths,
-                selected_path_idx=0,
-                path_difficulty="unknown",
-                path_difficulty_emoji="⬜",
-            ).display()
-            return
+        # selected_idx is kept in range by generation (reset to 0) and browser nav (% num_paths);
+        # None only before the first selection → show the first proposal.
+        selected_idx = self.ctx.proposals.selected_idx if self.ctx.proposals.selected_idx is not None else 0
 
         path = self.ctx.proposals.paths[selected_idx]
         emoji = StyleConfig.DIFFICULTY_EMOJIS[path.difficulty]
@@ -574,49 +563,33 @@ class PathSelectionPanel:
         ).display()
 
         # Navigation arrows
-        col_prev, col_nav_label, col_next = st.columns([1, 2, 1])
-        with col_prev:
-            if st.button("◀", key="prev_path", width="stretch", help="Previous path variant"):
-                self.ctx.proposals.selected_idx = (selected_idx - 1) % num_paths
-                reload_map()  # Refresh map with new selection
-        with col_nav_label:
-            st.markdown(f"**◀ ▶ Browse {num_paths} paths**")
-        with col_next:
-            if st.button("▶", key="next_path", width="stretch", help="Next path variant"):
-                self.ctx.proposals.selected_idx = (selected_idx + 1) % num_paths
-                reload_map()  # Refresh map with new selection
+        _render_proposal_browser(ctx=self.ctx, key_prefix="path", noun="paths")
 
-        # Commit button
-        if is_connector:
-            commit_label = f"🏁 Finish → {path.target_node_id}"
-            commit_help = f"Connect to {path.target_node_id} and finish this slope"
-        else:
-            commit_label = "✅ Commit This Path"
-            commit_help = "Add this segment and continue building"
-
+        # Commit button (shared label logic with the road panel)
+        commit_label, commit_help = _commit_button_label(
+            path,
+            continue_label="✅ Commit This Path",
+            continue_help="Add this segment and continue building",
+        )
         if st.button(commit_label, type="primary", width="stretch", help=commit_help):
             logger.info(f"UI: Commit button clicked for path {selected_idx}, is_connector={is_connector}")
             self.on_commit(selected_idx)
 
-        # Custom Direction button (not shown if already in custom connect mode)
-        if not self.ctx.custom_connect.enabled and not self.ctx.custom_connect.force_mode:  # type: ignore[redundant-expr]  # noqa: SIM102
-            if st.button(
-                "🎯 Custom Direction",
-                width="stretch",
-                help="Click anywhere downhill to create a path to that point, or connect to an existing node",
-            ):
-                logger.info("UI: Custom Direction button clicked")
-                self.on_custom_direction()
-
-        # Cancel Connection button
+        # While showing custom-connect proposals, offer a way back to fan-out.
+        # The label adapts: a connector routes to a node ("Cancel Connection"), a custom target ("Cancel Custom Path").
         if self.ctx.custom_connect.force_mode:
+            cancel_label = "✖️ Cancel Connection" if is_connector else "✖️ Cancel Custom Path"
             if st.button(
-                "✖️ Cancel Connection",
+                cancel_label,
                 width="stretch",
-                help="Return to regular path proposals",
+                help="Return to regular fan-out path proposals",
             ):
-                logger.info("UI: Cancel Connection clicked")
+                logger.info(f"UI: {cancel_label} clicked")
                 self.on_cancel_connection()
+        else:
+            # Fan-out mode: the panel showed auto-generated proposals, but the user can
+            # also aim anywhere. Make that discoverable now that there is no button.
+            st.caption("🎯 Or click any downhill point or node on the map to route a path there.")
 
 
 # =============================================================================

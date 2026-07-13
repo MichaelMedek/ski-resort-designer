@@ -23,11 +23,10 @@ State Definitions:
     4. IDLE_VIEWING_ROAD: Panel showing road details, profile visible, 3D available
     5. SLOPE_STARTING: 0 segments committed, picking first fan direction
     6. SLOPE_BUILDING: 1+ segments committed, continuing slope picking next fan direction
-    7. SLOPE_CUSTOM_PICKING: Waiting for custom target click or cancel to return to building/starting
-    8. SLOPE_CUSTOM_PATH: Showing custom path options
-    9. LIFT_PLACING: Start selected, waiting for end station
-    10. ROAD_STARTING: 0 road segments committed, picking first target
-    11. ROAD_BUILDING: 1+ road segments committed, extending the road
+    7. SLOPE_CUSTOM_PATH: Showing custom path options routed to a clicked target
+    8. LIFT_PLACING: Start selected, waiting for end station
+    9. ROAD_STARTING: 0 road segments committed, picking first target
+    10. ROAD_BUILDING: 1+ road segments committed, extending the road
 
 Design Philosophy:
     → NO workflow mutations here (force_mode, target_location, proposals, etc.)
@@ -237,7 +236,7 @@ def exit_slope_starting(ctx: PlannerContext) -> None:
 
     Possible destinations:
     - SLOPE_BUILDING: before_commit_path event hook clears proposals
-    - SLOPE_CUSTOM_PICKING: enter_slope_custom_picking clears proposals
+    - SLOPE_CUSTOM_PATH: enter_slope_custom_path regenerates proposals to the target
     - IDLE_READY: before_cancel_slope event hook clears building state
 
     All destinations handle their own cleanup, so no action needed here.
@@ -261,10 +260,10 @@ def enter_slope_building(ctx: PlannerContext) -> None:
 
     Sources:
     - From SLOPE_STARTING: First path committed via commit_path event
-    - From SLOPE_CUSTOM_PATH: Custom path committed (continue)
+    - From SLOPE_CUSTOM_PATH: Custom path committed (commit_custom_continue), or
+      canceled back to building when segments exist (cancel_custom → cancel_path_to_building)
     - From SLOPE_BUILDING: Self-loop (more segments committed, undo)
     - From IDLE_VIEWING_SLOPE: Resume building (undo finish)
-    - From SLOPE_CUSTOM_PICKING: cancel_custom event
 
     This function is responsible for:
     - Hiding any viewing panel
@@ -285,7 +284,7 @@ def exit_slope_building(ctx: PlannerContext) -> None:
     - SLOPE_BUILDING (self-loop): commit_path/undo_continue
       - before_commit_path: clears proposals (new segment)
       - before_undo_continue: PRESERVES proposals (set by undo_last_action)
-    - SLOPE_CUSTOM_PICKING: enter_slope_custom_picking clears proposals
+    - SLOPE_CUSTOM_PATH: enter_slope_custom_path regenerates proposals to the target
     - IDLE_VIEWING_SLOPE: enter_idle_viewing_slope clears proposals
     - IDLE_READY: enter_idle_ready clears proposals
 
@@ -300,52 +299,6 @@ def exit_slope_building(ctx: PlannerContext) -> None:
 
 
 # =============================================================================
-# 6. SLOPE_CUSTOM_PICKING - Waiting for custom target click
-# =============================================================================
-
-
-def enter_slope_custom_picking(ctx: PlannerContext) -> None:
-    """Enter SLOPE_CUSTOM_PICKING: Wait for user to click target location.
-
-    Sources:
-    - From SLOPE_STARTING: Custom connect button pressed (0 segments)
-    - From SLOPE_BUILDING: Custom connect button pressed (1+ segments)
-
-    What happens externally (handled by before_* transition actions):
-    - custom_connect.enabled is set to True
-    - custom_connect.start_node is set to current endpoint
-
-    What this function ensures:
-    - Clear proposals (no fan proposals in picking mode)
-
-    What should NOT be cleared:
-    - building context (has committed segments if from BUILDING)
-    - custom_connect state (being set up)
-
-    End state: Map ready to receive target click, no proposals shown
-    """
-    logger.debug("ENTER: slope_custom_picking - clearing proposals")
-    ctx.clear_proposals()
-    # Clear the click-dedup marker so the first target click always registers
-    # (matches enter_slope_starting / enter_lift_placing / enter_road_starting).
-    ctx.click_dedup.clear_marker()
-
-
-def exit_slope_custom_picking(ctx: PlannerContext) -> None:
-    """Exit SLOPE_CUSTOM_PICKING: No-op.
-
-    Cleanup is intentionally NOT done here because:
-    - Transition to SLOPE_CUSTOM_PATH needs to preserve custom_connect state
-    - Cancel transitions handle cleanup in before_cancel_custom hook
-    - force_idle()/force_building() handle cleanup explicitly
-
-    This follows the "destination controls cleanup" pattern.
-    """
-    logger.debug("EXIT: slope_custom_picking - no cleanup (destination handles it)")
-    pass
-
-
-# =============================================================================
 # 7. SLOPE_CUSTOM_PATH - Showing custom path options
 # =============================================================================
 
@@ -354,12 +307,16 @@ def enter_slope_custom_path(ctx: PlannerContext) -> None:
     """Enter SLOPE_CUSTOM_PATH: Show path options to custom target.
 
     Sources:
-    - From SLOPE_CUSTOM_PICKING: Target location selected
+    - From SLOPE_STARTING / SLOPE_BUILDING: terrain/node clicked as target
+    - From SLOPE_CUSTOM_PATH (self-loop): a new target clicked → re-route
 
     What happens:
-    - before_select_custom_target set target_location and force_mode
+    - The target before-hook set start_node, target_location and force_mode
     - This function sets deferred.custom_connect to trigger path generation
     - On next render, deferred handler generates proposals with spinner
+
+    Fires on the retarget self-loop too (external self-transition), so a new
+    target click regenerates proposals here.
 
     End state: Path proposals shown from start to custom target
     """
