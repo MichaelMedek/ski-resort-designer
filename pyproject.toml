@@ -26,15 +26,29 @@ docstring-code-line-length = "dynamic"
 [tool.ruff.lint]
 # Enable all `pydocstyle` rules, limiting to those that adhere to the
 # Google convention via `convention = "google"`, below.
-select = ["D", "E4", "E7", "E9", "F"]
+# On top of pydocstyle (D) / pycodestyle (E) / pyflakes (F) we enable strict
+# structural rules:
+#   ANN  - flake8-annotations: every arg/return must be typed, no bare `Any`
+#   C90  - mccabe: reject overly complex functions
+#   PLR  - pylint refactor: too many args / branches / statements / returns
+#   FBT  - flake8-boolean-trap: no boolean positional args
+#   W505 - doc-line-too-long: cap docstring / comment length
+#   B    - flake8-bugbear: real bug patterns (mutable defaults, loop closures)
+#   SIM  - flake8-simplify: collapsible ifs, redundant bool (mostly auto-fixable)
+#   UP   - pyupgrade: modern py311 syntax (auto-fixable)
+select = ["D", "E4", "E7", "E9", "F", "ANN", "C90", "PLR", "FBT", "W505", "B", "SIM", "UP"]
 
 # On top of the Google convention, disable `D417`, which requires
 # documentation for every function parameter.
 # Also, disable dicstring enforcer for public classes and functions
-ignore = ["D417", "D100", "D101", "D102", "D104", "D105", "D103", "D107", "D205", "D415", "E731", "E741"]
+ignore = [
+    "D417", "D100", "D101", "D102", "D104", "D105", "D103", "D107", "D205", "D415",
+    "E731", "E741",
+    "PLR2004",  # magic-value-comparison: too noisy, not a real quality signal
+    "PLR0911",  # too-many-return-statements: early returns are often the clean choice
+]
 
 exclude = [
-    "tests_workflow/*",
     "setup.py"
 ]
 
@@ -47,6 +61,34 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+# Tests are still linted (F-rules catch real bugs: undefined names, redefined
+# fixtures, dead code) but we don't demand full type annotations or complexity
+# limits on test scaffolding and fakes.
+"tests_workflow/*" = ["ANN", "PLR09", "C901"]
+
+[tool.ruff.lint.mccabe]
+# Cyclomatic complexity ceiling. 10 is the common default; leaves room for
+# real control flow while flagging functions that need splitting.
+max-complexity = 10
+
+[tool.ruff.lint.pylint]
+max-args = 6          # signatures beyond this want a dataclass / config object
+max-positional-args = 4  # more than this must be keyword-only for readability
+max-branches = 12
+max-statements = 50
+max-returns = 6
+
+[tool.ruff.lint.pycodestyle]
+# Required for W505 to activate. Caps comment / docstring line length so prose
+# stays readable; code lines are still governed by line-length = 120 above.
+max-doc-length = 120
+ignore-overlong-task-comments = true
+
+[tool.ruff.lint.flake8-annotations]
+mypy-init-return = true   # __init__ need not annotate its `-> None`
+suppress-dummy-args = true  # underscore-prefixed args need no annotation
 
 [tool.pytest.ini_options]
 testpaths = ["tests_workflow"]
@@ -76,22 +118,13 @@ warn_unreachable = true
 pretty = true
 show_error_codes = true
 enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+# `strict` does NOT ban explicit `Any` — add it so annotations must be concrete.
+disallow_any_explicit = true
+disallow_any_decorated = true
 
 
-# Per-module configuration - ignore test files
-[[tool.mypy.overrides]]
-module = [
-    "tests_workflow.*",
-]
-ignore_errors = true
-
-# UI files use dynamic Streamlit APIs with poor type stubs
-[[tool.mypy.overrides]]
-module = [
-    "skiresort_planner.ui.*",
-]
-ignore_errors = true
-
+# Third-party libraries without type stubs. We only silence *missing imports*,
+# not type errors in our own code that touches them.
 [[tool.mypy.overrides]]
 module = [
     "streamlit.*",
