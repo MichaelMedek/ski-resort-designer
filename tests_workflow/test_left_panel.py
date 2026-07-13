@@ -134,8 +134,8 @@ class TestImportOSMButton:
         fake_st.clicked_keys = {"import_osm"}
         SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
         assert ctx.deferred.osm_import is True, "clicking Import must flag a deferred OSM import"
-        # The slider defaults to RADIUS_DEFAULT_KM, so the flagged radius matches it (reset-safe).
-        assert ctx.deferred.osm_import_radius_km == OSMConfig.RADIUS_DEFAULT_KM
+        # The slider defaults to HALF_WIDTH_DEFAULT_KM, so the flagged half-width matches it (reset-safe).
+        assert ctx.deferred.osm_import_half_width_km == OSMConfig.HALF_WIDTH_DEFAULT_KM
 
 
 class TestPathSettingsVisibility:

@@ -441,22 +441,22 @@ class TestDeferredProcessing:
 
 
 class TestOSMImport:
-    """import_osm_action flags a deferred import (with the chosen radius); process_osm_import_deferred
+    """import_osm_action flags a deferred import (with the chosen half-width); process_osm_import_deferred
     runs it (mocked network) as one undoable batch; undo removes the batch; re-import dedups."""
 
-    def test_import_osm_action_sets_deferred_flag_and_radius(self, fake_st, mock_dem_blue_slope) -> None:
+    def test_import_osm_action_sets_deferred_flag_and_half_width(self, fake_st, mock_dem_blue_slope) -> None:
         from skiresort_planner.ui.actions import import_osm_action
 
         _sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
-        import_osm_action(radius_km=3.0)
+        import_osm_action(half_width_km=3.0)
         assert ctx.deferred.osm_import is True
-        assert ctx.deferred.osm_import_radius_km == 3.0
+        assert ctx.deferred.osm_import_half_width_km == 3.0
 
-    def test_radius_reaches_fetch_as_region(self, fake_st, mock_dem_blue_slope, monkeypatch) -> None:
-        """The slider radius (km) must arrive at fetch() as (center_lon, center_lat, radius_m).
+    def test_half_width_reaches_fetch_as_bbox(self, fake_st, mock_dem_blue_slope, monkeypatch) -> None:
+        """The slider half-width (km) must arrive at fetch() as a square bbox around the map center.
 
-        Guards the slider → deferred → region chain: a reset-to-default slider still imports exactly
-        the radius shown, centered on the current map center.
+        Guards the slider → deferred → bbox chain: a reset-to-default slider still imports exactly
+        the area shown, centered on the current map center.
         """
         from skiresort_planner.generators.osm_importer import ImportSummary
         from skiresort_planner.ui import actions
@@ -466,13 +466,15 @@ class TestOSMImport:
         ctx.map.lat, ctx.map.lon = 0.3, 0.1
 
         seen = {}
-        monkeypatch.setattr(actions.OSMImporter, "fetch", lambda self, region: seen.setdefault("region", region) or [])
-        monkeypatch.setattr(actions.OSMImporter, "convert", lambda self, region, elements: ImportSummary())
+        monkeypatch.setattr(actions.OSMImporter, "fetch", lambda self, bbox: seen.setdefault("bbox", bbox) or [])
+        monkeypatch.setattr(actions.OSMImporter, "convert", lambda self, bbox, elements: ImportSummary())
 
-        import_osm_action(radius_km=3.5)  # what the slider returns
+        import_osm_action(half_width_km=3.5)  # what the slider returns
         actions.process_osm_import_deferred()
 
-        assert seen["region"] == (0.1, 0.3, 3500.0), "center=map center (lon,lat), radius km→m"
+        min_lon, min_lat, max_lon, max_lat = seen["bbox"]
+        assert (min_lon + max_lon) / 2 == 0.1 and (min_lat + max_lat) / 2 == 0.3, "box centered on map center"
+        assert max_lat - min_lat > 0 and max_lon - min_lon > 0, "3.5 km half-width → a real square box"
 
     def test_process_import_adds_entities_and_bumps_map(self, fake_st, mock_dem_blue_slope, monkeypatch) -> None:
         from skiresort_planner.generators.osm_importer import ImportSummary, LiftImport, PisteImport
@@ -500,9 +502,9 @@ class TestOSMImport:
         )
 
         # Mock the importer so no network happens: fetch returns nothing, convert returns our summary.
-        monkeypatch.setattr(actions.OSMImporter, "fetch", lambda self, region: [])
+        monkeypatch.setattr(actions.OSMImporter, "fetch", lambda self, bbox: [])
         monkeypatch.setattr(
-            actions.OSMImporter, "convert", lambda self, region, elements: ImportSummary(pistes=[piste], lifts=[lift])
+            actions.OSMImporter, "convert", lambda self, bbox, elements: ImportSummary(pistes=[piste], lifts=[lift])
         )
         version_before = fake_st.session_state["map_version"]
 
@@ -524,7 +526,7 @@ class TestOSMImport:
         ctx.map.lat, ctx.map.lon = 0.0, 0.0
         ctx.deferred.osm_import = True
 
-        def boom(self, region):
+        def boom(self, bbox):
             raise RuntimeError("overpass down")
 
         monkeypatch.setattr(actions.OSMImporter, "fetch", boom)
@@ -564,9 +566,9 @@ class TestOSMImport:
             lift_type="chairlift",
             name=None,
         )
-        monkeypatch.setattr(actions.OSMImporter, "fetch", lambda self, region: [])
+        monkeypatch.setattr(actions.OSMImporter, "fetch", lambda self, bbox: [])
         monkeypatch.setattr(
-            actions.OSMImporter, "convert", lambda self, region, elements: ImportSummary(pistes=[piste], lifts=[lift])
+            actions.OSMImporter, "convert", lambda self, bbox, elements: ImportSummary(pistes=[piste], lifts=[lift])
         )
 
         actions.process_osm_import_deferred()
@@ -602,9 +604,9 @@ class TestOSMImport:
             lift_type="chairlift",
             name="Gipfelbahn",
         )
-        monkeypatch.setattr(actions.OSMImporter, "fetch", lambda self, region: [])
+        monkeypatch.setattr(actions.OSMImporter, "fetch", lambda self, bbox: [])
         monkeypatch.setattr(
-            actions.OSMImporter, "convert", lambda self, region, elements: ImportSummary(pistes=[piste], lifts=[lift])
+            actions.OSMImporter, "convert", lambda self, bbox, elements: ImportSummary(pistes=[piste], lifts=[lift])
         )
 
         ctx.deferred.osm_import = True

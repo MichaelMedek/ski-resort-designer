@@ -268,7 +268,7 @@ class OSMImportSummaryMessage(ToastMessage):
         base = f"Imported {self.pistes} pistes and {self.lifts} lifts from OpenStreetMap"
         notes = []
         if self.skipped:
-            notes.append(f"{self.skipped} skipped — only fully-visible runs are imported")
+            notes.append(f"{self.skipped} skipped — only named, fully-visible runs are imported (see log)")
         if self.duplicates:
             notes.append(f"{self.duplicates} already imported")
         return f"{base} ({'; '.join(notes)})." if notes else f"{base}."

@@ -367,23 +367,23 @@ class SidebarRenderer:
             reload_map()  # Bumps version and triggers rerun
 
     def _render_import_button(self) -> None:
-        """Render the OpenStreetMap import radius slider + button (idle only).
+        """Render the OpenStreetMap import area slider + button (idle only).
 
-        Imports the real lifts & pistes within a circle centered on the current map center, with
-        the chosen radius; elevation, difficulty, and pylons are all recomputed from our
+        Imports the real lifts & pistes within a square area centered on the current map center,
+        with the chosen half-width; elevation, difficulty, and pylons are all recomputed from our
         DEM/physics. Disabled mid-build/placement so an import can't interleave with an
         in-progress entity.
         """
         if not self.sm.is_idle_ready:
             return
-        radius_km = st.slider(
-            "Import radius (km)",
-            min_value=OSMConfig.RADIUS_MIN_KM,
-            max_value=OSMConfig.RADIUS_MAX_KM,
-            value=OSMConfig.RADIUS_DEFAULT_KM,
+        half_width_km = st.slider(
+            "Import area half-width (km)",
+            min_value=OSMConfig.HALF_WIDTH_MIN_KM,
+            max_value=OSMConfig.HALF_WIDTH_MAX_KM,
+            value=OSMConfig.HALF_WIDTH_DEFAULT_KM,
             step=0.5,
-            key="import_osm_radius",
-            help="Lifts & pistes within this distance of the map center are imported.",
+            key="import_osm_half_width",
+            help="Lifts & pistes within this distance of the map center (in each direction) are imported.",
         )
         if st.button(
             "🗺️ Import from OpenStreetMap",
@@ -391,7 +391,7 @@ class SidebarRenderer:
             key="import_osm",
             help="Add the real lifts & pistes around the map center. Elevation, difficulty and pylons are recomputed; one Undo removes the whole import.",
         ):
-            import_osm_action(radius_km=radius_km)
+            import_osm_action(half_width_km=half_width_km)
 
     def _render_mode_selector(self) -> None:
         """Render unified build type selector with 5 buttons.

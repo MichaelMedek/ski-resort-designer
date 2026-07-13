@@ -627,17 +627,26 @@ class OSMConfig:
     # Overpass returns HTTP 406 without a User-Agent (verified live) — always send one.
     USER_AGENT = "ski-resort-designer/0.1"
 
+    # A large region in one Overpass query times out (504). We tile the region into square sub-tiles
+    # of this half-width and fetch each separately, merging elements deduped by OSM id.
+    TILE_HALF_WIDTH_M = 2000.0
+    # The public Overpass endpoint rate-limits bursts (429). Pace tiles: wait between requests, and
+    # retry a failed tile with exponential backoff so a transient 429/504 never aborts the import.
+    TILE_THROTTLE_S = 1.0
+    TILE_RETRIES = 4
+    TILE_RETRY_BACKOFF_S = 2.0
+
     # Output spacing when resampling an OSM polyline onto DEM-sampled points.
     RESAMPLE_STEP_M = 30.0
 
-    # Import region: a circle centered on the current map center, radius chosen on a slider (km).
-    RADIUS_MIN_KM = 0.5
-    RADIUS_MAX_KM = 5.0
-    RADIUS_DEFAULT_KM = 2.0
+    # Import region: a square centered on the current map center, half-width chosen on a slider (km).
+    HALF_WIDTH_MIN_KM = 0.5
+    HALF_WIDTH_MAX_KM = 5.0
+    HALF_WIDTH_DEFAULT_KM = 2.0
 
     # Minimum imported length: shorter entities are ignored (nursery/kiddie lifts, stub runs).
-    MIN_LIFT_LENGTH_M = 500.0
-    MIN_PISTE_LENGTH_M = 300.0
+    MIN_LIFT_LENGTH_M = 300.0
+    MIN_PISTE_LENGTH_M = 200.0
 
     # OSM aerialway value → our LiftConfig.TYPES. ONLY these values import; every other aerialway
     # value (station, pylon, zip_line, magic_carpet, rope_tow, yes, …) is silently ignored.

@@ -579,8 +579,8 @@ class DeferredContext(BaseContext):
     custom_connect: bool = False  # Generate paths to custom target location
     start_building_from_node_id: str | None = None  # Deferred start_building from node
     start_lift_from_node_id: str | None = None  # Deferred start_lift from node
-    osm_import: bool = False  # Fetch + import OSM lifts/pistes for the chosen circle (slow network)
-    osm_import_radius_km: float = OSMConfig.RADIUS_DEFAULT_KM  # Circle radius chosen on the import slider
+    osm_import: bool = False  # Fetch + import OSM lifts/pistes for the chosen area (slow network)
+    osm_import_half_width_km: float = OSMConfig.HALF_WIDTH_DEFAULT_KM  # Square half-width from the import slider
 
     def clear_custom_connect(self) -> None:
         self.custom_connect = False
@@ -594,7 +594,7 @@ class DeferredContext(BaseContext):
         self.start_building_from_node_id = None
         self.start_lift_from_node_id = None
         self.osm_import = False
-        self.osm_import_radius_km = OSMConfig.RADIUS_DEFAULT_KM
+        self.osm_import_half_width_km = OSMConfig.HALF_WIDTH_DEFAULT_KM
 
 
 @dataclass

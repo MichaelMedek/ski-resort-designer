@@ -382,8 +382,8 @@ Instead of starting from an empty map, load a real resort's existing lifts and p
 canvas, then keep editing with the normal tools.
 
 1. Pan the map so its **center** is on the resort area you want (within the terrain coverage).
-2. In the sidebar, set the **Import radius (km)** slider, then click **🗺️ Import from OpenStreetMap**.
-3. The lifts and pistes within that circle are added.
+2. In the sidebar, set the **Import area half-width (km)** slider, then click **🗺️ Import from OpenStreetMap**.
+3. The lifts and pistes within that square area are added.
 
 **What gets imported**
 
@@ -392,8 +392,9 @@ canvas, then keep editing with the normal tools.
 
 **Good to know**
 
-- **Only runs fully inside the circle import.** A piste or lift that reaches outside the radius is skipped entirely (never half-imported) — increase the radius or re-center and re-import to get it whole.
-- **Trivial runs are ignored.** Lifts shorter than 500 m and pistes shorter than 300 m are skipped.
+- **Only named runs import.** Unnamed lifts and pistes are skipped — in OSM they're frequently outdated or duplicate.
+- **Only runs fully inside the area import.** A piste or lift that reaches outside the box is skipped entirely (never half-imported) — enlarge the area or re-center and re-import to get it whole.
+- **Trivial runs are ignored.** Lifts shorter than 300 m and pistes shorter than 200 m are skipped.
 - **Re-importing won't duplicate.** If you import an overlapping area again, runs already in the resort are recognised and skipped.
 - **One Undo removes the whole import**, so you can undo and import a different area.
 

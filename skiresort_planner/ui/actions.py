@@ -19,7 +19,7 @@ import streamlit as st
 
 from skiresort_planner.constants import MapConfig
 from skiresort_planner.enum_utils import enum_eq
-from skiresort_planner.generators.osm_importer import OSMImporter
+from skiresort_planner.generators.osm_importer import OSMImporter, bbox_around
 from skiresort_planner.generators.path_factory import PathFactory
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.message import OSMImportErrorMessage, OSMImportSummaryMessage
@@ -182,24 +182,24 @@ def process_custom_connect_deferred() -> bool:
     return True
 
 
-def import_osm_action(radius_km: float) -> None:
-    """Flag an OSM import of a circle (current map center, given radius); the slow fetch runs deferred.
+def import_osm_action(half_width_km: float) -> None:
+    """Flag an OSM import of a square area (current map center, given half-width); fetch runs deferred.
 
-    Mirrors the other button actions: set the deferred flag + radius, bump the map, rerun. The actual
-    network call + graph mutation happen in process_osm_import_deferred() under a spinner.
+    Mirrors the other button actions: set the deferred flag + half-width, bump the map, rerun. The
+    actual network call + graph mutation happen in process_osm_import_deferred() under a spinner.
     """
     ctx: PlannerContext = st.session_state.context
     ctx.deferred.osm_import = True
-    ctx.deferred.osm_import_radius_km = radius_km
+    ctx.deferred.osm_import_half_width_km = half_width_km
     bump_map_version()
     trigger_rerun()
 
 
 def process_osm_import_deferred() -> bool:
-    """Process a pending OSM import: fetch the chosen circle, convert, add as one undoable batch.
+    """Process a pending OSM import: fetch the chosen area, convert, add as one undoable batch.
 
-    The circle is centered on the current map center with the radius the user picked. Call this
-    wrapped in st.spinner() from app.py. Returns True if it handled a pending import. Any
+    The area is a square centered on the current map center with the half-width the user picked.
+    Call this wrapped in st.spinner() from app.py. Returns True if it handled a pending import. Any
     network/parse error shows an error toast and imports nothing.
     """
     ctx: PlannerContext = st.session_state.context
@@ -210,11 +210,13 @@ def process_osm_import_deferred() -> bool:
     ctx.deferred.osm_import = False
 
     dem = st.session_state.dem_service
-    region = (ctx.map.lon, ctx.map.lat, ctx.deferred.osm_import_radius_km * 1000.0)
+    bbox = bbox_around(
+        center_lon=ctx.map.lon, center_lat=ctx.map.lat, half_width_m=ctx.deferred.osm_import_half_width_km * 1000.0
+    )
 
     try:
         importer = OSMImporter(dem=dem)
-        summary = importer.convert(region=region, elements=importer.fetch(region=region))
+        summary = importer.convert(bbox=bbox, elements=importer.fetch(bbox=bbox))
     except Exception as exc:  # network / HTTP / parse — report, import nothing
         logger.warning(f"OSM import failed: {exc}")
         OSMImportErrorMessage(error=str(exc)).display()
