@@ -323,6 +323,7 @@ def handle_slope_building_click(click_info: ClickInfo, elevation: float | None) 
         SLOPE → Cannot view while building
         LIFT → Cannot view while building
         PYLON → Cannot view while building
+        ROAD → Cannot view while building
     """
     ctx: "PlannerContext" = st.session_state.context
 
@@ -380,6 +381,14 @@ def handle_slope_building_click(click_info: ClickInfo, elevation: float | None) 
         if marker_type == MarkerType.SEGMENT:
             InvalidClickMessage(
                 action="view segment",
+                reason="Finish or cancel the current slope first.",
+            ).display()
+            return
+
+        # ROAD during building = user error
+        if marker_type == MarkerType.ROAD:
+            InvalidClickMessage(
+                action="view road",
                 reason="Finish or cancel the current slope first.",
             ).display()
             return
@@ -527,6 +536,14 @@ def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) ->
         if marker_type in {MarkerType.LIFT, MarkerType.PYLON}:
             InvalidClickMessage(
                 action="view lift",
+                reason="Finish placing the lift first (click uphill for top station).",
+            ).display()
+            return
+
+        # ROAD during placement = user error
+        if marker_type == MarkerType.ROAD:
+            InvalidClickMessage(
+                action="view road",
                 reason="Finish placing the lift first (click uphill for top station).",
             ).display()
             return

@@ -649,3 +649,61 @@ class TestDispatchClick:
         # A marker click carries no lat/lon; dispatch must route it straight to the handler.
         dispatch_click(ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SLOPE, slope_id=slope.id))
         assert sm.is_idle_viewing_slope and ctx.viewing.slope_id == slope.id
+
+
+# =============================================================================
+# no build-state handler crashes on ANY marker the map can emit.
+# =============================================================================
+
+
+class TestBuildStateMarkerCompleteness:
+    """The map renders finished slopes/roads/lifts (and their segments/pylons) as pickable in every
+    state, so a user can click any of them mid-build. Each build-state handler must handle those
+    entity markers WITHOUT raising — it should politely reject them (InvalidClickMessage), never crash.
+
+    This guards the class of bug where a handler forgot an entity-marker type: a ROAD marker clicked
+    while building a slope or placing a lift used to hit `raise RuntimeError`. (NODE and PROPOSAL_*
+    are functional interaction paths needing live state — covered by the routing tests above.)
+    """
+
+    # Entity markers the map emits for FINISHED entities — all must be politely rejected mid-build.
+    _ENTITY_MARKERS = {
+        MarkerType.SLOPE: {"slope_id": "SL1"},
+        MarkerType.SEGMENT: {"segment_id": "S1"},
+        MarkerType.LIFT: {"lift_id": "L1"},
+        MarkerType.ROAD: {"road_id": "R1"},
+        MarkerType.PYLON: {"lift_id": "L1", "pylon_index": 0},
+    }
+
+    def _entity_marker_clicks(self):
+        for marker_type, kwargs in self._ENTITY_MARKERS.items():
+            yield marker_type, ClickInfo(click_type=MapClickType.MARKER, marker_type=marker_type, **kwargs)
+
+    def test_slope_building_rejects_every_entity_marker(
+        self, fake_st, path_factory, mock_dem_red_slope_diagonal
+    ) -> None:
+        from skiresort_planner.ui.click_handlers import handle_slope_building_click
+
+        for _marker_type, ci in self._entity_marker_clicks():
+            sm, ctx = _session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
+            sm.start_slope(lon=0.0, lat=0.0, elevation=2500.0, node_id=None)
+            # Must not raise for any entity marker (shows an InvalidClickMessage instead).
+            handle_slope_building_click(click_info=ci, elevation=2000.0)
+            assert sm.is_slope_building_only or sm.is_slope_starting, "click must not change build state"
+
+    def test_lift_placing_rejects_every_entity_marker(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
+        from skiresort_planner.ui.click_handlers import handle_lift_placing_click
+
+        for _marker_type, ci in self._entity_marker_clicks():
+            sm, ctx = _session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
+            ctx.lift.start_location = PathPoint(lon=0.0, lat=-0.01, elevation=2400.0)
+            handle_lift_placing_click(click_info=ci, elevation=2000.0)
+
+    def test_road_building_rejects_every_entity_marker(
+        self, fake_st, path_factory, mock_dem_red_slope_diagonal
+    ) -> None:
+        from skiresort_planner.ui.click_handlers import handle_road_building_click
+
+        for _marker_type, ci in self._entity_marker_clicks():
+            sm, ctx = _session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
+            handle_road_building_click(click_info=ci, elevation=2000.0)
