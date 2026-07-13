@@ -12,7 +12,7 @@ Reference: DETAILS.md
 from dataclasses import dataclass
 from enum import Enum
 from math import floor
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import pyproj
 from shapely.geometry import LineString
@@ -29,6 +29,10 @@ from skiresort_planner.model.warning import (
     TooSteepWarning,
     Warning,
 )
+
+if TYPE_CHECKING:
+    from skiresort_planner.core.dem_service import DEMService
+    from skiresort_planner.model.node import Node
 
 
 def _get_utm_zone(lon: float, lat: float) -> str:
@@ -158,6 +162,38 @@ class PathSegment(Path):
 
         # Clamp to allowed range for this difficulty
         return max(min_width, min(max_width, adaptive_width))
+
+    def restitch(self, start_node: "Node", end_node: "Node", dem: "DEMService") -> None:
+        """Re-anchor this segment's drawn polyline after an endpoint node moved.
+
+        Snaps the first point to `start_node` and the last to `end_node` (the same exact-coordinate
+        snap that commit does), then re-drapes every point's elevation from the DEM so the whole
+        polyline sits on current terrain. Keeps identity + styling (id, name, kind, side slope);
+        derived metrics (length/drop/slope/difficulty/belt) are computed from `points`, so they
+        refresh automatically. Route is preserved — this re-drapes existing geometry, it does not
+        re-plan (mirrors OSM import's re-sample-in-place).
+
+        Args:
+            start_node: The (possibly moved) node this segment starts at.
+            end_node: The (possibly moved) node this segment ends at.
+            dem: DEM service for elevation re-draping.
+
+        Raises:
+            ValueError: If any point falls on DEM nodata.
+        """
+        redraped: list[PathPoint] = []
+        for i, p in enumerate(self.points):
+            if i == 0:
+                lon, lat = start_node.lon, start_node.lat
+            elif i == len(self.points) - 1:
+                lon, lat = end_node.lon, end_node.lat
+            else:
+                lon, lat = p.lon, p.lat
+            elevation = dem.get_elevation(lon=lon, lat=lat)
+            if elevation is None:
+                raise ValueError(f"restitch of segment {self.id}: point ({lat:.5f}, {lon:.5f}) has no DEM elevation")
+            redraped.append(PathPoint(lon=lon, lat=lat, elevation=elevation))
+        self.points = redraped
 
     def get_belt_polygon(self) -> list[tuple[float, float]]:
         """Get belt polygon coordinates (buffered ribbon in meters).

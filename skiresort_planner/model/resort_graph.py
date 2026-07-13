@@ -12,6 +12,7 @@ Provides operations for:
 Reference: DETAILS.md
 """
 
+import copy
 import logging
 import statistics
 from dataclasses import asdict, dataclass
@@ -222,15 +223,19 @@ class OSMImportResult(NamedTuple):
 class MergeNodesAction:
     """Undo action for merging several nodes into one survivor.
 
-    Restoring is exact: put the deleted nodes back, move the survivor to its old location, and
-    repoint every segment/lift endpoint that was redirected onto the survivor back to its old node.
+    Restoring is exact: put the deleted nodes back, move the survivor to its old location, and restore
+    the pre-merge snapshot of every builder the merge touched — segments (repointed + re-stitched
+    geometry), lifts (repointed + rebuilt cable), and slopes/roads (repointed boundary ids). Each
+    snapshot carries the original endpoint ids, so replacing it in place also undoes the repoint.
     """
 
     survivor_id: str
     survivor_before: "Node"  # survivor's location before it moved to the median
     deleted_nodes: tuple["Node", ...]  # the merged-away nodes, to restore verbatim
-    # (owner_id, endpoint, old_node_id): a segment/lift endpoint repointed onto the survivor.
-    repoints: tuple[tuple[str, str, str], ...]
+    # Pre-merge snapshots of every touched builder, restored verbatim on undo.
+    segments_before: tuple["PathSegment", ...]
+    lifts_before: tuple["Lift", ...]
+    paths_before: tuple["SegmentPath", ...]  # slopes + roads whose boundary ids were repointed
 
     @property
     def action_type(self) -> ActionType:
@@ -882,24 +887,45 @@ class ResortGraph:
         survivor_id, merged_ids = node_ids[0], node_ids[1:]
         survivor = self.nodes[survivor_id]
         survivor_before = Node(id=survivor.id, location=survivor.location)
-
-        # Repoint every segment/lift endpoint on a merged-away node onto the survivor.
         merged = set(merged_ids)
-        repoints: list[tuple[str, str, str]] = []
+        # The survivor moves to the median too, so a builder touching ANY of the selected nodes
+        # (survivor included) needs re-stitching — not just those on the merged-away nodes.
+        touched = set(node_ids)
+
+        # Which builders touch the selected nodes — snapshot them BEFORE any mutation so undo can
+        # restore their exact pre-merge state (all mutated in place below).
+        affected_segments = [
+            s for s in self.segments.values() if s.start_node_id in touched or s.end_node_id in touched
+        ]
+        affected_lifts = [ln for ln in self.lifts.values() if ln.start_node_id in touched or ln.end_node_id in touched]
+        # Slopes/roads store their own boundary node ids (mirroring their first/last segment), so a
+        # merge that repoints those nodes must repoint the entity boundary too.
+        affected_paths: list[SegmentPath] = [
+            p
+            for p in (*self.slopes.values(), *self.roads.values())
+            if p.start_node_id in touched or p.end_node_id in touched
+        ]
+        segments_before = tuple(copy.deepcopy(s) for s in affected_segments)
+        lifts_before = tuple(copy.deepcopy(ln) for ln in affected_lifts)
+        paths_before = tuple(copy.deepcopy(p) for p in affected_paths)
+
+        # Repoint every segment / lift / slope / road endpoint on a merged-away node onto the survivor
+        # (one uniform rule for every id-holder — the same convention the whole model uses).
         for seg in self.segments.values():
             if seg.start_node_id in merged:
-                repoints.append((seg.id, "start", seg.start_node_id))
                 seg.start_node_id = survivor_id
             if seg.end_node_id in merged:
-                repoints.append((seg.id, "end", seg.end_node_id))
                 seg.end_node_id = survivor_id
         for lift in self.lifts.values():
             if lift.start_node_id in merged:
-                repoints.append((lift.id, "start", lift.start_node_id))
                 lift.start_node_id = survivor_id
             if lift.end_node_id in merged:
-                repoints.append((lift.id, "end", lift.end_node_id))
                 lift.end_node_id = survivor_id
+        for path in (*self.slopes.values(), *self.roads.values()):
+            if path.start_node_id in merged:
+                path.start_node_id = survivor_id
+            if path.end_node_id in merged:
+                path.end_node_id = survivor_id
 
         # Move the survivor to the median point; drop the merged-away nodes.
         deleted_nodes = tuple(self.nodes[nid] for nid in merged_ids)
@@ -914,12 +940,21 @@ class ResortGraph:
             del self.nodes[nid]
         self.cleanup_isolated_nodes()
 
+        # Re-stitch every affected builder fresh from the moved endpoints (each model owns its
+        # recompute; a road is just segments with kind=ROAD, so no per-kind branch is needed).
+        for seg in affected_segments:
+            seg.restitch(self.nodes[seg.start_node_id], self.nodes[seg.end_node_id], dem)
+        for lift in affected_lifts:
+            lift.rebuild(self.nodes[lift.start_node_id], self.nodes[lift.end_node_id], dem)
+
         self._push_undo(
             MergeNodesAction(
                 survivor_id=survivor_id,
                 survivor_before=survivor_before,
                 deleted_nodes=deleted_nodes,
-                repoints=tuple(repoints),
+                segments_before=segments_before,
+                lifts_before=lifts_before,
+                paths_before=paths_before,
             )
         )
         logger.info(f"Merged {len(node_ids)} nodes into {survivor_id} at ({med_lat:.5f}, {med_lon:.5f})")
@@ -1028,19 +1063,24 @@ class ResortGraph:
             )
 
         elif enum_eq(action_type, ActionType.MERGE_NODES):
-            # Restore the merged-away nodes, move the survivor back, and repoint every
-            # redirected endpoint to its original node.
+            # Restore the merged-away nodes, move the survivor back, and restore every touched builder
+            # from its pre-merge snapshot. Each snapshot carries the original endpoint/boundary ids, so
+            # replacing it in place also undoes the repoint.
             merge = cast(MergeNodesAction, action)
             for node in merge.deleted_nodes:
                 self.nodes[node.id] = node
             self.nodes[merge.survivor_id].location = merge.survivor_before.location
-            for owner_id, endpoint, old_node_id in merge.repoints:
-                owner = self.segments.get(owner_id) or self.lifts.get(owner_id)
-                assert owner is not None, f"merge undo: owner {owner_id} vanished"
-                if endpoint == "start":
-                    owner.start_node_id = old_node_id
+            for seg_before in merge.segments_before:
+                self.segments[seg_before.id] = seg_before
+            for lift_before in merge.lifts_before:
+                self.lifts[lift_before.id] = lift_before
+            for path_before in merge.paths_before:
+                if isinstance(path_before, Slope):
+                    self.slopes[path_before.id] = path_before
+                elif isinstance(path_before, Road):
+                    self.roads[path_before.id] = path_before
                 else:
-                    owner.end_node_id = old_node_id
+                    raise RuntimeError(f"merge undo: unexpected path type {type(path_before).__name__}")
             logger.info(f"Reverted merge into {merge.survivor_id}: restored {len(merge.deleted_nodes)} nodes")
 
         else:

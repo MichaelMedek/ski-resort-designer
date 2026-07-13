@@ -158,7 +158,7 @@ class OSMImporter:
         logger.info(f"Overpass returned {len(elements)} elements for bbox {bbox}")
         return elements
 
-    def convert(self, bbox: BBox, elements: list[dict[str, Any]]) -> ImportSummary:
+    def convert(self, bbox: BBox, elements: list[OverpassElement]) -> ImportSummary:
         """Turn raw Overpass elements into import-ready pistes + lifts for the given box.
 
         `bbox` is the region the user chose; only ways fully inside the box are kept. Every element
@@ -169,7 +169,7 @@ class OSMImporter:
         for el in elements:
             tags = el.get("tags", {})
             vertices = [(v["lon"], v["lat"]) for v in el.get("geometry", [])]
-            osm_id = el.get("id", "?")
+            osm_id = el.get("id", 0)
             if "aerialway" in tags:
                 self._add_lift(tags, vertices, bbox, summary, osm_id)
             elif "piste:type" in tags:
@@ -180,7 +180,7 @@ class OSMImporter:
     # -- pistes ---------------------------------------------------------------
 
     def _add_piste(
-        self, tags: dict[str, Any], vertices: list[Vertex], bbox: BBox, summary: ImportSummary, osm_id: Any
+        self, tags: dict[str, str], vertices: list[Vertex], bbox: BBox, summary: ImportSummary, osm_id: int
     ) -> None:
         if tags.get("piste:type") != OSMConfig.PISTE_TYPE_DOWNHILL:
             return  # only alpine downhill runs; ignore connection/snow_park/playground/sled/yes
@@ -216,7 +216,7 @@ class OSMImporter:
     # -- lifts ----------------------------------------------------------------
 
     def _add_lift(
-        self, tags: dict[str, Any], vertices: list[Vertex], bbox: BBox, summary: ImportSummary, osm_id: Any
+        self, tags: dict[str, str], vertices: list[Vertex], bbox: BBox, summary: ImportSummary, osm_id: int
     ) -> None:
         aerialway = tags["aerialway"]
         lift_type = OSMConfig.AERIALWAY_TO_LIFT_TYPE.get(aerialway)
@@ -377,7 +377,7 @@ def _longest_descending_run(points: list[PathPoint]) -> list[PathPoint]:
     return points[n - 1 - r1 : n - r0][::-1]  # map reversed indices back, orient top→bottom
 
 
-def _piste_name(tags: dict[str, Any]) -> str | None:
+def _piste_name(tags: dict[str, str]) -> str | None:
     """OSM name resolution order; None if the run is unnamed (unnamed runs are skipped on import)."""
     for key in ("name", "piste:name", "piste:ref", "ref"):
         value = tags.get(key)
@@ -386,7 +386,7 @@ def _piste_name(tags: dict[str, Any]) -> str | None:
     return None
 
 
-def _lift_name(tags: dict[str, Any]) -> str | None:
+def _lift_name(tags: dict[str, str]) -> str | None:
     """OSM lift name resolution; None if unnamed (unnamed lifts are skipped on import)."""
     for key in ("name", "ref"):
         value = tags.get(key)

@@ -1019,3 +1019,121 @@ class TestMergeNodes:
         self._node(empty_graph, dem, "B", 0.0, -100 / self.M)
         span = empty_graph.max_node_span_m(["A", "B"])
         assert span == pytest.approx(100.0, abs=1.0)
+
+    # -- geometry re-stitch after merge (the split-station tangle fix) --------------------------
+
+    def test_merge_resyncs_slope_boundary_ids_so_endpoints_do_not_dangle(
+        self, empty_graph, mock_dem_blue_slope
+    ) -> None:
+        """Regression: merging a slope's boundary node used to leave slope.start/end_node_id pointing
+        at a deleted node → `ValueError: Start or end node not found` on the next import. The slope's
+        own boundary ids must be resynced to live nodes after merge.
+        """
+        dem = mock_dem_blue_slope
+        graph = empty_graph
+        seg_ids = _commit_L_slope(graph, dem)
+        graph.finish_slope(segment_ids=seg_ids)
+        slope = graph.slopes[next(iter(graph.slopes))]
+        top_node_id = slope.start_node_id  # the run's top boundary node
+
+        # A second node a few metres from the slope top, to merge the top into.
+        self._node(graph, dem, "X", 6 / self.M, 6 / self.M)
+        graph.merge_nodes(node_ids=[top_node_id, "X"], dem=dem)
+
+        # The boundary ids must resolve to live nodes — endpoints() would raise otherwise.
+        start_pt, end_pt = slope.endpoints(nodes=graph.nodes)
+        assert start_pt is not None and end_pt is not None
+        assert slope.start_node_id in graph.nodes and slope.end_node_id in graph.nodes
+
+    def test_merge_restitches_segment_polyline_endpoint_to_survivor(self, empty_graph, mock_dem_blue_slope) -> None:
+        """After merge, an affected segment's drawn polyline endpoint sits exactly on the survivor
+        (not the pre-merge coordinate), so the slope actually reaches the merged node.
+        """
+        dem = mock_dem_blue_slope
+        graph = empty_graph
+        seg_ids = _commit_L_slope(graph, dem)
+        graph.finish_slope(segment_ids=seg_ids)
+        slope = graph.slopes[next(iter(graph.slopes))]
+        top_seg = graph.segments[slope.segment_ids[0]]
+        assert top_seg.start_node_id == slope.start_node_id
+        top_node_id = slope.start_node_id
+
+        self._node(graph, dem, "X", 8 / self.M, 8 / self.M)
+        graph.merge_nodes(node_ids=[top_node_id, "X"], dem=dem)
+
+        survivor = graph.nodes[top_node_id]
+        # The segment's first drawn point is snapped onto the moved survivor node.
+        assert top_seg.points[0].lon == pytest.approx(survivor.lon)
+        assert top_seg.points[0].lat == pytest.approx(survivor.lat)
+        assert top_seg.points[0].elevation == pytest.approx(survivor.elevation)
+
+    def test_merge_rebuilds_lift_cable_from_moved_station(self, empty_graph, mock_dem_blue_slope) -> None:
+        """Merging a lift station rebuilds the cable: first cable point lands on the survivor and the
+        cached geometry actually changes (was left stale before).
+        """
+        dem = mock_dem_blue_slope
+        graph = empty_graph
+        self._node(graph, dem, "A", 0.0, 0.0)
+        self._node(graph, dem, "B", 40 / self.M, 0.0)  # split bottom station, 40m from A
+        self._node(graph, dem, "T", 0.0, -1000 / self.M)
+        lift = graph.add_lift(start_node_id="B", end_node_id="T", lift_type="chairlift", dem=dem)
+        cable_before = [(p.lon, p.lat) for p in graph.lifts[lift.id].cable_points]
+
+        graph.merge_nodes(node_ids=["A", "B"], dem=dem)
+
+        rebuilt = graph.lifts[lift.id]
+        survivor = graph.nodes["A"]
+        assert rebuilt.start_node_id == "A"
+        assert rebuilt.cable_points[0].lon == pytest.approx(survivor.lon)
+        assert rebuilt.cable_points[0].lat == pytest.approx(survivor.lat)
+        cable_after = [(p.lon, p.lat) for p in rebuilt.cable_points]
+        assert cable_after != cable_before, "cable geometry must be recomputed, not left stale"
+
+    def test_undo_restores_segment_and_lift_geometry_exactly(self, empty_graph, mock_dem_blue_slope) -> None:
+        """Undo of a merge restores the pre-merge drawn geometry byte-for-byte (segment polylines +
+        lift cable) and the slope boundary ids.
+        """
+        dem = mock_dem_blue_slope
+        graph = empty_graph
+        seg_ids = _commit_L_slope(graph, dem)
+        graph.finish_slope(segment_ids=seg_ids)
+        slope = graph.slopes[next(iter(graph.slopes))]
+        top_seg = graph.segments[slope.segment_ids[0]]
+        top_node_id = slope.start_node_id
+
+        self._node(graph, dem, "T", 0.0, -1200 / self.M)
+        lift = graph.add_lift(start_node_id=top_node_id, end_node_id="T", lift_type="chairlift", dem=dem)
+
+        seg_points_before = [(p.lon, p.lat, p.elevation) for p in top_seg.points]
+        cable_before = [(p.lon, p.lat, p.elevation) for p in graph.lifts[lift.id].cable_points]
+        slope_boundary_before = (slope.start_node_id, slope.end_node_id)
+
+        self._node(graph, dem, "X", 8 / self.M, 8 / self.M)
+        graph.merge_nodes(node_ids=[top_node_id, "X"], dem=dem)
+        graph.undo_last()
+
+        top_seg_after = graph.segments[slope.segment_ids[0]]
+        restored_slope = graph.slopes[next(iter(graph.slopes))]
+        assert [(p.lon, p.lat, p.elevation) for p in top_seg_after.points] == seg_points_before
+        assert [(p.lon, p.lat, p.elevation) for p in graph.lifts[lift.id].cable_points] == cable_before
+        assert (restored_slope.start_node_id, restored_slope.end_node_id) == slope_boundary_before
+
+    def test_merge_after_slope_does_not_break_import_duplicate_check(self, empty_graph, mock_dem_blue_slope) -> None:
+        """End-to-end regression for the crash: after merging a slope boundary node, has_endpoint_duplicate
+        (called by import_osm) must not raise on the slope's now-updated endpoints.
+        """
+        dem = mock_dem_blue_slope
+        graph = empty_graph
+        seg_ids = _commit_L_slope(graph, dem)
+        graph.finish_slope(segment_ids=seg_ids)
+        slope = graph.slopes[next(iter(graph.slopes))]
+        top_node_id = slope.start_node_id
+
+        self._node(graph, dem, "X", 5 / self.M, 5 / self.M)
+        graph.merge_nodes(node_ids=[top_node_id, "X"], dem=dem)
+
+        # Would raise ValueError("Start or end node not found ...") before the fix.
+        result = graph.has_endpoint_duplicate(
+            a=PathPoint(lon=0.5, lat=0.5, elevation=0.0), b=PathPoint(lon=0.6, lat=0.6, elevation=0.0)
+        )
+        assert result is False

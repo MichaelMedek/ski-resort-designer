@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, cast
 
 from skiresort_planner.constants import EntityPrefixes, LiftConfig, NameConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
+from skiresort_planner.model.node_connected import NodeConnected
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.pylon import Pylon
 
@@ -29,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class Lift:
+class Lift(NodeConnected):
     """A ski lift connecting two nodes.
 
     Lifts store only IDs of start/end nodes. Derived properties
@@ -386,14 +387,6 @@ class Lift:
             lon2=end.lon,
         )
 
-    def endpoints(self, nodes: dict[str, "Node"]) -> tuple[PathPoint, PathPoint]:
-        """The two station locations, for geometric duplicate matching (see endpoints_match)."""
-        start = nodes.get(self.start_node_id)
-        end = nodes.get(self.end_node_id)
-        if not start or not end:
-            raise ValueError(f"Start or end node not found for lift {self.id}")
-        return start.location, end.location
-
     def update_type(self, new_type: str, start_node: "Node", end_node: "Node") -> None:
         """Change lift type and refresh type-dependent geometry.
 
@@ -425,6 +418,30 @@ class Lift:
         )
 
         logger.info(f"Updated lift {self.id} type to {new_type}")
+
+    def rebuild(self, start_node: "Node", end_node: "Node", dem: "DEMService") -> None:
+        """Recompute all geometry for moved station endpoints, keeping identity (id, name, type).
+
+        Used when a station node moves (e.g. node-merge): re-samples terrain along the NEW station
+        line, then recomputes pylons + cable_points via the same _compute_type_dependent_data helper
+        that create()/update_type() use. Unlike update_type (which changes the type and reuses stale
+        terrain_points), this refreshes terrain_points from the moved endpoints. The regenerated name
+        is discarded — a rebuild must not clobber the existing (user/OSM) name.
+
+        Args:
+            start_node: Bottom station node (new position).
+            end_node: Top station node (new position).
+            dem: DEM service for terrain sampling.
+        """
+        self.terrain_points = self.sample_terrain(start_node=start_node, end_node=end_node, dem=dem)
+        _name, self.pylons, self.cable_points, _length = self._compute_type_dependent_data(
+            terrain_points=self.terrain_points,
+            start_node=start_node,
+            end_node=end_node,
+            lift_type=self.lift_type,
+            lift_id=self.id,
+        )
+        logger.info(f"Rebuilt lift {self.id} geometry for moved endpoints")
 
     @staticmethod
     def calculate_pylons(

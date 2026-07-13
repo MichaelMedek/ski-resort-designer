@@ -137,3 +137,17 @@ module = [
     "scipy.*",
 ]
 ignore_missing_imports = true
+
+# Test files are held to real type-CORRECTNESS (bad calls, wrong args still error) but are NOT
+# forced to annotate every test method / fixture. `strict` turns on disallow_untyped_defs and the
+# explicit-Any bans, which for a test suite mean hundreds of `-> None` stubs with no safety payoff.
+# Production code (skiresort_planner.*) stays fully strict — this override is tests-only.
+[[tool.mypy.overrides]]
+module = ["tests_workflow.*"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false
+disallow_untyped_decorators = false
+disallow_any_explicit = false
+disallow_any_decorated = false
+check_untyped_defs = true

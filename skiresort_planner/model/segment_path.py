@@ -14,9 +14,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, TypeVar, cast
 
 from skiresort_planner.constants import SlopeConfig
+from skiresort_planner.model.node_connected import NodeConnected
 
 if TYPE_CHECKING:
-    from skiresort_planner.model.node import Node
     from skiresort_planner.model.path_point import PathPoint
     from skiresort_planner.model.path_segment import PathSegment
 
@@ -38,15 +38,15 @@ def steepest_section_pct(segments: list["PathSegment"]) -> float:
 
 
 @dataclass
-class SegmentPath:
+class SegmentPath(NodeConnected):
     """A named chain of segments between two nodes.
 
     Attributes:
         id: Unique identifier (prefix defined by subclass ID_PREFIX).
         name: Display name with number prefix.
         segment_ids: Ordered list of segment IDs.
-        start_node_id: ID of first node.
-        end_node_id: ID of last node.
+        start_node_id: Boundary node the chain starts at (the first segment's start node).
+        end_node_id: Boundary node the chain ends at (the last segment's end node).
     """
 
     id: str
@@ -111,17 +111,6 @@ class SegmentPath:
     def has_warnings(self, segments: dict[str, "PathSegment"]) -> bool:
         """True if any segment carries a warning."""
         return any(segments[sid].has_warnings for sid in self.segment_ids if sid in segments)
-
-    def endpoints(self, nodes: dict[str, "Node"]) -> tuple["PathPoint", "PathPoint"]:
-        """The start and end node locations, for geometric duplicate matching (see endpoints_match).
-
-        Uses the immutable end nodes (not smoothed segment points), symmetric with Lift.endpoints.
-        """
-        start = nodes.get(self.start_node_id)
-        end = nodes.get(self.end_node_id)
-        if not start or not end:
-            raise ValueError(f"Start or end node not found for {type(self).__name__} {self.id}")
-        return start.location, end.location
 
     @classmethod
     def from_dict(cls: type[T], data: dict[str, object]) -> T:

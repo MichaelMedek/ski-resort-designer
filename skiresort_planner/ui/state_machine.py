@@ -251,7 +251,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import NoReturn, cast
+from typing import NoReturn, Protocol, cast
 
 import streamlit as st
 from statemachine import State, StateMachine
@@ -337,7 +337,15 @@ class StreamlitUIListener:
         trigger_rerun()
 
 
-def _forbidden_call(name: str) -> Callable[..., NoReturn]:
+class _ForbiddenCall(Protocol):
+    """A blocked transition stand-in: any call raises. Variadic-object so it can replace any bound
+    transition method regardless of that transition's real signature.
+    """
+
+    def __call__(self, *args: object, **kwargs: object) -> NoReturn: ...
+
+
+def _forbidden_call(name: str) -> _ForbiddenCall:
     """Create a function that raises RuntimeError when called.
 
     Used to block direct calls to event-triggered transitions.

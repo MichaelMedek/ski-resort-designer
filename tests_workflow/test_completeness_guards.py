@@ -171,3 +171,42 @@ class TestLayering:
                             if alias.name.startswith("skiresort_planner.ui"):
                                 offenders.append(f"{py.relative_to(PACKAGE_DIR)}:{node.lineno} imports {alias.name}")
         assert not offenders, "lower layers must not import ui:\n" + "\n".join(offenders)
+
+
+# =============================================================================
+# 4. NodeConnected contract: every subclass exposes the endpoint interface
+# =============================================================================
+
+
+class TestNodeConnectedContract:
+    """Every concrete NodeConnected subclass (Slope, Road, Lift) must expose `id`, `start_node_id`,
+    and `end_node_id` — as a dataclass field (Lift: stored) or a property (Slope/Road: derived).
+    """
+
+    def test_every_subclass_provides_the_endpoint_members(self) -> None:
+        import dataclasses as dc
+
+        from skiresort_planner.model.lift import Lift  # noqa: F401 — import registers the subclass
+        from skiresort_planner.model.node_connected import NodeConnected
+        from skiresort_planner.model.road import Road  # noqa: F401
+        from skiresort_planner.model.slope import Slope  # noqa: F401
+
+        required = ("id", "start_node_id", "end_node_id")
+
+        def all_descendants(cls: type) -> set[type]:
+            subs = set(cls.__subclasses__())
+            return subs.union(*(all_descendants(s) for s in subs))
+
+        # Every descendant must satisfy the contract (SegmentPath supplies it via properties, Lift via
+        # fields, Slope/Road inherit SegmentPath's) — no leaf/abstract filtering needed: the check is
+        # uniform, a class either exposes each member as a property or a dataclass field, or it fails.
+        descendants = all_descendants(NodeConnected)
+        assert {c.__name__ for c in descendants} >= {"Slope", "Road", "Lift"}, "expected the 3 known entities"
+
+        offenders = {}
+        for cls in descendants:
+            field_names = {f.name for f in dc.fields(cls)} if dc.is_dataclass(cls) else set()
+            missing = [m for m in required if not (isinstance(getattr(cls, m, None), property) or m in field_names)]
+            if missing:
+                offenders[cls.__name__] = missing
+        assert not offenders, f"NodeConnected subclasses missing endpoint members: {offenders}"
