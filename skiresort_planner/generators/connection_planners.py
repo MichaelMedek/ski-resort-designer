@@ -14,9 +14,8 @@ Reference: DETAILS.md Section 7 for algorithm details.
 import logging
 import math
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from math import exp
-from typing import Optional
 
 import numpy as np
 from scipy.sparse import csr_matrix
@@ -34,7 +33,7 @@ from skiresort_planner.model.proposed_path import ProposedPathSegment
 logger = logging.getLogger(__name__)
 
 
-class GradientMode(str, Enum):
+class GradientMode(StrEnum):
     """Which way a single segment is allowed to run along its length."""
 
     DOWNHILL = "downhill"  # net-descends; climbing is penalized (skiable pistes + descending roads)
@@ -98,7 +97,7 @@ class LeastCostPathPlanner:
         target_elevation: float,
         target_grade_pct: float,
         gradient_mode: GradientMode = GradientMode.DOWNHILL,
-    ) -> Optional[ProposedPathSegment]:
+    ) -> ProposedPathSegment | None:
         """Plan a least-cost path that holds a target grade from start to target.
 
         Args:
@@ -180,7 +179,7 @@ class LeastCostPathPlanner:
         target_lon: float,
         target_lat: float,
         direct_distance: float,
-    ) -> Optional[tuple[list[list[float]], list[list[float]], list[list[float]], GridNode, GridNode]]:
+    ) -> tuple[list[list[float]], list[list[float]], list[list[float]], GridNode, GridNode] | None:
         """Build elevation grid covering the search area."""
         # Calculate grid bounds with buffer
         # TODO(serpentine): this buffer (0.5×direct) is too tight for switchbacks — a
@@ -270,7 +269,7 @@ class LeastCostPathPlanner:
         target_lat: float,
         lons: list[list[float]],
         lats: list[list[float]],
-    ) -> Optional[GridNode]:
+    ) -> GridNode | None:
         """Find grid node nearest to target coordinates."""
         best_dist = float("inf")
         best_node = None
@@ -298,7 +297,7 @@ class LeastCostPathPlanner:
         lons: list[list[float]],
         lats: list[list[float]],
         gradient_mode: GradientMode = GradientMode.DOWNHILL,
-    ) -> tuple[Optional[list[GridNode]], int, int]:
+    ) -> tuple[list[GridNode] | None, int, int]:
         """Least-cost path using SciPy's C-optimized Dijkstra.
 
         Builds a sparse graph from the elevation grid and uses

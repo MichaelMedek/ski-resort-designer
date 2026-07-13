@@ -12,7 +12,7 @@ Reference: DETAILS.md Sections 2, 3, 4
 
 import logging
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from math import atan2, cos, degrees, radians, sin, sqrt
 from typing import Optional
 
@@ -63,7 +63,7 @@ class TerrainOrientation:
     difficulty_color: str
 
 
-class SideDirection(str, Enum):
+class SideDirection(StrEnum):
     """Which way terrain leans perpendicular to the ski direction (str-Enum for serialization)."""
 
     FLAT = "flat"
@@ -96,7 +96,7 @@ class TerrainAnalyzer:
         print(f"Slope: {gradient.slope_pct:.1f}%, Fall line: {gradient.bearing_deg:.0f}°")
     """
 
-    def __init__(self, dem: Optional[DEMService] = None):
+    def __init__(self, dem: DEMService | None = None):
         """Initialize with optional DEM service.
 
         Args:
@@ -275,7 +275,7 @@ class TerrainAnalyzer:
 
         return TerrainGradient(slope_pct=magnitude, bearing_deg=steepest_bearing)
 
-    def get_orientation(self, lon: float, lat: float) -> Optional[TerrainOrientation]:
+    def get_orientation(self, lon: float, lat: float) -> TerrainOrientation | None:
         """Get complete terrain orientation at a point.
 
         Returns orientation info including fall line, slope percentage,

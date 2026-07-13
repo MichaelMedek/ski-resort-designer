@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from skiresort_planner.constants import ClickConfig, LiftConfig, MapConfig, OSMConfig, PathConfig
@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     from skiresort_planner.model.proposed_path import ProposedPathSegment
 
 
-class EntityKind(str, Enum):
+class EntityKind(StrEnum):
     """A viewable resort entity: a ski slope, a vehicle road, or a lift.
 
     The single vocabulary for kind-dispatch in the UI (viewing header/body, the

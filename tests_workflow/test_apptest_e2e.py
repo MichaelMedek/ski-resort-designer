@@ -100,7 +100,7 @@ def create_command_executor() -> None:
 
     Custom connect (actions.py):
         ("cancel_custom",) → cancel_custom_path()
-        ("select_custom_target", lon, lat) → sm.select_custom_target()
+        ("select_custom_target", lon, lat) → sm.select_custom_target()  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
     Delete operations (actions.py):
         ("delete_slope", slope_id) → delete_slope_action(slope_id)
@@ -257,7 +257,7 @@ def create_command_executor() -> None:
         elif cmd_type == "select_custom_target":
             _, lon, lat = cmd
             elevation = dem.get_elevation_or_raise(lon=lon, lat=lat)
-            sm.select_custom_target(target_location=(lon, lat, elevation))
+            sm.select_custom_target(target_location=(lon, lat, elevation))  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
         # -------------------------------------------------------------------------
         # Delete operations (actions.py) - Uses new action functions!
@@ -383,7 +383,7 @@ class TestGrandResortTour:
         - commit_selected_path() for path commits (actions.py)
         - finish_current_slope() for finishing (actions.py)
         - undo_last_action() for undo (actions.py)
-        - sm.select_custom_target() for custom-connect targeting (map-only)
+        - sm.select_custom_target() for custom-connect targeting (map-only)  # type: ignore[attr-defined]  # dynamic python-statemachine event
         - delete_slope_action/delete_lift_action for deletions (actions.py)
 
         PHASE 1: SLOPE_1 (Terrain → Terrain)

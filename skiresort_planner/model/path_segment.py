@@ -10,7 +10,7 @@ Reference: DETAILS.md
 """
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from math import floor
 from typing import TYPE_CHECKING, cast
 
@@ -43,7 +43,7 @@ def _get_utm_zone(lon: float, lat: float) -> str:
     return f"EPSG:327{zone_number:02d}"
 
 
-class SegmentKind(str, Enum):
+class SegmentKind(StrEnum):
     """What a committed segment IS — a ski slope or a vehicle road."""
 
     SLOPE = "slope"

@@ -31,6 +31,7 @@ import plotly.graph_objects as go
 import pydeck as pdk
 import streamlit as st
 
+from skiresort_planner.constants import StyleConfig
 from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.model.click_info import ClickInfo, MapClickType
 from skiresort_planner.model.message import OutsideTerrainMessage
@@ -46,6 +47,7 @@ if TYPE_CHECKING:
     from skiresort_planner.model.lift import Lift
     from skiresort_planner.model.road import Road
     from skiresort_planner.model.slope import Slope
+    from skiresort_planner.ui.left_panel import SidebarRenderer
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +64,14 @@ class ProfileSpec:
 
     fig: go.Figure
     key: str
+
+
+@dataclass(frozen=True)
+class StateHeader:
+    """The sidebar header for a state: an icon glyph plus a label (rendered as `### {icon} {label}`)."""
+
+    icon: str
+    label: str
 
 
 # =============================================================================
@@ -122,6 +132,23 @@ class BuildState(ABC):
     def renders_custom_path(self, ctx: PlannerContext) -> bool:
         """Whether proposals draw as a single freehand path (roads + slope custom-connect)."""
 
+    @abstractmethod
+    def header(self, ctx: PlannerContext) -> StateHeader:
+        """The sidebar header (icon + label) shown while in this state."""
+
+    @abstractmethod
+    def sidebar_controls(self, renderer: SidebarRenderer) -> dict[str, bool | str]:
+        """Render this state's mode-specific sidebar controls, returning any action flags.
+
+        Called by SidebarRenderer with itself, so a state routes into the renderer's control helpers
+        (close button / build controls / cancel). Returns the flags app.py consumes (empty when the
+        state produces none).
+        """
+
+    @abstractmethod
+    def blocks_build_buttons(self) -> bool:
+        """Whether the build-mode selector buttons are disabled (True while building/placing)."""
+
 
 def _stored_2d_view(ctx: PlannerContext) -> ViewState:
     """The stored top-down camera — used by every state that does not fit a 3D framing."""
@@ -150,6 +177,19 @@ class _IdleReadyState(BuildState):
         return None
 
     def renders_custom_path(self, ctx):  # type: ignore[no-untyped-def]
+        return False
+
+    def header(self, ctx: PlannerContext) -> StateHeader:
+        # The lift glyph tracks the first lift button so the header matches whatever lift renders first.
+        return StateHeader(
+            icon=f"{StyleConfig.SLOPE_ICON}{StyleConfig.ROAD_ICON}{StyleConfig.LIFT_ICONS[BuildMode.LIFT_TYPES[0]]}",
+            label="Ready to Build",
+        )
+
+    def sidebar_controls(self, renderer: SidebarRenderer) -> dict[str, bool | str]:
+        return {}
+
+    def blocks_build_buttons(self) -> bool:
         return False
 
 
@@ -192,6 +232,16 @@ class _EntityViewingState(BuildState):
         return None
 
     def renders_custom_path(self, ctx):  # type: ignore[no-untyped-def]
+        return False
+
+    def header(self, ctx: PlannerContext) -> StateHeader:
+        return StateHeader(icon=StyleConfig.VIEWING_ICON, label=f"Viewing {self.kind.value.capitalize()}")
+
+    def sidebar_controls(self, renderer: SidebarRenderer) -> dict[str, bool | str]:
+        renderer.render_close_panel_button()
+        return {}
+
+    def blocks_build_buttons(self) -> bool:
         return False
 
 
@@ -276,6 +326,15 @@ class _SlopeBuildingState(BuildState):
     def renders_custom_path(self, ctx):  # type: ignore[no-untyped-def]
         return ctx.custom_connect.force_mode
 
+    def header(self, ctx: PlannerContext) -> StateHeader:
+        return StateHeader(icon=StyleConfig.BUILDING_ICON, label="Building Slope...")
+
+    def sidebar_controls(self, renderer: SidebarRenderer) -> dict[str, bool | str]:
+        return renderer.render_slope_building_controls()
+
+    def blocks_build_buttons(self) -> bool:
+        return True
+
 
 class _LiftPlacingState(BuildState):
     state_key = "lift_placing"
@@ -314,6 +373,16 @@ class _LiftPlacingState(BuildState):
     def renders_custom_path(self, ctx):  # type: ignore[no-untyped-def]
         return False
 
+    def header(self, ctx: PlannerContext) -> StateHeader:
+        return StateHeader(icon=StyleConfig.BUILDING_ICON, label="Placing Lift...")
+
+    def sidebar_controls(self, renderer: SidebarRenderer) -> dict[str, bool | str]:
+        renderer.render_lift_cancel_button()
+        return {}
+
+    def blocks_build_buttons(self) -> bool:
+        return True
+
 
 class _ImportPlacingState(BuildState):
     state_key = "import_placing"
@@ -350,6 +419,16 @@ class _ImportPlacingState(BuildState):
     def renders_custom_path(self, ctx):  # type: ignore[no-untyped-def]
         return False
 
+    def header(self, ctx: PlannerContext) -> StateHeader:
+        return StateHeader(icon=StyleConfig.BUILDING_ICON, label="Importing Area...")
+
+    def sidebar_controls(self, renderer: SidebarRenderer) -> dict[str, bool | str]:
+        renderer.render_import_building_controls()
+        return {}
+
+    def blocks_build_buttons(self) -> bool:
+        return True
+
 
 class _MergePlacingState(BuildState):
     state_key = "merge_placing"
@@ -374,6 +453,16 @@ class _MergePlacingState(BuildState):
 
     def renders_custom_path(self, ctx):  # type: ignore[no-untyped-def]
         return False
+
+    def header(self, ctx: PlannerContext) -> StateHeader:
+        return StateHeader(icon=StyleConfig.BUILDING_ICON, label="Merging Nodes...")
+
+    def sidebar_controls(self, renderer: SidebarRenderer) -> dict[str, bool | str]:
+        renderer.render_merge_building_controls()
+        return {}
+
+    def blocks_build_buttons(self) -> bool:
+        return True
 
 
 class _RoadBuildingState(BuildState):
@@ -421,6 +510,15 @@ class _RoadBuildingState(BuildState):
         return None
 
     def renders_custom_path(self, ctx):  # type: ignore[no-untyped-def]
+        return True
+
+    def header(self, ctx: PlannerContext) -> StateHeader:
+        return StateHeader(icon=StyleConfig.BUILDING_ICON, label="Building Road...")
+
+    def sidebar_controls(self, renderer: SidebarRenderer) -> dict[str, bool | str]:
+        return renderer.render_road_building_controls()
+
+    def blocks_build_buttons(self) -> bool:
         return True
 
 

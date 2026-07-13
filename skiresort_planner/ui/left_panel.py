@@ -38,7 +38,7 @@ from skiresort_planner.persistence import backup_store
 from skiresort_planner.ui.actions import undo_last_action
 from skiresort_planner.ui.context import BuildMode, EntityKind, PlannerContext
 from skiresort_planner.ui.infra import bump_map_version, reload_map, trigger_rerun
-from skiresort_planner.ui.mode_registry import OPERATIONS, BuilderOperation, OperationGroup
+from skiresort_planner.ui.mode_registry import BUILD_STATES, OPERATIONS, BuilderOperation, OperationGroup
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
 logger = logging.getLogger(__name__)
@@ -224,31 +224,19 @@ class SidebarRenderer:
             return actions
 
     def _render_mode_specific_controls(self) -> dict[str, bool | str]:
-        """Render the controls for the current state: viewing close button OR building/placing controls.
+        """Render the controls for the current state, dispatched via the BUILD_STATES registry.
 
-        Returns the action flags produced by the building controls (empty for states that produce none).
+        Each state owns its sidebar controls (BuildState.sidebar_controls), so a new state can't be
+        forgotten — the registry is bijection-asserted against the SM states at import.
         """
-        # Mode-specific controls: close button OR building/placing controls
-        if self.sm.is_idle_viewing_slope or self.sm.is_idle_viewing_lift or self.sm.is_idle_viewing_road:
-            self._render_close_panel_button()
-        elif self.sm.is_any_slope_state:
-            return self._render_slope_building_controls()
-        elif self.sm.is_lift_placing:
-            self._render_lift_cancel_button()
-        elif self.sm.is_import_placing:
-            self._render_import_building_controls()
-        elif self.sm.is_merge_placing:
-            self._render_merge_building_controls()
-        elif self.sm.is_any_road_state:
-            return self._render_road_building_controls()
-        return {}
+        return BUILD_STATES[self.sm.get_current_state_id()].sidebar_controls(self)
 
     def _render_resort_data(self) -> None:
         """Render the resort-data group: cumulative stats and save/load controls."""
         self._render_resort_stats()
         self._render_save_load()
 
-    def _render_close_panel_button(self) -> None:
+    def render_close_panel_button(self) -> None:
         """Render close panel button for viewing states."""
         if st.button(
             "✖️ Close Right Panel",
@@ -270,7 +258,7 @@ class SidebarRenderer:
             bump_map_version()  # clear stale click state before the transition
             on_cancel()  # the state transition triggers st.rerun() via the listener
 
-    def _render_lift_cancel_button(self) -> None:
+    def render_lift_cancel_button(self) -> None:
         """Render cancel button during lift placement."""
         self._cancel_button(
             label="✖️ Cancel Lift Placement",
@@ -278,8 +266,8 @@ class SidebarRenderer:
             help="Discard start point and return to idle",
         )
 
-    def _render_road_building_controls(self) -> dict[str, bool | str]:
-        """Render controls during road building (mirrors _render_slope_building_controls).
+    def render_road_building_controls(self) -> dict[str, bool | str]:
+        """Render controls during road building (mirrors render_slope_building_controls).
 
         Returns a dict with finish_road / cancel_road flags for the render loop.
         """
@@ -369,7 +357,7 @@ class SidebarRenderer:
                 logger.warning(f"Reset View cleaned {removed} orphaned node(s)")
             reload_map()  # Bumps version and triggers rerun
 
-    def _render_import_building_controls(self) -> None:
+    def render_import_building_controls(self) -> None:
         """Render controls while placing an OSM import box (IMPORT_PLACING).
 
         Shows the area half-width slider (mirrors slope's Segment Length slider — only visible while
@@ -396,7 +384,7 @@ class SidebarRenderer:
             help="Discard the placed area and return to idle",
         )
 
-    def _render_merge_building_controls(self) -> None:
+    def render_merge_building_controls(self) -> None:
         """Render controls while selecting nodes to merge (MERGE_PLACING).
 
         Shows how many nodes are selected and a Cancel button. Confirming happens from the right
@@ -429,34 +417,13 @@ class SidebarRenderer:
         viewing = self.sm.viewing_entity  # (EntityKind, id) or None
         viewing_kind = viewing[0] if viewing is not None else None
 
-        if viewing_kind is not None:
-            st.markdown(f"### {StyleConfig.VIEWING_ICON} Viewing {viewing_kind.value.capitalize()}")
-        elif self.sm.is_any_slope_state:
-            st.markdown(f"### {StyleConfig.BUILDING_ICON} Building Slope...")
-        elif self.sm.is_lift_placing:
-            st.markdown(f"### {StyleConfig.BUILDING_ICON} Placing Lift...")
-        elif self.sm.is_any_road_state:
-            st.markdown(f"### {StyleConfig.BUILDING_ICON} Building Road...")
-        elif self.sm.is_import_placing:
-            st.markdown(f"### {StyleConfig.BUILDING_ICON} Importing Area...")
-        elif self.sm.is_merge_placing:
-            st.markdown(f"### {StyleConfig.BUILDING_ICON} Merging Nodes...")
-        else:
-            # All Idle* states (IdleReady, IdleViewing*). The lift glyph tracks the first lift
-            # button so the header always matches whatever lift renders first.
-            st.markdown(
-                f"### {StyleConfig.SLOPE_ICON}{StyleConfig.ROAD_ICON}"
-                f"{StyleConfig.LIFT_ICONS[BuildMode.LIFT_TYPES[0]]} Ready to Build"
-            )
+        # Header + button-disabled state come from the current state's BuildState (registry-driven,
+        # bijection-asserted against the SM states), so a new state can't be forgotten here.
+        build_state = BUILD_STATES[self.sm.get_current_state_id()]
+        head = build_state.header(self.ctx)
+        st.markdown(f"### {head.icon} {head.label}")
 
-        # Buttons disabled during building/placing
-        buttons_disabled = (
-            self.sm.is_any_slope_state
-            or self.sm.is_lift_placing
-            or self.sm.is_any_road_state
-            or self.sm.is_import_placing
-            or self.sm.is_merge_placing
-        )
+        buttons_disabled = build_state.blocks_build_buttons()
         current_mode = self.ctx.build_mode.mode
 
         if buttons_disabled:
@@ -535,8 +502,8 @@ class SidebarRenderer:
             return viewed_lift is not None and viewed_lift.lift_type == mode
         return current_mode == mode
 
-    def _render_slope_building_controls(self) -> dict[str, bool | str]:
-        """Render controls for slope building state (mirrors _render_road_building_controls).
+    def render_slope_building_controls(self) -> dict[str, bool | str]:
+        """Render controls for slope building state (mirrors render_road_building_controls).
 
         Returns dict with finish_slope, cancel_slope, recompute flags.
         Note: Undo button is rendered separately in render() for consistency.

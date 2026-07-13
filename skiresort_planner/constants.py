@@ -22,6 +22,7 @@ Classes:
     MergeConfig: Manual node-merge tool
 """
 
+from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
@@ -144,6 +145,10 @@ class SlopeConfig:
         "black": {"gentle": 45.0, "steep": 60.0},  # Threshold: 40%+
     }
     assert set(DIFFICULTY_TARGETS.keys()) == set(DIFFICULTIES)
+    # Every target sub-dict must define exactly the two grade knobs path generation reads.
+    assert all(set(v.keys()) == {"gentle", "steep"} for v in DIFFICULTY_TARGETS.values()), (
+        "each DIFFICULTY_TARGETS entry must define exactly {'gentle', 'steep'}"
+    )
 
     # Rolling window for steepness calculation
     # Used to find the steepest section within a segment or across the full path
@@ -159,6 +164,15 @@ assert all(
     SlopeConfig.DIFFICULTY_TARGETS[diff]["steep"] > SlopeConfig.DIFFICULTY_THRESHOLDS[diff][0]
     for diff in SlopeConfig.DIFFICULTY_TARGETS
 ), "Steep targets must be above lower threshold"
+
+# DIFFICULTIES order is LOAD-BEARING: path_factory uses DIFFICULTIES[:-1] ("all but the hardest"),
+# so the last entry MUST be the steepest. Enforce strictly-ascending thresholds.
+_ordered_lowers = [SlopeConfig.DIFFICULTY_THRESHOLDS[d][0] for d in SlopeConfig.DIFFICULTIES]
+_ordered_uppers = [SlopeConfig.DIFFICULTY_THRESHOLDS[d][1] for d in SlopeConfig.DIFFICULTIES]
+assert _ordered_lowers == sorted(_ordered_lowers) and _ordered_uppers == sorted(_ordered_uppers), (
+    f"DIFFICULTIES must be ordered easiest→hardest (strictly ascending thresholds); "
+    f"got lowers={_ordered_lowers}, uppers={_ordered_uppers}"
+)
 
 
 class PathConfig:
@@ -340,6 +354,18 @@ class ClickConfig:
     DEBOUNCE_TIME_DELAY = 0.15  # Minimum time between clicks (150ms debounce)
 
 
+class LiftType(StrEnum):
+    """The kinds of lift the app builds. A StrEnum, so a member IS its string value — every dict
+    keyed/valued by these (PYLON_CONFIG, LIFT_ICONS, AERIALWAY_TO_LIFT_TYPE, …), every JSON round-trip,
+    and str(LiftType.CHAIRLIFT) == "chairlift" all work transparently.
+    """
+
+    SURFACE_LIFT = "surface_lift"
+    CHAIRLIFT = "chairlift"
+    GONDOLA = "gondola"
+    AERIAL_TRAM = "aerial_tram"
+
+
 class LiftConfig:
     """Lift types and catenary/pylon parameters."""
 
@@ -347,7 +373,7 @@ class LiftConfig:
     TERRAIN_SAMPLE_STEP_M = 30
 
     PYLON_CONFIG = {
-        "surface_lift": {
+        LiftType.SURFACE_LIFT: {
             "pylon_height_m": 15,
             "station_height_m": 5,
             "min_spacing_m": 10,
@@ -355,7 +381,7 @@ class LiftConfig:
             "min_clearance_m": 10,
             "sag_factor": 0.05,
         },
-        "chairlift": {
+        LiftType.CHAIRLIFT: {
             "pylon_height_m": 25,
             "station_height_m": 6,
             "min_spacing_m": 15,
@@ -363,7 +389,7 @@ class LiftConfig:
             "min_clearance_m": 15,
             "sag_factor": 0.06,
         },
-        "gondola": {
+        LiftType.GONDOLA: {
             "pylon_height_m": 35,
             "station_height_m": 6,
             "min_spacing_m": 20,
@@ -371,7 +397,7 @@ class LiftConfig:
             "min_clearance_m": 20,
             "sag_factor": 0.06,
         },
-        "aerial_tram": {
+        LiftType.AERIAL_TRAM: {
             "pylon_height_m": 60,
             "station_height_m": 10,
             "min_spacing_m": 30,
@@ -380,7 +406,18 @@ class LiftConfig:
             "sag_factor": 0.06,
         },
     }
-    TYPES = list(PYLON_CONFIG.keys())
+    # Lift-type strings, in the canonical order. Members are str-Enum so this list of LiftType also
+    # behaves as a list of plain strings for callers that compare/serialize by value.
+    TYPES = [t.value for t in PYLON_CONFIG]
+
+    # Every lift type must define the full set of pylon-placement knobs the builder reads.
+    assert all(
+        set(v.keys())
+        == {"pylon_height_m", "station_height_m", "min_spacing_m", "max_spacing_m", "min_clearance_m", "sag_factor"}
+        for v in PYLON_CONFIG.values()
+    ), "each PYLON_CONFIG entry must define exactly the 6 pylon-placement keys"
+    # PYLON_CONFIG must be keyed by every LiftType member (bijection: no type missing, none stray).
+    assert set(PYLON_CONFIG) == set(LiftType), "PYLON_CONFIG must have one entry per LiftType member"
 
 
 class StyleConfig:
@@ -676,14 +713,14 @@ class OSMConfig:
     # OSM aerialway value → our LiftConfig.TYPES. ONLY these values import; every other aerialway
     # value (station, pylon, zip_line, magic_carpet, rope_tow, yes, …) is silently ignored.
     AERIALWAY_TO_LIFT_TYPE = {
-        "drag_lift": "surface_lift",
-        "t-bar": "surface_lift",
-        "j-bar": "surface_lift",
-        "platter": "surface_lift",
-        "chair_lift": "chairlift",
-        "gondola": "gondola",
-        "mixed_lift": "gondola",
-        "cable_car": "aerial_tram",
+        "drag_lift": LiftType.SURFACE_LIFT,
+        "t-bar": LiftType.SURFACE_LIFT,
+        "j-bar": LiftType.SURFACE_LIFT,
+        "platter": LiftType.SURFACE_LIFT,
+        "chair_lift": LiftType.CHAIRLIFT,
+        "gondola": LiftType.GONDOLA,
+        "mixed_lift": LiftType.GONDOLA,
+        "cable_car": LiftType.AERIAL_TRAM,
     }
 
     # piste:type value marking an alpine downhill run — the only kind we import.
