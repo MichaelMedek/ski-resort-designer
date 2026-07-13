@@ -138,6 +138,41 @@ class TestSmoothJoinedPath:
         joined = out[0] + out[1][1:] + out[2][1:]
         assert _min_curvature_radius_m(joined) > 1.0, "multi-junction ribbon must be cusp-free"
 
+    def test_slope_hugs_terrain_more_than_road(self) -> None:
+        # The road/slope smoothing split, as an invariant on the RELATIONSHIP (not a magic
+        # number): over one identical path, a SLOPE must stay at least as close to the raw
+        # committed corridor as a ROAD (skiers are flexible → less earthwork). This guards the
+        # feature against a future edit swapping ROAD/SLOPE_SMOOTHING_FACTOR while leaving the
+        # exact values free to be re-tuned.
+        step = 10 / M
+        s1 = _leg(0.0, 0.0, step, 0.0, 25, z0=2100.0, dz=-0.5)
+        j = s1[-1]
+        s2 = _leg(j.lon, j.lat, step * 0.7, step * 0.7, 25, z0=j.elevation, dz=-0.5)  # ~45° junction
+        segs = [s1, s2]
+        anchors = _anchors(segs)
+        raw = s1 + s2[1:]
+
+        def mean_terrain_deviation(smoothed: list[list[PathPoint]]) -> float:
+            ribbon = smoothed[0] + smoothed[1][1:]
+            return sum(min(p.distance_to(other=r) for r in raw) for p in ribbon) / len(ribbon)
+
+        def smooth_with(factor: float) -> list[list[PathPoint]]:
+            return smooth_joined_path(
+                segment_point_lists=segs,
+                node_anchors=anchors,
+                step_m=GeometricTuningConfig.RESAMPLE_STEP_M,
+                smoothing_factor=factor,
+                node_weight=GeometricTuningConfig.NODE_WEIGHT,
+                corridor_weight=GeometricTuningConfig.CORRIDOR_WEIGHT,
+            )
+
+        slope_dev = mean_terrain_deviation(smooth_with(GeometricTuningConfig.SLOPE_SMOOTHING_FACTOR))
+        road_dev = mean_terrain_deviation(smooth_with(GeometricTuningConfig.ROAD_SMOOTHING_FACTOR))
+        assert slope_dev <= road_dev, (
+            f"slope must hug terrain at least as tightly as road (slope {slope_dev:.2f}m > road {road_dev:.2f}m — "
+            "are ROAD/SLOPE_SMOOTHING_FACTOR swapped?)"
+        )
+
     def test_single_segment_returned_unchanged(self) -> None:
         seg = _leg(0.0, 0.0, 10 / M, 0.0, 20, z0=2000.0, dz=-0.5)
         out = _smooth([seg], [seg[0], seg[-1]])
