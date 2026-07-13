@@ -28,6 +28,22 @@ class TestBuildStateBijection:
         assert "merge_placing" in BUILD_STATES
 
 
+class TestExitHookBijection:
+    """Every SM state must have an exit hook; _set_current_state does a direct [] lookup, so a
+    missing hook KeyError-crashes the render during any force_* (e.g. undoing an OSM import from
+    import_placing — the bug this guards). Mirrors the import-time assert in state_machine.py.
+    """
+
+    def test_exit_hooks_cover_every_state(self) -> None:
+        sm_ids = {s.id for s in PlannerStateMachine.states}
+        assert set(PlannerStateMachine._EXIT_HOOKS) == sm_ids
+
+    def test_import_and_merge_placing_have_exit_hooks(self) -> None:
+        # These two were the states missing from _EXIT_HOOKS (the live bug).
+        assert "import_placing" in PlannerStateMachine._EXIT_HOOKS
+        assert "merge_placing" in PlannerStateMachine._EXIT_HOOKS
+
+
 class TestOperationBijection:
     def test_keys_match_buildmode_values_exactly(self) -> None:
         modes = {

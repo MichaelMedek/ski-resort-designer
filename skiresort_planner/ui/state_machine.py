@@ -282,7 +282,9 @@ from skiresort_planner.ui.state_lifecycle import (
     exit_idle_viewing_lift,
     exit_idle_viewing_road,
     exit_idle_viewing_slope,
+    exit_import_placing,
     exit_lift_placing,
+    exit_merge_placing,
     exit_road_building,
     exit_road_starting,
     exit_slope_building,
@@ -1203,6 +1205,8 @@ class PlannerStateMachine(StateMachine):
         "slope_building": exit_slope_building,
         "slope_custom_path": exit_slope_custom_path,
         "lift_placing": exit_lift_placing,
+        "import_placing": exit_import_placing,
+        "merge_placing": exit_merge_placing,
         "road_starting": exit_road_starting,
         "road_building": exit_road_building,
     }
@@ -1403,3 +1407,13 @@ class PlannerStateMachine(StateMachine):
         else:
             logger.info("Created PlannerStateMachine without UI listener")
         return sm, context
+
+
+# Import-time bijection guard: every state-machine state must have an exit hook. 
+# Mirrors the BUILD_STATES/OPERATIONS bijection asserts in mode_registry.
+_sm_state_ids = {s.id for s in PlannerStateMachine.states}
+assert set(PlannerStateMachine._EXIT_HOOKS) == _sm_state_ids, (
+    f"_EXIT_HOOKS keys must match state-machine state ids exactly. "
+    f"Missing: {_sm_state_ids - set(PlannerStateMachine._EXIT_HOOKS)}; "
+    f"stray: {set(PlannerStateMachine._EXIT_HOOKS) - _sm_state_ids}"
+)

@@ -185,16 +185,17 @@ class BuildMode:
     IMPORT = "import"
     MERGE = "merge"
 
-    assert CHAIRLIFT in LiftConfig.TYPES, f"Invalid lift type '{CHAIRLIFT}'."
-    assert GONDOLA in LiftConfig.TYPES, f"Invalid lift type '{GONDOLA}'."
-    assert SURFACE_LIFT in LiftConfig.TYPES, f"Invalid lift type '{SURFACE_LIFT}'."
-    assert AERIAL_TRAM in LiftConfig.TYPES, f"Invalid lift type '{AERIAL_TRAM}'."
+    # Lift types + their order are OWNED by LiftConfig.TYPES (single source of truth); we don't
+    # re-list them. The named constants above exist for readable references (BuildMode.CHAIRLIFT).
+    LIFT_TYPES = list(LiftConfig.TYPES)
 
-    # All lift types for iteration (matches StyleConfig.LIFT_ICONS keys)
-    LIFT_TYPES = [SURFACE_LIFT, CHAIRLIFT, GONDOLA, AERIAL_TRAM]
+    assert set(LIFT_TYPES) == {CHAIRLIFT, GONDOLA, SURFACE_LIFT, AERIAL_TRAM}, (
+        f"BuildMode lift constants must exactly cover LiftConfig.TYPES; "
+        f"LiftConfig.TYPES={LiftConfig.TYPES}, named={{{SURFACE_LIFT}, {CHAIRLIFT}, {GONDOLA}, {AERIAL_TRAM}}}"
+    )
 
-    # Every build mode, in sidebar order — the source of truth for iterating all modes.
-    ALL = [SLOPE, ROAD, SURFACE_LIFT, CHAIRLIFT, GONDOLA, AERIAL_TRAM, IMPORT, MERGE]
+    # Every build mode, in sidebar order — built from parts so the lift block tracks LIFT_TYPES.
+    ALL = [SLOPE, ROAD, *LIFT_TYPES, IMPORT, MERGE]
 
     @staticmethod
     def is_slope(mode: str) -> bool:

@@ -388,6 +388,31 @@ def exit_lift_placing(ctx: PlannerContext) -> None:
     ctx.lift.clear()
 
 
+def exit_import_placing(ctx: PlannerContext) -> None:
+    """Exit IMPORT_PLACING: clear the placed import-box center.
+
+    Destinations: IDLE_READY (cancel or confirm). The placed box center lives in
+    ctx.deferred.osm_import_center_lon/lat; clearing it here guarantees no stale box survives the
+    exit no matter which transition (or a force_* during undo) leaves the state. The osm_import
+    fetch flag is deliberately left alone — a confirmed import sets it just before this runs and
+    consumes it in process_osm_import_deferred.
+    """
+    logger.debug("EXIT: import_placing - clearing placed import-box center")
+    ctx.deferred.osm_import_center_lon = None
+    ctx.deferred.osm_import_center_lat = None
+
+
+def exit_merge_placing(ctx: PlannerContext) -> None:
+    """Exit MERGE_PLACING: clear the node-merge selection.
+
+    Destinations: IDLE_READY (cancel or confirm). The selected node ids live in ctx.merge; clearing
+    here guarantees no stale selection survives the exit regardless of transition (or a force_*
+    during undo).
+    """
+    logger.debug("EXIT: merge_placing - clearing merge selection")
+    ctx.merge.clear()
+
+
 def enter_import_placing(ctx: PlannerContext) -> None:
     """Enter IMPORT_PLACING: an import box center has been placed (Single Point of Truth).
 
