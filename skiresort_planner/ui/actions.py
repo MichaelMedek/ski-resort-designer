@@ -182,25 +182,27 @@ def process_custom_connect_deferred() -> bool:
     return True
 
 
-def import_osm_action(half_width_km: float) -> None:
-    """Flag an OSM import of a square area (current map center, given half-width); fetch runs deferred.
+def confirm_import_action() -> None:
+    """Confirm the placed OSM import box: flag the deferred fetch and return to idle.
 
-    Mirrors the other button actions: set the deferred flag + half-width, bump the map, rerun. The
-    actual network call + graph mutation happen in process_osm_import_deferred() under a spinner.
+    Called by both the right-panel "Confirm Import" button and the center-dot click. The box
+    center is already stored in ctx.deferred.osm_import_center_lon/lat (set when the box was
+    placed/retargeted). The slow network fetch + graph mutation happen in
+    process_osm_import_deferred() under a spinner after we return to idle.
     """
     ctx: PlannerContext = st.session_state.context
+    sm: PlannerStateMachine = st.session_state.state_machine
     ctx.deferred.osm_import = True
-    ctx.deferred.osm_import_half_width_km = half_width_km
     bump_map_version()
-    trigger_rerun()
+    sm.complete_import()  # → idle_ready; listener triggers the rerun that runs the deferred fetch
 
 
 def process_osm_import_deferred() -> bool:
     """Process a pending OSM import: fetch the chosen area, convert, add as one undoable batch.
 
-    The area is a square centered on the current map center with the half-width the user picked.
-    Call this wrapped in st.spinner() from app.py. Returns True if it handled a pending import. Any
-    network/parse error shows an error toast and imports nothing.
+    The area is the square box the user placed and confirmed (ctx.deferred.osm_import_center_*
+    + half-width). Call this wrapped in st.spinner() from app.py. Returns True if it handled a
+    pending import. Any network/parse error shows an error toast and imports nothing.
     """
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
@@ -210,9 +212,17 @@ def process_osm_import_deferred() -> bool:
     ctx.deferred.osm_import = False
 
     dem = st.session_state.dem_service
+    # The box center is always placed before confirm (start_import stores it)
+    center_lon = ctx.deferred.osm_import_center_lon
+    center_lat = ctx.deferred.osm_import_center_lat
+    if center_lon is None or center_lat is None:
+        raise RuntimeError("Pending OSM import has no placed center — start_import must set it before confirm.")
     bbox = bbox_around(
-        center_lon=ctx.map.lon, center_lat=ctx.map.lat, half_width_m=ctx.deferred.osm_import_half_width_km * 1000.0
+        center_lon=center_lon, center_lat=center_lat, half_width_m=ctx.deferred.osm_import_half_width_km * 1000.0
     )
+    # Consume the placed center so a later import can't reuse a stale box.
+    ctx.deferred.osm_import_center_lon = None
+    ctx.deferred.osm_import_center_lat = None
 
     try:
         importer = OSMImporter(dem=dem)

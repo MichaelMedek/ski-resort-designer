@@ -388,6 +388,22 @@ def exit_lift_placing(ctx: PlannerContext) -> None:
     ctx.lift.clear()
 
 
+def enter_import_placing(ctx: PlannerContext) -> None:
+    """Enter IMPORT_PLACING: an import box center has been placed (Single Point of Truth).
+
+    Reached from any idle state on the first map click in import mode, and re-entered on
+    each retarget (self-loop) when the user clicks a new center. The placed center lives in
+    ctx.deferred.osm_import_center_lon/lat (set by before_start_import) — it must NOT be cleared
+    here, or the self-loop would wipe it. Cancel clears it via before_cancel_import; a confirmed
+    import clears it in process_osm_import_deferred after building the bbox.
+
+    End state: Panel hidden, box drawn from the stored center, ready for confirm.
+    """
+    logger.debug("ENTER: import_placing - hiding panel")
+    ctx.viewing.hide_panel()
+    ctx.click_dedup.clear_marker()
+
+
 # =============================================================================
 # 9. IDLE_VIEWING_ROAD - Panel showing road details
 # =============================================================================

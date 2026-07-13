@@ -92,6 +92,36 @@ class TestIdleClickRouting:
         assert sm.is_road_starting
         assert ctx.road_build.start_node_id == node.id
 
+    def test_import_mode_terrain_click_places_box(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
+        from skiresort_planner.ui.click_handlers import handle_idle_click
+
+        dem = mock_dem_red_slope_diagonal
+        sm, ctx = _session(fake_st, ResortGraph(), path_factory, dem)
+        ctx.build_mode.mode = BuildMode.IMPORT
+
+        handle_idle_click(
+            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.01, lon=0.02),
+            elevation=dem.get_elevation_or_raise(lon=0.02, lat=0.01),
+        )
+        assert sm.is_import_placing
+        assert ctx.deferred.osm_import_center_lon == 0.02 and ctx.deferred.osm_import_center_lat == 0.01
+
+    def test_import_mode_node_click_places_box_at_node(
+        self, fake_st, path_factory, mock_dem_red_slope_diagonal
+    ) -> None:
+        from skiresort_planner.ui.click_handlers import handle_idle_click
+
+        graph = ResortGraph()
+        node, _ = graph.get_or_create_node(lon=0.03, lat=0.04, elevation=2000.0)
+        sm, ctx = _session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
+        ctx.build_mode.mode = BuildMode.IMPORT
+
+        handle_idle_click(
+            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id), elevation=None
+        )
+        assert sm.is_import_placing
+        assert ctx.deferred.osm_import_center_lon == 0.03 and ctx.deferred.osm_import_center_lat == 0.04
+
     def test_slope_mode_node_click_starts_building(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         from skiresort_planner.ui.click_handlers import handle_idle_click
 
@@ -707,3 +737,39 @@ class TestBuildStateMarkerCompleteness:
         for _marker_type, ci in self._entity_marker_clicks():
             sm, ctx = _session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
             handle_road_building_click(click_info=ci, elevation=2000.0)
+
+
+# =============================================================================
+# handle_import_placing_click — center-dot re-click confirms; terrain re-places
+# =============================================================================
+
+
+class TestImportPlacingClick:
+    def _placing(self, fake_st, factory, dem):
+        """Enter import_placing with a box center already placed."""
+        sm, ctx = _session(fake_st, ResortGraph(), factory, dem)
+        ctx.build_mode.mode = BuildMode.IMPORT
+        sm.start_import(lon=0.0, lat=0.0)
+        return sm, ctx
+
+    def test_center_dot_click_confirms_import(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
+        from skiresort_planner.ui.click_handlers import handle_import_placing_click
+
+        sm, ctx = self._placing(fake_st, path_factory, mock_dem_red_slope_diagonal)
+        handle_import_placing_click(
+            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.IMPORT_CENTER), elevation=None
+        )
+        # confirm_import_action flags the deferred fetch and returns to idle
+        assert ctx.deferred.osm_import is True
+        assert sm.is_idle_ready
+
+    def test_terrain_click_replaces_center_and_keeps_placing(
+        self, fake_st, path_factory, mock_dem_red_slope_diagonal
+    ) -> None:
+        from skiresort_planner.ui.click_handlers import handle_import_placing_click
+
+        sm, ctx = self._placing(fake_st, path_factory, mock_dem_red_slope_diagonal)
+        handle_import_placing_click(ClickInfo(click_type=MapClickType.TERRAIN, lat=0.05, lon=0.06), elevation=2000.0)
+        assert sm.is_import_placing, "re-placing keeps us in import mode"
+        assert ctx.deferred.osm_import_center_lon == 0.06 and ctx.deferred.osm_import_center_lat == 0.05
+        assert ctx.deferred.osm_import is False, "re-placing does not confirm"

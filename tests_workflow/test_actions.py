@@ -441,40 +441,52 @@ class TestDeferredProcessing:
 
 
 class TestOSMImport:
-    """import_osm_action flags a deferred import (with the chosen half-width); process_osm_import_deferred
-    runs it (mocked network) as one undoable batch; undo removes the batch; re-import dedups."""
+    """Click-to-place import: start_import stores the box center; confirm_import_action flags the
+    deferred fetch + returns to idle; process_osm_import_deferred runs it (mocked network) as one
+    undoable batch centered on the placed box; undo removes the batch; re-import dedups."""
 
-    def test_import_osm_action_sets_deferred_flag_and_half_width(self, fake_st, mock_dem_blue_slope) -> None:
-        from skiresort_planner.ui.actions import import_osm_action
+    def test_start_import_stores_center_and_confirm_flags_deferred(self, fake_st, mock_dem_blue_slope) -> None:
+        from skiresort_planner.ui.actions import confirm_import_action
 
-        _sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
-        import_osm_action(half_width_km=3.0)
+        sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
+        sm.start_import(lon=0.1, lat=0.3)  # first map click places the box center
+        assert sm.is_import_placing
+        assert ctx.deferred.osm_import_center_lon == 0.1 and ctx.deferred.osm_import_center_lat == 0.3
+
+        confirm_import_action()  # center-dot click / Confirm button
         assert ctx.deferred.osm_import is True
-        assert ctx.deferred.osm_import_half_width_km == 3.0
+        assert sm.is_idle_ready, "confirm returns to idle so the deferred fetch runs under the spinner"
 
-    def test_half_width_reaches_fetch_as_bbox(self, fake_st, mock_dem_blue_slope, monkeypatch) -> None:
-        """The slider half-width (km) must arrive at fetch() as a square bbox around the map center.
-
-        Guards the slider → deferred → bbox chain: a reset-to-default slider still imports exactly
-        the area shown, centered on the current map center.
-        """
+    def test_placed_center_reaches_fetch_as_bbox(self, fake_st, mock_dem_blue_slope, monkeypatch) -> None:
+        """The placed box center + half-width must arrive at fetch() as a square bbox around it."""
         from skiresort_planner.generators.osm_importer import ImportSummary
         from skiresort_planner.ui import actions
-        from skiresort_planner.ui.actions import import_osm_action
+        from skiresort_planner.ui.actions import confirm_import_action
 
-        _sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
-        ctx.map.lat, ctx.map.lon = 0.3, 0.1
+        sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
+        ctx.map.lat, ctx.map.lon = 0.9, 0.9  # deliberately NOT the placed center — must be ignored
 
         seen = {}
         monkeypatch.setattr(actions.OSMImporter, "fetch", lambda self, bbox: seen.setdefault("bbox", bbox) or [])
         monkeypatch.setattr(actions.OSMImporter, "convert", lambda self, bbox, elements: ImportSummary())
 
-        import_osm_action(half_width_km=3.5)  # what the slider returns
+        sm.start_import(lon=0.1, lat=0.3)  # placed center
+        ctx.deferred.osm_import_half_width_km = 3.5
+        confirm_import_action()
         actions.process_osm_import_deferred()
 
         min_lon, min_lat, max_lon, max_lat = seen["bbox"]
-        assert (min_lon + max_lon) / 2 == 0.1 and (min_lat + max_lat) / 2 == 0.3, "box centered on map center"
+        assert (min_lon + max_lon) / 2 == 0.1 and (min_lat + max_lat) / 2 == 0.3, "box centered on the PLACED center"
         assert max_lat - min_lat > 0 and max_lon - min_lon > 0, "3.5 km half-width → a real square box"
+
+    def test_process_without_placed_center_raises(self, fake_st, mock_dem_blue_slope) -> None:
+        """A pending import with no placed center is a bug — no silent map-center fallback."""
+        from skiresort_planner.ui import actions
+
+        _sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
+        ctx.deferred.osm_import = True  # flagged, but no center placed
+        with pytest.raises(RuntimeError, match="no placed center"):
+            actions.process_osm_import_deferred()
 
     def test_process_import_adds_entities_and_bumps_map(self, fake_st, mock_dem_blue_slope, monkeypatch) -> None:
         from skiresort_planner.generators.osm_importer import ImportSummary, LiftImport, PisteImport
@@ -484,8 +496,9 @@ class TestOSMImport:
         dem = mock_dem_blue_slope
         graph = ResortGraph()
         _sm, ctx = _session(fake_st, graph, dem=dem)
-        ctx.map.lat, ctx.map.lon = 0.0, 0.0  # inside MockDEM bounds (-1..1)
         ctx.deferred.osm_import = True
+        ctx.deferred.osm_import_center_lon = 0.0  # inside MockDEM bounds (-1..1)
+        ctx.deferred.osm_import_center_lat = 0.0
 
         piste = PisteImport(
             points=[
@@ -515,6 +528,7 @@ class TestOSMImport:
         assert len(graph.undo_stack) == 1, "import is one undoable batch"
         assert fake_st.session_state["map_version"] > version_before
         assert ctx.deferred.osm_import is False, "flag consumed"
+        assert ctx.deferred.osm_import_center_lon is None, "placed center consumed"
 
     def test_process_import_network_error_reports_and_imports_nothing(
         self, fake_st, mock_dem_blue_slope, monkeypatch
@@ -523,8 +537,9 @@ class TestOSMImport:
 
         graph = ResortGraph()
         _sm, ctx = _session(fake_st, graph, dem=mock_dem_blue_slope)
-        ctx.map.lat, ctx.map.lon = 0.0, 0.0
         ctx.deferred.osm_import = True
+        ctx.deferred.osm_import_center_lon = 0.0
+        ctx.deferred.osm_import_center_lat = 0.0
 
         def boom(self, bbox):
             raise RuntimeError("overpass down")
@@ -550,8 +565,9 @@ class TestOSMImport:
         dem = mock_dem_blue_slope
         graph = ResortGraph()
         _sm, ctx = _session(fake_st, graph, dem=dem)
-        ctx.map.lat, ctx.map.lon = 0.0, 0.0
         ctx.deferred.osm_import = True
+        ctx.deferred.osm_import_center_lon = 0.0
+        ctx.deferred.osm_import_center_lat = 0.0
 
         piste = PisteImport(
             points=[
@@ -580,8 +596,8 @@ class TestOSMImport:
         assert len(graph.segments) == 0 and len(graph.nodes) == 0
         assert len(graph.undo_stack) == 0
 
-    def test_reimport_same_view_adds_nothing(self, fake_st, mock_dem_blue_slope, monkeypatch) -> None:
-        """Clicking Import twice over the same area adds entities once, then dedups the rest."""
+    def test_reimport_same_area_adds_nothing(self, fake_st, mock_dem_blue_slope, monkeypatch) -> None:
+        """Importing the same area twice adds entities once, then dedups the rest."""
         from skiresort_planner.generators.osm_importer import ImportSummary, LiftImport, PisteImport
         from skiresort_planner.model.path_point import PathPoint
         from skiresort_planner.ui import actions
@@ -589,7 +605,6 @@ class TestOSMImport:
         dem = mock_dem_blue_slope
         graph = ResortGraph()
         _sm, ctx = _session(fake_st, graph, dem=dem)
-        ctx.map.lat, ctx.map.lon = 0.0, 0.0
 
         piste = PisteImport(
             points=[
@@ -609,10 +624,15 @@ class TestOSMImport:
             actions.OSMImporter, "convert", lambda self, bbox, elements: ImportSummary(pistes=[piste], lifts=[lift])
         )
 
-        ctx.deferred.osm_import = True
+        def _flag_import() -> None:
+            ctx.deferred.osm_import = True
+            ctx.deferred.osm_import_center_lon = 0.0
+            ctx.deferred.osm_import_center_lat = 0.0
+
+        _flag_import()
         actions.process_osm_import_deferred()
         assert len(graph.slopes) == 1 and len(graph.lifts) == 1
 
-        ctx.deferred.osm_import = True
-        actions.process_osm_import_deferred()  # same view again
+        _flag_import()
+        actions.process_osm_import_deferred()  # same area again
         assert len(graph.slopes) == 1 and len(graph.lifts) == 1, "no duplicates on re-import"

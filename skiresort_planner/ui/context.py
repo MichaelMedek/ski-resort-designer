@@ -182,6 +182,7 @@ class BuildMode:
     SURFACE_LIFT = "surface_lift"
     AERIAL_TRAM = "aerial_tram"
     ROAD = "road"
+    IMPORT = "import"
 
     assert CHAIRLIFT in LiftConfig.TYPES, f"Invalid lift type '{CHAIRLIFT}'."
     assert GONDOLA in LiftConfig.TYPES, f"Invalid lift type '{GONDOLA}'."
@@ -207,6 +208,11 @@ class BuildMode:
         return mode == BuildMode.ROAD
 
     @staticmethod
+    def is_import(mode: str) -> bool:
+        """Check if mode is OSM import (click-to-place a bounding box)."""
+        return mode == BuildMode.IMPORT
+
+    @staticmethod
     def display_name(mode: str) -> str:
         """Human-friendly name for display."""
         from skiresort_planner.constants import StyleConfig
@@ -216,6 +222,8 @@ class BuildMode:
                 return "Slope"
             case BuildMode.ROAD:
                 return "Road"
+            case BuildMode.IMPORT:
+                return "Import"
             case BuildMode.CHAIRLIFT | BuildMode.GONDOLA | BuildMode.SURFACE_LIFT | BuildMode.AERIAL_TRAM:
                 return StyleConfig.LIFT_DISPLAY_NAMES[mode]
             case _:
@@ -231,6 +239,8 @@ class BuildMode:
                 return StyleConfig.SLOPE_ICON
             case BuildMode.ROAD:
                 return StyleConfig.ROAD_ICON
+            case BuildMode.IMPORT:
+                return StyleConfig.IMPORT_ICON
             case BuildMode.CHAIRLIFT | BuildMode.GONDOLA | BuildMode.SURFACE_LIFT | BuildMode.AERIAL_TRAM:
                 return StyleConfig.LIFT_ICONS[mode]
             case _:
@@ -262,6 +272,10 @@ class BuildModeContext(BaseContext):
     def is_road(self) -> bool:
         """Check if mode is road building."""
         return self.mode == BuildMode.ROAD
+
+    def is_import(self) -> bool:
+        """Check if mode is OSM import."""
+        return self.mode == BuildMode.IMPORT
 
 
 @dataclass
@@ -581,6 +595,9 @@ class DeferredContext(BaseContext):
     start_lift_from_node_id: str | None = None  # Deferred start_lift from node
     osm_import: bool = False  # Fetch + import OSM lifts/pistes for the chosen area (slow network)
     osm_import_half_width_km: float = OSMConfig.HALF_WIDTH_DEFAULT_KM  # Square half-width from the import slider
+    # Center of the placed import box (click-to-place). Set by start_import, consumed on confirm.
+    osm_import_center_lon: float | None = None
+    osm_import_center_lat: float | None = None
 
     def clear_custom_connect(self) -> None:
         self.custom_connect = False
@@ -595,6 +612,8 @@ class DeferredContext(BaseContext):
         self.start_lift_from_node_id = None
         self.osm_import = False
         self.osm_import_half_width_km = OSMConfig.HALF_WIDTH_DEFAULT_KM
+        self.osm_import_center_lon = None
+        self.osm_import_center_lat = None
 
 
 @dataclass

@@ -214,6 +214,14 @@ class ClickDetector:
                 proposal_index=proposal_index,  # Already 0-indexed
             )
 
+        # IMPORT CENTER click (confirm the placed import box). Carries no id — it is a positionless
+        # confirm signal — so unlike the id-bearing markers above there is nothing to assert here.
+        if obj_type == ClickConfig.TYPE_IMPORT_CENTER:
+            return ClickInfo(
+                click_type=MapClickType.MARKER,
+                marker_type=MarkerType.IMPORT_CENTER,
+            )
+
         # Unknown type — pydeck can pick unlabeled/basemap objects; ignore them.
         logger.warning(f"Unknown object type: {obj_type}")
         return None

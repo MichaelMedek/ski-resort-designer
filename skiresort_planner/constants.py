@@ -321,6 +321,7 @@ class ClickConfig:
     TYPE_PROPOSAL_ENDPOINT = "proposal_endpoint"
     TYPE_PROPOSAL_BODY = "proposal_body"
     TYPE_START_MARKER = "start_marker"  # non-interactive origin dot on a proposal
+    TYPE_IMPORT_CENTER = "import_center"  # clickable center dot of the OSM import box (re-click = confirm)
 
     # Clickable marker radii (meters for Pydeck ScatterplotLayer)
     NODE_MARKER_RADIUS = 35
@@ -450,6 +451,12 @@ class StyleConfig:
     # so "proposed" reads as distinct from a committed solid amber-700 road.
     ROAD_PROPOSAL_COLOR_RGBA = [217, 119, 6, 150]
     ROAD_ICON = "🛣️"
+
+    # OSM import mode icon (build-mode selector + placement markers)
+    IMPORT_ICON = "🗺️"
+    # OSM import overlay (RGBA for Pydeck): one blue for the box, one for the center dot.
+    IMPORT_BOX_RGBA = [33, 150, 243, 60]  # translucent square (fill + outline)
+    IMPORT_CENTER_RGBA = [33, 150, 243, 230]  # solid center dot (click to confirm)
 
     # Parking place (auto-shown where a road meets a slope or lift)
     PARKING_ICON = "🅿️"

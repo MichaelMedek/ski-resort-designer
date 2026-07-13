@@ -40,6 +40,7 @@ class MarkerType(Enum):
     PYLON = "pylon"
     PROPOSAL_ENDPOINT = "proposal_endpoint"
     PROPOSAL_BODY = "proposal_body"
+    IMPORT_CENTER = "import_center"
 
 
 @dataclass(frozen=True)
@@ -119,6 +120,8 @@ class ClickInfo:
             case MarkerType.PROPOSAL_BODY:
                 if self.proposal_index is None:
                     raise ValueError("PROPOSAL_BODY marker must have proposal_index set")
+            case MarkerType.IMPORT_CENTER:
+                pass  # positionless confirm marker — carries no id
             case _:
                 raise RuntimeError(f"Unknown marker_type: {self.marker_type}")
 
@@ -164,6 +167,8 @@ class ClickInfo:
                 case MarkerType.PROPOSAL_BODY:
                     assert self.proposal_index is not None
                     return f"Path option {self.proposal_index + 1}"
+                case MarkerType.IMPORT_CENTER:
+                    return "Import area center"
                 case _:
                     raise RuntimeError(f"Unknown marker_type: {self.marker_type}")
 

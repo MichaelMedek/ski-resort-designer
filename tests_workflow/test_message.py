@@ -96,3 +96,18 @@ class TestOSMImportMessages:
         msg = OSMImportErrorMessage(error="the current view is outside the terrain coverage").message
         assert "OSM import failed" in msg
         assert "outside the terrain coverage" in msg
+
+
+class TestImportPlacingMessages:
+    def test_context_shows_center_and_area(self) -> None:
+        from skiresort_planner.model.message import ImportPlacingContextMessage
+
+        msg = ImportPlacingContextMessage(center_lat=47.05, center_lon=10.32, half_width_km=2.0).message
+        assert "47.05" in msg and "10.32" in msg, "center coordinates shown"
+        assert "4.0 × 4.0 km" in msg, "half-width 2.0 → 4×4 km area"
+
+    def test_action_message_mentions_confirm(self) -> None:
+        from skiresort_planner.model.message import ImportActionMessage
+
+        msg = ImportActionMessage().message
+        assert "Confirm" in msg or "center dot" in msg

@@ -25,6 +25,7 @@ from skiresort_planner.ui.actions import (
     center_on_road,
     center_on_slope,
     commit_selected_path,
+    confirm_import_action,
     reload_map,
 )
 from skiresort_planner.ui.validators import (
@@ -70,12 +71,14 @@ def get_click_handler(sm: "PlannerStateMachine") -> Callable[..., None]:
         return handle_slope_building_click
     elif sm.is_lift_placing:
         return handle_lift_placing_click
+    elif sm.is_import_placing:
+        return handle_import_placing_click
     elif sm.is_any_road_state:
         return handle_road_building_click
     else:
         raise RuntimeError(
             f"No click handler registered for state '{sm.get_state_name()}'. "
-            f"Expected idle, slope building, lift placing, or road building state."
+            f"Expected idle, slope building, lift placing, import placing, or road building state."
         )
 
 
@@ -190,8 +193,14 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
                 node_id=None,
                 location=PathPoint(lon=lon, lat=lat, elevation=elevation),
             )
+        elif ctx.build_mode.is_import():
+            # Place the OSM import box center (keep the map where it is so the box shows in context)
+            logger.info(f"[IDLE] Terrain click: placing import box center at ({lat:.6f}, {lon:.6f})")
+            sm.start_import(lon=lon, lat=lat)
         else:
-            raise RuntimeError(f"[IDLE] Unknown build_mode '{build_mode}'. Expected SLOPE, road, or a lift type.")
+            raise RuntimeError(
+                f"[IDLE] Unknown build_mode '{build_mode}'. Expected SLOPE, road, import, or a lift type."
+            )
         return
 
     # MARKER clicks
@@ -227,8 +236,14 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
                 logger.info(f"[IDLE] Node click: starting road from {node.id}")
                 ctx.map.set_building_view(lon=node.lon, lat=node.lat)
                 sm.select_road_start(node_id=node.id)
+            elif ctx.build_mode.is_import():
+                # Place the import box center on the node's location
+                logger.info(f"[IDLE] Node click: placing import box center at {node.id}")
+                sm.start_import(lon=node.lon, lat=node.lat)
             else:
-                raise RuntimeError(f"[IDLE] Unknown build_mode '{build_mode}'. Expected SLOPE, road, or a lift type.")
+                raise RuntimeError(
+                    f"[IDLE] Unknown build_mode '{build_mode}'. Expected SLOPE, road, import, or a lift type."
+                )
             return
 
         # SLOPE → Show slope panel (always works regardless of build_mode)
@@ -645,6 +660,39 @@ def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) ->
     center_on_lift(ctx=ctx, graph=graph, lift=lift, zoom=MapConfig.VIEWING_ZOOM)
     bump_map_version()
     sm.complete_lift(lift_id=lift.id)
+
+
+def handle_import_placing_click(click_info: ClickInfo, elevation: float | None) -> None:
+    """Handle a click while placing an OSM import box (IMPORT_PLACING).
+
+    Mirrors the road proposal re-click pattern (_select_or_commit_proposal): clicking the
+    center dot confirms the import; clicking terrain elsewhere re-places the box center.
+
+    Valid clicks:
+        IMPORT_CENTER marker → confirm (run the deferred fetch)
+        TERRAIN              → move the box center and redraw
+    Anything else is ignored (the box is only a center + rectangle).
+    """
+    sm: "PlannerStateMachine" = st.session_state.state_machine
+    ctx: "PlannerContext" = st.session_state.context
+
+    # Center-dot re-click → confirm (the documented shortcut, like re-clicking a proposal).
+    if click_info.click_type == MapClickType.MARKER and click_info.marker_type == MarkerType.IMPORT_CENTER:
+        logger.info("[IMPORT] Center-dot click: confirming import")
+        confirm_import_action()
+        return
+
+    # Terrain click → re-place the box center (keep placing, redraw the box).
+    if click_info.click_type == MapClickType.TERRAIN:
+        assert click_info.lat is not None and click_info.lon is not None
+        logger.info(f"[IMPORT] Terrain click: re-placing box center at ({click_info.lat:.6f}, {click_info.lon:.6f})")
+        ctx.deferred.osm_import_center_lon = click_info.lon
+        ctx.deferred.osm_import_center_lat = click_info.lat
+        sm.retarget_import()
+        reload_map()
+        return
+
+    logger.info(f"[IMPORT] Ignoring {click_info.display_name} — click the center dot or terrain to re-place")
 
 
 def handle_road_building_click(click_info: ClickInfo, elevation: float | None) -> None:

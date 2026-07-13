@@ -343,6 +343,23 @@ def _render_map_fragment_inner() -> None:
                     use_3d=use_3d,
                 )
             )
+
+    # Add the OSM import box (rectangle + pickable center dot) while placing an import area.
+    if sm.is_import_placing and ctx.deferred.osm_import_center_lon is not None:
+        center_lon = ctx.deferred.osm_import_center_lon
+        center_lat = ctx.deferred.osm_import_center_lat
+        assert center_lat is not None  # set together with lon by start_import
+        dem_service: DEMService = st.session_state.dem_service
+        center_elev = dem_service.get_elevation(lon=center_lon, lat=center_lat) or 0.0
+        extra_layers.extend(
+            renderer.create_import_bbox_layers(
+                center_lon=center_lon,
+                center_lat=center_lat,
+                half_width_m=ctx.deferred.osm_import_half_width_km * 1000.0,
+                elevation=center_elev,
+                use_3d=use_3d,
+            )
+        )
     # 3D mode: TerrainLayer with AWS tiles + OpenTopoMap texture
     # 2D mode: No terrain_layer needed - render() uses OPENTOPOMAP_STYLE map_style dict
     #          (TileLayer doesn't work because pydeck doesn't expose renderSubLayers)

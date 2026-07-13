@@ -13,7 +13,7 @@ All rendering logic is encapsulated to keep the main app.py concise.
 import json
 import logging
 from datetime import datetime
-from typing import Any, Literal, cast
+from typing import Any, Callable, Literal, cast
 
 import streamlit as st
 
@@ -44,7 +44,6 @@ from skiresort_planner.model.resort_graph import (
 from skiresort_planner.persistence import backup_store
 from skiresort_planner.ui.actions import (
     bump_map_version,
-    import_osm_action,
     reload_map,
     trigger_rerun,
     undo_last_action,
@@ -272,7 +271,6 @@ class SidebarRenderer:
 
             self._render_mode_selector()
             st.divider()
-            self._render_import_button()
 
             # Mode-specific controls: close button OR building/placing controls
             if self.sm.is_idle_viewing_slope or self.sm.is_idle_viewing_lift or self.sm.is_idle_viewing_road:
@@ -281,6 +279,8 @@ class SidebarRenderer:
                 actions.update(self._render_slope_building_controls())
             elif self.sm.is_lift_placing:
                 self._render_lift_cancel_button()
+            elif self.sm.is_import_placing:
+                self._render_import_building_controls()
             elif self.sm.is_any_road_state:
                 actions.update(self._render_road_building_controls())
 
@@ -305,15 +305,23 @@ class SidebarRenderer:
             # NOTE: State transition triggers st.rerun() via listener
             self.sm.hide_info_panel()
 
+    def _cancel_button(self, label: str, on_cancel: Callable[[], None], help: str) -> None:
+        """Render a full-width cancel button that clears stale click state then transitions.
+
+        Shared by lift placement and import placement (both are single-step "placing" modes whose
+        cancel just discards the in-progress placement and returns to idle).
+        """
+        if st.button(label, width="stretch", help=help):
+            bump_map_version()  # clear stale click state before the transition
+            on_cancel()  # the state transition triggers st.rerun() via the listener
+
     def _render_lift_cancel_button(self) -> None:
         """Render cancel button during lift placement."""
-        if st.button(
-            "✖️ Cancel Lift Placement",
-            width="stretch",
+        self._cancel_button(
+            label="✖️ Cancel Lift Placement",
+            on_cancel=self.sm.cancel_lift,
             help="Discard start point and return to idle",
-        ):
-            bump_map_version()  # Clear stale click state
-            self.sm.cancel_lift()  # Triggers st.rerun() via listener
+        )
 
     def _render_road_building_controls(self) -> dict[str, Any]:
         """Render controls during road building (mirrors _render_slope_building_controls).
@@ -366,37 +374,37 @@ class SidebarRenderer:
                 logger.warning(f"Reset View cleaned {removed} orphaned node(s)")
             reload_map()  # Bumps version and triggers rerun
 
-    def _render_import_button(self) -> None:
-        """Render the OpenStreetMap import area slider + button (idle only).
+    def _render_import_building_controls(self) -> None:
+        """Render controls while placing an OSM import box (IMPORT_PLACING).
 
-        Imports the real lifts & pistes within a square area centered on the current map center,
-        with the chosen half-width; elevation, difficulty, and pylons are all recomputed from our
-        DEM/physics. Disabled mid-build/placement so an import can't interleave with an
-        in-progress entity.
+        Shows the area half-width slider (mirrors slope's Segment Length slider — only visible while
+        placing) and a Cancel button. Changing the slider writes the new half-width into the deferred
+        state and redraws the box at the new size. Confirming happens from the right panel or by
+        re-clicking the box center on the map.
         """
-        if not self.sm.is_idle_ready:
-            return
         half_width_km = st.slider(
             "Import area half-width (km)",
             min_value=OSMConfig.HALF_WIDTH_MIN_KM,
             max_value=OSMConfig.HALF_WIDTH_MAX_KM,
-            value=OSMConfig.HALF_WIDTH_DEFAULT_KM,
+            value=self.ctx.deferred.osm_import_half_width_km,
             step=0.5,
             key="import_osm_half_width",
-            help="Lifts & pistes within this distance of the map center (in each direction) are imported.",
+            help="Lifts & pistes fully inside the box (this far from the center in each direction) are imported.",
         )
-        if st.button(
-            "🗺️ Import from OpenStreetMap",
-            width="stretch",
-            key="import_osm",
-            help="Add the real lifts & pistes around the map center. Elevation, difficulty and pylons are recomputed; one Undo removes the whole import.",
-        ):
-            import_osm_action(half_width_km=half_width_km)
+        if half_width_km != self.ctx.deferred.osm_import_half_width_km:
+            self.ctx.deferred.osm_import_half_width_km = half_width_km
+            reload_map()  # redraw the box at the new size
+        st.caption("👆 Click the map to place the area, then click its center dot (or Confirm) to import.")
+        self._cancel_button(
+            label="✖️ Cancel Import",
+            on_cancel=self.sm.cancel_import,
+            help="Discard the placed area and return to idle",
+        )
 
     def _render_mode_selector(self) -> None:
-        """Render unified build type selector with 5 buttons.
+        """Render unified build type selector with 7 buttons.
 
-        Shows buttons for all build types (slope + 4 lift types).
+        Shows buttons for all build types (slope + road + import + 4 lift types).
         One button is always selected.
         Buttons are disabled when in building or placing states.
 
@@ -420,6 +428,8 @@ class SidebarRenderer:
             st.markdown("### 🏗️ Placing Lift...")
         elif self.sm.is_any_road_state:
             st.markdown("### 🏗️ Building Road...")
+        elif self.sm.is_import_placing:
+            st.markdown(f"### {StyleConfig.IMPORT_ICON} Importing Area...")
         else:
             # All Idle* states (IdleReady, IdleViewing*)
             st.markdown(
@@ -427,7 +437,12 @@ class SidebarRenderer:
             )
 
         # Buttons disabled during building/placing
-        buttons_disabled = self.sm.is_any_slope_state or self.sm.is_lift_placing or self.sm.is_any_road_state
+        buttons_disabled = (
+            self.sm.is_any_slope_state
+            or self.sm.is_lift_placing
+            or self.sm.is_any_road_state
+            or self.sm.is_import_placing
+        )
         current_mode = self.ctx.build_mode.mode
 
         if buttons_disabled:
@@ -546,6 +561,27 @@ class SidebarRenderer:
                     viewing_lift=viewing_lift,
                     viewing_road=viewing_road,
                 )
+
+        # === IMPORT button (full width) — OSM import, click-to-place a bounding box ===
+        # Available from any idle state (import can start while viewing); only disabled mid-build.
+        import_selected = current_mode == BuildMode.IMPORT
+        import_type: Literal["primary", "secondary"] = "primary" if import_selected else "secondary"
+        import_label = (
+            f"{StyleConfig.IMPORT_ICON} **Import (OSM)**"
+            if import_selected
+            else f"{StyleConfig.IMPORT_ICON} Import (OSM)"
+        )
+        if st.button(
+            import_label,
+            width="stretch",
+            type=import_type,
+            key="build_btn_import",
+            disabled=buttons_disabled,
+            help="Select, then click the map to place an import area — real lifts & pistes inside it are added.",
+        ):
+            self.ctx.build_mode.mode = BuildMode.IMPORT
+            logger.info("UI: Build mode set to Import")
+            reload_map()
 
     def _render_lift_button(
         self,

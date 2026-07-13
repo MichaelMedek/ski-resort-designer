@@ -21,6 +21,8 @@ from skiresort_planner.constants import MapConfig, SlopeConfig, StyleConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.message import (
+    ImportActionMessage,
+    ImportPlacingContextMessage,
     LiftActionMessage,
     LiftPlacingContextMessage,
     RoadActionMessage,
@@ -33,6 +35,7 @@ from skiresort_planner.model.message import (
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.actions import (
     bump_map_version,
+    confirm_import_action,
     delete_lift_action,
     delete_road_action,
     delete_slope_action,
@@ -109,11 +112,20 @@ def _rename_dialog(entity_id: str, current_name: str) -> None:
 # =============================================================================
 
 
+def _action_button(label: str, *, key: str, help: str, type: str = "secondary") -> bool:
+    """Render one full-width right-panel action button. Returns True when clicked.
+
+    The single width idiom for every right-panel action (3D toggle, rename, close, delete) so they
+    all render as uniform stacked full-width buttons — no columns, no use_container_width mix.
+    """
+    return st.button(label, key=key, width="stretch", help=help, type=type)
+
+
 def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, kind: EntityKind, entity_id: str) -> None:
     """Render 3D/2D view toggle button. Calls reload_map() if button is clicked."""
     noun = kind.value
     if ctx.viewing.view_3d:
-        if st.button("🗺️ Return to 2D View", key=f"{noun}_2d_view", use_container_width=True):
+        if _action_button("🗺️ Return to 2D View", key=f"{noun}_2d_view", help="Return to the top-down 2D map"):
             logger.info(f"Switching to 2D view from {noun} {entity_id}")
             ctx.viewing.disable_3d()
             # Reset pitch, bearing, and zoom to top-down 2D view
@@ -145,12 +157,7 @@ def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, kind: Enti
                 raise ValueError(f"Unknown {kind=}")
             reload_map()  # Never returns - raises StopExecution
     else:
-        if st.button(
-            "🏔️ View in 3D",
-            key=f"{noun}_3d_view",
-            use_container_width=True,
-            help=f"View {noun} from the side with terrain",
-        ):
+        if _action_button("🏔️ View in 3D", key=f"{noun}_3d_view", help=f"View {noun} from the side with terrain"):
             logger.info(f"Switching to 3D view for {noun} {entity_id}")
             ctx.viewing.enable_3d()
             reload_map()  # Never returns - raises StopExecution
@@ -165,44 +172,40 @@ def _render_entity_actions(
     entity: "Slope | Lift | Road",
     delete_fn: Callable[[str], bool],
 ) -> None:
-    """Render rename / close / delete for a viewed entity. Buttons open dialogs or transition state."""
+    """Render the viewed-entity action buttons: 3D toggle, Rename, Close, Delete.
+
+    All four are full-width and stacked in this fixed order (via _action_button) so every entity
+    panel reads identically. Buttons open dialogs or transition state.
+    """
     noun = kind.value
-    if st.button(
-        "✏️ Rename",
-        key=f"rename_{noun}",
-        width="stretch",
-        help=f"Give this {noun} a custom name",
-    ):
+
+    # 1. 3D / 2D toggle (own reload_map side effects live in the helper)
+    _render_3d_toggle_button(ctx=ctx, graph=graph, kind=kind, entity_id=entity_id)
+
+    # 2. Rename
+    if _action_button("✏️ Rename", key=f"rename_{noun}", help=f"Give this {noun} a custom name"):
         _rename_dialog(entity_id=entity_id, current_name=entity.name)
-    col_close, col_delete = st.columns(2)
-    with col_close:
-        if st.button(
-            "✖️ Close",
-            key=f"close_{noun}",
-            help="Close this panel to start building new slopes and lifts",
-        ):
-            logger.info(f"Closing {noun} panel for {entity_id}")
-            ctx.viewing.disable_3d()
-            # Reset pitch and bearing to top-down view (preserve zoom level)
-            ctx.map.pitch = MapConfig.DEFAULT_PITCH
-            ctx.map.bearing = MapConfig.DEFAULT_BEARING
-            bump_map_version()
-            # Uses close_panel event - SM resolves to appropriate transition
-            # State transition triggers st.rerun() via listener - never returns
-            sm.hide_info_panel()
-    with col_delete:
-        if st.button(
-            "🗑️ Delete",
-            type="secondary",
-            key=f"delete_{noun}",
-            help=f"Permanently remove this {noun}",
-        ):
-            _confirm_delete_dialog(
-                kind=kind,
-                entity_name=entity.name,
-                entity_id=entity_id,
-                delete_fn=delete_fn,
-            )
+
+    # 3. Close
+    if _action_button("✖️ Close", key=f"close_{noun}", help="Close this panel to start building again"):
+        logger.info(f"Closing {noun} panel for {entity_id}")
+        ctx.viewing.disable_3d()
+        # Reset pitch and bearing to top-down view (preserve zoom level)
+        ctx.map.pitch = MapConfig.DEFAULT_PITCH
+        ctx.map.bearing = MapConfig.DEFAULT_BEARING
+        bump_map_version()
+        # Uses close_panel event - SM resolves to appropriate transition
+        # State transition triggers st.rerun() via listener - never returns
+        sm.hide_info_panel()
+
+    # 4. Delete
+    if _action_button("🗑️ Delete", key=f"delete_{noun}", help=f"Permanently remove this {noun}"):
+        _confirm_delete_dialog(
+            kind=kind,
+            entity_name=entity.name,
+            entity_id=entity_id,
+            delete_fn=delete_fn,
+        )
 
 
 # =============================================================================
@@ -258,12 +261,14 @@ def render_control_panel(
         renderer = _render_slope_building_panel
     elif sm.is_lift_placing:
         renderer = _render_lift_placing_panel
+    elif sm.is_import_placing:
+        renderer = _render_import_placing_panel
     elif sm.is_any_road_state:
         renderer = _render_road_building_panel
     else:
         raise RuntimeError(
             f"No control panel renderer for state '{sm.get_state_name()}'. "
-            f"Expected idle, slope building, lift placing, or road building state."
+            f"Expected idle, slope building, lift placing, import placing, or road building state."
         )
 
     renderer(
@@ -385,6 +390,33 @@ def _render_lift_placing_panel(
     LiftActionMessage(is_awaiting_top=True, bottom_elevation_m=start_elev).display()
 
 
+def _render_import_placing_panel(
+    sm: PlannerStateMachine,
+    ctx: PlannerContext,
+    graph: ResortGraph,
+    on_commit: Callable[[int], None],
+    on_cancel_connection: Callable[[], None],
+) -> None:
+    """Render control panel for IMPORT_PLACING - box context, action instruction, confirm button."""
+    center_lon = ctx.deferred.osm_import_center_lon
+    center_lat = ctx.deferred.osm_import_center_lat
+    if center_lon is None or center_lat is None:
+        raise RuntimeError("ImportPlacing state requires a placed box center")
+
+    # Blue context (where + how big) then yellow action instruction.
+    ImportPlacingContextMessage(
+        center_lat=center_lat,
+        center_lon=center_lon,
+        half_width_km=ctx.deferred.osm_import_half_width_km,
+    ).display()
+    ImportActionMessage().display()
+
+    # Confirm button — the panel-side commit (the center-dot click is the map-side shortcut).
+    if st.button("✅ Confirm Import", type="primary", width="stretch", help="Fetch and import this area from OSM"):
+        logger.info("UI: Confirm Import clicked")
+        confirm_import_action()
+
+
 def _render_road_building_panel(
     sm: PlannerStateMachine,
     ctx: PlannerContext,
@@ -461,8 +493,6 @@ def _render_slope_info_panel(
 
     SlopeStatsPanel(graph=graph).render(slope_id=slope_id)
 
-    _render_3d_toggle_button(ctx=ctx, graph=graph, kind=EntityKind.SLOPE, entity_id=slope_id)
-
     _render_entity_actions(
         sm=sm,
         ctx=ctx,
@@ -490,8 +520,6 @@ def _render_lift_info_panel(
 
     LiftStatsPanel(graph=graph).render(lift_id=lift_id)
 
-    _render_3d_toggle_button(ctx=ctx, graph=graph, kind=EntityKind.LIFT, entity_id=lift_id)
-
     _render_entity_actions(
         sm=sm,
         ctx=ctx,
@@ -518,8 +546,6 @@ def _render_road_info_panel(
         raise ValueError(f"Road {road_id} must exist when panel shows it")
 
     RoadStatsPanel(graph=graph).render(road_id=road_id)
-
-    _render_3d_toggle_button(ctx=ctx, graph=graph, kind=EntityKind.ROAD, entity_id=road_id)
 
     _render_entity_actions(
         sm=sm,

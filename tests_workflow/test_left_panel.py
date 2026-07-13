@@ -122,20 +122,19 @@ class TestModeSelectorButton:
 
 
 class TestImportOSMButton:
-    def test_click_import_button_flags_deferred_import(self, fake_st, empty_graph) -> None:
-        from skiresort_planner.constants import OSMConfig
-
+    def test_click_import_button_selects_import_mode(self, fake_st, empty_graph) -> None:
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         fake_st.session_state["state_machine"] = sm
         fake_st.session_state["context"] = ctx
         fake_st.session_state["graph"] = empty_graph
         fake_st.session_state["map_version"] = 0
 
-        fake_st.clicked_keys = {"import_osm"}
+        fake_st.clicked_keys = {"build_btn_import"}
         SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
-        assert ctx.deferred.osm_import is True, "clicking Import must flag a deferred OSM import"
-        # The slider defaults to HALF_WIDTH_DEFAULT_KM, so the flagged half-width matches it (reset-safe).
-        assert ctx.deferred.osm_import_half_width_km == OSMConfig.HALF_WIDTH_DEFAULT_KM
+        # Selecting Import only arms the click-to-place mode; it stays idle and does NOT flag a fetch.
+        assert ctx.build_mode.mode == BuildMode.IMPORT, "clicking Import must select import mode"
+        assert sm.is_idle_ready, "selecting a mode must not leave idle"
+        assert ctx.deferred.osm_import is False, "import is not flagged until the box is placed + confirmed"
 
 
 class TestPathSettingsVisibility:

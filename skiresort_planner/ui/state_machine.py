@@ -269,6 +269,7 @@ from skiresort_planner.ui.state_lifecycle import (
     enter_idle_viewing_lift,
     enter_idle_viewing_road,
     enter_idle_viewing_slope,
+    enter_import_placing,
     enter_lift_placing,
     enter_road_building,
     enter_road_starting,
@@ -372,7 +373,7 @@ class PlannerStateMachine(StateMachine):
     """
 
     # ==========================================================================
-    # State Definitions (10 explicit states)
+    # State Definitions (all explicit states)
     # ==========================================================================
 
     # IDLE states (no building in progress)
@@ -388,6 +389,9 @@ class PlannerStateMachine(StateMachine):
 
     # LIFT state
     lift_placing = State("LiftPlacing")
+
+    # IMPORT state (click-to-place an OSM import bounding box, then confirm)
+    import_placing = State("ImportPlacing")
 
     # ROAD states (segment-by-segment, like a slope: build then finish)
     road_starting = State("RoadStarting")
@@ -405,6 +409,7 @@ class PlannerStateMachine(StateMachine):
     start_slope = idle_ready.to(slope_starting, event="start_slope")  # 1.4 [event: start_slope]
     start_lift = idle_ready.to(lift_placing, event="start_lift")  # 1.8 [event: start_lift]
     start_road = idle_ready.to(road_starting, event="start_road")  # 1.9 [event: start_road]
+    start_import = idle_ready.to(import_placing, event="start_import")  # 1.10 [event: start_import]
     view_slope = idle_ready.to(idle_viewing_slope, event="view_slope")  # 1.2 [event: view_slope]
     view_lift = idle_ready.to(idle_viewing_lift, event="view_lift")  # 1.3 [event: view_lift]
     view_road = idle_ready.to(idle_viewing_road, event="view_road")  # 1.5 [event: view_road]
@@ -426,6 +431,9 @@ class PlannerStateMachine(StateMachine):
     start_slope_from_slope_view = idle_viewing_slope.to(slope_starting, event="start_slope")  # 2.4 [event: start_slope]
     start_lift_from_slope_view = idle_viewing_slope.to(lift_placing, event="start_lift")  # 2.8 [event: start_lift]
     start_road_from_slope_view = idle_viewing_slope.to(road_starting, event="start_road")  # 2.9 [event: start_road]
+    start_import_from_slope_view = idle_viewing_slope.to(
+        import_placing, event="start_import"
+    )  # 2.10 [event: start_import]
 
     # ==========================================================================
     # 3. Transitions: From IDLE_VIEWING_LIFT
@@ -444,6 +452,9 @@ class PlannerStateMachine(StateMachine):
     start_slope_from_lift_view = idle_viewing_lift.to(slope_starting, event="start_slope")  # 3.4 [event: start_slope]
     start_lift_from_lift_view = idle_viewing_lift.to(lift_placing, event="start_lift")  # 3.8 [event: start_lift]
     start_road_from_lift_view = idle_viewing_lift.to(road_starting, event="start_road")  # 3.9 [event: start_road]
+    start_import_from_lift_view = idle_viewing_lift.to(
+        import_placing, event="start_import"
+    )  # 3.10 [event: start_import]
 
     # ==========================================================================
     # 3b. Transitions: From IDLE_VIEWING_ROAD
@@ -462,6 +473,9 @@ class PlannerStateMachine(StateMachine):
     start_slope_from_road_view = idle_viewing_road.to(slope_starting, event="start_slope")  # 3b.4 [event: start_slope]
     start_lift_from_road_view = idle_viewing_road.to(lift_placing, event="start_lift")  # 3b.8 [event: start_lift]
     start_road_from_road_view = idle_viewing_road.to(road_starting, event="start_road")  # 3b.9 [event: start_road]
+    start_import_from_road_view = idle_viewing_road.to(
+        import_placing, event="start_import"
+    )  # 3b.10 [event: start_import]
 
     # ==========================================================================
     # 4. Transitions: From SLOPE_STARTING (0 segments)
@@ -532,6 +546,18 @@ class PlannerStateMachine(StateMachine):
 
     complete_lift = lift_placing.to(idle_viewing_lift)  # 8.3 [direct]
     cancel_lift = lift_placing.to(idle_ready)  # 8.1 [direct]
+
+    # ==========================================================================
+    # 8b. Transitions: From IMPORT_PLACING
+    # ==========================================================================
+    # All transitions from IMPORT_PLACING are direct (no shared events), mirroring LIFT_PLACING.
+    # 8b.1. cancel_import [direct]: Cancel button
+    # 8b.2. complete_import [direct]: Confirm button or center-dot click → run the deferred fetch
+    # 8b.3. retarget_import [direct, self-loop]: click a new point to re-place the box center
+
+    complete_import = import_placing.to(idle_ready)  # 8b.2 [direct]
+    cancel_import = import_placing.to(idle_ready)  # 8b.1 [direct]
+    retarget_import = import_placing.to(import_placing)  # 8b.3 [direct] self-loop
 
     # ==========================================================================
     # 9. Transitions: From ROAD_STARTING (0 segments) / ROAD_BUILDING (1+ segments)
@@ -684,6 +710,11 @@ class PlannerStateMachine(StateMachine):
         return bool(self.lift_placing.is_active)
 
     @property
+    def is_import_placing(self) -> bool:
+        """Check if placing an OSM import bounding box."""
+        return bool(self.import_placing.is_active)
+
+    @property
     def is_road_starting(self) -> bool:
         """Check if starting a road (0 segments)."""
         return bool(self.road_starting.is_active)
@@ -771,6 +802,10 @@ class PlannerStateMachine(StateMachine):
     def on_enter_lift_placing(self) -> None:
         """Hook: Entering lift placing state."""
         enter_lift_placing(self.context)
+
+    def on_enter_import_placing(self) -> None:
+        """Hook: Entering import placing state (also fires on retarget self-loop)."""
+        enter_import_placing(self.context)
 
     def on_enter_road_starting(self) -> None:
         """Hook: Entering road starting state."""
@@ -970,10 +1005,26 @@ class PlannerStateMachine(StateMachine):
     before_start_road_from_lift_view = before_start_road
     before_start_road_from_road_view = before_start_road
 
+    def before_start_import(self, lon: float, lat: float) -> None:
+        """Action before starting import placement: store the first clicked center."""
+        self.context.deferred.osm_import_center_lon = lon
+        self.context.deferred.osm_import_center_lat = lat
+
+    # Reuse start_import logic for the other idle entry points
+    before_start_import_from_slope_view = before_start_import
+    before_start_import_from_lift_view = before_start_import
+    before_start_import_from_road_view = before_start_import
+
     def before_complete_lift(self, lift_id: str) -> None:
         """Set lift_id before completing. Panel visibility set by enter_idle_viewing_lift."""
         self.context.viewing.set_lift_id(lift_id=lift_id)
         self.context.lift.clear()
+
+    def before_cancel_import(self) -> None:
+        """Discard a placed-but-unconfirmed import: clear the box center and the pending flag."""
+        self.context.deferred.osm_import = False
+        self.context.deferred.osm_import_center_lon = None
+        self.context.deferred.osm_import_center_lat = None
 
     def before_finish_road(self, road_id: str) -> None:
         """Set road_id before finishing. Panel visibility set by enter_idle_viewing_road."""

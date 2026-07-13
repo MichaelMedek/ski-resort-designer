@@ -166,6 +166,44 @@ class TestInfoPanelButtonClicks:
         _render_road_info_panel(sm=sm, ctx=ctx, graph=empty_graph)
         assert not ctx.viewing.view_3d, "clicking 'Return to 2D' must disable 3D"
 
+    def test_entity_actions_are_wide_stacked_and_ordered(
+        self, fake_st, empty_graph, path_points_blue, monkeypatch
+    ) -> None:
+        """Every viewed-entity action button is full-width (width='stretch'), stacked (no columns),
+        and in the fixed order 3D-toggle → Rename → Close → Delete."""
+        from skiresort_planner.ui import right_panel
+
+        slope_id = _build_slope(empty_graph, path_points_blue)
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        sm.show_slope_info_panel(slope_id=slope_id)
+        self._bump_ready(fake_st, sm, ctx, empty_graph)
+
+        calls: list[dict] = []
+
+        def _record(*_args, **kwargs):
+            calls.append(kwargs)
+            return False  # nothing clicked
+
+        monkeypatch.setattr(right_panel.st, "button", _record)
+        # columns() would raise if used for Close/Delete — assert it's NOT called for the action row.
+        monkeypatch.setattr(
+            right_panel.st, "columns", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no columns"))
+        )
+
+        right_panel._render_entity_actions(
+            sm=sm,
+            ctx=ctx,
+            graph=empty_graph,
+            kind=right_panel.EntityKind.SLOPE,
+            entity_id=slope_id,
+            entity=empty_graph.slopes[slope_id],
+            delete_fn=lambda _id: True,
+        )
+
+        keys = [c["key"] for c in calls]
+        assert keys == ["slope_3d_view", "rename_slope", "close_slope", "delete_slope"], "fixed order"
+        assert all(c.get("width") == "stretch" for c in calls), "all action buttons must be full-width"
+
     def test_enable_3d_from_lift_panel(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         from skiresort_planner.ui.right_panel import _render_lift_info_panel
 

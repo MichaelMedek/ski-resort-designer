@@ -32,6 +32,7 @@ from skiresort_planner.constants import (
 )
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.enum_utils import enum_eq
+from skiresort_planner.generators.osm_importer import bbox_around
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
@@ -1188,6 +1189,66 @@ class MapRenderer:
                 line_width_min_pixels=3,
                 id="pending_road_start",
             )
+        ]
+
+    def create_import_bbox_layers(
+        self,
+        center_lon: float,
+        center_lat: float,
+        half_width_m: float,
+        elevation: float,
+        use_3d: bool = False,
+    ) -> list[pdk.Layer]:
+        """Draw the OSM import box: a translucent square + a pickable center dot (re-click = confirm).
+
+        The rectangle is the region that will be fetched (corners from bbox_around, same maths the
+        import uses). The center dot carries ClickConfig.TYPE_IMPORT_CENTER so a click on it is
+        classified as MarkerType.IMPORT_CENTER and routed to confirm. PolygonLayer is 2D-only, which
+        is fine — import is a top-down action.
+
+        Args:
+            center_lon, center_lat: Placed box center.
+            half_width_m: Half the box side length in metres (the slider value × 1000).
+            elevation: Ground elevation at the center (for the dot's z in 3D).
+            use_3d: If True, place the dot at terrain elevation.
+        """
+        min_lon, min_lat, max_lon, max_lat = bbox_around(
+            center_lon=center_lon, center_lat=center_lat, half_width_m=half_width_m
+        )
+        ring = [
+            [min_lon, min_lat],
+            [max_lon, min_lat],
+            [max_lon, max_lat],
+            [min_lon, max_lat],
+            [min_lon, min_lat],
+        ]
+        marker_z = self._get_z(elevation, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, MapConfig.Z_OFFSET_2D_MARKERS)
+        return [
+            pdk.Layer(
+                "PolygonLayer",
+                [{"polygon": ring}],
+                get_polygon="polygon",
+                get_fill_color=list(StyleConfig.IMPORT_BOX_RGBA),
+                get_line_color=list(StyleConfig.IMPORT_BOX_RGBA),
+                line_width_min_pixels=2,
+                id="import_bbox",
+            ),
+            pdk.Layer(
+                "ScatterplotLayer",
+                [
+                    {
+                        "type": ClickConfig.TYPE_IMPORT_CENTER,
+                        "position": [center_lon, center_lat, marker_z],
+                        "name": f"{StyleConfig.IMPORT_ICON} Import center — click to confirm",
+                    }
+                ],
+                get_position="position",
+                get_radius=MarkerConfig.LIFT_STATION_RADIUS,
+                get_fill_color=list(StyleConfig.IMPORT_CENTER_RGBA),
+                pickable=True,
+                auto_highlight=True,
+                id="import_center",
+            ),
         ]
 
     # =========================================================================

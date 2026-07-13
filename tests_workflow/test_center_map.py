@@ -373,3 +373,41 @@ class TestLayerCollection:
         assert layer_ids.index("slopes") < layer_ids.index("roads"), "slopes before roads"
         assert layer_ids.index("roads") < layer_ids.index("nodes"), "roads before nodes"
         assert layer_ids.index("nodes") < layer_ids.index("markers"), "nodes before markers"
+
+
+class TestImportBoxLayers:
+    """create_import_bbox_layers draws a square + a PICKABLE center dot tagged so a click on it
+    is classified as an IMPORT_CENTER confirm. Guards the confirm loop end-to-end with the detector."""
+
+    def test_box_and_pickable_center_with_confirm_tag(self, empty_graph) -> None:
+        from skiresort_planner.constants import ClickConfig, StyleConfig
+        from skiresort_planner.model.click_info import MapClickType, MarkerType
+        from skiresort_planner.ui.center_map import MapRenderer
+        from skiresort_planner.ui.click_detector import ClickDetector
+
+        renderer = MapRenderer(graph=empty_graph)
+        layers = renderer.create_import_bbox_layers(
+            center_lon=10.3, center_lat=47.0, half_width_m=2000.0, elevation=2000.0, use_3d=False
+        )
+        by_id = {layer.id: layer for layer in layers}
+
+        # The square: a closed 5-point ring in blue.
+        box = by_id["import_bbox"]
+        ring = box.data[0]["polygon"]
+        assert len(ring) == 5 and ring[0] == ring[-1], "closed rectangle ring"
+        assert box.get_fill_color == list(StyleConfig.IMPORT_BOX_RGBA)
+
+        # The center dot: pickable + tagged so the detector routes a click to confirm.
+        center = by_id["import_center"]
+        assert center.pickable, "center dot must be clickable to confirm"
+        marker = center.data[0]
+        assert marker["type"] == ClickConfig.TYPE_IMPORT_CENTER
+
+        # End-to-end: feed the dot's data through the REAL detector → IMPORT_CENTER marker.
+        class _Dedup:
+            def is_new_click(self, coord, obj_id):
+                return True
+
+        info = ClickDetector(dedup=_Dedup()).detect(clicked_object=marker, clicked_coordinate=None)
+        assert info is not None
+        assert info.click_type == MapClickType.MARKER and info.marker_type == MarkerType.IMPORT_CENTER

@@ -77,6 +77,12 @@ class TestClickDetectorParsing:
                 {"proposal_index": 2},
                 id="proposal",
             ),
+            pytest.param(
+                {"type": "import_center"},
+                MarkerType.IMPORT_CENTER,
+                {},  # positionless confirm marker — no id fields
+                id="import_center",
+            ),
         ],
     )
     def test_marker_click_parsing(

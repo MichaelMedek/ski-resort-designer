@@ -407,6 +407,28 @@ class LiftPlacingContextMessage(Message):
         )
 
 
+@dataclass(frozen=True)
+class ImportPlacingContextMessage(Message):
+    """RIGHT panel: OSM import placement progress — shows the placed box center + area size."""
+
+    center_lat: float = 0.0
+    center_lon: float = 0.0
+    half_width_km: float = 0.0
+
+    @property
+    def level(self) -> MessageLevel:
+        return MessageLevel.INFO
+
+    @property
+    def message(self) -> str:
+        side_km = self.half_width_km * 2
+        return (
+            "🗺️ **Import from OpenStreetMap** — Placing\n\n"
+            f"- 📍 Center: ({self.center_lat:.4f}, {self.center_lon:.4f})\n"
+            f"- ⬜ Area: {side_km:.1f} × {side_km:.1f} km"
+        )
+
+
 # =============================================================================
 # RIGHT PANEL (CONTROL) - Action Instructions (YELLOW)
 # One message telling user exactly what to do NOW
@@ -494,6 +516,24 @@ class LiftActionMessage(Message):
             )
         # No right panel message needed for lift idle
         raise ValueError("No action message to display - all flags are False")
+
+
+@dataclass(frozen=True)
+class ImportActionMessage(Message):
+    """RIGHT panel: action instruction while placing an OSM import box."""
+
+    @property
+    def level(self) -> MessageLevel:
+        return MessageLevel.WARNING
+
+    @property
+    def message(self) -> str:
+        return (
+            "🗺️ **Confirm the Import Area**\n\n"
+            "- ↔️ Resize with the **half-width slider** (left)\n"
+            "- 👆 Click terrain to **re-place** the center\n"
+            "- ✅ Click the **center dot** or **Confirm Import** to fetch"
+        )
 
 
 @dataclass(frozen=True)

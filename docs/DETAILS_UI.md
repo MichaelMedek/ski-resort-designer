@@ -381,9 +381,10 @@ Click **📤 Export GPX** to download GPS tracks of your slopes for use in other
 Instead of starting from an empty map, load a real resort's existing lifts and pistes as a
 canvas, then keep editing with the normal tools.
 
-1. Pan the map so its **center** is on the resort area you want (within the terrain coverage).
-2. In the sidebar, set the **Import area half-width (km)** slider, then click **🗺️ Import from OpenStreetMap**.
-3. The lifts and pistes within that square area are added.
+1. Select **🗺️ Import (OSM)** in the build-mode selector (like picking Slope/Road/Lift).
+2. Adjust the **Import area half-width (km)** slider (left) to size the box.
+3. **Click the map** to drop the import area — a blue square + center dot appear where you clicked. Click elsewhere to re-place it; move the slider to resize it live.
+4. **Confirm** by clicking the **center dot** on the map, or the **✅ Confirm Import** button in the right panel. The lifts and pistes fully inside the square are then fetched and added. **Cancel** (left) discards the box.
 
 **What gets imported**
 

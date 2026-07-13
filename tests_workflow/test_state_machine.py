@@ -288,3 +288,49 @@ class TestViewingEntity:
         _force_state(sm=sm, state_name="idle_viewing_lift")
         ctx.viewing.set_lift_id(lift_id="L3")
         assert sm.viewing_entity == (EntityKind.LIFT, "L3")
+
+
+class TestImportPlacing:
+    """The click-to-place OSM import mode: start_import from any idle state stores the box center;
+    retarget re-places it; cancel/complete return to idle (cancel also clears the center)."""
+
+    def _sm(self):
+        from skiresort_planner.model.resort_graph import ResortGraph
+
+        return PlannerStateMachine.create(graph=ResortGraph(), add_ui_listener=False)
+
+    @pytest.mark.parametrize(
+        "idle_state",
+        ["idle_ready", "idle_viewing_slope", "idle_viewing_lift", "idle_viewing_road"],
+    )
+    def test_start_import_from_every_idle_state(self, idle_state) -> None:
+        sm, ctx = self._sm()
+        _force_state(sm=sm, state_name=idle_state)
+        sm.start_import(lon=10.3, lat=47.0)
+        assert sm.is_import_placing
+        assert ctx.deferred.osm_import_center_lon == 10.3 and ctx.deferred.osm_import_center_lat == 47.0
+
+    def test_retarget_keeps_placing(self) -> None:
+        sm, ctx = self._sm()
+        sm.start_import(lon=1.0, lat=2.0)
+        sm.retarget_import()
+        assert sm.is_import_placing, "retarget is a self-loop"
+
+    def test_cancel_returns_to_idle_and_clears_center(self) -> None:
+        sm, ctx = self._sm()
+        sm.start_import(lon=1.0, lat=2.0)
+        sm.cancel_import()
+        assert sm.is_idle_ready
+        assert ctx.deferred.osm_import_center_lon is None and ctx.deferred.osm_import_center_lat is None
+        assert ctx.deferred.osm_import is False
+
+    def test_complete_returns_to_idle(self) -> None:
+        sm, ctx = self._sm()
+        sm.start_import(lon=1.0, lat=2.0)
+        sm.complete_import()
+        assert sm.is_idle_ready
+
+    def test_import_placing_is_not_idle(self) -> None:
+        sm, _ = self._sm()
+        sm.start_import(lon=1.0, lat=2.0)
+        assert not sm.is_idle and not sm.is_any_slope_state and not sm.is_any_road_state
