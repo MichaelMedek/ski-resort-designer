@@ -37,6 +37,7 @@ from skiresort_planner.model.resort_graph import (
     DeleteSlopeAction,
     FinishRoadAction,
     FinishSlopeAction,
+    ImportOSMAction,
     ResortGraph,
     UndoAction,
 )
@@ -100,6 +101,10 @@ def _describe_undo_action(action: UndoAction, graph: ResortGraph) -> str:
     elif enum_eq(action.action_type, ActionType.DELETE_ROAD):
         act = cast(DeleteRoadAction, action)
         return f"Restore deleted road **{act.deleted_road.name}**"
+
+    elif enum_eq(action.action_type, ActionType.IMPORT_OSM):
+        act = cast(ImportOSMAction, action)
+        return f"Remove OSM import ({len(act.slope_ids)} slopes, {len(act.lift_ids)} lifts)"
 
     else:
         raise RuntimeError(f"Unknown action type: {action.action_type}")

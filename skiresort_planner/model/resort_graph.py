@@ -29,6 +29,7 @@ from skiresort_planner.model.path_segment import PathSegment, SegmentKind
 from skiresort_planner.model.path_smoothing import smooth_joined_path
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.road import Road
+from skiresort_planner.model.segment_path import SegmentPath
 from skiresort_planner.model.slope import Slope
 
 if TYPE_CHECKING:
@@ -914,6 +915,20 @@ class ResortGraph:
             raise RuntimeError(f"Unknown action type in undo_last: {action_type}")
 
         return action
+
+    def rename(self, entity_id: str, new_name: str) -> None:
+        """Rename a slope, lift, or road by id (and its segments, for segment-path entities).
+
+        Ids are uniquely prefixed (SL/L/R), so no kind is needed. Slopes and roads also rename their
+        segments — finish_slope/finish_road set segment names, and the elevation profile shows them.
+        """
+        entity = self.slopes.get(entity_id) or self.roads.get(entity_id) or self.lifts.get(entity_id)
+        if entity is None:
+            raise KeyError(f"No slope/lift/road with id {entity_id}")
+        entity.name = new_name
+        if isinstance(entity, SegmentPath):
+            for seg_id in entity.segment_ids:
+                self.segments[seg_id].name = new_name
 
     def delete_slope(self, slope_id: str) -> bool:
         """Delete a slope and its segments.

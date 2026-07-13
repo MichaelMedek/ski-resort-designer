@@ -74,6 +74,31 @@ class TestDeleteSlopeAction:
         assert not sm.is_idle_viewing_slope, "deleting the viewed slope must close its panel"
 
 
+class TestRenameEntityAction:
+    def test_sets_name_and_bumps_map(self, fake_st, empty_graph, path_points_blue) -> None:
+        from skiresort_planner.ui.actions import rename_entity_action
+
+        slope = _make_slope(empty_graph, path_points_blue)
+        _session(fake_st, empty_graph)
+        version_before = fake_st.session_state["map_version"]
+
+        rename_entity_action(entity_id=slope.id, new_name="  Renamed  ")
+
+        assert empty_graph.slopes[slope.id].name == "Renamed", "name is trimmed and applied"
+        assert fake_st.session_state["map_version"] > version_before
+
+    def test_empty_name_is_noop(self, fake_st, empty_graph, path_points_blue) -> None:
+        from skiresort_planner.ui.actions import rename_entity_action
+
+        slope = _make_slope(empty_graph, path_points_blue)
+        original = slope.name
+        _session(fake_st, empty_graph)
+
+        rename_entity_action(entity_id=slope.id, new_name="   ")
+
+        assert empty_graph.slopes[slope.id].name == original, "blank name must not overwrite"
+
+
 class TestDeleteRoadAction:
     def test_removes_road(self, fake_st, empty_graph) -> None:
         from skiresort_planner.ui.actions import delete_road_action

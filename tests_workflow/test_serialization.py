@@ -121,6 +121,20 @@ class TestResortGraphSerialization:
         _s, _l, duplicates = restored.import_osm(pistes=[piste], lifts=[lift], dem=dem)
         assert duplicates == 2
 
+    def test_custom_name_survives_roundtrip(self, empty_graph, path_points_blue) -> None:
+        """A user's rename persists through to_dict → from_dict (issue #12)."""
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
+        from skiresort_planner.model.resort_graph import ResortGraph
+
+        graph = empty_graph
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        graph.rename(entity_id=slope.id, new_name="My Favourite Run")
+
+        restored = ResortGraph.from_dict(data=json.loads(json.dumps(graph.to_dict())))
+
+        assert restored.slopes[slope.id].name == "My Favourite Run"
+
 
 class TestFileSaveLoad:
     """Tests for file-based save/load operations."""

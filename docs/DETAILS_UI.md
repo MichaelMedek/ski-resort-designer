@@ -115,6 +115,7 @@ Click **"🏔️ View in 3D"** to see the slope from an angled perspective with 
 
 ### Actions
 
+- **✏️ Rename** — Give the slope a custom name (opens a dialog; the name persists and survives save/reload)
 - **✖️ Close** — Return to build mode
 - **🗑️ Delete** — Remove the slope (confirms first, can be undone)
 
@@ -246,7 +247,11 @@ Click on any **lift** (the purple line or its icon) to open the statistics panel
 
 ### Changing Lift Type
 
-While viewing a lift, click a different lift button in the sidebar to **change its type**. This updates the pylon configuration and cable profile.
+While viewing a lift, click a different lift button in the sidebar to **change its type**. This updates the pylon configuration and cable profile. The lift's **name is kept**.
+
+### Renaming
+
+Click **✏️ Rename** to give a lift (or slope or road) a custom name. It persists in saved resorts and survives reloads and lift-type changes.
 
 ### 3D View
 
@@ -295,7 +300,7 @@ Click any road (its brown line or icon) to open its panel:
 | **Elevation Change** | Net rise/fall (signed) |
 | **Steepest Section** | Steepest 300m section (magnitude), always ≤15% |
 
-As with slopes and lifts, you can view the road's elevation profile, switch to **🏔️ 3D**, **🗑️ Delete** it, or **↩️ Undo**.
+As with slopes and lifts, you can view the road's elevation profile, switch to **🏔️ 3D**, **✏️ Rename** it, **🗑️ Delete** it, or **↩️ Undo**.
 
 ---
 

@@ -395,10 +395,11 @@ class Lift:
         return start.location, end.location
 
     def update_type(self, new_type: str, start_node: "Node", end_node: "Node") -> None:
-        """Change lift type and update all dependent fields.
+        """Change lift type and refresh type-dependent geometry.
 
         Uses _compute_type_dependent_data() to ensure consistency with create().
-        Updates: lift_type, name, pylons, cable_points.
+        Updates: lift_type, pylons, cable_points. The NAME is deliberately kept — a type change
+        must not clobber a user's (or OSM's) name; rename it explicitly via the UI if desired.
 
         Args:
             new_type: New lift type (must be valid from LiftConfig.TYPES)
@@ -414,8 +415,8 @@ class Lift:
 
         self.lift_type = new_type
 
-        # Recompute all type-dependent data via shared helper
-        self.name, self.pylons, self.cable_points, _ = self._compute_type_dependent_data(
+        # Recompute type-dependent geometry via shared helper; keep the existing name.
+        _name, self.pylons, self.cable_points, _length = self._compute_type_dependent_data(
             terrain_points=self.terrain_points,
             start_node=start_node,
             end_node=end_node,

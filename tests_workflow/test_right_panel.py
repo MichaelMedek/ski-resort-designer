@@ -217,6 +217,44 @@ class TestInfoPanelButtonClicks:
         _render_slope_info_panel(sm=sm, ctx=ctx, graph=empty_graph)
         assert not sm.is_idle_viewing_slope, "clicking Close must leave the viewing state"
 
+    def test_rename_button_offered_in_each_panel(
+        self, fake_st, empty_graph, path_points_blue, mock_dem_blue_slope
+    ) -> None:
+        """The ✏️ Rename button renders in all three detail panels (key rename_<kind>).
+
+        We capture the button keys rather than click it — clicking would invoke the real
+        @st.dialog. The dialog body's effect is covered by TestRenameEntityAction.
+        """
+        from skiresort_planner.ui.right_panel import (
+            _render_lift_info_panel,
+            _render_road_info_panel,
+            _render_slope_info_panel,
+        )
+
+        keys: list[str] = []
+        orig_button = fake_st.button
+        fake_st.button = lambda *a, **k: (keys.append(k.get("key")), orig_button(*a, **k))[1]
+
+        slope_id = _build_slope(empty_graph, path_points_blue)
+        road_id = _build_road(empty_graph, path_points_blue)
+        lift_id = _build_lift(empty_graph, mock_dem_blue_slope)
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        self._bump_ready(fake_st, sm, ctx, empty_graph)
+
+        sm.show_slope_info_panel(slope_id=slope_id)
+        _render_slope_info_panel(sm=sm, ctx=ctx, graph=empty_graph)
+        assert "rename_slope" in keys
+
+        sm.hide_info_panel()
+        sm.show_road_info_panel(road_id=road_id)
+        _render_road_info_panel(sm=sm, ctx=ctx, graph=empty_graph)
+        assert "rename_road" in keys
+
+        sm.hide_info_panel()
+        sm.show_lift_info_panel(lift_id=lift_id)
+        _render_lift_info_panel(sm=sm, ctx=ctx, graph=empty_graph)
+        assert "rename_lift" in keys
+
 
 # =============================================================================
 # render_control_panel dispatch across states

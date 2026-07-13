@@ -37,6 +37,7 @@ from skiresort_planner.ui.actions import (
     delete_road_action,
     delete_slope_action,
     reload_map,
+    rename_entity_action,
     trigger_rerun,
 )
 from skiresort_planner.ui.context import EntityKind
@@ -85,6 +86,20 @@ def _confirm_delete_dialog(
             # Action functions handle state transition and map version bump
             trigger_rerun()
     with col_no:
+        if st.button("✖️ Cancel", use_container_width=True):
+            trigger_rerun()
+
+
+@st.dialog("Rename")
+def _rename_dialog(entity_id: str, current_name: str) -> None:
+    """Prompt for a new name for a slope, road, or lift and apply it on Save."""
+    new_name = st.text_input("Name", value=current_name)
+    col_save, col_cancel = st.columns(2)
+    with col_save:
+        if st.button("💾 Save", type="primary", use_container_width=True):
+            rename_entity_action(entity_id=entity_id, new_name=new_name)
+            trigger_rerun()
+    with col_cancel:
         if st.button("✖️ Cancel", use_container_width=True):
             trigger_rerun()
 
@@ -141,7 +156,7 @@ def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, kind: Enti
             reload_map()  # Never returns - raises StopExecution
 
 
-def _render_close_delete_buttons(
+def _render_entity_actions(
     sm: PlannerStateMachine,
     ctx: PlannerContext,
     graph: ResortGraph,
@@ -150,8 +165,15 @@ def _render_close_delete_buttons(
     entity: "Slope | Lift | Road",
     delete_fn: Callable[[str], bool],
 ) -> None:
-    """Render close and delete buttons. Triggers state transition or opens dialog."""
+    """Render rename / close / delete for a viewed entity. Buttons open dialogs or transition state."""
     noun = kind.value
+    if st.button(
+        "✏️ Rename",
+        key=f"rename_{noun}",
+        width="stretch",
+        help=f"Give this {noun} a custom name",
+    ):
+        _rename_dialog(entity_id=entity_id, current_name=entity.name)
     col_close, col_delete = st.columns(2)
     with col_close:
         if st.button(
@@ -441,7 +463,7 @@ def _render_slope_info_panel(
 
     _render_3d_toggle_button(ctx=ctx, graph=graph, kind=EntityKind.SLOPE, entity_id=slope_id)
 
-    _render_close_delete_buttons(
+    _render_entity_actions(
         sm=sm,
         ctx=ctx,
         graph=graph,
@@ -470,7 +492,7 @@ def _render_lift_info_panel(
 
     _render_3d_toggle_button(ctx=ctx, graph=graph, kind=EntityKind.LIFT, entity_id=lift_id)
 
-    _render_close_delete_buttons(
+    _render_entity_actions(
         sm=sm,
         ctx=ctx,
         graph=graph,
@@ -499,7 +521,7 @@ def _render_road_info_panel(
 
     _render_3d_toggle_button(ctx=ctx, graph=graph, kind=EntityKind.ROAD, entity_id=road_id)
 
-    _render_close_delete_buttons(
+    _render_entity_actions(
         sm=sm,
         ctx=ctx,
         graph=graph,

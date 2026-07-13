@@ -961,6 +961,20 @@ def delete_slope_action(slope_id: str) -> bool:
     )
 
 
+def rename_entity_action(entity_id: str, new_name: str) -> None:
+    """Set a custom name on the viewed slope/lift/road; ignore an empty name.
+
+    Kind-agnostic (ids are uniquely prefixed), so one action covers all three. The panel header
+    re-renders from the entity's name; bump the map so labels redraw.
+    """
+    name = new_name.strip()
+    if not name:
+        return
+    graph: ResortGraph = st.session_state.graph
+    graph.rename(entity_id=entity_id, new_name=name)
+    bump_map_version()
+
+
 def delete_lift_action(lift_id: str) -> bool:
     """Delete a lift and trigger UI updates."""
     sm: PlannerStateMachine = st.session_state.state_machine

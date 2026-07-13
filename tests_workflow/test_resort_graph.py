@@ -819,3 +819,97 @@ class TestImportOSMBatch:
         r2 = graph.import_osm(pistes=pistes, lifts=[], dem=dem)
         assert (r2.slopes_added, r2.duplicates_skipped) == (0, 2), "snapped re-import must be idempotent"
         assert len(graph.slopes) == 2, "no duplicate slopes created"
+
+
+class TestRename:
+    """graph.rename sets a custom name on a slope/lift/road by id (and its segments for slopes/roads)."""
+
+    def test_rename_slope_also_renames_its_segments(self, empty_graph, path_points_blue) -> None:
+        graph = empty_graph
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+
+        graph.rename(entity_id=slope.id, new_name="My Run")
+
+        assert graph.slopes[slope.id].name == "My Run"
+        assert all(graph.segments[sid].name == "My Run" for sid in slope.segment_ids), "segments renamed too"
+
+    def test_rename_road_also_renames_its_segments(self, empty_graph) -> None:
+        graph = empty_graph
+        pts = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=300 / M, lat=0.0, elevation=1990.0)]
+        graph.commit_paths(paths=[ProposedPathSegment(points=pts, is_connector=True, kind=SegmentKind.ROAD)])
+        road = graph.finish_road(segment_ids=list(graph.segments.keys()))
+
+        graph.rename(entity_id=road.id, new_name="Access Road")
+
+        assert graph.roads[road.id].name == "Access Road"
+        assert all(graph.segments[sid].name == "Access Road" for sid in road.segment_ids)
+
+    def test_rename_lift(self, empty_graph, mock_dem_blue_slope) -> None:
+        graph, dem = empty_graph, mock_dem_blue_slope
+        bottom, _ = graph.get_or_create_node(
+            lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M)
+        )
+        top, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
+        lift = graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
+
+        graph.rename(entity_id=lift.id, new_name="Sunrise Express")
+
+        assert graph.lifts[lift.id].name == "Sunrise Express"
+
+    def test_rename_unknown_id_raises(self, empty_graph) -> None:
+        with pytest.raises(KeyError):
+            empty_graph.rename(entity_id="SL999", new_name="x")
+
+
+class TestLiftTypeChangeKeepsName:
+    """Changing a lift's type must NOT regenerate its name (it would clobber a custom/OSM name)."""
+
+    def test_update_type_preserves_name_and_updates_geometry(self, empty_graph, mock_dem_blue_slope) -> None:
+        graph, dem = empty_graph, mock_dem_blue_slope
+        bottom, _ = graph.get_or_create_node(
+            lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M)
+        )
+        top, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
+        lift = graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
+        graph.rename(entity_id=lift.id, new_name="Keep Me")
+        cable_before = lift.cable_points
+
+        lift.update_type(new_type="gondola", start_node=graph.nodes[bottom.id], end_node=graph.nodes[top.id])
+
+        assert lift.name == "Keep Me", "type change must not rename the lift"
+        assert lift.lift_type == "gondola"
+        assert lift.cable_points is not cable_before, "type-dependent geometry still recomputed"
+
+
+class TestUndoDispatchExhaustiveness:
+    """Tripwire: every ActionType must be handled by ALL THREE undo dispatchers.
+
+    Adding an ActionType without wiring up one dispatcher previously shipped a user-facing crash
+    (the IMPORT_OSM undo-describe bug). These dispatchers are parallel if/elif chains on a plain
+    enum, so the type checker can't enforce completeness — this test does, at the source level.
+    """
+
+    def _dispatcher_sources(self):
+        import inspect
+
+        from skiresort_planner.model.resort_graph import ResortGraph
+        from skiresort_planner.ui.actions import undo_last_action
+        from skiresort_planner.ui.left_panel import _describe_undo_action
+
+        return {
+            "graph.undo_last": inspect.getsource(ResortGraph.undo_last),
+            "actions.undo_last_action": inspect.getsource(undo_last_action),
+            "left_panel._describe_undo_action": inspect.getsource(_describe_undo_action),
+        }
+
+    def test_every_action_type_handled_by_all_dispatchers(self) -> None:
+        from skiresort_planner.model.resort_graph import ActionType
+
+        sources = self._dispatcher_sources()
+        missing = {
+            name: [member.name for member in ActionType if f"ActionType.{member.name}" not in src]
+            for name, src in sources.items()
+        }
+        missing = {name: gaps for name, gaps in missing.items() if gaps}
+        assert not missing, f"undo dispatchers missing ActionType branches: {missing}"

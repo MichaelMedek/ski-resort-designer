@@ -221,6 +221,21 @@ class TestDescribeUndoAction:
         empty_graph.delete_road(road_id=road_id)
         assert "Restore deleted road" in self._describe_top(empty_graph)
 
+    def test_import_osm_label(self, empty_graph, mock_dem_blue_slope) -> None:
+        from skiresort_planner.model.path_point import PathPoint
+
+        dem = mock_dem_blue_slope
+        m = 111320.0
+        piste = (
+            [
+                PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
+                PathPoint(lon=0.0, lat=-500 / m, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / m)),
+            ],
+            "Run",
+        )
+        empty_graph.import_osm(pistes=[piste], lifts=[], dem=dem)
+        assert "OSM import" in self._describe_top(empty_graph)
+
 
 # =============================================================================
 # Dialog action helpers (extracted from @st.dialog bodies to be testable)
