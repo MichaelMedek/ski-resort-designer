@@ -12,6 +12,7 @@ Road graph-ops / parking / stats classes are added here in the road dissection.
 import pytest
 
 from skiresort_planner.constants import MapConfig
+from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
@@ -455,3 +456,149 @@ class TestStatsWithRoads:
         stats = empty_graph.get_stats()
         assert stats["total_roads"] == 1
         assert stats["total_road_length_m"] > 0
+
+
+# =============================================================================
+# Whole-path smoothing on finish (DETAILS.md §5.8)
+# =============================================================================
+
+
+def _leg(lon0, lat0, d_lon, d_lat, n, dem):
+    """A straight leg of n points stepping (d_lon, d_lat) metres/point, elevation from DEM."""
+    pts = []
+    for i in range(n):
+        lon = lon0 + d_lon * i / M
+        lat = lat0 + d_lat * i / M
+        pts.append(PathPoint(lon=lon, lat=lat, elevation=dem.get_elevation_or_raise(lon=lon, lat=lat)))
+    return pts
+
+
+def _turn_deg(a, b, c):
+    """Absolute heading change (deg) at b for the polyline a->b->c."""
+    h1 = GeoCalculator.initial_bearing_deg(lon1=a.lon, lat1=a.lat, lon2=b.lon, lat2=b.lat)
+    h2 = GeoCalculator.initial_bearing_deg(lon1=b.lon, lat1=b.lat, lon2=c.lon, lat2=c.lat)
+    d = abs(h1 - h2) % 360
+    return d if d <= 180 else 360 - d
+
+
+def _commit_L_slope(graph, dem):
+    """Commit two descending segments meeting at a sharp ~45° junction; return their ids.
+
+    Leg 1 heads due south, leg 2 turns south-east from the shared junction node. Both
+    descend on the south-facing DEM, so finish_slope accepts them.
+    """
+    leg1 = _leg(0.0, 0.0, 0.0, -20.0, 25, dem)  # 480m south
+    graph.commit_paths(paths=[ProposedPathSegment(points=leg1, target_difficulty="blue")])
+    j = leg1[-1]
+    leg2 = _leg(j.lon, j.lat, 20.0, -20.0, 25, dem)  # 480m south-east from the junction
+    graph.commit_paths(paths=[ProposedPathSegment(points=leg2, target_difficulty="blue")])
+    return list(graph.segments.keys())
+
+
+class TestFinishSmoothing:
+    """Whole-path smoothing runs on finish, rounding junction kinks without rejecting."""
+
+    def test_finish_reduces_junction_turn_angle(self, empty_graph, mock_dem_blue_slope) -> None:
+        graph = empty_graph
+        seg_ids = _commit_L_slope(graph, mock_dem_blue_slope)
+        s1, s2 = graph.segments[seg_ids[0]], graph.segments[seg_ids[1]]
+        raw_turn = _turn_deg(s1.points[-2], s1.points[-1], s2.points[1])
+        assert raw_turn > 30, "fixture should start with a sharp junction"
+
+        graph.finish_slope(segment_ids=seg_ids)
+
+        joined = graph.slopes[list(graph.slopes)[0]].get_all_points(segments=graph.segments)
+        max_turn = max(_turn_deg(joined[i - 1], joined[i], joined[i + 1]) for i in range(1, len(joined) - 1))
+        assert max_turn < raw_turn, f"junction should round (raw {raw_turn:.1f} -> {max_turn:.1f})"
+        assert max_turn < 20, f"rounded junction should be gentle, got {max_turn:.1f}"
+
+    def test_finish_pins_every_node_onto_ribbon(self, empty_graph, mock_dem_blue_slope) -> None:
+        # Outer endpoints AND the internal junction must land exactly on their node coords,
+        # so markers connect and any node can be a branch point (the purpose of pinning).
+        graph = empty_graph
+        seg_ids = _commit_L_slope(graph, mock_dem_blue_slope)
+        start_node = graph.nodes[graph.segments[seg_ids[0]].start_node_id]
+        junction_node = graph.nodes[graph.segments[seg_ids[0]].end_node_id]
+        end_node = graph.nodes[graph.segments[seg_ids[-1]].end_node_id]
+
+        graph.finish_slope(segment_ids=seg_ids)
+
+        first_pt = graph.segments[seg_ids[0]].points[0]
+        junction_pt = graph.segments[seg_ids[0]].points[-1]
+        last_pt = graph.segments[seg_ids[-1]].points[-1]
+        assert (first_pt.lon, first_pt.lat, first_pt.elevation) == (
+            start_node.lon,
+            start_node.lat,
+            start_node.elevation,
+        )
+        assert (junction_pt.lon, junction_pt.lat, junction_pt.elevation) == (
+            junction_node.lon,
+            junction_node.lat,
+            junction_node.elevation,
+        ), "internal junction must be pinned exactly onto the node"
+        assert (last_pt.lon, last_pt.lat, last_pt.elevation) == (end_node.lon, end_node.lat, end_node.elevation)
+
+    def test_finish_preserves_segment_count_and_ids(self, empty_graph, mock_dem_blue_slope) -> None:
+        graph = empty_graph
+        seg_ids = _commit_L_slope(graph, mock_dem_blue_slope)
+
+        graph.finish_slope(segment_ids=seg_ids)
+
+        assert list(graph.segments.keys()) == seg_ids, "same segment ids after smoothing"
+        for sid in seg_ids:
+            assert len(graph.segments[sid].points) >= 2, "each segment keeps >=2 points"
+
+    def test_get_all_points_contiguous_after_finish(self, empty_graph, mock_dem_blue_slope) -> None:
+        graph = empty_graph
+        seg_ids = _commit_L_slope(graph, mock_dem_blue_slope)
+
+        graph.finish_slope(segment_ids=seg_ids)
+
+        s1, s2 = graph.segments[seg_ids[0]], graph.segments[seg_ids[1]]
+        assert s1.points[-1] == s2.points[0], "adjacent segments must share the junction by value"
+        slope = graph.slopes[list(graph.slopes)[0]]
+        slope.get_all_points(segments=graph.segments)  # must not raise on the dedup
+
+    def test_undo_after_smoothed_finish_keeps_segments(self, empty_graph, mock_dem_blue_slope) -> None:
+        graph = empty_graph
+        seg_ids = _commit_L_slope(graph, mock_dem_blue_slope)
+        graph.finish_slope(segment_ids=seg_ids)
+        after_first = [graph.segments[sid].max_slope_pct for sid in seg_ids]
+
+        undone = graph.undo_last()
+
+        assert isinstance(undone, FinishSlopeAction)
+        assert list(graph.segments.keys()) == seg_ids, "segments survive finish-undo"
+        # Re-finishing an already-smoothed path is idempotent (sub-meter drift, non-accumulating).
+        graph.finish_slope(segment_ids=seg_ids)
+        after_second = [graph.segments[sid].max_slope_pct for sid in seg_ids]
+        for a, b in zip(after_first, after_second):
+            assert abs(a - b) < 1.0, "re-finish must not drift max_slope_pct meaningfully"
+
+    def test_road_finish_may_exceed_15pct_but_never_none(self, empty_graph, mock_dem_black_slope) -> None:
+        # Black terrain (45%) → smoothing a road's junction can push its steepest section
+        # over the ±15% build cap. A finished road is allowed to exceed it and must not vanish.
+        graph = empty_graph
+        dem = mock_dem_black_slope
+        leg1 = _leg(0.0, 0.0, 0.0, -20.0, 25, dem)
+        graph.commit_paths(paths=[ProposedPathSegment(points=leg1, is_connector=True, kind=SegmentKind.ROAD)])
+        j = leg1[-1]
+        leg2 = _leg(j.lon, j.lat, 20.0, -20.0, 25, dem)
+        graph.commit_paths(paths=[ProposedPathSegment(points=leg2, is_connector=True, kind=SegmentKind.ROAD)])
+        seg_ids = list(graph.segments.keys())
+
+        road = graph.finish_road(segment_ids=seg_ids)
+
+        assert road is not None, "a finished road must never be rejected by smoothing"
+        assert max(graph.segments[sid].max_slope_pct for sid in seg_ids) > 15.0
+
+    def test_single_segment_finish_is_noop(self, empty_graph, path_points_blue) -> None:
+        graph = empty_graph
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        seg_id = list(graph.segments.keys())[0]
+        before = list(graph.segments[seg_id].points)
+
+        slope = graph.finish_slope(segment_ids=[seg_id])
+
+        assert slope is not None
+        assert graph.segments[seg_id].points == before, "single-segment path is not smoothed"

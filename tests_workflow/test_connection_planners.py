@@ -15,7 +15,7 @@ from typing import Optional
 
 import pytest
 
-from skiresort_planner.constants import PlannerConfig
+from skiresort_planner.constants import GeometricTuningConfig
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.generators.connection_planners import (
     GradientMode,
@@ -324,14 +324,13 @@ class TestEdgeCostGradeAttractor:
         """DOWNHILL, downhill edge (with the grade): cost = dist × exp(|actual−target| / σ)."""
         from math import exp
 
-        from skiresort_planner.constants import PlannerConfig
         from skiresort_planner.core.geo_calculator import GeoCalculator
 
         planner = self._planner(mock_dem_blue_slope)
         cost = self._cost(planner, 2000.0, 1994.0, target_grade_pct=0.0, gradient_mode=GradientMode.DOWNHILL)
         horiz = GeoCalculator.haversine_distance_m(lat1=0.0, lon1=0.0, lat2=0.0, lon2=30.0 / 111320.0)
         actual_grade = (6.0 / horiz) * 100
-        expected = horiz * exp(abs(actual_grade - 0.0) / PlannerConfig.COST_SIGMA)
+        expected = horiz * exp(abs(actual_grade - 0.0) / GeometricTuningConfig.COST_SIGMA)
         assert cost == pytest.approx(expected, rel=1e-6)
 
     def test_downhill_mode_penalizes_climbing(self, mock_dem_blue_slope) -> None:

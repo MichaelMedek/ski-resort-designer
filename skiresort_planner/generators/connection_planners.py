@@ -19,15 +19,15 @@ from math import exp
 from typing import Optional
 
 import numpy as np
-from scipy.interpolate import splev, splprep
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import shortest_path
 
-from skiresort_planner.constants import PathConfig, PlannerConfig
+from skiresort_planner.constants import GeometricTuningConfig, PlannerConfig
 from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.model.path_point import PathPoint
+from skiresort_planner.model.path_smoothing import resample_cubic_spline
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 
 logger = logging.getLogger(__name__)
@@ -75,7 +75,7 @@ class LeastCostPathPlanner:
     prefer longer traverses over steep shortcuts — so a gentle target grade serpentines
     on steep ground instead of exceeding it.
 
-    Configuration: See PlannerConfig in constants.py for tunable parameters.
+    Configuration: See GeometricTuningConfig in constants.py for tunable parameters.
     """
 
     def __init__(
@@ -121,7 +121,7 @@ class LeastCostPathPlanner:
             lat1=start_lat, lon1=start_lon, lat2=target_lat, lon2=target_lon
         )
 
-        if direct_distance_m < PathConfig.STEP_SIZE_M:
+        if direct_distance_m < GeometricTuningConfig.STEP_SIZE_M:
             return None
 
         # Build the search grid
@@ -186,12 +186,12 @@ class LeastCostPathPlanner:
         # zig-zag needs much more lateral room than a near-straight line. When a gentle
         # target grade forces serpentining on steep ground, widen this buffer so those
         # switchbacks physically fit in the search grid instead of being clipped.
-        buffer_m = direct_distance * PlannerConfig.GRID_BUFFER_FACTOR
+        buffer_m = direct_distance * GeometricTuningConfig.GRID_BUFFER_FACTOR
         total_extent = direct_distance + 2 * buffer_m
 
         # Grid dimensions
-        n_cells = int(total_extent / PlannerConfig.GRID_RESOLUTION_M) + 1
-        n_cells = min(n_cells, int(PlannerConfig.MAX_GRID_SIZE))  # Cap grid size for performance
+        n_cells = int(total_extent / GeometricTuningConfig.GRID_RESOLUTION_M) + 1
+        n_cells = min(n_cells, int(GeometricTuningConfig.MAX_GRID_SIZE))  # Cap grid size for performance
 
         # Center point
         center_lon = (start_lon + target_lon) / 2
@@ -230,13 +230,13 @@ class LeastCostPathPlanner:
                     lon=origin_lon,
                     lat=origin_lat,
                     bearing_deg=(bearing + 90) % 360,
-                    distance_m=col * PlannerConfig.GRID_RESOLUTION_M,
+                    distance_m=col * GeometricTuningConfig.GRID_RESOLUTION_M,
                 )
                 lon, lat = GeoCalculator.destination(
                     lon=lon,
                     lat=lat,
                     bearing_deg=bearing,
-                    distance_m=row * PlannerConfig.GRID_RESOLUTION_M,
+                    distance_m=row * GeometricTuningConfig.GRID_RESOLUTION_M,
                 )
 
                 elev = self.dem.get_elevation(lon=lon, lat=lat)
@@ -421,7 +421,7 @@ class LeastCostPathPlanner:
         actual_grade = (drop / horiz_dist) * 100
 
         # Attractor: exponential penalty for deviating from the target grade.
-        grade_cost = exp(abs(actual_grade - target_grade_pct) / PlannerConfig.COST_SIGMA)
+        grade_cost = exp(abs(actual_grade - target_grade_pct) / GeometricTuningConfig.COST_SIGMA)
 
         # Penalize running against the segment's direction: DOWNHILL penalizes climbing
         # (actual_grade < 0), UPHILL penalizes descending (actual_grade > 0). This
@@ -429,7 +429,7 @@ class LeastCostPathPlanner:
         against_penalty = 1.0
         wrong_way = actual_grade < 0 if gradient_mode is GradientMode.DOWNHILL else actual_grade > 0
         if wrong_way:
-            against_penalty = exp(abs(actual_grade) / PlannerConfig.COST_SIGMA)
+            against_penalty = exp(abs(actual_grade) / GeometricTuningConfig.COST_SIGMA)
 
         return horiz_dist * grade_cost * against_penalty
 
@@ -458,80 +458,27 @@ class LeastCostPathPlanner:
         target_grade_pct: float,
         step_m: float = 7.0,
     ) -> list[PathPoint]:
-        """Smooth grid path using cubic spline interpolation and resample at fixed intervals.
+        """Smooth a grid path with a cubic spline, then re-query the DEM for elevations.
 
-        The grid-based Dijkstra produces staircase paths due to 8-directional movement.
-        This method fits a smooth cubic spline through the points and resamples at
-        regular intervals, eliminating grid artifacts while preserving the overall shape.
+        The grid-based Dijkstra produces staircase paths (8-directional movement). This
+        fits a smoothing spline and resamples at step_m, then replaces each point's
+        elevation with the DEM value (the planner path must follow the ground).
 
         Args:
             points: Raw grid path points
-            target_grade_pct: Target grade - gentler targets get more aggressive smoothing
+            target_grade_pct: Target grade — gentler targets get more aggressive smoothing
             step_m: Output point spacing in meters (default 7m)
-
-        Returns:
-            Smoothed path with regular point spacing and DEM-sampled elevations.
         """
-        if len(points) < 4:
-            return points
-
-        lons = np.array([p.lon for p in points])
-        lats = np.array([p.lat for p in points])
-        elevs = np.array([p.elevation for p in points])
-
-        # Cumulative horizontal distance (so spline respects real path length)
-        cumdist = np.zeros(len(points))
-        for i in range(1, len(points)):
-            cumdist[i] = cumdist[i - 1] + GeoCalculator.haversine_distance_m(
-                lat1=lats[i - 1], lon1=lons[i - 1], lat2=lats[i], lon2=lons[i]
-            )
-
-        total_length = cumdist[-1]
-        if total_length < step_m * 2:
-            return points
-
-        # Smoothing factor: higher = more aggressive smoothing
-        # Green: 4.0 for flowing traverses
-        # Blue: 3.0 for moderate smoothing
-        # Red/Black: 2.0 for nearly straight paths
+        # Gentler difficulties smooth more aggressively (green 4.0 → red/black 2.0).
         difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=target_grade_pct)
-        if difficulty == "green":
-            smoothing_factor = 4.0
-        elif difficulty == "blue":
-            smoothing_factor = 3.0
-        else:
-            smoothing_factor = 2.0
+        smoothing_factor = {"green": 4.0, "blue": 3.0}.get(difficulty, 2.0)
 
-        try:
-            # Fit cubic smoothing spline
-            # splprep returns a complex tuple that Mypy can't unpack into tck, u
-            tck, _ = splprep(
-                [lons, lats, elevs],
-                u=cumdist,
-                s=smoothing_factor * len(points),
-                k=3,
-            )
-
-            # Resample evenly along the path
-            new_dists = np.arange(0, total_length + step_m / 2, step_m)
-            new_lon, new_lat, new_elev_approx = splev(new_dists, tck)
-
-            # Re-query DEM for accurate elevations at smoothed positions
-            final_points = []
-            for i in range(len(new_lon)):
-                real_elev = self.dem.get_elevation(lon=float(new_lon[i]), lat=float(new_lat[i]))
-                if real_elev is None:
-                    real_elev = float(new_elev_approx[i])
-                final_points.append(
-                    PathPoint(
-                        lon=float(new_lon[i]),
-                        lat=float(new_lat[i]),
-                        elevation=real_elev,
-                    )
-                )
-
-            return final_points
-
-        except Exception as e:
-            logger.error(f"Spline smoothing failed: {e}, returning raw points")
+        smoothed = resample_cubic_spline(points=points, smoothing_factor=smoothing_factor, step_m=step_m)
+        if smoothed is points:
             return points
+
+        # Planner paths follow the ground: re-query the DEM at each smoothed position.
+        return [
+            PathPoint(lon=p.lon, lat=p.lat, elevation=self.dem.get_elevation(lon=p.lon, lat=p.lat) or p.elevation)
+            for p in smoothed
+        ]

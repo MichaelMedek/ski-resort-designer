@@ -18,13 +18,14 @@ from datetime import datetime
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, Optional, cast
 
-from skiresort_planner.constants import EntityPrefixes, PathConfig, UndoConfig
+from skiresort_planner.constants import EntityPrefixes, GeometricTuningConfig, UndoConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import PathSegment, SegmentKind
+from skiresort_planner.model.path_smoothing import smooth_joined_path
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.road import Road
 from skiresort_planner.model.slope import Slope
@@ -231,7 +232,7 @@ class ResortGraph:
         self,
         lon: float,
         lat: float,
-        threshold_m: float = PathConfig.STEP_SIZE_M,
+        threshold_m: float = GeometricTuningConfig.STEP_SIZE_M,
     ) -> Optional[Node]:
         """Find nearest node within threshold distance.
 
@@ -445,6 +446,30 @@ class ResortGraph:
         )
         return first_seg, last_seg, start_node, end_node, avg_bearing
 
+    def _smooth_finished_path(self, segment_ids: list[str]) -> None:
+        """Whole-path smooth a finished entity across its junctions, in place.
+
+        No-op for a single segment. EVERY node on the path (outer endpoints + every junction)
+        stays pinned exactly on the ribbon, so markers sit on the path and any node can be a
+        branch point; only the shape between nodes rounds. Never rejects — a road may drift
+        over the ±15% build cap here (bridge/cut/fill), which is intentional; not re-applied.
+        """
+        if len(segment_ids) < 2:
+            return  # single-segment path has no junction to smooth
+        segments = [self.segments[sid] for sid in segment_ids]
+        # Boundary nodes: start of the first segment, then each segment's end node.
+        boundary_node_ids = [segments[0].start_node_id, *(seg.end_node_id for seg in segments)]
+
+        before = max(seg.max_slope_pct for seg in segments)
+        smoothed = smooth_joined_path(
+            segment_point_lists=[seg.points for seg in segments],
+            node_anchors=[self.nodes[nid].location for nid in boundary_node_ids],
+        )
+        for seg, pts in zip(segments, smoothed):
+            seg.points = pts
+        after = max(seg.max_slope_pct for seg in segments)
+        logger.info(f"Smoothed finished path {segment_ids}: max_slope_pct {before:.1f}% -> {after:.1f}%")
+
     # =========================================================================
     # Slope Operations
     # =========================================================================
@@ -463,6 +488,7 @@ class ResortGraph:
         Returns:
             Created Slope or None if invalid.
         """
+        self._smooth_finished_path(segment_ids=segment_ids)
         resolved = self._resolve_finish_endpoints(segment_ids=segment_ids)
         if resolved is None:
             return None
@@ -523,6 +549,7 @@ class ResortGraph:
         Returns:
             Created Road or None if invalid.
         """
+        self._smooth_finished_path(segment_ids=segment_ids)
         resolved = self._resolve_finish_endpoints(segment_ids=segment_ids)
         if resolved is None:
             return None

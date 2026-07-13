@@ -8,10 +8,11 @@ Classes:
     MapConfig: Default map view parameters
     DEMConfig: Elevation data file paths
     SlopeConfig: Difficulty thresholds and targets
-    PathConfig: Path generation algorithm parameters
+    PathConfig: Path generation domain values (segment length, road cap)
+    GeometricTuningConfig: Machine-tunable knobs shaping generated route geometry
     EarthworkConfig: Excavation warning thresholds and belt width limits
     ConnectionConfig: Connection path parameters
-    PlannerConfig: Grid-based Dijkstra path planner parameters
+    PlannerConfig: Grid-based Dijkstra grid connectivity
     MarkerConfig: Map marker styling
     LiftConfig: Lift types and catenary parameters
     StyleConfig: Visual colors and styling
@@ -159,36 +160,50 @@ assert all(
 
 
 class PathConfig:
-    """Path generation algorithm parameters."""
-
-    # Step size for path tracing (meters)
-    STEP_SIZE_M = 30  # Smaller = smoother paths, larger = faster computation
+    """Path generation domain values the user owns (not algorithm tuning knobs)."""
 
     # Segment length controls (slider range in UI)
     SEGMENT_LENGTH_MIN_M = 100
     SEGMENT_LENGTH_MAX_M = 1000
     SEGMENT_LENGTH_DEFAULT_M = 500
 
-    # Traverse angle limits (degrees)
-    MIN_TRAVERSE_ANGLE_DEG = 2  # Ensures left/right paths diverge on gentle terrain
-    MAX_TRAVERSE_ANGLE_DEG = 89  # Physical limit (near-horizontal traverse)
-
-    # Center-stop rule: stop after this many center paths (DETAILS.md Section 5.4)
-    MAX_CENTER_PATHS = 4
-
     # Minimum path points for valid path (less = terrain edge or error)
     MIN_PATH_POINTS = 4
-
-    # Path tracing behavior parameters (self-intersection and smoothing)
-    MAX_TURN_PER_STEP_DEG = 40.0  # Max angular change per step to prevent self-intersection
-    BEARING_SMOOTHING_WINDOW = 4  # Number of recent bearings to average when smoothing
-    FLAT_TERRAIN_THRESHOLD_PCT = 15.0  # Below this slope %, use bearing smoothing (no clear fall line)
-    BEARING_SMOOTHING_WEIGHT = 0.8  # Weight of the averaged bearing vs terrain bearing on flat terrain
 
     # Roads for cars: the hard gradient cap enforced at build time.
     # Cars may climb, descend, or run flat, but a proposal over this is refused.
     # (Roads AIM for the green grades 7%/12% — see PathFactory.generate_manual_paths.)
     ROAD_MAX_GRADIENT_PCT = 15
+
+
+class GeometricTuningConfig:
+    """Machine-tunable knobs that shape generated route geometry."""
+
+    # --- Grid-Dijkstra planner (connection_planners.py) ---
+    GRID_RESOLUTION_M = 15.0  # Grid cell size in meters
+    GRID_BUFFER_FACTOR = 1.0  # Lateral room around the direct start→target line, as a fraction of that distance
+    MAX_GRID_SIZE = 100  # Maximum grid cells per dimension (performance cap)
+    COST_SIGMA = 8.0  # Slope-deviation sensitivity in the edge cost (lower = stricter grade matching)
+    PATH_SIMILARITY_TOLERANCE = 0.0001  # Overlap-dedup tolerance (~0.0001° ≈ 10m at mid-latitudes)
+
+    # --- Fan tracer (path_tracer.py) + fan breadth (path_factory.py) ---
+    STEP_SIZE_M = 30  # Path trace / terrain-sample / node-snap step (smaller = smoother, slower)
+    MIN_TRAVERSE_ANGLE_DEG = 2  # Ensures left/right paths diverge on gentle terrain
+    MAX_TRAVERSE_ANGLE_DEG = 89  # Physical limit (near-horizontal traverse)
+    MAX_TURN_PER_STEP_DEG = 40.0  # Max angular change per step to prevent self-intersection
+    BEARING_SMOOTHING_WINDOW = 4  # Number of recent bearings to average when smoothing
+    FLAT_TERRAIN_THRESHOLD_PCT = 15.0  # Below this slope %, use bearing smoothing (no clear fall line)
+    BEARING_SMOOTHING_WEIGHT = 0.8  # Weight of the averaged bearing vs terrain bearing on flat terrain
+    MAX_CENTER_PATHS = 4  # Center-stop rule: stop after this many center paths (DETAILS.md §5.4)
+    TRACER_NOISE_BASE = 5.0  # Base Gaussian bearing noise (deg), scaled down by traverse angle
+    STEP_TARGET_CLAMP_FACTOR = 2.5  # Upper clamp on per-step target grade = FACTOR × target (self-correction bound)
+
+    # --- Whole-path finish smoothing (path_smoothing.py) ---
+    RESAMPLE_STEP_M = 7.0  # Output point spacing of the smoothed polyline (tuned: 10m+ aliases sharp turns)
+    SMOOTHING_FACTOR = 5.0  # splprep s = FACTOR * point_count (higher = smoother; tuned on real corpus)
+    # Per-point splprep weight applied at EVERY node on the path.
+    # The single spline PASSES THROUGH each node. Higher = tighter pin, less rounding.
+    PIN_WEIGHT = 100.0
 
 
 class EarthworkConfig:
@@ -229,29 +244,10 @@ class ConnectionConfig:
 
 
 class PlannerConfig:
-    """Grid-based Dijkstra path planner configuration parameters.
-
-    Controls the grid-based path planning algorithm that finds optimal
-    routes considering slope preferences and terrain features.
-
-    Uses SciPy's C-optimized Dijkstra followed by cubic spline smoothing.
+    """Structural constants for the grid-based Dijkstra planner.
 
     Reference: DETAILS.md Section 7 for algorithm details.
     """
-
-    # Grid search parameters
-    GRID_RESOLUTION_M = 15.0  # Grid cell size in meters
-    # Lateral room around the direct start→target line, as a fraction of that distance.
-    GRID_BUFFER_FACTOR = 1.0
-    MAX_GRID_SIZE = 100  # Maximum grid cells per dimension (performance cap)
-
-    # Cost function parameters
-    # Cost = distance × exp(slope_deviation / COST_SIGMA) × against-mode penalty
-    COST_SIGMA = 8.0  # Slope deviation sensitivity (lower = stricter grade matching)
-
-    # Path deduplication for overlapping path removal
-    # ~0.0001 degrees ≈ ~10 meters at mid-latitudes
-    PATH_SIMILARITY_TOLERANCE = 0.0001
 
     # 8-connected grid neighbor directions
     NEIGHBORS_8 = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]

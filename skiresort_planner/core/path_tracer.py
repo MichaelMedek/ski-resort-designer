@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Optional
 import numpy as np
 
 from skiresort_planner.constants import (
+    GeometricTuningConfig,
     PathConfig,
     SlopeConfig,
 )
@@ -120,7 +121,7 @@ class PathTracer:
             return None
 
         bounds = self._dem.bounds
-        step_size = PathConfig.STEP_SIZE_M
+        step_size = GeometricTuningConfig.STEP_SIZE_M
         side_sign = -1 if side == "left" else +1  # Left = negative offset
 
         # Initialize tracking
@@ -129,13 +130,13 @@ class PathTracer:
         total_dist = 0.0
 
         # Self-intersection prevention
-        max_turn_per_step = PathConfig.MAX_TURN_PER_STEP_DEG
+        max_turn_per_step = GeometricTuningConfig.MAX_TURN_PER_STEP_DEG
         previous_bearing: Optional[float] = None
 
         # Bearing smoothing for flat terrain
         recent_bearings: list[float] = []
-        smoothing_window = PathConfig.BEARING_SMOOTHING_WINDOW
-        flat_terrain_threshold = PathConfig.FLAT_TERRAIN_THRESHOLD_PCT
+        smoothing_window = GeometricTuningConfig.BEARING_SMOOTHING_WINDOW
+        flat_terrain_threshold = GeometricTuningConfig.FLAT_TERRAIN_THRESHOLD_PCT
 
         # Cumulative drop tracking
         target_total_drop = (target_slope_pct / 100.0) * target_length_m
@@ -150,7 +151,7 @@ class PathTracer:
             if remaining_distance > step_size:
                 step_target = (remaining_drop / remaining_distance) * 100.0
                 # Asymmetric clamping for self-correction
-                upper_clamp = target_slope_pct * 2.5
+                upper_clamp = target_slope_pct * GeometricTuningConfig.STEP_TARGET_CLAMP_FACTOR
                 lower_clamp = SlopeConfig.MIN_SKIABLE_PCT
                 step_target = max(lower_clamp, min(upper_clamp, step_target))
             else:
@@ -170,17 +171,16 @@ class PathTracer:
                 cos_theta = max(-1.0, min(1.0, cos_theta))
                 traverse_angle = degrees(acos(cos_theta))
                 traverse_angle = min(
-                    max(traverse_angle, PathConfig.MIN_TRAVERSE_ANGLE_DEG),
-                    PathConfig.MAX_TRAVERSE_ANGLE_DEG,
+                    max(traverse_angle, GeometricTuningConfig.MIN_TRAVERSE_ANGLE_DEG),
+                    GeometricTuningConfig.MAX_TRAVERSE_ANGLE_DEG,
                 )
             else:
-                traverse_angle = PathConfig.MIN_TRAVERSE_ANGLE_DEG
+                traverse_angle = GeometricTuningConfig.MIN_TRAVERSE_ANGLE_DEG
 
             # Add noise scaled by traverse angle
             noise_factor = (90.0 - traverse_angle) / 90.0
             noise_factor = max(0.0, noise_factor)
-            base_noise = 5.0
-            noise = random.gauss(0, base_noise * noise_factor)
+            noise = random.gauss(0, GeometricTuningConfig.TRACER_NOISE_BASE * noise_factor)
 
             # Calculate terrain-derived bearing
             terrain_bearing = (fall_line + side_sign * traverse_angle + noise) % 360
@@ -190,7 +190,9 @@ class PathTracer:
                 sin_sum = sum(np.sin(np.radians(b)) for b in recent_bearings)
                 cos_sum = sum(np.cos(np.radians(b)) for b in recent_bearings)
                 smoothed_bearing = np.degrees(np.arctan2(sin_sum, cos_sum)) % 360
-                smoothing_weight = PathConfig.BEARING_SMOOTHING_WEIGHT * (1.0 - terrain_slope / flat_terrain_threshold)
+                smoothing_weight = GeometricTuningConfig.BEARING_SMOOTHING_WEIGHT * (
+                    1.0 - terrain_slope / flat_terrain_threshold
+                )
                 diff = terrain_bearing - smoothed_bearing
                 if diff > 180:
                     diff -= 360

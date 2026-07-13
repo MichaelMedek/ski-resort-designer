@@ -33,8 +33,8 @@ from enum import Enum
 from typing import Iterator, Optional
 
 from skiresort_planner.constants import (
+    GeometricTuningConfig,
     PathConfig,
-    PlannerConfig,
     SlopeConfig,
     StyleConfig,
 )
@@ -107,7 +107,7 @@ class PathFactory:
         for path in factory.generate_manual_paths(...):
             print(f"Slope: {path.avg_slope_pct}%")
 
-    Configuration: See PlannerConfig in constants.py for tunable parameters.
+    Configuration: See GeometricTuningConfig in constants.py for tunable parameters.
     """
 
     def __init__(
@@ -200,7 +200,7 @@ class PathFactory:
                     center_count += 1
                     # Stop if we've generated paths at all but the hardest difficulty AND hit limit
                     all_diffs_seen = all(count_by_diff[d] > 0 for d in SlopeConfig.DIFFICULTIES[:-1])
-                    if center_count > PathConfig.MAX_CENTER_PATHS and all_diffs_seen:
+                    if center_count > GeometricTuningConfig.MAX_CENTER_PATHS and all_diffs_seen:
                         stop_generation = True
                     side_variants = [Side.CENTER]
                 else:
@@ -291,7 +291,7 @@ class PathFactory:
             total_distance += (p1.lon - p2.lon) ** 2 + (p1.lat - p2.lat) ** 2
 
         avg_distance = total_distance / len(percentiles)
-        threshold_sq = PlannerConfig.PATH_SIMILARITY_TOLERANCE**2
+        threshold_sq = GeometricTuningConfig.PATH_SIMILARITY_TOLERANCE**2
         return avg_distance < threshold_sq
 
     def _deduplicate_paths(self, paths: list[ProposedPathSegment]) -> list[ProposedPathSegment]:

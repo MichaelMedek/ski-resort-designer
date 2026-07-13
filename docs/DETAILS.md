@@ -315,6 +315,14 @@ This creates **natural curving**:
 - On convex hills: paths curve outward
 - On concave valleys: paths curve inward
 
+### 5.8 Whole-Path Smoothing on Finish
+
+Each segment is spline-smoothed independently at trace time, so two segments meet at a shared junction node with different tangents — a visible **kink**. When a slope or road is **finished**, the whole path is smoothed in one pass by a single cubic smoothing spline fitted over the full polyline (parametrised by cumulative distance, resampled every `RESAMPLE_STEP_M` ≈ 7 m), then re-sliced back to the original segments so the ribbon is continuous across junctions.
+
+- **Every node on the path is pinned onto the ribbon** — outer start/end *and* every internal junction. High per-point spline weights (`PIN_WEIGHT`) force the single cubic spline to pass through each node, so the curve makes a *tight-but-smooth* turn there (a continuous tangent, not a kink). Only the shape *between* nodes is relaxed/rounded.
+- Elevation is **smoothed along the spline, not re-sampled from the DEM**. A finished deck may therefore float slightly off the ground between nodes — treat it as a bridge / cut / fill.
+- Finish smoothing **never rejects** a path and does **not** re-apply the ±15% road cap (§7.3). Smoothing a corner can nudge a road's steepest 300 m section slightly; a finished road is allowed to exceed the build cap (bridge/cut/fill).
+
 ---
 
 ## 6. Difficulty Classification
