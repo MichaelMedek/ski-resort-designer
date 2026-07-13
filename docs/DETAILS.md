@@ -16,6 +16,7 @@ For user workflow, see [DETAILS_UI.md](DETAILS_UI.md).
 6. [Difficulty Classification](#6-difficulty-classification)
 7. [Custom Direction / Connect Paths](#7-custom-direction--connect-paths)
 8. [Lift Pylon Placement](#8-lift-pylon-placement)
+9. [OpenStreetMap Import](#9-openstreetmap-import)
 
 ---
 
@@ -440,3 +441,26 @@ If any span exceeds `max_spacing_m`, insert a midpoint pylon.
 
 **Phase 3 — Re-check Clearance:**
 Spacing pylons may affect adjacent spans. Re-run Phase 1 to fix new violations.
+
+---
+
+## 9. OpenStreetMap Import
+
+An **Import from OpenStreetMap** control (sidebar, idle only) fetches the real lifts & pistes within a circle around the map center and adds them to the graph. **Geometry only** — we take just the lon/lat polylines and lift stations; elevation, difficulty, and pylons are all recomputed by our own pipeline. OSM's own attributes are ignored.
+
+### 9.1 Region + fetch
+
+A **circle**: the current map center + a radius from a slider. One Overpass POST using the native `(around:radius_m, lat, lon)` filter for `way["aerialway"]` + `way["piste:type"]`, `out geom;`.
+
+### 9.2 Mapping OSM → graph
+
+- **Pistes** — `piste:type=downhill` only. The polyline is linearly resampled every `RESAMPLE_STEP_M` (~30 m, no cubic spline — OSM pistes are already smooth) with DEM elevation, then `commit_paths` → `finish_slope`. Difficulty comes from the DEM `max_slope_pct`; name from `name → piste:name → piste:ref → ref`.
+- **Lifts** — import ONLY `aerialway` values defined by us (drag/t-bar/j-bar/platter → surface_lift, chair_lift → chairlift, gondola/mixed_lift → gondola, cable_car → aerial_tram). Any other value is ignored.
+
+### 9.3 Only full, non-trivial entities; one undoable batch
+
+A way with any vertex outside the circle, or over a DEM nodata hole, is skipped entirely (never half-imported). Lifts under `MIN_LIFT_LENGTH_M` (500 m) and pistes under `MIN_PISTE_LENGTH_M` (300 m) are skipped as trivial. The whole import is one `ImportOSMAction` — a single Undo removes it all.
+
+### 9.4 Idempotent re-import
+
+An incoming run is skipped if the graph already has a slope/lift with the **same two endpoints**.

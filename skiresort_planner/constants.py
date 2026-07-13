@@ -18,6 +18,7 @@ Classes:
     StyleConfig: Visual colors and styling
     NameConfig: Creative naming components
     ChartConfig: Chart rendering dimensions
+    OSMConfig: OpenStreetMap import (Overpass query, aerialway→lift-type map)
 """
 
 from pathlib import Path
@@ -611,3 +612,45 @@ class UndoConfig:
     # Maximum number of actions to keep in undo stack
     # Older actions are discarded when limit is reached
     MAX_UNDO_STACK_SIZE = 50
+
+
+class OSMConfig:
+    """OpenStreetMap import (generators/osm_importer.py).
+
+    We take GEOMETRY ONLY from OSM (where lifts/pistes are); elevation, difficulty, and pylons
+    are all recomputed from our own DEM + physics. OSM's difficulty/pylon/elevation tags are
+    deliberately ignored.
+    """
+
+    OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+    OVERPASS_TIMEOUT_S = 30
+    # Overpass returns HTTP 406 without a User-Agent (verified live) — always send one.
+    USER_AGENT = "ski-resort-designer/0.1"
+
+    # Output spacing when resampling an OSM polyline onto DEM-sampled points.
+    RESAMPLE_STEP_M = 30.0
+
+    # Import region: a circle centered on the current map center, radius chosen on a slider (km).
+    RADIUS_MIN_KM = 0.5
+    RADIUS_MAX_KM = 5.0
+    RADIUS_DEFAULT_KM = 2.0
+
+    # Minimum imported length: shorter entities are ignored (nursery/kiddie lifts, stub runs).
+    MIN_LIFT_LENGTH_M = 500.0
+    MIN_PISTE_LENGTH_M = 300.0
+
+    # OSM aerialway value → our LiftConfig.TYPES. ONLY these values import; every other aerialway
+    # value (station, pylon, zip_line, magic_carpet, rope_tow, yes, …) is silently ignored.
+    AERIALWAY_TO_LIFT_TYPE = {
+        "drag_lift": "surface_lift",
+        "t-bar": "surface_lift",
+        "j-bar": "surface_lift",
+        "platter": "surface_lift",
+        "chair_lift": "chairlift",
+        "gondola": "gondola",
+        "mixed_lift": "gondola",
+        "cable_car": "aerial_tram",
+    }
+
+    # piste:type value marking an alpine downhill run — the only kind we import.
+    PISTE_TYPE_DOWNHILL = "downhill"

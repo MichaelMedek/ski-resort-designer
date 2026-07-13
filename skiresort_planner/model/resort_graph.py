@@ -16,7 +16,7 @@ import logging
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Any, Optional, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, Optional, cast
 
 from skiresort_planner.constants import EntityPrefixes, GeometricTuningConfig, UndoConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
@@ -24,7 +24,7 @@ from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.node import Node
-from skiresort_planner.model.path_point import PathPoint
+from skiresort_planner.model.path_point import PathPoint, endpoints_match
 from skiresort_planner.model.path_segment import PathSegment, SegmentKind
 from skiresort_planner.model.path_smoothing import smooth_joined_path
 from skiresort_planner.model.proposed_path import ProposedPathSegment
@@ -52,6 +52,7 @@ class ActionType(Enum):
     DELETE_SLOPE = auto()
     DELETE_LIFT = auto()
     DELETE_ROAD = auto()
+    IMPORT_OSM = auto()
 
 
 @dataclass(frozen=True)
@@ -157,6 +158,38 @@ class DeleteRoadAction:
         return ActionType.DELETE_ROAD
 
 
+@dataclass(frozen=True)
+class ImportOSMAction:
+    """Undo action for a single OSM import batch.
+
+    One import (any number of pistes + lifts) is ONE undoable unit: undo removes every entity
+    the import created — its slopes, lifts, segments, and the nodes it newly created — so the
+    user can then import a different selection.
+    """
+
+    slope_ids: tuple[str, ...]
+    lift_ids: tuple[str, ...]
+    segment_ids: tuple[str, ...]
+    node_ids: tuple[str, ...]  # nodes CREATED by this import (not pre-existing shared ones)
+
+    @property
+    def action_type(self) -> ActionType:
+        """Return the enum type for dispatch."""
+        return ActionType.IMPORT_OSM
+
+    def removed_entity(self, entity_id: str) -> bool:
+        """True if the given slope/lift id was one this import created (now removed on undo)."""
+        return entity_id in self.slope_ids or entity_id in self.lift_ids
+
+
+class OSMImportResult(NamedTuple):
+    """Counts from one import_osm call (named so callers don't guess tuple positions)."""
+
+    slopes_added: int
+    lifts_added: int
+    duplicates_skipped: int  # entities skipped because the graph already has that endpoint fingerprint
+
+
 UndoAction = (
     AddSegmentsAction
     | FinishSlopeAction
@@ -165,6 +198,7 @@ UndoAction = (
     | DeleteSlopeAction
     | DeleteLiftAction
     | DeleteRoadAction
+    | ImportOSMAction
 )
 
 
@@ -485,12 +519,14 @@ class ResortGraph:
         self,
         segment_ids: list[str],
         name: Optional[str] = None,
+        record_undo: bool = True,
     ) -> Optional[Slope]:
         """Finish a slope by grouping segments.
 
         Args:
             segment_ids: List of segment IDs to group
             name: Optional custom name (generates creative name if None)
+            record_undo: Push a FinishSlopeAction. False when a batch (OSM import) owns the undo.
 
         Returns:
             Created Slope or None if invalid.
@@ -527,14 +563,15 @@ class ResortGraph:
         for seg_id in segment_ids:
             self.segments[seg_id].name = name
         logger.info(f"Slope finished: {name}, {len(segment_ids)} segments, difficulty={difficulty}")
-        self._push_undo(
-            FinishSlopeAction(
-                slope_id=slope_id,
-                segment_ids=tuple(segment_ids),
-                slope_name=name,
-                start_node_id=first_seg.start_node_id,
+        if record_undo:
+            self._push_undo(
+                FinishSlopeAction(
+                    slope_id=slope_id,
+                    segment_ids=tuple(segment_ids),
+                    slope_name=name,
+                    start_node_id=first_seg.start_node_id,
+                )
             )
-        )
         return slope
 
     # =========================================================================
@@ -633,6 +670,8 @@ class ResortGraph:
         end_node_id: str,
         lift_type: str,
         dem: "DEMService",
+        name: Optional[str] = None,
+        record_undo: bool = True,
     ) -> Lift:
         """Add a lift between two nodes.
 
@@ -641,6 +680,8 @@ class ResortGraph:
             end_node_id: ID of top station
             lift_type: Type of lift
             dem: DEM service for terrain sampling
+            name: Optional custom name (Lift.create generates a creative name if None)
+            record_undo: Push an AddLiftAction. False when a batch (OSM import) owns the undo.
 
         Returns:
             Created Lift.
@@ -660,11 +701,111 @@ class ResortGraph:
             lift_type=lift_type,
             lift_id=lift_id,
         )
+        if name is not None:
+            lift.name = name
 
         self.lifts[lift_id] = lift
-        self._push_undo(AddLiftAction(lift_id=lift_id))
+        if record_undo:
+            self._push_undo(AddLiftAction(lift_id=lift_id))
 
         return lift
+
+    def import_osm(
+        self,
+        pistes: list[tuple[list[PathPoint], str | None]],
+        lifts: list[tuple[PathPoint, PathPoint, str, str | None]],
+        dem: "DEMService",
+    ) -> OSMImportResult:
+        """Add a batch of OSM-derived pistes and lifts as ONE undoable unit.
+
+        Each piste (its DEM-sampled points + optional name) is committed and finished as a slope;
+        each lift (bottom station, top station, lift type, optional name) becomes a lift with
+        regenerated pylons. All individual undo entries are suppressed and replaced by a single
+        ImportOSMAction, so one undo removes the entire import. Nodes the import newly creates are
+        tracked and removed on undo; nodes it reuses (shared with pre-existing entities) are left alone.
+
+        Re-import is idempotent AND source-agnostic: an incoming piste/lift is skipped (counted as
+        a duplicate) if the graph ALREADY contains an entity with the same endpoint fingerprint.
+
+        Args:
+            pistes: (points, name) per downhill run — points already DEM-sampled by the importer.
+            lifts: (bottom, top, lift_type, name) per lift — stations already DEM-sampled.
+            dem: DEM service for lift terrain sampling / pylon placement.
+
+        Returns:
+            OSMImportResult(slopes_added, lifts_added, duplicates_skipped).
+        """
+        nodes_before = set(self.nodes)
+        slope_ids: list[str] = []
+        lift_ids: list[str] = []
+        segment_ids: list[str] = []
+        duplicates = 0
+
+        for points, name in pistes:
+            if self.has_endpoint_duplicate(a=points[0], b=points[-1]):
+                duplicates += 1
+                continue
+            proposal = ProposedPathSegment(points=points, kind=SegmentKind.SLOPE)
+            segments_before = set(self.segments)
+            self.commit_paths(paths=[proposal], record_undo=False)
+            # commit_paths returns endpoint node ids, not segment ids; a single proposal
+            # creates exactly one segment, so the tuple-unpack both finds and asserts it.
+            (seg_id,) = (sid for sid in self.segments if sid not in segments_before)
+            segment_ids.append(seg_id)
+            slope = self.finish_slope(segment_ids=[seg_id], name=name, record_undo=False)
+            if slope is not None:
+                slope_ids.append(slope.id)
+
+        for bottom, top, lift_type, lift_name in lifts:
+            if self.has_endpoint_duplicate(a=bottom, b=top):
+                duplicates += 1
+                continue
+            start, _ = self.get_or_create_node(lon=bottom.lon, lat=bottom.lat, elevation=bottom.elevation)
+            end, _ = self.get_or_create_node(lon=top.lon, lat=top.lat, elevation=top.elevation)
+            lift = self.add_lift(
+                start_node_id=start.id,
+                end_node_id=end.id,
+                lift_type=lift_type,
+                dem=dem,
+                name=lift_name,
+                record_undo=False,
+            )
+            lift_ids.append(lift.id)
+
+        created_node_ids = tuple(nid for nid in self.nodes if nid not in nodes_before)
+        self._push_undo(
+            ImportOSMAction(
+                slope_ids=tuple(slope_ids),
+                lift_ids=tuple(lift_ids),
+                segment_ids=tuple(segment_ids),
+                node_ids=created_node_ids,
+            )
+        )
+        logger.info(
+            f"OSM import: {len(slope_ids)} slopes, {len(lift_ids)} lifts, "
+            f"{len(created_node_ids)} new nodes, {duplicates} duplicates skipped"
+        )
+        return OSMImportResult(slopes_added=len(slope_ids), lifts_added=len(lift_ids), duplicates_skipped=duplicates)
+
+    def has_endpoint_duplicate(self, a: PathPoint, b: PathPoint) -> bool:
+        """True if an existing slope or lift already spans endpoints `a` and `b`.
+
+        Direct geometric comparison against each stored entity's endpoints (endpoints_match, within
+        STEP_SIZE_M — the import snap distance). No coordinate rounding or shared-node lookup, so it
+        stays correct where many runs cluster around one junction. Used to skip re-importing a run
+        the graph already has (whether imported earlier or built by hand).
+        """
+        tol = GeometricTuningConfig.STEP_SIZE_M
+        pair = (a, b)
+        slope_match = any(
+            endpoints_match(pair_a=pair, pair_b=slope.endpoints(nodes=self.nodes), tol_m=tol)
+            for slope in self.slopes.values()
+        )
+        lift_match = any(
+            endpoints_match(pair_a=pair, pair_b=lift.endpoints(nodes=self.nodes), tol_m=tol)
+            for lift in self.lifts.values()
+        )
+        return slope_match or lift_match
 
     # =========================================================================
     # Undo Operations
@@ -749,6 +890,24 @@ class ResortGraph:
             logger.info(
                 f"Restored road {del_road.road_id} with {len(del_road.deleted_segments)} segments "
                 f"and {len(del_road.deleted_nodes)} nodes"
+            )
+
+        elif enum_eq(action_type, ActionType.IMPORT_OSM):
+            # One import = one undo: drop every entity the batch created (slopes, lifts,
+            # segments) and the nodes it newly made; reused/shared nodes are left untouched.
+            imp = cast(ImportOSMAction, action)
+            for slope_id in imp.slope_ids:
+                self.slopes.pop(slope_id, None)
+            for lift_id in imp.lift_ids:
+                self.lifts.pop(lift_id, None)
+            for seg_id in imp.segment_ids:
+                self.segments.pop(seg_id, None)
+            for node_id in imp.node_ids:
+                self.nodes.pop(node_id, None)
+            self.cleanup_isolated_nodes()
+            logger.info(
+                f"Reverted OSM import: {len(imp.slope_ids)} slopes, {len(imp.lift_ids)} lifts, "
+                f"{len(imp.segment_ids)} segments, {len(imp.node_ids)} nodes"
             )
 
         else:

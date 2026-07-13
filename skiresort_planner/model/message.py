@@ -250,6 +250,45 @@ class FileLoadErrorMessage(ToastMessage):
         return f"Load Failed — {self.error}"
 
 
+@dataclass(frozen=True)
+class OSMImportSummaryMessage(ToastMessage):
+    """Result of an OpenStreetMap import."""
+
+    pistes: int
+    lifts: int
+    skipped: int  # ways dropped because truncated / outside coverage / nodata (only full imports)
+    duplicates: int  # ways skipped because already imported (same deterministic endpoint key)
+
+    @property
+    def icon(self) -> str:
+        return "🗺️"
+
+    @property
+    def message(self) -> str:
+        base = f"Imported {self.pistes} pistes and {self.lifts} lifts from OpenStreetMap"
+        notes = []
+        if self.skipped:
+            notes.append(f"{self.skipped} skipped — only fully-visible runs are imported")
+        if self.duplicates:
+            notes.append(f"{self.duplicates} already imported")
+        return f"{base} ({'; '.join(notes)})." if notes else f"{base}."
+
+
+@dataclass(frozen=True)
+class OSMImportErrorMessage(ToastMessage):
+    """An OpenStreetMap import could not run (off-coverage viewport or network/parse error)."""
+
+    error: str
+
+    @property
+    def icon(self) -> str:
+        return "🗺️"
+
+    @property
+    def message(self) -> str:
+        return f"OSM import failed — {self.error}"
+
+
 # =============================================================================
 # CENTER (UNDER MAP) - Loading states (BLUE)
 # =============================================================================

@@ -386,6 +386,14 @@ class Lift:
             lon2=end.lon,
         )
 
+    def endpoints(self, nodes: dict[str, "Node"]) -> tuple[PathPoint, PathPoint]:
+        """The two station locations, for geometric duplicate matching (see endpoints_match)."""
+        start = nodes.get(self.start_node_id)
+        end = nodes.get(self.end_node_id)
+        if not start or not end:
+            raise ValueError(f"Start or end node not found for lift {self.id}")
+        return start.location, end.location
+
     def update_type(self, new_type: str, start_node: "Node", end_node: "Node") -> None:
         """Change lift type and update all dependent fields.
 

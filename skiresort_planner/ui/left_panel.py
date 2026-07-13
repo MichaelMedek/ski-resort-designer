@@ -19,6 +19,7 @@ import streamlit as st
 
 from skiresort_planner.constants import (
     LiftConfig,
+    OSMConfig,
     PathConfig,
     SlopeConfig,
     StyleConfig,
@@ -40,7 +41,13 @@ from skiresort_planner.model.resort_graph import (
     UndoAction,
 )
 from skiresort_planner.persistence import backup_store
-from skiresort_planner.ui.actions import bump_map_version, reload_map, trigger_rerun, undo_last_action
+from skiresort_planner.ui.actions import (
+    bump_map_version,
+    import_osm_action,
+    reload_map,
+    trigger_rerun,
+    undo_last_action,
+)
 from skiresort_planner.ui.context import EntityKind
 from skiresort_planner.ui.state_machine import (
     BuildMode,
@@ -260,6 +267,7 @@ class SidebarRenderer:
 
             self._render_mode_selector()
             st.divider()
+            self._render_import_button()
 
             # Mode-specific controls: close button OR building/placing controls
             if self.sm.is_idle_viewing_slope or self.sm.is_idle_viewing_lift or self.sm.is_idle_viewing_road:
@@ -352,6 +360,33 @@ class SidebarRenderer:
             if removed > 0:
                 logger.warning(f"Reset View cleaned {removed} orphaned node(s)")
             reload_map()  # Bumps version and triggers rerun
+
+    def _render_import_button(self) -> None:
+        """Render the OpenStreetMap import radius slider + button (idle only).
+
+        Imports the real lifts & pistes within a circle centered on the current map center, with
+        the chosen radius; elevation, difficulty, and pylons are all recomputed from our
+        DEM/physics. Disabled mid-build/placement so an import can't interleave with an
+        in-progress entity.
+        """
+        if not self.sm.is_idle_ready:
+            return
+        radius_km = st.slider(
+            "Import radius (km)",
+            min_value=OSMConfig.RADIUS_MIN_KM,
+            max_value=OSMConfig.RADIUS_MAX_KM,
+            value=OSMConfig.RADIUS_DEFAULT_KM,
+            step=0.5,
+            key="import_osm_radius",
+            help="Lifts & pistes within this distance of the map center are imported.",
+        )
+        if st.button(
+            "🗺️ Import from OpenStreetMap",
+            width="stretch",
+            key="import_osm",
+            help="Add the real lifts & pistes around the map center. Elevation, difficulty and pylons are recomputed; one Undo removes the whole import.",
+        ):
+            import_osm_action(radius_km=radius_km)
 
     def _render_mode_selector(self) -> None:
         """Render unified build type selector with 5 buttons.

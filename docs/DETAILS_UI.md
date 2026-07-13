@@ -371,6 +371,29 @@ Click **📤 Export GPX** to download GPS tracks of your slopes for use in other
 
 ---
 
+## Import from OpenStreetMap
+
+Instead of starting from an empty map, load a real resort's existing lifts and pistes as a
+canvas, then keep editing with the normal tools.
+
+1. Pan the map so its **center** is on the resort area you want (within the terrain coverage).
+2. In the sidebar, set the **Import radius (km)** slider, then click **🗺️ Import from OpenStreetMap**.
+3. The lifts and pistes within that circle are added.
+
+**What gets imported**
+
+- **Pistes:** only alpine downhill runs. Their colour (difficulty) is computed from the terrain, not copied from OSM.
+- **Lifts:** drag/T-bar → surface lift, chairlift → chairlift, gondola/mixed (incl. 3S and Funitel gondolas) → gondola, cable car → aerial tram. Everything else — stations, pylons, zip-lines, kiddie lifts (magic carpets, rope tows), funiculars — is ignored. Pylons are placed by the terrain, not taken from OSM.
+
+**Good to know**
+
+- **Only runs fully inside the circle import.** A piste or lift that reaches outside the radius is skipped entirely (never half-imported) — increase the radius or re-center and re-import to get it whole.
+- **Trivial runs are ignored.** Lifts shorter than 500 m and pistes shorter than 300 m are skipped.
+- **Re-importing won't duplicate.** If you import an overlapping area again, runs already in the resort are recognised and skipped.
+- **One Undo removes the whole import**, so you can undo and import a different area.
+
+---
+
 ## Exploring New Areas
 
 ![Exploring New Areas](images/8-NewAreas.png)

@@ -121,6 +121,23 @@ class TestModeSelectorButton:
         assert ctx.build_mode.mode == BuildMode.ROAD, "clicking the Road button must switch build mode"
 
 
+class TestImportOSMButton:
+    def test_click_import_button_flags_deferred_import(self, fake_st, empty_graph) -> None:
+        from skiresort_planner.constants import OSMConfig
+
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        fake_st.session_state["state_machine"] = sm
+        fake_st.session_state["context"] = ctx
+        fake_st.session_state["graph"] = empty_graph
+        fake_st.session_state["map_version"] = 0
+
+        fake_st.clicked_keys = {"import_osm"}
+        SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
+        assert ctx.deferred.osm_import is True, "clicking Import must flag a deferred OSM import"
+        # The slider defaults to RADIUS_DEFAULT_KM, so the flagged radius matches it (reset-safe).
+        assert ctx.deferred.osm_import_radius_km == OSMConfig.RADIUS_DEFAULT_KM
+
+
 class TestPathSettingsVisibility:
     """The ⚙️ Path Settings block only applies to fan-out proposals, so it is hidden
     while routing a custom-connect path (force_mode)."""

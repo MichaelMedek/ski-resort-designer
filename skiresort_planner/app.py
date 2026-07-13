@@ -40,6 +40,7 @@ from skiresort_planner.ui import (
     finish_current_slope,
     handle_fast_deferred_actions,
     process_custom_connect_deferred,
+    process_osm_import_deferred,
     process_path_generation_deferred,
     recompute_paths,
     render_building_profile,
@@ -542,7 +543,10 @@ def _run_app_ui() -> None:
 
     # Handle deferred actions from previous transitions
     # Slow ops get spinners, fast ops run directly
-    if ctx.deferred.custom_connect:
+    if ctx.deferred.osm_import:
+        with st.spinner("🗺️ Importing lifts & pistes from OpenStreetMap..."):
+            process_osm_import_deferred()
+    elif ctx.deferred.custom_connect:
         with st.spinner("🎯 Computing custom path options..."):
             process_custom_connect_deferred()
     elif ctx.deferred.path_generation:

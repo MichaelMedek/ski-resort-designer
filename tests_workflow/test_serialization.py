@@ -89,6 +89,38 @@ class TestResortGraphSerialization:
         assert abs(restored_segment.points[0].lat - orig_first_point.lat) < 0.0001
         assert abs(restored_segment.points[0].elevation - orig_first_point.elevation) < 0.1
 
+    def test_endpoints_survive_roundtrip_keeping_reimport_idempotent(self, empty_graph, mock_dem_blue_slope) -> None:
+        """Endpoints are derived from nodes (which serialize), so duplicate detection still works
+        after save/load — a re-import into the reloaded graph adds nothing."""
+        from skiresort_planner.model.path_point import PathPoint, endpoints_match
+        from skiresort_planner.model.resort_graph import ResortGraph
+
+        m = 111320.0
+        dem = mock_dem_blue_slope
+        piste = (
+            [
+                PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
+                PathPoint(lon=0.0, lat=-500 / m, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / m)),
+            ],
+            "Run",
+        )
+        lift = (
+            PathPoint(lon=0.02, lat=-500 / m, elevation=dem.get_elevation_or_raise(lon=0.02, lat=-500 / m)),
+            PathPoint(lon=0.02, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.02, lat=0.0)),
+            "chairlift",
+            None,
+        )
+        empty_graph.import_osm(pistes=[piste], lifts=[lift], dem=dem)
+        orig_slope_ends = list(empty_graph.slopes.values())[0].endpoints(nodes=empty_graph.nodes)
+
+        restored = ResortGraph.from_dict(data=json.loads(json.dumps(empty_graph.to_dict())))
+
+        restored_slope_ends = list(restored.slopes.values())[0].endpoints(nodes=restored.nodes)
+        assert endpoints_match(pair_a=orig_slope_ends, pair_b=restored_slope_ends, tol_m=0.001)
+        # A re-import into the reloaded graph is still fully deduped.
+        _s, _l, duplicates = restored.import_osm(pistes=[piste], lifts=[lift], dem=dem)
+        assert duplicates == 2
+
 
 class TestFileSaveLoad:
     """Tests for file-based save/load operations."""

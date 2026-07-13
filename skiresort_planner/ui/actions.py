@@ -19,8 +19,10 @@ import streamlit as st
 
 from skiresort_planner.constants import MapConfig
 from skiresort_planner.enum_utils import enum_eq
+from skiresort_planner.generators.osm_importer import OSMImporter
 from skiresort_planner.generators.path_factory import PathFactory
 from skiresort_planner.model.lift import Lift
+from skiresort_planner.model.message import OSMImportErrorMessage, OSMImportSummaryMessage
 from skiresort_planner.model.resort_graph import (
     ActionType,
     AddLiftAction,
@@ -30,6 +32,7 @@ from skiresort_planner.model.resort_graph import (
     DeleteSlopeAction,
     FinishRoadAction,
     FinishSlopeAction,
+    ImportOSMAction,
     ResortGraph,
 )
 from skiresort_planner.ui.infra import bump_map_version, reload_map, trigger_rerun
@@ -176,6 +179,54 @@ def process_custom_connect_deferred() -> bool:
     ctx.deferred.custom_connect = False
     _generate_custom_connect_paths()
     bump_map_version()  # Clear stale click state so proposal 1 can be clicked
+    return True
+
+
+def import_osm_action(radius_km: float) -> None:
+    """Flag an OSM import of a circle (current map center, given radius); the slow fetch runs deferred.
+
+    Mirrors the other button actions: set the deferred flag + radius, bump the map, rerun. The actual
+    network call + graph mutation happen in process_osm_import_deferred() under a spinner.
+    """
+    ctx: PlannerContext = st.session_state.context
+    ctx.deferred.osm_import = True
+    ctx.deferred.osm_import_radius_km = radius_km
+    bump_map_version()
+    trigger_rerun()
+
+
+def process_osm_import_deferred() -> bool:
+    """Process a pending OSM import: fetch the chosen circle, convert, add as one undoable batch.
+
+    The circle is centered on the current map center with the radius the user picked. Call this
+    wrapped in st.spinner() from app.py. Returns True if it handled a pending import. Any
+    network/parse error shows an error toast and imports nothing.
+    """
+    ctx: PlannerContext = st.session_state.context
+    graph: ResortGraph = st.session_state.graph
+
+    if not ctx.deferred.osm_import:
+        return False
+    ctx.deferred.osm_import = False
+
+    dem = st.session_state.dem_service
+    region = (ctx.map.lon, ctx.map.lat, ctx.deferred.osm_import_radius_km * 1000.0)
+
+    try:
+        importer = OSMImporter(dem=dem)
+        summary = importer.convert(region=region, elements=importer.fetch(region=region))
+    except Exception as exc:  # network / HTTP / parse — report, import nothing
+        logger.warning(f"OSM import failed: {exc}")
+        OSMImportErrorMessage(error=str(exc)).display()
+        return True
+
+    slopes, lifts, duplicates = graph.import_osm(
+        pistes=[(p.points, p.name) for p in summary.pistes],
+        lifts=[(lift.bottom, lift.top, lift.lift_type, lift.name) for lift in summary.lifts],
+        dem=dem,
+    )
+    OSMImportSummaryMessage(pistes=slopes, lifts=lifts, skipped=summary.skipped, duplicates=duplicates).display()
+    bump_map_version()
     return True
 
 
@@ -787,6 +838,24 @@ def _undo_delete_road(undone: DeleteRoadAction) -> None:
     reload_map()
 
 
+def _undo_import_osm(undone: ImportOSMAction) -> None:
+    """Handle undo of IMPORT_OSM: the batch's slopes/lifts are already gone from the graph.
+
+    If the user was viewing one of the removed entities, exit to idle; otherwise just redraw.
+    """
+    sm: PlannerStateMachine = st.session_state.state_machine
+
+    logger.info(f"Undone OSM import: {len(undone.slope_ids)} slopes, {len(undone.lift_ids)} lifts")
+
+    viewing = sm.viewing_entity
+    if viewing is not None and undone.removed_entity(entity_id=viewing[1]):
+        sm.force_idle()
+        bump_map_version()
+        trigger_rerun()
+    else:
+        reload_map()
+
+
 def undo_last_action() -> None:
     """Undo the most recent action.
 
@@ -840,6 +909,8 @@ def undo_last_action() -> None:
         _undo_delete_lift(undone=cast(DeleteLiftAction, undone))
     elif enum_eq(action_type, ActionType.DELETE_ROAD):
         _undo_delete_road(undone=cast(DeleteRoadAction, undone))
+    elif enum_eq(action_type, ActionType.IMPORT_OSM):
+        _undo_import_osm(undone=cast(ImportOSMAction, undone))
     else:
         raise RuntimeError(f"Unknown action type: {action_type}")
 

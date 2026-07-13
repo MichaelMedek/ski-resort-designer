@@ -16,6 +16,9 @@ from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
 
+M = 111320.0  # metres per degree near the equator
+
+
 def _session(fake_st, graph, factory=None, dem=None):
     """Seed fake st.session_state with the objects action functions read."""
     sm, ctx = PlannerStateMachine.create(graph=graph, add_ui_listener=False)
@@ -410,3 +413,179 @@ class TestDeferredProcessing:
         handle_fast_deferred_actions()
         assert sm.is_lift_placing, "deferred start-lift-from-node begins lift placement"
         assert ctx.deferred.start_lift_from_node_id is None, "flag consumed"
+
+
+class TestOSMImport:
+    """import_osm_action flags a deferred import (with the chosen radius); process_osm_import_deferred
+    runs it (mocked network) as one undoable batch; undo removes the batch; re-import dedups."""
+
+    def test_import_osm_action_sets_deferred_flag_and_radius(self, fake_st, mock_dem_blue_slope) -> None:
+        from skiresort_planner.ui.actions import import_osm_action
+
+        _sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
+        import_osm_action(radius_km=3.0)
+        assert ctx.deferred.osm_import is True
+        assert ctx.deferred.osm_import_radius_km == 3.0
+
+    def test_radius_reaches_fetch_as_region(self, fake_st, mock_dem_blue_slope, monkeypatch) -> None:
+        """The slider radius (km) must arrive at fetch() as (center_lon, center_lat, radius_m).
+
+        Guards the slider → deferred → region chain: a reset-to-default slider still imports exactly
+        the radius shown, centered on the current map center.
+        """
+        from skiresort_planner.generators.osm_importer import ImportSummary
+        from skiresort_planner.ui import actions
+        from skiresort_planner.ui.actions import import_osm_action
+
+        _sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
+        ctx.map.lat, ctx.map.lon = 0.3, 0.1
+
+        seen = {}
+        monkeypatch.setattr(actions.OSMImporter, "fetch", lambda self, region: seen.setdefault("region", region) or [])
+        monkeypatch.setattr(actions.OSMImporter, "convert", lambda self, region, elements: ImportSummary())
+
+        import_osm_action(radius_km=3.5)  # what the slider returns
+        actions.process_osm_import_deferred()
+
+        assert seen["region"] == (0.1, 0.3, 3500.0), "center=map center (lon,lat), radius km→m"
+
+    def test_process_import_adds_entities_and_bumps_map(self, fake_st, mock_dem_blue_slope, monkeypatch) -> None:
+        from skiresort_planner.generators.osm_importer import ImportSummary, LiftImport, PisteImport
+        from skiresort_planner.model.path_point import PathPoint
+        from skiresort_planner.ui import actions
+
+        dem = mock_dem_blue_slope
+        graph = ResortGraph()
+        _sm, ctx = _session(fake_st, graph, dem=dem)
+        ctx.map.lat, ctx.map.lon = 0.0, 0.0  # inside MockDEM bounds (-1..1)
+        ctx.deferred.osm_import = True
+
+        piste = PisteImport(
+            points=[
+                PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
+                PathPoint(lon=0.0, lat=-500 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / M)),
+            ],
+            name="Imported Run",
+        )
+        lift = LiftImport(
+            bottom=PathPoint(lon=0.02, lat=-500 / M, elevation=dem.get_elevation_or_raise(lon=0.02, lat=-500 / M)),
+            top=PathPoint(lon=0.02, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.02, lat=0.0)),
+            lift_type="chairlift",
+            name=None,
+        )
+
+        # Mock the importer so no network happens: fetch returns nothing, convert returns our summary.
+        monkeypatch.setattr(actions.OSMImporter, "fetch", lambda self, region: [])
+        monkeypatch.setattr(
+            actions.OSMImporter, "convert", lambda self, region, elements: ImportSummary(pistes=[piste], lifts=[lift])
+        )
+        version_before = fake_st.session_state["map_version"]
+
+        handled = actions.process_osm_import_deferred()
+
+        assert handled is True
+        assert len(graph.slopes) == 1 and len(graph.lifts) == 1
+        assert len(graph.undo_stack) == 1, "import is one undoable batch"
+        assert fake_st.session_state["map_version"] > version_before
+        assert ctx.deferred.osm_import is False, "flag consumed"
+
+    def test_process_import_network_error_reports_and_imports_nothing(
+        self, fake_st, mock_dem_blue_slope, monkeypatch
+    ) -> None:
+        from skiresort_planner.ui import actions
+
+        graph = ResortGraph()
+        _sm, ctx = _session(fake_st, graph, dem=mock_dem_blue_slope)
+        ctx.map.lat, ctx.map.lon = 0.0, 0.0
+        ctx.deferred.osm_import = True
+
+        def boom(self, region):
+            raise RuntimeError("overpass down")
+
+        monkeypatch.setattr(actions.OSMImporter, "fetch", boom)
+
+        handled = actions.process_osm_import_deferred()
+
+        assert handled is True
+        assert len(graph.slopes) == 0 and len(graph.lifts) == 0
+        assert len(graph.undo_stack) == 0, "a network error imports nothing"
+
+    def test_undo_last_action_reverts_whole_import(self, fake_st, mock_dem_blue_slope, monkeypatch) -> None:
+        """The headline promise: one Undo (via the UI dispatcher) removes the entire import.
+
+        Exercises undo_last_action() — the dispatcher a direct graph.undo_last() call bypasses.
+        """
+        from skiresort_planner.generators.osm_importer import ImportSummary, LiftImport, PisteImport
+        from skiresort_planner.model.path_point import PathPoint
+        from skiresort_planner.ui import actions
+        from skiresort_planner.ui.actions import undo_last_action
+
+        dem = mock_dem_blue_slope
+        graph = ResortGraph()
+        _sm, ctx = _session(fake_st, graph, dem=dem)
+        ctx.map.lat, ctx.map.lon = 0.0, 0.0
+        ctx.deferred.osm_import = True
+
+        piste = PisteImport(
+            points=[
+                PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
+                PathPoint(lon=0.0, lat=-500 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / M)),
+            ],
+            name="Imported Run",
+        )
+        lift = LiftImport(
+            bottom=PathPoint(lon=0.02, lat=-500 / M, elevation=dem.get_elevation_or_raise(lon=0.02, lat=-500 / M)),
+            top=PathPoint(lon=0.02, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.02, lat=0.0)),
+            lift_type="chairlift",
+            name=None,
+        )
+        monkeypatch.setattr(actions.OSMImporter, "fetch", lambda self, region: [])
+        monkeypatch.setattr(
+            actions.OSMImporter, "convert", lambda self, region, elements: ImportSummary(pistes=[piste], lifts=[lift])
+        )
+
+        actions.process_osm_import_deferred()
+        assert len(graph.slopes) == 1 and len(graph.lifts) == 1
+
+        undo_last_action()  # dispatch IMPORT_OSM — must not raise, must wipe the batch
+
+        assert len(graph.slopes) == 0 and len(graph.lifts) == 0
+        assert len(graph.segments) == 0 and len(graph.nodes) == 0
+        assert len(graph.undo_stack) == 0
+
+    def test_reimport_same_view_adds_nothing(self, fake_st, mock_dem_blue_slope, monkeypatch) -> None:
+        """Clicking Import twice over the same area adds entities once, then dedups the rest."""
+        from skiresort_planner.generators.osm_importer import ImportSummary, LiftImport, PisteImport
+        from skiresort_planner.model.path_point import PathPoint
+        from skiresort_planner.ui import actions
+
+        dem = mock_dem_blue_slope
+        graph = ResortGraph()
+        _sm, ctx = _session(fake_st, graph, dem=dem)
+        ctx.map.lat, ctx.map.lon = 0.0, 0.0
+
+        piste = PisteImport(
+            points=[
+                PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
+                PathPoint(lon=0.0, lat=-500 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / M)),
+            ],
+            name="Imported Run",
+        )
+        lift = LiftImport(
+            bottom=PathPoint(lon=0.02, lat=-500 / M, elevation=dem.get_elevation_or_raise(lon=0.02, lat=-500 / M)),
+            top=PathPoint(lon=0.02, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.02, lat=0.0)),
+            lift_type="chairlift",
+            name="Gipfelbahn",
+        )
+        monkeypatch.setattr(actions.OSMImporter, "fetch", lambda self, region: [])
+        monkeypatch.setattr(
+            actions.OSMImporter, "convert", lambda self, region, elements: ImportSummary(pistes=[piste], lifts=[lift])
+        )
+
+        ctx.deferred.osm_import = True
+        actions.process_osm_import_deferred()
+        assert len(graph.slopes) == 1 and len(graph.lifts) == 1
+
+        ctx.deferred.osm_import = True
+        actions.process_osm_import_deferred()  # same view again
+        assert len(graph.slopes) == 1 and len(graph.lifts) == 1, "no duplicates on re-import"
