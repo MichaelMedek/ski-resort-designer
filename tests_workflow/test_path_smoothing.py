@@ -117,6 +117,9 @@ class TestSmoothJoinedPath:
         assert out[1][-1] == out[2][0], "junction 2 shared by value"
         assert out[0][-1].distance_to(other=anchors[1]) < 15.0, "junction 1 near its node"
         assert out[1][-1].distance_to(other=anchors[2]) < 15.0, "junction 2 near its node"
+        # No cusp at EITHER junction — multi-junction paths were where the sharp-edge bug lived.
+        joined = out[0] + out[1][1:] + out[2][1:]
+        assert _min_curvature_radius_m(joined) > 1.0, "multi-junction ribbon must be cusp-free"
 
     def test_single_segment_returned_unchanged(self) -> None:
         seg = _leg(0.0, 0.0, 10 / M, 0.0, 20, z0=2000.0, dz=-0.5)

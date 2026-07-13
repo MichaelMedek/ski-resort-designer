@@ -499,6 +499,44 @@ class TestNodeSharingDeletes:
         assert len(empty_graph.nodes) == node_count_before, "no duplicate node created on restore"
 
 
+class TestMultipleSlopesFromOneNode:
+    """'Multiple ways down' — several slopes fanning off ONE shared hub node (DETAILS_UI.md
+    Tips). The hub must count all connections and survive until its LAST user is deleted."""
+
+    def _three_slopes_from_hub(self, graph, dem):
+        hub = PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
+        slope_ids = []
+        # Ends 200 m apart in lon so no end-node snapping — each slope keeps a distinct end.
+        for dlon in (0.0, 200 / M, 400 / M):
+            end_lat = -500 / M
+            start = PathPoint(lon=hub.lon, lat=hub.lat, elevation=hub.elevation)
+            end = PathPoint(lon=dlon, lat=end_lat, elevation=dem.get_elevation_or_raise(lon=dlon, lat=end_lat))
+            graph.commit_paths(paths=[ProposedPathSegment(points=[start, end], target_difficulty="blue")])
+            slope = graph.finish_slope(segment_ids=[list(graph.segments.keys())[-1]])
+            slope_ids.append(slope.id)
+        hub_id = graph.segments[graph.slopes[slope_ids[0]].segment_ids[0]].start_node_id
+        return slope_ids, hub_id
+
+    def test_hub_counts_all_three_slopes(self, empty_graph, mock_dem_blue_slope) -> None:
+        graph = empty_graph
+        slope_ids, hub_id = self._three_slopes_from_hub(graph, mock_dem_blue_slope)
+        assert len(graph.slopes) == 3
+        assert len(graph.nodes) == 4, "one shared hub + three distinct ends"
+        assert graph.get_connection_count(node_id=hub_id) == 3, "hub carries all three slope starts"
+
+    def test_deleting_one_slope_keeps_hub_for_the_others(self, empty_graph, mock_dem_blue_slope) -> None:
+        graph = empty_graph
+        slope_ids, hub_id = self._three_slopes_from_hub(graph, mock_dem_blue_slope)
+
+        graph.delete_slope(slope_id=slope_ids[0])
+        assert hub_id in graph.nodes, "hub survives — two other slopes still use it"
+        assert graph.get_connection_count(node_id=hub_id) == 2
+
+        graph.delete_slope(slope_id=slope_ids[1])
+        graph.delete_slope(slope_id=slope_ids[2])
+        assert hub_id not in graph.nodes, "hub orphaned only once its LAST slope is gone"
+
+
 class TestLiftMetricsInvariants:
     def test_vertical_rise_raises_on_missing_node(self, empty_graph, mock_dem_blue_slope) -> None:
         # A committed lift's endpoint nodes are a graph invariant; a missing one is a real bug,

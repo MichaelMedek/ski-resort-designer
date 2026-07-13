@@ -151,8 +151,14 @@ class TestRenderLoop:
         graph.commit_paths(paths=[proposal], record_undo=False)
         road = graph.finish_road(segment_ids=[list(graph.segments.keys())[-1]])
         sm.show_road_info_panel(road_id=road.id)
+        keys: list[str] = []
+        fake_st.plotly_chart = lambda *a, **k: keys.append(k.get("key"))
 
         app._run_app_ui()
+
+        # The road viewing profile must actually render (regression for the "Unknown viewing
+        # kind ROAD" crash — the app.py fragment → render_viewing_profile wiring for a road).
+        assert "viewing_profile" in keys
 
     def test_run_app_ui_lift_placing_renders_marker(self, fake_st, monkeypatch, mock_dem_blue_slope) -> None:
         from skiresort_planner.model.path_point import PathPoint

@@ -127,6 +127,35 @@ class TestFileSaveLoad:
         finally:
             filepath.unlink()  # Clean up
 
+    def test_reload_then_continue_building_reuses_node_and_ids(self, empty_graph, path_points_blue) -> None:
+        """Save → reload → keep building: a real multi-session resume. The new slope must
+        reuse the shared node (not duplicate it) and get a fresh, non-colliding segment id.
+        """
+        from skiresort_planner.constants import MapConfig
+        from skiresort_planner.model.path_point import PathPoint
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
+        from skiresort_planner.model.resort_graph import ResortGraph
+
+        M = MapConfig.METERS_PER_DEGREE_EQUATOR
+        graph = empty_graph
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        graph.finish_slope(segment_ids=list(graph.segments.keys()))
+
+        loaded = ResortGraph.from_dict(data=graph.to_dict())
+        assert len(loaded.nodes) == 2 and len(loaded.segments) == 1
+
+        # Continue from the finished slope's bottom node, heading further downhill.
+        bottom = path_points_blue[-1]
+        cont = [
+            PathPoint(lon=bottom.lon, lat=bottom.lat, elevation=bottom.elevation),
+            PathPoint(lon=bottom.lon, lat=bottom.lat - 500 / M, elevation=bottom.elevation - 100.0),
+        ]
+        loaded.commit_paths(paths=[ProposedPathSegment(points=cont, target_difficulty="blue")])
+
+        assert len(loaded.segments) == 2, "second segment committed on the reloaded graph"
+        assert len(loaded.nodes) == 3, "shared bottom node reused, not duplicated (would be 4)"
+        assert len(set(loaded.segments.keys())) == 2, "segment ids must not collide after reload"
+
 
 class TestLiftSerialization:
     """Tests for lift serialization including pylons and cable points."""
