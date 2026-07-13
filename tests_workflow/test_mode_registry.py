@@ -5,14 +5,35 @@ The bijection asserts run at import (so a gap crashes on import), and these test
 """
 
 from skiresort_planner.model.resort_graph import ResortGraph
-from skiresort_planner.ui.context import BuildMode, EntityKind
+from skiresort_planner.ui.context import BuildMode, EntityKind, PlannerContext
 from skiresort_planner.ui.mode_registry import (
     BUILD_STATES,
     ENTITY_KIND_SPECS,
     OPERATIONS,
     OperationGroup,
+    StateHeader,
 )
 from skiresort_planner.ui.state_machine import PlannerStateMachine
+
+
+class TestBuildStateHeader:
+    """Every state must supply a non-empty header + a bool blocks_build_buttons (abstract methods,
+    so this can't be forgotten; this test also pins that headers render for all states).
+    """
+
+    def test_every_state_has_a_valid_header(self) -> None:
+        ctx = PlannerContext()
+        for key, bs in BUILD_STATES.items():
+            head = bs.header(ctx)
+            assert isinstance(head, StateHeader), key
+            assert head.icon and head.label, f"{key} header has empty icon/label"
+            assert isinstance(bs.blocks_build_buttons(), bool), key
+
+    def test_placing_and_building_states_block_buttons(self) -> None:
+        # Every non-idle state blocks the build-mode buttons; idle_* states do not.
+        for key, bs in BUILD_STATES.items():
+            expected = not key.startswith("idle_")
+            assert bs.blocks_build_buttons() is expected, key
 
 
 class TestBuildStateBijection:

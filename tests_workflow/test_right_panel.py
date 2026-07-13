@@ -341,7 +341,7 @@ class TestControlPanelDispatch:
             record_undo=False,
         )
         seg = list(empty_graph.segments.keys())[-1]
-        sm.commit_road(segment_id=seg, endpoint_node_id=empty_graph.segments[seg].end_node_id)
+        sm.commit_road(segment_id=seg, endpoint_node_id=empty_graph.segments[seg].end_node_id)  # type: ignore[attr-defined]  # dynamic python-statemachine event
         assert sm.is_road_building_only
         _dispatch(sm, ctx, empty_graph)
 

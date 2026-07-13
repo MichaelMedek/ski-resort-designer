@@ -100,7 +100,7 @@ def create_command_executor() -> None:
 
     Custom connect (actions.py):
         ("cancel_custom",) → cancel_custom_path()
-        ("select_custom_target", lon, lat) → sm.select_custom_target()  # type: ignore[attr-defined]  # dynamic python-statemachine event
+        ("select_custom_target", lon, lat) → sm.select_custom_target()  # dynamic python-statemachine event
 
     Delete operations (actions.py):
         ("delete_slope", slope_id) → delete_slope_action(slope_id)
@@ -109,7 +109,7 @@ def create_command_executor() -> None:
     Control operations:
         ("undo",) → undo_last_action()
         ("set_build_mode", mode) → ctx.build_mode.mode = mode
-        ("close_panel",) → sm.close_panel()
+        ("close_panel",) → sm.close_panel()  # type: ignore[attr-defined]  # dynamic python-statemachine event
         ("noop",) → do nothing
 
     HYBRID: Renders buttons that can be clicked via at.button().click()
@@ -295,7 +295,7 @@ def create_command_executor() -> None:
             ctx.build_mode.mode = mode_constants[mode]
 
         elif cmd_type == "close_panel":
-            sm.close_panel()
+            sm.close_panel()  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
         elif cmd_type == "noop":
             pass
@@ -332,14 +332,12 @@ def create_command_executor() -> None:
             if st.button("Cancel Slope", key="btn_cancel_slope"):
                 cancel_current_slope()
             # While showing custom-connect proposals, offer a way back to fan-out.
-            if ctx.custom_connect.force_mode:
-                if st.button("Cancel Connection", key="btn_cancel_custom"):
-                    cancel_custom_path()
+            if ctx.custom_connect.force_mode and st.button("Cancel Connection", key="btn_cancel_custom"):
+                cancel_custom_path()
 
         # Undo button (always visible if undo stack)
-        if graph.undo_stack:
-            if st.button("Undo", key="btn_undo"):
-                undo_last_action()
+        if graph.undo_stack and st.button("Undo", key="btn_undo"):
+            undo_last_action()
 
     # Sync build mode from radio button (radio → context) - ONLY if no command processed
     # This prevents radio overwriting command-set build mode
@@ -383,7 +381,7 @@ class TestGrandResortTour:
         - commit_selected_path() for path commits (actions.py)
         - finish_current_slope() for finishing (actions.py)
         - undo_last_action() for undo (actions.py)
-        - sm.select_custom_target() for custom-connect targeting (map-only)  # type: ignore[attr-defined]  # dynamic python-statemachine event
+        - sm.select_custom_target() for custom-connect targeting (map-only)
         - delete_slope_action/delete_lift_action for deletions (actions.py)
 
         PHASE 1: SLOPE_1 (Terrain → Terrain)
@@ -563,7 +561,7 @@ class TestGrandResortTour:
 
         graph = at.session_state["graph"]
         assert len(graph.slopes) == 2, f"Expected 2 slopes, got {len(graph.slopes)}"
-        slope2_id = [sid for sid in graph.slopes.keys() if sid != slope1_id][0]
+        slope2_id = [sid for sid in graph.slopes if sid != slope1_id][0]
 
         # ================================================================
         # PHASE 4: Delete and Undo Operations (Using action functions!)

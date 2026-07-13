@@ -25,23 +25,55 @@ from skiresort_planner.constants import PACKAGE_DIR
 class TestSerializationCompleteness:
     """A dataclass field that `from_dict` doesn't restore is silently lost on reload.
 
-    Two complementary checks: a source scan (new field not named in from_dict) and a real
-    round-trip (the field's value actually survives). Either catches the osm_key/rename-class bug.
+    Two complementary checks: a source scan (every field named somewhere in the deserialization
+    source) and a real round-trip (the field's value actually survives). Either catches the
+    osm_key/rename-class bug.
     """
 
-    def _manual_from_dict_classes(self):
-        from skiresort_planner.model.lift import Lift
-        from skiresort_planner.model.path_segment import PathSegment
-        from skiresort_planner.model.segment_path import SegmentPath
+    def _deserialization_targets(self):
+        """Discover (dataclass, deserialization-source) pairs whose from_dict hand-lists fields.
 
-        # Classes with a HAND-WRITTEN from_dict that lists fields (the drop hazard). Node/Pylon/
-        # PathPoint deserialize via ** unpack, so they can't drop a field and need no guard.
-        return [SegmentPath, PathSegment, Lift]
+        Returns a list of (cls, source_str). A class maps to the source of the from_dict that
+        actually constructs it: its own, or an inherited one (for subclasses that don't override).
+        Nested reconstruction (Pylon built inside Lift.from_dict) is added explicitly below, derived
+        from "which model dataclasses are serialized but have NO from_dict of their own and are not
+        `**`-safe" — i.e. rebuilt by a keyword constructor in some other class's from_dict.
+        """
+        import dataclasses as dc
+
+        from skiresort_planner.model.lift import Lift
+        from skiresort_planner.model.node import Node
+        from skiresort_planner.model.path_segment import PathSegment
+        from skiresort_planner.model.pylon import Pylon
+        from skiresort_planner.model.road import Road
+        from skiresort_planner.model.segment_path import SegmentPath
+        from skiresort_planner.model.slope import Slope
+
+        targets: list[tuple[type, str]] = []
+
+        def fd_source(owner: type) -> str:
+            # Source of the from_dict that constructs `owner` — its own or the inherited one.
+            for klass in owner.__mro__:
+                if "from_dict" in klass.__dict__:
+                    return inspect.getsource(klass.__dict__["from_dict"])
+            raise AssertionError(f"{owner.__name__} has no from_dict in its MRO")
+
+        # Classes rebuilt by a hand-listed from_dict (own or inherited). SegmentPath itself plus its
+        # concrete subclasses (whose extra fields must appear in the inherited source), the segment,
+        # the lift, and the node (lists `id` explicitly, only `location` is ** unpacked).
+        for cls in (SegmentPath, Slope, Road, PathSegment, Lift, Node):
+            targets.append((cls, fd_source(cls)))
+
+        # Pylon has no from_dict and is NOT ** unpacked — Lift.from_dict rebuilds it field-by-field,
+        # so a new Pylon field would be dropped there. Check its fields against Lift's from_dict.
+        assert "from_dict" not in Pylon.__dict__ and dc.is_dataclass(Pylon)
+        targets.append((Pylon, inspect.getsource(Lift.__dict__["from_dict"])))
+
+        return targets
 
     def test_every_field_named_in_from_dict(self) -> None:
         offenders = {}
-        for cls in self._manual_from_dict_classes():
-            src = inspect.getsource(cls.__dict__["from_dict"])
+        for cls, src in self._deserialization_targets():
             missing = [f.name for f in dataclasses.fields(cls) if f.name not in src]
             if missing:
                 offenders[cls.__name__] = missing
@@ -95,6 +127,14 @@ class TestSerializationCompleteness:
         assert restored.segments == graph.segments
         assert restored.nodes == graph.nodes
 
+        # The id counters must round-trip too — a dropped/mismatched counter would reissue an
+        # existing id (collision) or, with a `[]` read on an old save, KeyError on load.
+        assert restored._node_counter == graph._node_counter
+        assert restored._segment_counter == graph._segment_counter
+        assert restored._slope_counter == graph._slope_counter
+        assert restored._lift_counter == graph._lift_counter
+        assert restored._road_counter == graph._road_counter
+
 
 # =============================================================================
 # 2. Enum dispatch: total (`else: raise`) dispatchers must handle every member
@@ -102,47 +142,102 @@ class TestSerializationCompleteness:
 
 
 class TestEnumDispatchCompleteness:
-    """A total dispatcher (one with a final `raise` on unknown) must name every member of its enum.
+    """Every TOTAL dispatcher (a match/if chain ending in `raise` on an unhandled member) must name
+    every member of the enum it switches on — else a new member ships a rarely-hit runtime crash.
 
-    Only TOTAL dispatchers are listed — functions that legitimately handle a subset (e.g. a
-    click handler that only cares about some marker types) are excluded on purpose.
+    The enum MEMBERS are derived from production (that's the part that must not drift — a new member
+    is exactly what we're guarding against). The list of dispatchers, and which members a
+    deliberately PARTIAL one may omit, is stated explicitly here with a reason: "is this function
+    meant to be exhaustive?" is human intent that has to live somewhere, and an explicit reasoned
+    table in the test is honest and robust — better than magic opt-out comments in production.
     """
 
     def _cases(self):
-        from skiresort_planner.model.click_info import ClickInfo, MarkerType
+        """Yield (label, source, member_names, qualifier, allowed_omissions) per total dispatcher.
+
+        - source: the function source, scanned for `qualifier.MEMBER` mentions.
+        - member_names/qualifier: derived from the production enum (BuildMode is a plain-attr class,
+          so its members come from BuildMode.ALL and are qualified as `BuildMode.MEMBER`).
+        - allowed_omissions: member names a legitimately-partial dispatcher may skip (reason inline).
+        """
+        import inspect
+
+        from skiresort_planner.model.click_info import ClickInfo, MapClickType, MarkerType
+        from skiresort_planner.model.message import Message, MessageLevel
         from skiresort_planner.model.path_segment import SegmentKind
-        from skiresort_planner.ui import bottom_chart, context
+        from skiresort_planner.ui import bottom_chart, click_handlers, context
         from skiresort_planner.ui.context import BuildMode, EntityKind
 
-        marker_names = [m.name for m in MarkerType]
-        segkind_names = [m.name for m in SegmentKind]
-        entity_names = [m.name for m in EntityKind]
-        # BuildMode is a plain-attr class (not an Enum); BuildMode.ALL is its source-of-truth list.
-        buildmode_names = [m.upper() for m in BuildMode.ALL]
+        src = inspect.getsource
+        marker = [m.name for m in MarkerType]
+        clicktype = [m.name for m in MapClickType]
+        segkind = [m.name for m in SegmentKind]
+        entity = [m.name for m in EntityKind]
+        msglevel = [m.name for m in MessageLevel]
+        buildmode = [m.upper() for m in BuildMode.ALL]  # attr names, e.g. SLOPE, CHAIRLIFT
 
-        # (label, function-or-source, qualifier, member-names)
+        # IMPORT_CENTER only appears in import_placing; the idle & slope-building handlers legitimately
+        # don't route it (it hits their safety-net raise), so they may omit exactly that one member.
+        idle_omit = {"IMPORT_CENTER"}
+
+        # (label, source, member_names, qualifier, allowed_omissions)
         return [
-            ("ClickInfo._validate_marker_ids", ClickInfo.__dict__["_validate_marker_ids"], "MarkerType", marker_names),
-            ("ClickInfo.display_name", ClickInfo.__dict__["display_name"].fget, "MarkerType", marker_names),
+            (
+                "ClickInfo._validate_marker_ids",
+                src(ClickInfo.__dict__["_validate_marker_ids"]),
+                marker,
+                "MarkerType",
+                set(),
+            ),
+            (
+                "ClickInfo.display_name[Marker]",
+                src(ClickInfo.__dict__["display_name"].fget),
+                marker,
+                "MarkerType",
+                set(),
+            ),
+            (
+                "ClickInfo.display_name[Click]",
+                src(ClickInfo.__dict__["display_name"].fget),
+                clicktype,
+                "MapClickType",
+                set(),
+            ),
+            ("ClickInfo.__post_init__", src(ClickInfo.__dict__["__post_init__"]), clicktype, "MapClickType", set()),
             (
                 "bottom_chart.render_building_profile",
-                bottom_chart.render_building_profile,
+                src(bottom_chart.render_building_profile),
+                segkind,
                 "SegmentKind",
-                segkind_names,
+                set(),
             ),
-            ("bottom_chart.render_viewing_profile", bottom_chart.render_viewing_profile, "EntityKind", entity_names),
-            ("context.BuildMode.display_name", context.BuildMode.display_name, "BuildMode", buildmode_names),
-            ("context.BuildMode.icon", context.BuildMode.icon, "BuildMode", buildmode_names),
+            (
+                "bottom_chart.render_viewing_profile",
+                src(bottom_chart.render_viewing_profile),
+                entity,
+                "EntityKind",
+                set(),
+            ),
+            ("context.BuildMode.display_name", src(context.BuildMode.display_name), buildmode, "BuildMode", set()),
+            ("context.BuildMode.icon", src(context.BuildMode.icon), buildmode, "BuildMode", set()),
+            ("Message.display", src(Message.__dict__["display"]), msglevel, "MessageLevel", set()),
+            ("handle_idle_click", src(click_handlers.handle_idle_click), marker, "MarkerType", idle_omit),
+            (
+                "handle_slope_building_click",
+                src(click_handlers.handle_slope_building_click),
+                marker,
+                "MarkerType",
+                idle_omit,
+            ),
         ]
 
     def test_total_dispatchers_handle_every_member(self) -> None:
-        offenders = {}
-        for label, func, qual, names in self._cases():
-            src = inspect.getsource(func)
-            missing = [n for n in names if f"{qual}.{n}" not in src]
+        offenders: dict[str, list[str]] = {}
+        for label, source, members, qual, allowed in self._cases():
+            missing = [m for m in members if m not in allowed and f"{qual}.{m}" not in source]
             if missing:
-                offenders[label] = missing
-        assert not offenders, f"total dispatchers missing branches: {offenders}"
+                offenders[f"{label} [{qual}]"] = missing
+        assert not offenders, f"total dispatchers missing enum branches: {offenders}"
 
 
 # =============================================================================

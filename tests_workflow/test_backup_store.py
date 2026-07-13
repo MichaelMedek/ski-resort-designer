@@ -1,27 +1,30 @@
 """Tests for resort auto-backup: store primitives, graph helpers,
-startup URL routing, and the central dirty-checked autosave hook."""
+startup URL routing, and the central dirty-checked autosave hook.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 
+from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.persistence import backup_store
 
 
-class FakeSessionState(dict):
+class FakeSessionState(dict[str, object]):
     """Mimics st.session_state: both attribute and item access over one store."""
 
-    def __getattr__(self, key: str):
+    def __getattr__(self, key: str) -> object:
         try:
             return self[key]
         except KeyError as e:
             raise AttributeError(key) from e
 
-    def __setattr__(self, key: str, value) -> None:
+    def __setattr__(self, key: str, value: object) -> None:
         self[key] = value
 
 
@@ -32,7 +35,7 @@ def _isolate_backup_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     return tmp_path / "backups"
 
 
-def _populate(graph: ResortGraph, path_points_blue: list) -> str:
+def _populate(graph: ResortGraph, path_points_blue: list[PathPoint]) -> str:
     """Commit one slope so the graph has content worth saving; return its name."""
     proposal = ProposedPathSegment(
         points=path_points_blue,
@@ -42,6 +45,7 @@ def _populate(graph: ResortGraph, path_points_blue: list) -> str:
     )
     graph.commit_paths(paths=[proposal])
     slope = graph.finish_slope(segment_ids=list(graph.segments.keys()), name="Testrun")
+    assert slope is not None
     return slope.name
 
 
@@ -177,15 +181,13 @@ class TestChangeToken:
 class TestAutosaveHook:
     """The hook that trigger_rerun() calls before every rerun."""
 
-    def _fake_session(self, monkeypatch: pytest.MonkeyPatch, state: dict) -> FakeSessionState:
-        import skiresort_planner.ui.infra as infra
-
+    def _fake_session(self, monkeypatch: pytest.MonkeyPatch, state: dict[str, object]) -> FakeSessionState:
         session = FakeSessionState(state)
-        monkeypatch.setattr(infra.st, "session_state", session, raising=False)
+        monkeypatch.setattr("skiresort_planner.ui.infra.st.session_state", session, raising=False)
         return session
 
     def test_saves_when_dirty(self, monkeypatch, empty_graph, path_points_blue) -> None:
-        import skiresort_planner.ui.infra as infra
+        from skiresort_planner.ui import infra
 
         _populate(empty_graph, path_points_blue)
         resort_id = backup_store.new_resort_id()
@@ -197,7 +199,7 @@ class TestAutosaveHook:
         assert session["_saved_token"] == empty_graph.change_token()
 
     def test_skips_when_unchanged(self, monkeypatch, empty_graph, path_points_blue) -> None:
-        import skiresort_planner.ui.infra as infra
+        from skiresort_planner.ui import infra
 
         _populate(empty_graph, path_points_blue)
         resort_id = backup_store.new_resort_id()
@@ -212,7 +214,7 @@ class TestAutosaveHook:
         assert backup_store.load(resort_id=resort_id) is None
 
     def test_noop_without_resort_id(self, monkeypatch, empty_graph, path_points_blue) -> None:
-        import skiresort_planner.ui.infra as infra
+        from skiresort_planner.ui import infra
 
         _populate(empty_graph, path_points_blue)
         self._fake_session(monkeypatch, {"graph": empty_graph})
@@ -227,28 +229,28 @@ class TestAutosaveHook:
 class TestStartupRouting:
     """URL-param → backup resolution on session init."""
 
-    def _patch_app(self, monkeypatch: pytest.MonkeyPatch, query: dict, state: dict) -> FakeSessionState:
-        import skiresort_planner.app as app
-
+    def _patch_app(
+        self, monkeypatch: pytest.MonkeyPatch, query: dict[str, object], state: dict[str, object]
+    ) -> FakeSessionState:
         session = FakeSessionState(state)
-        monkeypatch.setattr(app.st, "query_params", query, raising=False)
-        monkeypatch.setattr(app.st, "session_state", session, raising=False)
+        monkeypatch.setattr("skiresort_planner.app.st.query_params", query, raising=False)
+        monkeypatch.setattr("skiresort_planner.app.st.session_state", session, raising=False)
         return session
 
     def test_no_param_no_backups_starts_fresh(self, monkeypatch) -> None:
-        import skiresort_planner.app as app
+        from skiresort_planner import app
 
-        query: dict = {}
+        query: dict[str, object] = {}
         session = self._patch_app(monkeypatch, query, {})
 
         app._init_resort_from_url_or_new()
 
         assert "graph" not in session  # fresh: no graph loaded
-        assert len(session["resort_id"]) == 8
+        assert len(cast(str, session["resort_id"])) == 8
         assert query["resort"] == session["resort_id"]
 
     def test_param_with_backup_loads_it(self, monkeypatch, empty_graph, path_points_blue) -> None:
-        import skiresort_planner.app as app
+        from skiresort_planner import app
 
         _populate(empty_graph, path_points_blue)
         resort_id = backup_store.new_resort_id()
@@ -259,13 +261,14 @@ class TestStartupRouting:
         app._init_resort_from_url_or_new()
 
         assert session["resort_id"] == resort_id
-        assert len(session["graph"].slopes) == 1
-        assert session["_saved_token"] == session["graph"].change_token()
+        loaded_graph = cast(ResortGraph, session["graph"])
+        assert len(loaded_graph.slopes) == 1
+        assert session["_saved_token"] == loaded_graph.change_token()
 
     def test_param_missing_file_falls_through_to_fresh(self, monkeypatch) -> None:
-        import skiresort_planner.app as app
+        from skiresort_planner import app
 
-        query: dict = {"resort": "ghost123"}
+        query: dict[str, object] = {"resort": "ghost123"}
         session = self._patch_app(monkeypatch, query, {})
 
         app._init_resort_from_url_or_new()
@@ -275,17 +278,17 @@ class TestStartupRouting:
         assert query["resort"] == session["resort_id"]
 
     def test_bare_link_loads_biggest_backup(self, monkeypatch, empty_graph, path_points_blue) -> None:
-        import skiresort_planner.app as app
+        from skiresort_planner import app
 
         _populate(empty_graph, path_points_blue)
         biggest_id = backup_store.new_resort_id()
         backup_store.save(graph=empty_graph, resort_id=biggest_id)
 
-        query: dict = {}
+        query: dict[str, object] = {}
         session = self._patch_app(monkeypatch, query, {})
 
         app._init_resort_from_url_or_new()
 
         assert session["resort_id"] == biggest_id
-        assert len(session["graph"].slopes) == 1
+        assert len(cast(ResortGraph, session["graph"]).slopes) == 1
         assert query["resort"] == biggest_id
