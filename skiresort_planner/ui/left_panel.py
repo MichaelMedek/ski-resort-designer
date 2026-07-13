@@ -54,13 +54,11 @@ logger = logging.getLogger(__name__)
 def _describe_undo_action(action: UndoAction, graph: ResortGraph) -> str:
     """Generate human-readable description of what undo will do.
 
-    IMPORTANT: We compare by .name (string) instead of direct enum equality because
-    Streamlit's module reloading creates NEW enum class instances on each rerun.
-    Objects in st.session_state.graph.undo_stack hold references to the OLD enum
-    values, which fail `==` comparison against the NEW enum class values.
-    Using .name ensures stable comparison across module reloads.
+    Dispatch via enum_eq (reload-safe): Streamlit's module reloading creates NEW enum
+    class instances each rerun, and undo_stack holds OLD ActionType values, so `is`/`==`
+    fail. enum_eq compares the stable string form and is reload-safe.
     """
-    if action.action_type.name == ActionType.ADD_SEGMENTS.name:
+    if enum_eq(action.action_type, ActionType.ADD_SEGMENTS):
         act = cast(AddSegmentsAction, action)
         n_segments = len(act.segment_ids)
         # Roads commit via the same AddSegmentsAction path — name slope/road by kind.
@@ -70,29 +68,29 @@ def _describe_undo_action(action: UndoAction, graph: ResortGraph) -> str:
         # SegmentKind is a str-Enum, so .value ("slope"/"road") is reload-safe.
         return f"Remove {n_segments} segment(s) from current {first_seg.kind.value}"
 
-    elif action.action_type.name == ActionType.FINISH_SLOPE.name:
+    elif enum_eq(action.action_type, ActionType.FINISH_SLOPE):
         act = cast(FinishSlopeAction, action)
         return f"Restore slope **{act.slope_name}** to building mode"
 
-    elif action.action_type.name == ActionType.ADD_LIFT.name:
+    elif enum_eq(action.action_type, ActionType.ADD_LIFT):
         act = cast(AddLiftAction, action)
         lift = graph.lifts.get(act.lift_id)
         name = lift.name if lift else act.lift_id
         return f"Delete lift **{name}**"
 
-    elif action.action_type.name == ActionType.FINISH_ROAD.name:
+    elif enum_eq(action.action_type, ActionType.FINISH_ROAD):
         act = cast(FinishRoadAction, action)
         return f"Restore road **{act.road_name}** to building mode"
 
-    elif action.action_type.name == ActionType.DELETE_SLOPE.name:
+    elif enum_eq(action.action_type, ActionType.DELETE_SLOPE):
         act = cast(DeleteSlopeAction, action)
         return f"Restore deleted slope **{act.deleted_slope.name}**"
 
-    elif action.action_type.name == ActionType.DELETE_LIFT.name:
+    elif enum_eq(action.action_type, ActionType.DELETE_LIFT):
         act = cast(DeleteLiftAction, action)
         return f"Restore deleted lift **{act.deleted_lift.name}**"
 
-    elif action.action_type.name == ActionType.DELETE_ROAD.name:
+    elif enum_eq(action.action_type, ActionType.DELETE_ROAD):
         act = cast(DeleteRoadAction, action)
         return f"Restore deleted road **{act.deleted_road.name}**"
 

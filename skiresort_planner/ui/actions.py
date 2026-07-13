@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, cast
 import streamlit as st
 
 from skiresort_planner.constants import MapConfig
+from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.generators.path_factory import PathFactory
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.resort_graph import (
@@ -822,25 +823,22 @@ def undo_last_action() -> None:
     action_type = undone.action_type
     logger.info(f"[ACTION] Undone: {action_type.name}")
 
-    # Dispatch to type-specific handlers.
-    # IMPORTANT: We compare by .name (string) instead of direct enum equality because
-    # Streamlit's module reloading creates NEW enum class instances on each rerun.
-    # Objects in st.session_state.graph.undo_stack hold references to the OLD enum
-    # values, which fail `==` comparison against the NEW enum class values.
-    # Using .name ensures stable comparison across module reloads.
-    if action_type.name == ActionType.ADD_SEGMENTS.name:
+    # Dispatch to type-specific handlers via enum_eq (reload-safe): Streamlit's module
+    # reloading creates NEW enum class instances each rerun, and undo_stack holds OLD
+    # ActionType values, so `is`/`==` fail. enum_eq compares the stable string form.
+    if enum_eq(action_type, ActionType.ADD_SEGMENTS):
         _undo_add_segments(undone=cast(AddSegmentsAction, undone))
-    elif action_type.name == ActionType.FINISH_SLOPE.name:
+    elif enum_eq(action_type, ActionType.FINISH_SLOPE):
         _undo_finish_slope(undone=cast(FinishSlopeAction, undone))
-    elif action_type.name == ActionType.ADD_LIFT.name:
+    elif enum_eq(action_type, ActionType.ADD_LIFT):
         _undo_add_lift(undone=cast(AddLiftAction, undone))
-    elif action_type.name == ActionType.FINISH_ROAD.name:
+    elif enum_eq(action_type, ActionType.FINISH_ROAD):
         _undo_finish_road(undone=cast(FinishRoadAction, undone))
-    elif action_type.name == ActionType.DELETE_SLOPE.name:
+    elif enum_eq(action_type, ActionType.DELETE_SLOPE):
         _undo_delete_slope(undone=cast(DeleteSlopeAction, undone))
-    elif action_type.name == ActionType.DELETE_LIFT.name:
+    elif enum_eq(action_type, ActionType.DELETE_LIFT):
         _undo_delete_lift(undone=cast(DeleteLiftAction, undone))
-    elif action_type.name == ActionType.DELETE_ROAD.name:
+    elif enum_eq(action_type, ActionType.DELETE_ROAD):
         _undo_delete_road(undone=cast(DeleteRoadAction, undone))
     else:
         raise RuntimeError(f"Unknown action type: {action_type}")
