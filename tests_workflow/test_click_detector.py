@@ -9,15 +9,20 @@ import pytest
 
 from skiresort_planner.model.click_info import MapClickType, MarkerType
 from skiresort_planner.ui.click_detector import ClickDetector
+from skiresort_planner.ui.context import ClickDeduplicationContext
 
 
 @dataclass
-class MockDeduplicationContext:
-    """Mock click deduplication context for testing."""
+class MockDeduplicationContext(ClickDeduplicationContext):
+    """A real ClickDeduplicationContext whose dedup is a simple seen-set (no timing/debounce).
 
-    _seen: set = field(default_factory=set)
+    Subclasses the production context so it satisfies ClickDetector's `dedup` type exactly, while
+    overriding is_new_click with deterministic set-membership semantics for the parsing tests.
+    """
 
-    def is_new_click(self, coord: tuple | None, obj_id: str | None) -> bool:
+    _seen: set[tuple[object, str | None]] = field(default_factory=set)
+
+    def is_new_click(self, coord: tuple[float, ...] | None, obj_id: str | None) -> bool:
         """Return True if this click hasn't been seen before."""
         key = (coord, obj_id)
         if key in self._seen:
@@ -45,14 +50,15 @@ class TestClickDetectorParsing:
     def test_terrain_click_parsing(
         self,
         detector: ClickDetector,
-        clicked_object: dict | None,
-        clicked_coordinate: list | None,
+        clicked_object: dict[str, object] | None,
+        clicked_coordinate: list[float] | None,
         expected_lon: float,
         expected_lat: float,
     ) -> None:
         """Terrain clicks extract coordinates from coordinate or object."""
         result = detector.detect(clicked_object=clicked_object, clicked_coordinate=clicked_coordinate)
         assert result is not None
+        assert result.lon is not None and result.lat is not None
         assert result.click_type == MapClickType.TERRAIN
         assert abs(result.lon - expected_lon) < 0.001
         assert abs(result.lat - expected_lat) < 0.001
@@ -86,7 +92,11 @@ class TestClickDetectorParsing:
         ],
     )
     def test_marker_click_parsing(
-        self, detector: ClickDetector, clicked_object: dict, expected_marker_type: MarkerType, expected_attrs: dict
+        self,
+        detector: ClickDetector,
+        clicked_object: dict[str, object],
+        expected_marker_type: MarkerType,
+        expected_attrs: dict[str, object],
     ) -> None:
         """Marker clicks extract correct type and attributes."""
         result = detector.detect(clicked_object=clicked_object, clicked_coordinate=None)
@@ -105,7 +115,7 @@ class TestClickDetectorParsing:
             pytest.param({"type": "Feature", "properties": {}}, id="feature_without_properties_type"),
         ],
     )
-    def test_unrecognized_object_returns_none(self, detector: ClickDetector, clicked_object: dict) -> None:
+    def test_unrecognized_object_returns_none(self, detector: ClickDetector, clicked_object: dict[str, object]) -> None:
         """Genuinely unlabeled/unknown picks (pydeck can emit these) are ignored, not crashed."""
         result = detector.detect(clicked_object=clicked_object, clicked_coordinate=None)
         assert result is None
@@ -125,7 +135,7 @@ class TestClickDetectorParsing:
         ],
     )
     def test_marker_with_matching_type_but_missing_id_raises(
-        self, detector: ClickDetector, clicked_object: dict
+        self, detector: ClickDetector, clicked_object: dict[str, object]
     ) -> None:
         """A marker whose type matches but lacks its required id/index is a rendering bug → assert, not swallow.
 
@@ -137,7 +147,7 @@ class TestClickDetectorParsing:
 
     def test_geojson_feature_extracts_type_from_properties(self, detector: ClickDetector) -> None:
         """A GeoJSON Feature parses its marker type from nested properties (segment belt click)."""
-        obj = {"type": "Feature", "properties": {"type": "segment", "id": "S3"}}
+        obj: dict[str, object] = {"type": "Feature", "properties": {"type": "segment", "id": "S3"}}
         result = detector.detect(clicked_object=obj, clicked_coordinate=None)
         assert result is not None
         assert result.marker_type == MarkerType.SEGMENT
@@ -149,7 +159,7 @@ class TestClickDetectorDeduplication:
 
     def test_duplicate_click_rejected_different_accepted(self, detector: ClickDetector) -> None:
         """Same click rejected on second occurrence; different clicks accepted."""
-        obj = {"type": "node", "id": "N1"}
+        obj: dict[str, object] = {"type": "node", "id": "N1"}
 
         result1 = detector.detect(clicked_object=obj, clicked_coordinate=None)
         result_dup = detector.detect(clicked_object=obj, clicked_coordinate=None)

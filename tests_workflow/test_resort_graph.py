@@ -885,37 +885,59 @@ class TestLiftTypeChangeKeepsName:
         assert lift.cable_points is not cable_before, "type-dependent geometry still recomputed"
 
 
-class TestUndoDispatchExhaustiveness:
-    """Tripwire: every ActionType must be handled by ALL THREE undo dispatchers.
+class TestUndoActionBijection:
+    """Tripwire: the ActionType ↔ *Action dataclass ↔ handler mapping must be an exact bijection.
 
-    Adding an ActionType without wiring up one dispatcher previously shipped a user-facing crash
-    (the IMPORT_OSM undo-describe bug). These dispatchers are parallel if/elif chains on a plain
-    enum, so the type checker can't enforce completeness — this test does, at the source level.
+    Three parallel structures must cover every ActionType with no gap and no duplicate:
+    - each *Action dataclass (in the UndoAction union) reports a unique .action_type,
+    - the model UNDO_HANDLERS registry (graph mutation + description),
+    - the UI _UNDO_SIDE_EFFECTS registry (post-undo UI updates).
+
+    Adding an ActionType (or an action dataclass) without wiring all three previously shipped a
+    user-facing crash (the IMPORT_OSM undo-describe bug). The registries self-assert their keyset at
+    import; this test additionally verifies the dataclass side of the bijection.
     """
 
-    def _dispatcher_sources(self):
-        import inspect
+    def _action_classes(self):
+        import typing
 
-        from skiresort_planner.model.resort_graph import ResortGraph
-        from skiresort_planner.ui.actions import undo_last_action
-        from skiresort_planner.ui.left_panel import _describe_undo_action
+        from skiresort_planner.model import actions as actions_mod
 
-        return {
-            "graph.undo_last": inspect.getsource(ResortGraph.undo_last),
-            "actions.undo_last_action": inspect.getsource(undo_last_action),
-            "left_panel._describe_undo_action": inspect.getsource(_describe_undo_action),
-        }
+        # The UndoAction union is the source of truth for "every action dataclass".
+        return list(typing.get_args(actions_mod.UndoAction))
 
-    def test_every_action_type_handled_by_all_dispatchers(self) -> None:
-        from skiresort_planner.model.resort_graph import ActionType
+    def test_every_action_dataclass_reports_a_unique_action_type(self) -> None:
+        import dataclasses
 
-        sources = self._dispatcher_sources()
-        missing = {
-            name: [member.name for member in ActionType if f"ActionType.{member.name}" not in src]
-            for name, src in sources.items()
-        }
-        missing = {name: gaps for name, gaps in missing.items() if gaps}
-        assert not missing, f"undo dispatchers missing ActionType branches: {missing}"
+        from skiresort_planner.model.actions import ActionType
+
+        classes = self._action_classes()
+        # Each frozen dataclass exposes .action_type as a property; instantiate a zero-arg-free
+        # dummy via object.__new__ to read it without constructing real field values.
+        types = []
+        for cls in classes:
+            assert dataclasses.is_dataclass(cls), f"{cls.__name__} in UndoAction union is not a dataclass"
+            inst = object.__new__(cls)
+            types.append(inst.action_type)
+
+        # Surjective: every ActionType is claimed by some dataclass.
+        assert set(types) == set(ActionType), (
+            f"action dataclasses must cover every ActionType. "
+            f"Missing: {set(ActionType) - set(types)}; extra: {set(types) - set(ActionType)}"
+        )
+        # Injective: no two dataclasses claim the same ActionType.
+        assert len(types) == len(set(types)), f"duplicate .action_type across action dataclasses: {types}"
+
+    def test_both_registries_cover_every_action_type(self) -> None:
+        from skiresort_planner.model.actions import ActionType
+        from skiresort_planner.model.undo_handlers import UNDO_HANDLERS
+        from skiresort_planner.ui.actions import _UNDO_SIDE_EFFECTS
+
+        names = {t.name for t in ActionType}
+        assert set(UNDO_HANDLERS) == names, f"UNDO_HANDLERS keyset != ActionType: {set(UNDO_HANDLERS) ^ names}"
+        assert set(_UNDO_SIDE_EFFECTS) == names, (
+            f"_UNDO_SIDE_EFFECTS keyset != ActionType: {set(_UNDO_SIDE_EFFECTS) ^ names}"
+        )
 
 
 # =============================================================================

@@ -146,11 +146,11 @@ class TestSwitchLiftSelfLoop:
         lift2 = graph.add_lift(start_node_id="N3", end_node_id="N4", lift_type="gondola", dem=dem)
 
         # View first lift
-        sm.send("view_lift", lift_id=lift1.id)
+        sm.view_lift(lift_id=lift1.id)
         assert ctx.viewing.lift_id == lift1.id
 
         # Switch to second lift (self-loop)
-        sm.send("view_lift", lift_id=lift2.id)
+        sm.view_lift(lift_id=lift2.id)
 
         assert sm.current_state_value == "idle_viewing_lift", "Still in viewing state"
         assert ctx.viewing.lift_id == lift2.id, "Should now view second lift"

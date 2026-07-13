@@ -29,7 +29,7 @@ class TestNodeFromDict:
     """from_dict drives all graph deserialization — verify it reconstructs fully."""
 
     def test_from_dict_reconstructs_id_and_location(self) -> None:
-        data = {"id": "N7", "location": {"lon": 10.25, "lat": 46.98, "elevation": 2345.6}}
+        data: dict[str, object] = {"id": "N7", "location": {"lon": 10.25, "lat": 46.98, "elevation": 2345.6}}
         node = Node.from_dict(data=data)
 
         assert node.id == "N7"
@@ -40,7 +40,7 @@ class TestNodeFromDict:
     def test_from_dict_round_trips_coordinates(self) -> None:
         """A Node's coordinates survive a dict → Node reconstruction."""
         original = Node(id="N3", location=PathPoint(lon=10.1, lat=46.2, elevation=2222.0))
-        data = {
+        data: dict[str, object] = {
             "id": original.id,
             "location": {"lon": original.lon, "lat": original.lat, "elevation": original.elevation},
         }

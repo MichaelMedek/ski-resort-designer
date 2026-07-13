@@ -59,7 +59,7 @@ class TestSlopeBuildingWorkflow:
         assert ctx.viewing.slope_id == slope.id, "Viewing context should have slope ID"
 
         # === Phase 4: Close Panel (IdleViewingSlope → IdleReady) ===
-        sm.send("close_panel")
+        sm.close_panel()
 
         assert sm.current_state_value == "idle_ready", "After close: idle_ready"
         assert ctx.viewing.panel_visible is False, "Panel should be hidden"
@@ -98,7 +98,7 @@ class TestSelfLoopBehavior:
         sm.finish_slope(slope_id=slope2.id)
 
         # Self-loop: switch to first slope
-        sm.send("view_slope", slope_id=slope1.id)
+        sm.view_slope(slope_id=slope1.id)
 
         assert sm.current_state_value == "idle_viewing_slope", "Still in viewing state"
         assert ctx.viewing.slope_id == slope1.id, "Should view first slope after switch"
@@ -165,7 +165,7 @@ class TestForceStateMethods:
         sm, ctx, _graph, _factory, _dem = workflow_setup
 
         # Enter lift placing mode
-        sm.send("start_lift", node_id=None, location=None)
+        sm.start_lift(node_id=None, location=None)
         # Manually set some lift state to verify it gets cleared
         ctx.lift.start_node_id = "test_node"
 
@@ -187,7 +187,7 @@ class TestForceStateMethods:
         sm, ctx, _graph, _factory, _dem = workflow_setup
 
         # Enter lift placing mode
-        sm.send("start_lift", node_id=None, location=None)
+        sm.start_lift(node_id=None, location=None)
         assert sm.current_state_value == "lift_placing"
 
         # Patch exit_lift_placing to raise an exception
@@ -273,4 +273,4 @@ class TestInvalidTransitions:
         assert sm.current_state_value == "slope_building"
 
         with pytest.raises(TransitionNotAllowed):
-            sm.send("view_slope", slope_id="SL1")
+            sm.view_slope(slope_id="SL1")

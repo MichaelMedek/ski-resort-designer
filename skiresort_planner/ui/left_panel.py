@@ -14,7 +14,7 @@ import json
 import logging
 from collections.abc import Callable
 from datetime import datetime
-from typing import Literal, cast
+from typing import Literal
 
 import streamlit as st
 
@@ -28,23 +28,12 @@ from skiresort_planner.constants import (
 )
 from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.generators.geocoder import geocode
+from skiresort_planner.model.actions import UndoAction
 from skiresort_planner.model.message import (
     FileLoadErrorMessage,
 )
-from skiresort_planner.model.resort_graph import (
-    ActionType,
-    AddLiftAction,
-    AddSegmentsAction,
-    DeleteLiftAction,
-    DeleteRoadAction,
-    DeleteSlopeAction,
-    FinishRoadAction,
-    FinishSlopeAction,
-    ImportOSMAction,
-    MergeNodesAction,
-    ResortGraph,
-    UndoAction,
-)
+from skiresort_planner.model.resort_graph import ResortGraph
+from skiresort_planner.model.undo_handlers import UNDO_HANDLERS
 from skiresort_planner.persistence import backup_store
 from skiresort_planner.ui.actions import undo_last_action
 from skiresort_planner.ui.context import BuildMode, EntityKind, PlannerContext
@@ -58,56 +47,9 @@ logger = logging.getLogger(__name__)
 def _describe_undo_action(action: UndoAction, graph: ResortGraph) -> str:
     """Generate human-readable description of what undo will do.
 
-    Dispatch via enum_eq (reload-safe): Streamlit's module reloading creates NEW enum
-    class instances each rerun, and undo_stack holds OLD ActionType values, so `is`/`==`
-    fail. enum_eq compares the stable string form and is reload-safe.
+    Delegates to the UNDO_HANDLERS registry (keyed by ActionType.name, reload-safe).
     """
-    if enum_eq(action.action_type, ActionType.ADD_SEGMENTS):
-        segments_act = cast(AddSegmentsAction, action)
-        n_segments = len(segments_act.segment_ids)
-        # Roads commit via the same AddSegmentsAction path — name slope/road by kind.
-        first_seg = graph.segments.get(segments_act.segment_ids[0]) if segments_act.segment_ids else None
-        if first_seg is None:
-            raise RuntimeError(f"AddSegmentsAction references missing segment {segments_act.segment_ids}")
-        # SegmentKind is a str-Enum, so .value ("slope"/"road") is reload-safe.
-        return f"Remove {n_segments} segment(s) from current {first_seg.kind.value}"
-
-    elif enum_eq(action.action_type, ActionType.FINISH_SLOPE):
-        finish_slope_act = cast(FinishSlopeAction, action)
-        return f"Restore slope **{finish_slope_act.slope_name}** to building mode"
-
-    elif enum_eq(action.action_type, ActionType.ADD_LIFT):
-        add_lift_act = cast(AddLiftAction, action)
-        lift = graph.lifts.get(add_lift_act.lift_id)
-        name = lift.name if lift else add_lift_act.lift_id
-        return f"Delete lift **{name}**"
-
-    elif enum_eq(action.action_type, ActionType.FINISH_ROAD):
-        finish_road_act = cast(FinishRoadAction, action)
-        return f"Restore road **{finish_road_act.road_name}** to building mode"
-
-    elif enum_eq(action.action_type, ActionType.DELETE_SLOPE):
-        delete_slope_act = cast(DeleteSlopeAction, action)
-        return f"Restore deleted slope **{delete_slope_act.deleted_slope.name}**"
-
-    elif enum_eq(action.action_type, ActionType.DELETE_LIFT):
-        delete_lift_act = cast(DeleteLiftAction, action)
-        return f"Restore deleted lift **{delete_lift_act.deleted_lift.name}**"
-
-    elif enum_eq(action.action_type, ActionType.DELETE_ROAD):
-        delete_road_act = cast(DeleteRoadAction, action)
-        return f"Restore deleted road **{delete_road_act.deleted_road.name}**"
-
-    elif enum_eq(action.action_type, ActionType.IMPORT_OSM):
-        import_act = cast(ImportOSMAction, action)
-        return f"Remove OSM import ({len(import_act.slope_ids)} slopes, {len(import_act.lift_ids)} lifts)"
-
-    elif enum_eq(action.action_type, ActionType.MERGE_NODES):
-        merge = cast(MergeNodesAction, action)
-        return f"Un-merge {len(merge.deleted_nodes) + 1} nodes"
-
-    else:
-        raise RuntimeError(f"Unknown action type: {action.action_type}")
+    return UNDO_HANDLERS[action.action_type.name].describe(action=action, graph=graph)
 
 
 def _request_pending_undo() -> None:

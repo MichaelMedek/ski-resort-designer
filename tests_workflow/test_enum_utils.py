@@ -23,13 +23,13 @@ class TestEnumEq:
 
     def test_reloaded_class_same_member_is_equal(self) -> None:
         # Simulate a Streamlit reload: a fresh class with identical name + values.
-        reloaded = Enum("SegmentKind", {"SLOPE": "slope", "ROAD": "road"}, type=str)
-        assert enum_eq(reloaded.ROAD, SegmentKind.ROAD)  # type: ignore[arg-type]
-        assert enum_eq(SegmentKind.SLOPE, reloaded.SLOPE)  # type: ignore[arg-type]
+        reloaded = Enum("SegmentKind", {"SLOPE": "slope", "ROAD": "road"}, type=str)  # type: ignore[misc]
+        assert enum_eq(reloaded.ROAD, SegmentKind.ROAD)
+        assert enum_eq(SegmentKind.SLOPE, reloaded.SLOPE)
 
     def test_reloaded_class_different_member_not_equal(self) -> None:
-        reloaded = Enum("SegmentKind", {"SLOPE": "slope", "ROAD": "road"}, type=str)
-        assert not enum_eq(reloaded.ROAD, SegmentKind.SLOPE)  # type: ignore[arg-type]
+        reloaded = Enum("SegmentKind", {"SLOPE": "slope", "ROAD": "road"}, type=str)  # type: ignore[misc]
+        assert not enum_eq(reloaded.ROAD, SegmentKind.SLOPE)
 
     def test_different_enum_classes_never_equal(self) -> None:
         # repr() form is class-qualified, so members of different enums never match
@@ -43,6 +43,6 @@ class TestEnumEq:
             RED = 1
             BLUE = 2
 
-        reloaded = Enum("Color", {"RED": 1, "BLUE": 2})
-        assert enum_eq(Color.RED, reloaded.RED)  # type: ignore[arg-type]
-        assert not enum_eq(Color.RED, reloaded.BLUE)  # type: ignore[arg-type]
+        reloaded = Enum("Color", {"RED": 1, "BLUE": 2})  # type: ignore[misc]
+        assert enum_eq(Color.RED, reloaded.RED)
+        assert not enum_eq(Color.RED, reloaded.BLUE)

@@ -4,6 +4,7 @@ Every dispatch axis is covered EXACTLY, so a new state/mode/kind can't silently 
 The bijection asserts run at import (so a gap crashes on import), and these tests re-assert them.
 """
 
+from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.context import BuildMode, EntityKind
 from skiresort_planner.ui.mode_registry import (
     BUILD_STATES,
@@ -66,7 +67,7 @@ class TestGreyoutRule:
     every button's enabled() is the same rule, so this is asserted uniformly.
     """
 
-    def _sm(self, empty_graph):  # type: ignore[no-untyped-def]
+    def _sm(self, empty_graph: ResortGraph) -> PlannerStateMachine:
         sm, _ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         return sm
 

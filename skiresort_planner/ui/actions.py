@@ -13,17 +13,15 @@ This module handles:
 """
 
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
 
 import streamlit as st
 
 from skiresort_planner.constants import MapConfig, MergeConfig
-from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.generators.osm_importer import OSMImporter, bbox_around
 from skiresort_planner.generators.path_factory import PathFactory
-from skiresort_planner.model.lift import Lift
-from skiresort_planner.model.message import MergeTooFarMessage, OSMImportErrorMessage, OSMImportSummaryMessage
-from skiresort_planner.model.resort_graph import (
+from skiresort_planner.model.actions import (
     ActionType,
     AddLiftAction,
     AddSegmentsAction,
@@ -34,8 +32,11 @@ from skiresort_planner.model.resort_graph import (
     FinishSlopeAction,
     ImportOSMAction,
     MergeNodesAction,
-    ResortGraph,
+    UndoAction,
 )
+from skiresort_planner.model.lift import Lift
+from skiresort_planner.model.message import MergeTooFarMessage, OSMImportErrorMessage, OSMImportSummaryMessage
+from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.context import BuildMode, PlannerContext
 from skiresort_planner.ui.infra import bump_map_version, reload_map, trigger_rerun
 from skiresort_planner.ui.state_machine import PlannerStateMachine
@@ -922,6 +923,27 @@ def _undo_merge_nodes(undone: MergeNodesAction) -> None:
     reload_map()
 
 
+# UI side-effect per action type, keyed by ActionType.name.
+# The graph mutation itself is done by ResortGraph.undo_last; these handlers only update UI state
+# (rebuild proposals, force SM transitions, redraw). Import-time assert keeps this exhaustive.
+_UNDO_SIDE_EFFECTS: dict[str, "Callable[[UndoAction], None]"] = {
+    ActionType.ADD_SEGMENTS.name: lambda a: _undo_add_segments(undone=cast(AddSegmentsAction, a)),
+    ActionType.FINISH_SLOPE.name: lambda a: _undo_finish_slope(undone=cast(FinishSlopeAction, a)),
+    ActionType.ADD_LIFT.name: lambda a: _undo_add_lift(undone=cast(AddLiftAction, a)),
+    ActionType.FINISH_ROAD.name: lambda a: _undo_finish_road(undone=cast(FinishRoadAction, a)),
+    ActionType.DELETE_SLOPE.name: lambda a: _undo_delete_slope(undone=cast(DeleteSlopeAction, a)),
+    ActionType.DELETE_LIFT.name: lambda a: _undo_delete_lift(undone=cast(DeleteLiftAction, a)),
+    ActionType.DELETE_ROAD.name: lambda a: _undo_delete_road(undone=cast(DeleteRoadAction, a)),
+    ActionType.IMPORT_OSM.name: lambda a: _undo_import_osm(undone=cast(ImportOSMAction, a)),
+    ActionType.MERGE_NODES.name: lambda a: _undo_merge_nodes(undone=cast(MergeNodesAction, a)),
+}
+_action_names = {t.name for t in ActionType}
+assert set(_UNDO_SIDE_EFFECTS) == _action_names, (
+    f"_UNDO_SIDE_EFFECTS keys must match ActionType members exactly. "
+    f"Missing: {_action_names - set(_UNDO_SIDE_EFFECTS)}; stray: {set(_UNDO_SIDE_EFFECTS) - _action_names}"
+)
+
+
 def undo_last_action() -> None:
     """Undo the most recent action.
 
@@ -955,32 +977,10 @@ def undo_last_action() -> None:
         return
 
     undone = graph.undo_last()
-    action_type = undone.action_type
-    logger.info(f"[ACTION] Undone: {action_type.name}")
+    logger.info(f"[ACTION] Undone: {undone.action_type.name}")
 
-    # Dispatch to type-specific handlers via enum_eq (reload-safe): Streamlit's module
-    # reloading creates NEW enum class instances each rerun, and undo_stack holds OLD
-    # ActionType values, so `is`/`==` fail. enum_eq compares the stable string form.
-    if enum_eq(action_type, ActionType.ADD_SEGMENTS):
-        _undo_add_segments(undone=cast(AddSegmentsAction, undone))
-    elif enum_eq(action_type, ActionType.FINISH_SLOPE):
-        _undo_finish_slope(undone=cast(FinishSlopeAction, undone))
-    elif enum_eq(action_type, ActionType.ADD_LIFT):
-        _undo_add_lift(undone=cast(AddLiftAction, undone))
-    elif enum_eq(action_type, ActionType.FINISH_ROAD):
-        _undo_finish_road(undone=cast(FinishRoadAction, undone))
-    elif enum_eq(action_type, ActionType.DELETE_SLOPE):
-        _undo_delete_slope(undone=cast(DeleteSlopeAction, undone))
-    elif enum_eq(action_type, ActionType.DELETE_LIFT):
-        _undo_delete_lift(undone=cast(DeleteLiftAction, undone))
-    elif enum_eq(action_type, ActionType.DELETE_ROAD):
-        _undo_delete_road(undone=cast(DeleteRoadAction, undone))
-    elif enum_eq(action_type, ActionType.IMPORT_OSM):
-        _undo_import_osm(undone=cast(ImportOSMAction, undone))
-    elif enum_eq(action_type, ActionType.MERGE_NODES):
-        _undo_merge_nodes(undone=cast(MergeNodesAction, undone))
-    else:
-        raise RuntimeError(f"Unknown action type: {action_type}")
+    # Dispatch UI side-effects via the registry keyed by ActionType.name.
+    _UNDO_SIDE_EFFECTS[undone.action_type.name](undone)
 
 
 # =============================================================================

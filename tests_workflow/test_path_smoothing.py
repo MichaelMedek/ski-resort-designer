@@ -31,10 +31,12 @@ def _min_curvature_radius_m(points: list[PathPoint]) -> float:
     dx, dy = splev(uu, tck, der=1)
     ddx, ddy = splev(uu, tck, der=2)
     radii = [(dx[i] ** 2 + dy[i] ** 2) ** 1.5 / max(abs(dx[i] * ddy[i] - dy[i] * ddx[i]), 1e-9) for i in range(len(uu))]
-    return min(radii)
+    return float(min(radii))
 
 
-def _leg(start_lon: float, start_lat: float, d_lon: float, d_lat: float, n: int, z0: float, dz: float) -> list:
+def _leg(
+    start_lon: float, start_lat: float, d_lon: float, d_lat: float, n: int, z0: float, dz: float
+) -> list[PathPoint]:
     """A straight leg of n points stepping (d_lon, d_lat) per point, elevation z0 + i*dz."""
     return [PathPoint(lon=start_lon + d_lon * i, lat=start_lat + d_lat * i, elevation=z0 + dz * i) for i in range(n)]
 

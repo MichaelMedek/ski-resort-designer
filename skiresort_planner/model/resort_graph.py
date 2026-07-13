@@ -15,15 +15,26 @@ Reference: DETAILS.md
 import copy
 import logging
 import statistics
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from datetime import datetime
-from enum import Enum, auto
 from typing import TYPE_CHECKING, NamedTuple, TypedDict, cast
 
 from skiresort_planner.constants import EntityPrefixes, GeometricTuningConfig, MergeConfig, UndoConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.enum_utils import enum_eq
+from skiresort_planner.model.actions import (
+    AddLiftAction,
+    AddSegmentsAction,
+    DeleteLiftAction,
+    DeleteRoadAction,
+    DeleteSlopeAction,
+    FinishRoadAction,
+    FinishSlopeAction,
+    ImportOSMAction,
+    MergeNodesAction,
+    UndoAction,
+)
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint, endpoints_match
@@ -33,6 +44,7 @@ from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.road import Road
 from skiresort_planner.model.segment_path import SegmentPath
 from skiresort_planner.model.slope import Slope
+from skiresort_planner.model.undo_handlers import UNDO_HANDLERS
 
 if TYPE_CHECKING:
     from skiresort_planner.core.dem_service import DEMService
@@ -65,195 +77,12 @@ class ResortStats(TypedDict):
     total_road_length_m: float
 
 
-# =============================================================================
-# Undo Action Types
-# =============================================================================
-
-
-class ActionType(Enum):
-    """Enum identifying the type of (undo) action for reliable dispatch."""
-
-    ADD_SEGMENTS = auto()
-    FINISH_SLOPE = auto()
-    ADD_LIFT = auto()
-    FINISH_ROAD = auto()
-    DELETE_SLOPE = auto()
-    DELETE_LIFT = auto()
-    DELETE_ROAD = auto()
-    IMPORT_OSM = auto()
-    MERGE_NODES = auto()
-
-
-@dataclass(frozen=True)
-class AddSegmentsAction:
-    """Undo action for committed path segments."""
-
-    segment_ids: tuple[str, ...]
-    node_ids: tuple[str, ...]
-
-    @property
-    def action_type(self) -> ActionType:
-        """Return the enum type for dispatch."""
-        return ActionType.ADD_SEGMENTS
-
-
-@dataclass(frozen=True)
-class FinishSlopeAction:
-    """Undo action for finishing a slope."""
-
-    slope_id: str
-    segment_ids: tuple[str, ...]
-    slope_name: str
-    start_node_id: str | None
-
-    @property
-    def action_type(self) -> ActionType:
-        """Return the enum type for dispatch."""
-        return ActionType.FINISH_SLOPE
-
-
-@dataclass(frozen=True)
-class AddLiftAction:
-    """Undo action for creating a lift."""
-
-    lift_id: str
-
-    @property
-    def action_type(self) -> ActionType:
-        """Return the enum type for dispatch."""
-        return ActionType.ADD_LIFT
-
-
-@dataclass(frozen=True)
-class FinishRoadAction:
-    """Undo action for finishing a road (mirrors FinishSlopeAction).
-
-    Ungroups the Road but keeps its segments, so undo returns to road building
-    with the segments intact; further undos peel each segment (AddSegmentsAction).
-    """
-
-    road_id: str
-    segment_ids: tuple[str, ...]
-    road_name: str
-    start_node_id: str | None
-
-    @property
-    def action_type(self) -> ActionType:
-        """Return the enum type for dispatch."""
-        return ActionType.FINISH_ROAD
-
-
-@dataclass(frozen=True)
-class DeleteSlopeAction:
-    """Undo action for deleting a slope (stores data for restore)."""
-
-    slope_id: str
-    deleted_slope: "Slope"
-    deleted_segments: tuple["PathSegment", ...]
-    deleted_nodes: tuple["Node", ...] = ()  # Nodes orphaned by segment removal
-
-    @property
-    def action_type(self) -> ActionType:
-        """Return the enum type for dispatch."""
-        return ActionType.DELETE_SLOPE
-
-
-@dataclass(frozen=True)
-class DeleteLiftAction:
-    """Undo action for deleting a lift (stores data for restore)."""
-
-    lift_id: str
-    deleted_lift: "Lift"
-    deleted_nodes: tuple["Node", ...] = ()  # Nodes orphaned by lift removal
-
-    @property
-    def action_type(self) -> ActionType:
-        """Return the enum type for dispatch."""
-        return ActionType.DELETE_LIFT
-
-
-@dataclass(frozen=True)
-class DeleteRoadAction:
-    """Undo action for deleting a road (stores data for restore)."""
-
-    road_id: str
-    deleted_road: "Road"
-    deleted_segments: tuple["PathSegment", ...]
-    deleted_nodes: tuple["Node", ...] = ()  # Nodes orphaned by segment removal
-
-    @property
-    def action_type(self) -> ActionType:
-        """Return the enum type for dispatch."""
-        return ActionType.DELETE_ROAD
-
-
-@dataclass(frozen=True)
-class ImportOSMAction:
-    """Undo action for a single OSM import batch.
-
-    One import (any number of pistes + lifts) is ONE undoable unit: undo removes every entity
-    the import created — its slopes, lifts, segments, and the nodes it newly created — so the
-    user can then import a different selection.
-    """
-
-    slope_ids: tuple[str, ...]
-    lift_ids: tuple[str, ...]
-    segment_ids: tuple[str, ...]
-    node_ids: tuple[str, ...]  # nodes CREATED by this import (not pre-existing shared ones)
-
-    @property
-    def action_type(self) -> ActionType:
-        """Return the enum type for dispatch."""
-        return ActionType.IMPORT_OSM
-
-    def removed_entity(self, entity_id: str) -> bool:
-        """True if the given slope/lift id was one this import created (now removed on undo)."""
-        return entity_id in self.slope_ids or entity_id in self.lift_ids
-
-
 class OSMImportResult(NamedTuple):
     """Counts from one import_osm call (named so callers don't guess tuple positions)."""
 
     slopes_added: int
     lifts_added: int
     duplicates_skipped: int  # entities skipped because the graph already has that endpoint fingerprint
-
-
-@dataclass(frozen=True)
-class MergeNodesAction:
-    """Undo action for merging several nodes into one survivor.
-
-    Restoring is exact: put the deleted nodes back, move the survivor to its old location, and restore
-    the pre-merge snapshot of every builder the merge touched — segments (repointed + re-stitched
-    geometry), lifts (repointed + rebuilt cable), and slopes/roads (repointed boundary ids). Each
-    snapshot carries the original endpoint ids, so replacing it in place also undoes the repoint.
-    """
-
-    survivor_id: str
-    survivor_before: "Node"  # survivor's location before it moved to the median
-    deleted_nodes: tuple["Node", ...]  # the merged-away nodes, to restore verbatim
-    # Pre-merge snapshots of every touched builder, restored verbatim on undo.
-    segments_before: tuple["PathSegment", ...]
-    lifts_before: tuple["Lift", ...]
-    paths_before: tuple["SegmentPath", ...]  # slopes + roads whose boundary ids were repointed
-
-    @property
-    def action_type(self) -> ActionType:
-        """Return the enum type for dispatch."""
-        return ActionType.MERGE_NODES
-
-
-UndoAction = (
-    AddSegmentsAction
-    | FinishSlopeAction
-    | AddLiftAction
-    | FinishRoadAction
-    | DeleteSlopeAction
-    | DeleteLiftAction
-    | DeleteRoadAction
-    | ImportOSMAction
-    | MergeNodesAction
-)
 
 
 class ResortGraph:
@@ -976,116 +805,8 @@ class ResortGraph:
             raise RuntimeError("undo_last called with empty undo_stack")
 
         action = self.undo_stack.pop()
-
-        # Dispatch via enum_eq (reload-safe): ActionType is a plain Enum and the undo_stack
-        # lives in st.session_state holding OLD-class references after a Streamlit reload,
-        # so plain-enum `is`/`==` would fail. enum_eq compares the stable string form.
-        action_type = action.action_type
-
-        if enum_eq(action_type, ActionType.ADD_SEGMENTS):
-            add_seg = cast(AddSegmentsAction, action)
-            for seg_id in add_seg.segment_ids:
-                self.segments.pop(seg_id, None)
-            self.cleanup_isolated_nodes()  # Remove orphaned nodes from segment removal
-
-        elif enum_eq(action_type, ActionType.ADD_LIFT):
-            add_lift = cast(AddLiftAction, action)
-            self.lifts.pop(add_lift.lift_id, None)
-            self.cleanup_isolated_nodes()  # Remove orphaned station nodes
-
-        elif enum_eq(action_type, ActionType.FINISH_SLOPE):
-            # Ungroup the slope but keep its segments; their own AddSegmentsAction
-            # entries handle per-segment removal on further undo.
-            finish = cast(FinishSlopeAction, action)
-            self.slopes.pop(finish.slope_id, None)
-            for seg_id in finish.segment_ids:
-                self.segments[seg_id].name = f"Segment {seg_id[1:]}"
-
-        elif enum_eq(action_type, ActionType.FINISH_ROAD):
-            # Mirror FINISH_SLOPE: ungroup the road, keep its segments.
-            finish_road = cast(FinishRoadAction, action)
-            self.roads.pop(finish_road.road_id, None)
-            for seg_id in finish_road.segment_ids:
-                self.segments[seg_id].name = f"Segment {seg_id[1:]}"
-
-        elif enum_eq(action_type, ActionType.DELETE_SLOPE):
-            del_slope = cast(DeleteSlopeAction, action)
-            # Restore orphaned nodes first (they're needed by segments)
-            for node in del_slope.deleted_nodes:
-                self.nodes[node.id] = node
-            # Restore deleted slope and its segments
-            self.slopes[del_slope.slope_id] = del_slope.deleted_slope
-            for seg in del_slope.deleted_segments:
-                self.segments[seg.id] = seg
-            logger.info(
-                f"Restored slope {del_slope.slope_id} with {len(del_slope.deleted_segments)} segments "
-                f"and {len(del_slope.deleted_nodes)} nodes"
-            )
-
-        elif enum_eq(action_type, ActionType.DELETE_LIFT):
-            del_lift = cast(DeleteLiftAction, action)
-            # Restore orphaned nodes first (they're needed by lift)
-            for node in del_lift.deleted_nodes:
-                self.nodes[node.id] = node
-            # Restore deleted lift
-            self.lifts[del_lift.lift_id] = del_lift.deleted_lift
-            logger.info(f"Restored lift {del_lift.lift_id} with {len(del_lift.deleted_nodes)} nodes")
-
-        elif enum_eq(action_type, ActionType.DELETE_ROAD):
-            del_road = cast(DeleteRoadAction, action)
-            # Restore orphaned nodes first (they're needed by segments)
-            for node in del_road.deleted_nodes:
-                self.nodes[node.id] = node
-            self.roads[del_road.road_id] = del_road.deleted_road
-            for seg in del_road.deleted_segments:
-                self.segments[seg.id] = seg
-            logger.info(
-                f"Restored road {del_road.road_id} with {len(del_road.deleted_segments)} segments "
-                f"and {len(del_road.deleted_nodes)} nodes"
-            )
-
-        elif enum_eq(action_type, ActionType.IMPORT_OSM):
-            # One import = one undo: drop every entity the batch created (slopes, lifts,
-            # segments) and the nodes it newly made; reused/shared nodes are left untouched.
-            imp = cast(ImportOSMAction, action)
-            for slope_id in imp.slope_ids:
-                self.slopes.pop(slope_id, None)
-            for lift_id in imp.lift_ids:
-                self.lifts.pop(lift_id, None)
-            for seg_id in imp.segment_ids:
-                self.segments.pop(seg_id, None)
-            for node_id in imp.node_ids:
-                self.nodes.pop(node_id, None)
-            self.cleanup_isolated_nodes()
-            logger.info(
-                f"Reverted OSM import: {len(imp.slope_ids)} slopes, {len(imp.lift_ids)} lifts, "
-                f"{len(imp.segment_ids)} segments, {len(imp.node_ids)} nodes"
-            )
-
-        elif enum_eq(action_type, ActionType.MERGE_NODES):
-            # Restore the merged-away nodes, move the survivor back, and restore every touched builder
-            # from its pre-merge snapshot. Each snapshot carries the original endpoint/boundary ids, so
-            # replacing it in place also undoes the repoint.
-            merge = cast(MergeNodesAction, action)
-            for node in merge.deleted_nodes:
-                self.nodes[node.id] = node
-            self.nodes[merge.survivor_id].location = merge.survivor_before.location
-            for seg_before in merge.segments_before:
-                self.segments[seg_before.id] = seg_before
-            for lift_before in merge.lifts_before:
-                self.lifts[lift_before.id] = lift_before
-            for path_before in merge.paths_before:
-                if isinstance(path_before, Slope):
-                    self.slopes[path_before.id] = path_before
-                elif isinstance(path_before, Road):
-                    self.roads[path_before.id] = path_before
-                else:
-                    raise RuntimeError(f"merge undo: unexpected path type {type(path_before).__name__}")
-            logger.info(f"Reverted merge into {merge.survivor_id}: restored {len(merge.deleted_nodes)} nodes")
-
-        else:
-            raise RuntimeError(f"Unknown action type in undo_last: {action_type}")
-
+        # Dispatch via the UNDO_HANDLERS registry keyed by ActionType.name.
+        UNDO_HANDLERS[action.action_type.name].apply_undo(self, action)
         return action
 
     def rename(self, entity_id: str, new_name: str) -> None:

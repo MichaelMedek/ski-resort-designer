@@ -109,7 +109,7 @@ def create_command_executor() -> None:
     Control operations:
         ("undo",) → undo_last_action()
         ("set_build_mode", mode) → ctx.build_mode.mode = mode
-        ("close_panel",) → sm.send("close_panel")
+        ("close_panel",) → sm.close_panel()
         ("noop",) → do nothing
 
     HYBRID: Renders buttons that can be clicked via at.button().click()
@@ -295,7 +295,7 @@ def create_command_executor() -> None:
             ctx.build_mode.mode = mode_constants[mode]
 
         elif cmd_type == "close_panel":
-            sm.send("close_panel")
+            sm.close_panel()
 
         elif cmd_type == "noop":
             pass

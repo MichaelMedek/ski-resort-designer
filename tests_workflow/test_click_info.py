@@ -95,10 +95,10 @@ class TestClickInfoValidation:
             ),
         ],
     )
-    def test_invalid_construction_raises(self, kwargs: dict, error_match: str) -> None:
+    def test_invalid_construction_raises(self, kwargs: dict[str, object], error_match: str) -> None:
         """Invalid ClickInfo construction raises ValueError with expected message."""
         with pytest.raises(ValueError, match=error_match):
-            ClickInfo(**kwargs)
+            ClickInfo(**kwargs)  # type: ignore[arg-type]  # dynamic parametrize kwargs
 
     @pytest.mark.parametrize(
         "kwargs,check_field,expected_value",
@@ -154,9 +154,9 @@ class TestClickInfoValidation:
             ),
         ],
     )
-    def test_valid_construction(self, kwargs: dict, check_field: str, expected_value: object) -> None:
+    def test_valid_construction(self, kwargs: dict[str, object], check_field: str, expected_value: object) -> None:
         """Valid ClickInfo construction stores expected field values."""
-        click = ClickInfo(**kwargs)
+        click = ClickInfo(**kwargs)  # type: ignore[arg-type]  # dynamic parametrize kwargs
         assert getattr(click, check_field) == expected_value
 
 
@@ -213,9 +213,9 @@ class TestClickInfoDisplayName:
             ),
         ],
     )
-    def test_display_name_format(self, kwargs: dict, expected_name: str) -> None:
+    def test_display_name_format(self, kwargs: dict[str, object], expected_name: str) -> None:
         """display_name property formats correctly for all click types."""
-        click = ClickInfo(**kwargs)
+        click = ClickInfo(**kwargs)  # type: ignore[arg-type]  # dynamic parametrize kwargs
         assert click.display_name == expected_name
 
 
@@ -251,7 +251,7 @@ class TestClickInfoConvenienceProperties:
             ),
         ],
     )
-    def test_number_properties(self, kwargs: dict, prop: str, expected: int | None) -> None:
+    def test_number_properties(self, kwargs: dict[str, object], prop: str, expected: int | None) -> None:
         """1-indexed number properties return correct values or None."""
-        click = ClickInfo(**kwargs)
+        click = ClickInfo(**kwargs)  # type: ignore[arg-type]  # dynamic parametrize kwargs
         assert getattr(click, prop) == expected
