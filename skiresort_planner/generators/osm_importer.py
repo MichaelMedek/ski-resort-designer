@@ -6,31 +6,27 @@ DEM, difficulty from the DEM-derived max_slope_pct, and lift pylons/catenary fro
 OSM's difficulty / pylon / elevation / WIDTH tags are deliberately ignored — belt width comes
 entirely from our own PathSegment.width_m (adaptive to side slope).
 
-The import region is a SQUARE bounding box the user picks. A large box in one Overpass query
-times out (504), so we TILE it into a grid of smaller square boxes and fetch each separately,
-merging elements deduped by OSM id. Only FULL entities are imported — a way with any vertex
-outside the box, or crossing a DEM nodata hole, is skipped entirely (counted in the summary),
-never half-imported. Only NAMED lifts and pistes import: unnamed OSM ways are frequently
-outdated or duplicate, so we skip them (logged with the reason).
+The import region is a SQUARE bounding box the user picks, fetched in ONE Overpass query (a
+lift/piste-only query is light — even a full-size box returns in a few seconds). Overpass gives a
+few slots per IP; on a transient 429 (no slot) / 504 (busy) we wait for a free slot (from
+/api/status) and retry once. Only FULL entities are imported — a way with any vertex outside the
+box, or crossing a DEM nodata hole, is skipped entirely (counted in the summary), never
+half-imported. Pistes are trimmed to their descending run (a ski run only goes down). Only NAMED
+lifts and pistes import: unnamed OSM ways are frequently outdated or duplicate, so we skip them
+(logged with the reason).
 """
 
 import logging
 import math
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlencode
 
 import requests
-from tenacity import (
-    before_sleep_log,
-    retry,
-    retry_if_exception,
-    stop_after_attempt,
-    wait_exponential,
-)
 
-from skiresort_planner.constants import OSMConfig
+from skiresort_planner.constants import OSMConfig, SlopeConfig
 from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.model.path_point import PathPoint
@@ -55,8 +51,7 @@ def _is_transient(exc: BaseException) -> bool:
     """True for errors worth retrying: rate limit (429), gateway timeout (504), or a network error.
 
     A response-bearing error is transient only for 429/504; a bad request (4xx like 406) is not.
-    A connection/timeout error has no response and is always worth a retry. Non-request exceptions
-    (which tenacity may pass in) are not retried.
+    A connection/timeout error has no response and is always worth a retry.
     """
     if not isinstance(exc, requests.RequestException):
         return False
@@ -104,41 +99,29 @@ class OSMImporter:
         self.dem = dem
 
     def fetch(self, bbox: BBox) -> list[dict[str, Any]]:
-        """Fetch all OSM lift/piste ways in the box, tiling it into a grid of smaller boxes.
+        """Fetch all OSM lift/piste ways in the box with ONE Overpass query.
 
-        One Overpass query over a large box times out (504), and firing every tile at once trips
-        the public endpoint's rate limit (429). So we split the box into a grid of sub-tiles and
-        fetch them PACED — a throttle between requests, each tile retried with exponential backoff —
-        then merge the results deduped by OSM id. Reliable for a box of any size.
+        A lift/piste-only query is light enough that even a full-size box returns in a few seconds,
+        so no tiling is needed. On a transient 429 (no slot) / 504 (busy) we wait for a free slot
+        and retry once, then give up (the caller shows an error toast).
         """
-        by_id: dict[int, dict[str, Any]] = {}
-        tiles = _tile_bboxes(bbox)
-        for i, tile in enumerate(tiles):
-            if i > 0:
-                time.sleep(OSMConfig.TILE_THROTTLE_S)  # pace requests so we don't trip the rate limit
-            elements = self._fetch_tile(tile)
-            for el in elements:
-                by_id[el["id"]] = el
-            logger.info(f"OSM tile {i + 1}/{len(tiles)}: {len(elements)} elements ({len(by_id)} unique so far)")
-        merged = list(by_id.values())
-        logger.info(f"Overpass returned {len(merged)} unique elements across {len(tiles)} tiles for bbox {bbox}")
-        return merged
+        try:
+            return self._query(bbox)
+        except requests.RequestException as exc:
+            if not _is_transient(exc):
+                raise
+            wait_s = _seconds_until_free_slot()
+            logger.info(f"Overpass busy ({exc}); waiting {wait_s:.0f}s for a free slot, then retrying once")
+            time.sleep(wait_s)
+            return self._query(bbox)
 
-    @retry(
-        retry=retry_if_exception(_is_transient),
-        stop=stop_after_attempt(OSMConfig.TILE_RETRIES),
-        wait=wait_exponential(multiplier=OSMConfig.TILE_RETRY_BACKOFF_S),
-        before_sleep=before_sleep_log(logger, logging.INFO),
-        reraise=True,
-    )
-    def _fetch_tile(self, tile: BBox) -> list[dict[str, Any]]:
-        """POST an Overpass query for one sub-box, retrying transient failures with backoff.
+    def _query(self, bbox: BBox) -> list[dict[str, Any]]:
+        """POST one Overpass query for the box and return its ways (with inline geometry).
 
-        Uses Overpass's native bbox filter. tenacity retries a transient error (429 rate-limit,
-        504 timeout, or a network error) up to TILE_RETRIES times with exponential backoff; a
-        non-transient error (e.g. 406 missing User-Agent) is re-raised at once.
+        Uses Overpass's native bbox filter. Raises on any non-200 (the caller decides whether the
+        error is transient and worth a retry).
         """
-        min_lon, min_lat, max_lon, max_lat = tile
+        min_lon, min_lat, max_lon, max_lat = bbox
         # Overpass bbox filter order is (south, west, north, east).
         area = f"({min_lat},{min_lon},{max_lat},{max_lon})"
         query = (
@@ -155,6 +138,7 @@ class OSMImporter:
         )
         response.raise_for_status()
         elements: list[dict[str, Any]] = response.json()["elements"]
+        logger.info(f"Overpass returned {len(elements)} elements for bbox {bbox}")
         return elements
 
     def convert(self, bbox: BBox, elements: list[dict[str, Any]]) -> ImportSummary:
@@ -194,16 +178,20 @@ class OSMImporter:
             logger.info(f"Skipped piste '{name}' (way/{osm_id}): reaches outside the import area")
             summary.skipped += 1
             return
-        length = _polyline_length_m(vertices)
-        if length < OSMConfig.MIN_PISTE_LENGTH_M:
-            logger.info(
-                f"Skipped piste '{name}' (way/{osm_id}): {length:.0f}m < {OSMConfig.MIN_PISTE_LENGTH_M:.0f}m min"
-            )
+        resampled = self._resample(vertices)
+        if resampled is None:
+            logger.info(f"Skipped piste '{name}' (way/{osm_id}): over a DEM nodata hole")
             summary.skipped += 1
             return
-        points = self._resample(vertices)
-        if points is None:
-            logger.info(f"Skipped piste '{name}' (way/{osm_id}): over a DEM nodata hole")
+        # A ski run only goes down; trim an OSM out-and-back to its longest descending stretch
+        # BEFORE the length gate, so the up-arm doesn't inflate a run that's really too short.
+        points = _longest_descending_run(resampled)
+        length = _polyline_length_m([(p.lon, p.lat) for p in points])
+        if length < OSMConfig.MIN_PISTE_LENGTH_M:
+            logger.info(
+                f"Skipped piste '{name}' (way/{osm_id}): descending run {length:.0f}m "
+                f"< {OSMConfig.MIN_PISTE_LENGTH_M:.0f}m min"
+            )
             summary.skipped += 1
             return
         summary.pistes.append(PisteImport(points=points, name=name))
@@ -255,7 +243,7 @@ class OSMImporter:
 
         Linear (not the planner's cubic spline): real OSM pistes are already smooth and must not
         be over-smoothed. Whole-path finish smoothing still runs later via finish_slope.
-        Callers gate on MIN_PISTE_LENGTH_M (>> step), so total is always > step here.
+        A polyline shorter than one step resamples to just its two endpoints.
         """
         step = OSMConfig.RESAMPLE_STEP_M
         # Cumulative distance along the raw polyline.
@@ -296,36 +284,24 @@ def _fully_inside(vertices: list[Vertex], bbox: BBox) -> bool:
     return all(min_lon <= lon <= max_lon and min_lat <= lat <= max_lat for lon, lat in vertices)
 
 
-def _tile_bboxes(bbox: BBox) -> list[BBox]:
-    """Split the box into a grid of sub-tiles no wider than 2·TILE_HALF_WIDTH_M (as bboxes).
+def _seconds_until_free_slot() -> float:
+    """Seconds to wait for a free Overpass slot, read from /api/status (clamped to SLOT_WAIT_MAX_S).
 
-    Overpass times out on a large bbox query, so we fetch tile-by-tile. The box is divided into an
-    even grid whose cells each stay within the tile size; a box already within the tile size is a
-    single tile equal to itself. Squares tile a square exactly — no overlap, no gaps.
+    /api/status reports either "N slots available now." (wait 0) or one "…in X seconds." line per
+    busy slot (wait the soonest). On any parse/network failure, fall back to a short fixed wait so a
+    retry still happens — status only tunes how long to sleep, it is not required for correctness.
     """
-    min_lon, min_lat, max_lon, max_lat = bbox
-    center_lat = (min_lat + max_lat) / 2.0
-    m_per_deg = GeoCalculator.haversine_distance_m(lat1=0.0, lon1=0.0, lat2=1.0, lon2=0.0)
-    tile_lat_deg = (2.0 * OSMConfig.TILE_HALF_WIDTH_M) / m_per_deg
-    tile_lon_deg = tile_lat_deg / max(math.cos(math.radians(center_lat)), 1e-6)
-
-    n_lon = max(1, math.ceil((max_lon - min_lon) / tile_lon_deg))
-    n_lat = max(1, math.ceil((max_lat - min_lat) / tile_lat_deg))
-    span_lon = (max_lon - min_lon) / n_lon
-    span_lat = (max_lat - min_lat) / n_lat
-
-    tiles: list[BBox] = []
-    for iy in range(n_lat):
-        for ix in range(n_lon):
-            tiles.append(
-                (
-                    min_lon + ix * span_lon,
-                    min_lat + iy * span_lat,
-                    min_lon + (ix + 1) * span_lon,
-                    min_lat + (iy + 1) * span_lat,
-                )
-            )
-    return tiles
+    try:
+        text = requests.get(
+            OSMConfig.OVERPASS_STATUS_URL, headers={"User-Agent": OSMConfig.USER_AGENT}, timeout=15
+        ).text
+    except requests.RequestException:
+        return OSMConfig.SLOT_WAIT_FALLBACK_S
+    if re.search(r"[1-9]\d* slots? available now", text):
+        return 0.0
+    waits = [int(m) for m in re.findall(r"in (\d+) seconds", text)]
+    wait = min(waits) if waits else OSMConfig.SLOT_WAIT_FALLBACK_S
+    return float(min(wait, OSMConfig.SLOT_WAIT_MAX_S))
 
 
 def _polyline_length_m(vertices: list[Vertex]) -> float:
@@ -343,6 +319,45 @@ def _drop_none(points: list[PathPoint | None]) -> list[PathPoint] | None:
     if any(p is None for p in points):
         return None
     return [p for p in points if p is not None]  # narrowed: no None remains
+
+
+def _longest_descending_run(points: list[PathPoint]) -> list[PathPoint]:
+    """Trim a DEM-draped polyline to its longest DESCENDING run, oriented top→bottom.
+
+    OSM mappers sometimes draw a piste as an out-and-back (up then down), which drapes to an
+    up-and-down elevation profile — a 0 m net drop, 0% "slope". A ski run only goes down, so we keep
+    the longest stretch that descends. To ignore point-level DEM noise we judge "descending" on
+    elevations SMOOTHED over the rolling window (SlopeConfig.ROLLING_WINDOW_M): a real run with minor
+    rolls survives, only a genuine sustained climb breaks a run. Both orientations are considered and
+    the result is returned top→bottom (reversed if the descent runs end→start).
+    """
+    if len(points) < 2:
+        return points
+
+    elevs = [p.elevation for p in points]
+    window_pts = max(1, round(SlopeConfig.ROLLING_WINDOW_M / OSMConfig.RESAMPLE_STEP_M))
+    half = window_pts // 2
+    smoothed: list[float] = []
+    for i in range(len(elevs)):
+        window = elevs[max(0, i - half) : min(len(elevs), i + half + 1)]
+        smoothed.append(sum(window) / len(window))
+
+    def longest_non_increasing(series: list[float]) -> tuple[int, int]:
+        """(start, end) inclusive of the longest run where series never rises step-to-step."""
+        best_start, best_end, start = 0, 0, 0
+        for i in range(1, len(series)):
+            if series[i] > series[i - 1] + 1e-9:  # a rise ends the current run
+                start = i
+            if i - start > best_end - best_start:
+                best_start, best_end = start, i
+        return best_start, best_end
+
+    f0, f1 = longest_non_increasing(smoothed)
+    r0, r1 = longest_non_increasing(smoothed[::-1])
+    if (f1 - f0) >= (r1 - r0):
+        return points[f0 : f1 + 1]
+    n = len(points)
+    return points[n - 1 - r1 : n - r0][::-1]  # map reversed indices back, orient top→bottom
 
 
 def _piste_name(tags: dict[str, Any]) -> str | None:

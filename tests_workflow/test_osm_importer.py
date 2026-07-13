@@ -8,7 +8,7 @@ gate, and that ways reaching outside the box / over nodata are skipped ENTIRELY 
 import).
 """
 
-from skiresort_planner.generators.osm_importer import OSMImporter, _tile_bboxes, bbox_around
+from skiresort_planner.generators.osm_importer import OSMImporter
 
 M = 111320.0  # metres per degree near the equator
 
@@ -71,32 +71,12 @@ class TestNamedOnly:
         assert summary.lifts == [] and summary.skipped == 1
 
 
-class TestTiling:
-    def test_small_area_is_one_tile(self) -> None:
-        # A box within the tile size is fetched as a single tile equal to the box.
-        bbox = bbox_around(center_lon=0.0, center_lat=47.0, half_width_m=1500.0)
-        assert _tile_bboxes(bbox) == [bbox]
+class TestFetch:
+    """fetch() runs ONE Overpass query; on a transient 429/504 it waits for a free slot and retries
+    once. _is_transient classifies which errors are worth that retry; _seconds_until_free_slot reads
+    the wait from /api/status text.
+    """
 
-    def test_large_area_tiled(self) -> None:
-        # A large box splits into a grid of multiple sub-tiles.
-        bbox = bbox_around(center_lon=0.0, center_lat=47.0, half_width_m=5000.0)
-        assert len(_tile_bboxes(bbox)) > 1, "large box must be split into multiple tiles"
-
-    def test_tiles_partition_the_box_exactly(self) -> None:
-        # Squares tile a square with no gaps and no overlap: the tiles' union is the whole box, and
-        # every tile stays within the box bounds.
-        bbox = bbox_around(center_lon=10.3, center_lat=47.0, half_width_m=5000.0)
-        min_lon, min_lat, max_lon, max_lat = bbox
-        tiles = _tile_bboxes(bbox)
-        assert min(t[0] for t in tiles) == min_lon and min(t[1] for t in tiles) == min_lat
-        assert max(t[2] for t in tiles) == max_lon and max(t[3] for t in tiles) == max_lat
-        # Total tile area equals the box area (no overlap, no gap).
-        box_area = (max_lon - min_lon) * (max_lat - min_lat)
-        tile_area = sum((t[2] - t[0]) * (t[3] - t[1]) for t in tiles)
-        assert abs(tile_area - box_area) < 1e-12, "tiles must partition the box exactly"
-
-
-class TestFetchRetry:
     def test_transient_classification(self) -> None:
         import requests
 
@@ -114,30 +94,82 @@ class TestFetchRetry:
         assert _is_transient(_err(None)), "connection error (no response) is retryable"
         assert not _is_transient(_err(406)), "missing User-Agent (406) is not retryable"
 
-    def test_tile_retries_then_succeeds(self, monkeypatch) -> None:
-        # A tile that 429s twice then succeeds returns its elements; backoff sleeps are stubbed out.
+    def test_single_query_no_retry_on_success(self, monkeypatch) -> None:
         import requests
-        import tenacity.nap
 
         from skiresort_planner.generators import osm_importer
 
-        monkeypatch.setattr(tenacity.nap.time, "sleep", lambda _s: None)  # no real backoff wait
         calls = {"n": 0}
 
         def fake_post(*_args, **_kwargs):
             calls["n"] += 1
             resp = requests.Response()
-            if calls["n"] < 3:
-                resp.status_code = 429
-            else:
-                resp.status_code = 200
-                resp._content = b'{"elements": [{"id": 1}]}'
+            resp.status_code = 200
+            resp._content = b'{"elements": [{"id": 1}]}'
             return resp
 
         monkeypatch.setattr(osm_importer.requests, "post", fake_post)
-        importer = OSMImporter(dem=_FakeDEM())
-        elements = importer._fetch_tile((-0.02, 46.98, 0.02, 47.02))
-        assert elements == [{"id": 1}] and calls["n"] == 3, "retried twice, succeeded on the third"
+        elements = OSMImporter(dem=_FakeDEM()).fetch(BBOX)
+        assert elements == [{"id": 1}] and calls["n"] == 1, "one query, no retry when it succeeds"
+
+    def test_transient_error_waits_then_retries_once(self, monkeypatch) -> None:
+        import requests
+
+        from skiresort_planner.generators import osm_importer
+
+        monkeypatch.setattr(osm_importer, "_seconds_until_free_slot", lambda: 0.0)  # no real wait
+        calls = {"n": 0}
+
+        def fake_post(*_args, **_kwargs):
+            calls["n"] += 1
+            resp = requests.Response()
+            if calls["n"] == 1:
+                resp.status_code = 504  # first attempt: busy
+            else:
+                resp.status_code = 200
+                resp._content = b'{"elements": [{"id": 2}]}'
+            return resp
+
+        monkeypatch.setattr(osm_importer.requests, "post", fake_post)
+        elements = OSMImporter(dem=_FakeDEM()).fetch(BBOX)
+        assert elements == [{"id": 2}] and calls["n"] == 2, "one retry after a transient failure"
+
+    def test_non_transient_error_not_retried(self, monkeypatch) -> None:
+        import pytest
+        import requests
+
+        from skiresort_planner.generators import osm_importer
+
+        calls = {"n": 0}
+
+        def fake_post(*_args, **_kwargs):
+            calls["n"] += 1
+            resp = requests.Response()
+            resp.status_code = 406  # missing User-Agent — a client bug, not transient
+            return resp
+
+        monkeypatch.setattr(osm_importer.requests, "post", fake_post)
+        with pytest.raises(requests.HTTPError):
+            OSMImporter(dem=_FakeDEM()).fetch(BBOX)
+        assert calls["n"] == 1, "a non-transient error is raised at once, not retried"
+
+    def test_seconds_until_free_slot_parsing(self, monkeypatch) -> None:
+        from skiresort_planner.generators import osm_importer
+
+        def status(text: str):
+            resp = type("R", (), {"text": text})()
+            monkeypatch.setattr(osm_importer.requests, "get", lambda *a, **k: resp)
+
+        status("Rate limit: 2\n2 slots available now.\n")
+        assert osm_importer._seconds_until_free_slot() == 0.0, "free slot → no wait"
+
+        status("Rate limit: 2\nSlot available after: ..., in 7 seconds.\nSlot available after: ..., in 3 seconds.\n")
+        assert osm_importer._seconds_until_free_slot() == 3.0, "wait the soonest of the busy slots"
+
+        from skiresort_planner.constants import OSMConfig
+
+        status("Rate limit: 2\nSlot available after: ..., in 999 seconds.\n")
+        assert osm_importer._seconds_until_free_slot() == OSMConfig.SLOT_WAIT_MAX_S, "clamped to the cap"
 
 
 class TestResample:
@@ -151,12 +183,14 @@ class TestResample:
         gaps = [pts[i].distance_to(other=pts[i + 1]) for i in range(len(pts) - 1)]
         assert max(gaps) < 40.0, f"no gap far above the 30 m step, got {max(gaps):.0f}"
 
-    def test_two_vertex_run_keeps_endpoints(self) -> None:
-        # A 2-vertex run above the min length resamples to its endpoints plus interior points.
+    def test_two_vertex_run_keeps_endpoints_oriented_downhill(self) -> None:
+        # A straight 2-vertex run resamples to interior points; the DEM here rises toward -lat, so
+        # the run is reoriented to descend (top→bottom). Its endpoints are the two way vertices.
         summary = _convert([_way({"piste:type": "downhill", "name": "Ried"}, [(0.0, 0.0), (0.0, -0.01)])])
         pts = summary.pistes[0].points
-        assert (pts[0].lat, pts[0].lon) == (0.0, 0.0)
-        assert (pts[-1].lat, pts[-1].lon) == (-0.01, 0.0)
+        assert pts[0].elevation >= pts[-1].elevation, "imported run must descend top→bottom"
+        endpoints = {(round(pts[0].lat, 6), pts[0].lon), (round(pts[-1].lat, 6), pts[-1].lon)}
+        assert endpoints == {(0.0, 0.0), (-0.01, 0.0)}, "trim keeps the two way endpoints"
 
 
 class TestFullOnly:
@@ -232,6 +266,68 @@ class TestMinLength:
         # A run comfortably over the minimum imports normally.
         summary = _convert([_way({"piste:type": "downhill", "name": "Ried"}, [(0.0, 0.0), (0.0, -0.004)])])  # ~445 m
         assert len(summary.pistes) == 1 and summary.skipped == 0
+
+
+class TestDescendingTrim:
+    """OSM out-and-back pistes (drawn up AND down) must be trimmed to their descending run.
+
+    The _FakeDEM is a pure south slope (elev = 2500 - lat·M·0.20), so a run going south descends and
+    a run going north climbs. A polyline that goes down then back up drapes to an up-and-down profile
+    with ~0 net drop — the bug the user hit ('7a', 0% gradient). We keep only the longest descending
+    stretch, judged at rolling-window scale so DEM bumps don't fragment a real run.
+    """
+
+    def test_out_and_back_trimmed_to_descending_arm(self) -> None:
+        # South 600 m (down) then back north 600 m (up): only the descending arm should survive.
+        verts = [(0.0, 0.0), (0.0, -0.006), (0.0, 0.0)]
+        summary = _convert([_way({"piste:type": "downhill", "name": "7a"}, verts)])
+        assert len(summary.pistes) == 1, "the descending arm alone still clears the length min"
+        pts = summary.pistes[0].points
+        assert pts[0].elevation > pts[-1].elevation, "kept run descends"
+        assert pts[-1].lat == 0.0 and pts[0].lat < 0.0, "kept the south (descending) arm"
+        assert pts[0].elevation - pts[-1].elevation > 100.0, "real drop, not the ~0 of the out-and-back"
+
+    def test_pure_descent_is_unchanged(self) -> None:
+        summary = _convert([_way({"piste:type": "downhill", "name": "Ried"}, [(0.0, -0.006), (0.0, 0.0)])])
+        pts = summary.pistes[0].points
+        assert pts[0].elevation > pts[-1].elevation
+        assert (pts[0].lat, pts[-1].lat) == (-0.006, 0.0)
+
+    def test_out_and_back_where_each_arm_too_short_is_skipped(self) -> None:
+        # Down ~122 m then up ~122 m: each arm < 200 m min, so after trimming the run is dropped.
+        verts = [(0.0, 0.0), (0.0, -0.0011), (0.0, 0.0)]
+        summary = _convert([_way({"piste:type": "downhill", "name": "TinyOut"}, verts)])
+        assert summary.pistes == [] and summary.skipped == 1
+
+    def test_longest_descending_run_helper(self) -> None:
+        from skiresort_planner.generators.osm_importer import _longest_descending_run
+        from skiresort_planner.model.path_point import PathPoint
+
+        def run(elevs):
+            # Points spaced 30 m so the series spans well past the rolling window (realistic scale).
+            pts = [PathPoint(lon=0.0, lat=-i * 30 / M, elevation=e) for i, e in enumerate(elevs)]
+            out = _longest_descending_run(pts)
+            return out[0].elevation, out[-1].elevation, len(out)
+
+        # Pure 30-point descent: unchanged and oriented top→bottom.
+        pure = [100.0 - 2 * i for i in range(30)]
+        assert run(pure) == (100.0, pure[-1], 30)
+        assert run(pure)[0] > run(pure)[1]
+
+        # 20 down then 20 up: trimmed to the descending arm only.
+        out_and_back = [100.0 - 3 * i for i in range(20)] + [40.0 + 3 * i for i in range(20)]
+        first, last, n = run(out_and_back)
+        assert first > last and n < len(out_and_back), "out-and-back trimmed to its descending arm"
+
+        # Net descent with periodic small up-bumps: the whole run is kept (bumps tolerated).
+        undulating = []
+        e = 200.0
+        for i in range(30):
+            e += 6.0 if i % 5 == 0 else 0.0
+            e -= 4.0
+            undulating.append(e)
+        _first, _last, n = run(undulating)
+        assert n == 30, "an undulating-but-descending run is not fragmented by DEM bumps"
 
 
 class TestEndpointsMatch:

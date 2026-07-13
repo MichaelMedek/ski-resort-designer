@@ -630,18 +630,16 @@ class OSMConfig:
     """
 
     OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+    OVERPASS_STATUS_URL = "https://overpass-api.de/api/status"
     OVERPASS_TIMEOUT_S = 30
     # Overpass returns HTTP 406 without a User-Agent (verified live) — always send one.
     USER_AGENT = "ski-resort-designer/0.1"
 
-    # A large region in one Overpass query times out (504). We tile the region into square sub-tiles
-    # of this half-width and fetch each separately, merging elements deduped by OSM id.
-    TILE_HALF_WIDTH_M = 2000.0
-    # The public Overpass endpoint rate-limits bursts (429). Pace tiles: wait between requests, and
-    # retry a failed tile with exponential backoff so a transient 429/504 never aborts the import.
-    TILE_THROTTLE_S = 1.0
-    TILE_RETRIES = 4
-    TILE_RETRY_BACKOFF_S = 2.0
+    # A lift/piste-only query is light, so the whole region is fetched in ONE query. Overpass gives
+    # a few slots per IP; on a transient 429/504 we wait for a free slot (from /api/status) and retry
+    # once. SLOT_WAIT_MAX_S caps that wait; SLOT_WAIT_FALLBACK_S is used when status can't be read.
+    SLOT_WAIT_MAX_S = 30.0
+    SLOT_WAIT_FALLBACK_S = 3.0
 
     # Output spacing when resampling an OSM polyline onto DEM-sampled points.
     RESAMPLE_STEP_M = 30.0
