@@ -18,6 +18,7 @@ import plotly.graph_objects as go
 from skiresort_planner.constants import ChartConfig, LiftConfig, StyleConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
+from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.path_segment import PathSegment, SegmentKind
 from skiresort_planner.model.resort_graph import ResortGraph
@@ -539,11 +540,9 @@ def render_building_profile(
     chart = ProfileChart(height=ChartConfig.PROFILE_HEIGHT_PX)
 
     first_seg = graph.segments[building_segments[0]]
-    # Compare by == not `is`: Streamlit module reloads create a fresh SegmentKind
-    # class, so `is` (identity) fails on segments built under the old class. Because
-    # SegmentKind is a str-Enum, == compares the underlying string value and is
-    # reload-safe. (Plain enums like ActionType lack this and must dispatch by .name.)
-    if first_seg.kind == SegmentKind.ROAD:
+    # enum_eq (reload-safe str compare): Streamlit reloads create a fresh SegmentKind class,
+    # so `is` fails on segments built under the old class.
+    if enum_eq(first_seg.kind, SegmentKind.ROAD):
         combined_road = Road(
             id="combined",
             name=building_name or "Current Road",
@@ -552,7 +551,7 @@ def render_building_profile(
             end_node_id="",
         )
         return chart.render_road(road=combined_road, graph=graph, title="Current committed Road Progress")
-    elif first_seg.kind == SegmentKind.SLOPE:
+    elif enum_eq(first_seg.kind, SegmentKind.SLOPE):
         # Color by the steepest section — the SAME metric as the map marker and the
         # finished slope, so the progress color never disagrees with them.
         max_difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=steepest_section_pct(segments=segs))
@@ -567,17 +566,17 @@ def render_building_profile(
 def render_viewing_profile(kind: EntityKind, entity_id: str, graph: ResortGraph) -> go.Figure:
     """Render the elevation profile of a finished slope / road / lift being viewed."""
     chart = ProfileChart(height=ChartConfig.PROFILE_HEIGHT_PX)
-    if kind is EntityKind.SLOPE:
+    if enum_eq(kind, EntityKind.SLOPE):
         slope = graph.slopes.get(entity_id)
         if slope is None:
             raise ValueError(f"Slope {entity_id} must exist when panel shows slope")
         return chart.render_slope(slope=slope, graph=graph)
-    if kind is EntityKind.ROAD:
+    if enum_eq(kind, EntityKind.ROAD):
         road = graph.roads.get(entity_id)
         if road is None:
             raise ValueError(f"Road {entity_id} must exist when panel shows road")
         return chart.render_road(road=road, graph=graph)
-    if kind is EntityKind.LIFT:
+    if enum_eq(kind, EntityKind.LIFT):
         lift = graph.lifts.get(entity_id)
         if lift is None:
             raise ValueError(f"Lift {entity_id} must exist when panel shows lift")

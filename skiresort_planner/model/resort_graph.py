@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, Optional, cast
 from skiresort_planner.constants import EntityPrefixes, GeometricTuningConfig, UndoConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
+from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint
@@ -1039,7 +1040,7 @@ class ResortGraph:
         for road in graph.roads.values():
             for seg_id in road.segment_ids:
                 seg = graph.segments.get(seg_id)
-                assert seg is not None and seg.kind == SegmentKind.ROAD, (
+                assert seg is not None and enum_eq(seg.kind, SegmentKind.ROAD), (
                     f"road {road.id} owns segment {seg_id} with kind "
                     f"{seg.kind if seg else 'MISSING'} — expected ROAD (corrupt/stale save)"
                 )

@@ -8,6 +8,7 @@ the orientation MIN_SKIABLE_PCT branch — using the deterministic MockDEMServic
 
 import pytest
 
+from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.core.terrain_analyzer import SideDirection, TerrainAnalyzer
 
 
@@ -99,7 +100,7 @@ class TestComputeSideSlope:
         side = TerrainAnalyzer.compute_side_slope(
             start_lon=0.0, start_lat=0.0, end_lon=0.0, end_lat=-100 / M, analyzer=analyzer
         )
-        assert side.direction is SideDirection.FLAT
+        assert enum_eq(side.direction, SideDirection.FLAT)
         assert abs(side.slope_pct) < 2.0
 
     def test_traversing_across_fall_line_has_strong_side_slope(self, mock_dem_blue_slope) -> None:

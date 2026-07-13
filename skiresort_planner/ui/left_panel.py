@@ -23,6 +23,7 @@ from skiresort_planner.constants import (
     SlopeConfig,
     StyleConfig,
 )
+from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.message import (
     FileLoadErrorMessage,
 )
@@ -395,7 +396,8 @@ class SidebarRenderer:
             st.caption("⏳ Complete or cancel current build to change type")
         elif viewing_kind is not None:
             # Same body for every viewed kind; only lifts add a change-type line.
-            lines = ["- 🔄 Use lift buttons to change type"] if viewing_kind is EntityKind.LIFT else []
+            # enum_eq is reload-safe: EntityKind survives Streamlit reloads while the class is redefined.
+            lines = ["- 🔄 Use lift buttons to change type"] if enum_eq(viewing_kind, EntityKind.LIFT) else []
             lines.append("- ✖️ **Close** the right panel to return")
             lines.append(f"- 🗺️ Click terrain/node → new {viewing_kind.value}")
             st.markdown("\n".join(lines))

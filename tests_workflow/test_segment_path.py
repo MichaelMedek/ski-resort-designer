@@ -7,6 +7,7 @@ committed Road), and the cross-model `number_from_id` ID parsing.
 
 import pytest
 
+from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
@@ -77,14 +78,14 @@ class TestSegmentKind:
     def test_slope_commit_defaults_to_slope_kind(self, empty_graph, path_points_blue) -> None:
         empty_graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         seg = list(empty_graph.segments.values())[-1]
-        assert seg.kind is SegmentKind.SLOPE
+        assert enum_eq(seg.kind, SegmentKind.SLOPE)
 
     def test_road_commit_carries_road_kind(self, empty_graph, path_points_blue) -> None:
         empty_graph.commit_paths(
             paths=[ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)]
         )
         seg = list(empty_graph.segments.values())[-1]
-        assert seg.kind is SegmentKind.ROAD
+        assert enum_eq(seg.kind, SegmentKind.ROAD)
 
     def test_from_dict_defaults_to_slope_when_kind_absent(self) -> None:
         # Pre-enum saves have no "kind" key → SLOPE (backward compatible).
@@ -100,7 +101,7 @@ class TestSegmentKind:
             "start_node_id": "N1",
             "end_node_id": "N2",
         }
-        assert PathSegment.from_dict(data=data).kind is SegmentKind.SLOPE
+        assert enum_eq(PathSegment.from_dict(data=data).kind, SegmentKind.SLOPE)
 
     def test_from_dict_reads_road_kind(self) -> None:
         from skiresort_planner.model.path_segment import PathSegment
@@ -116,7 +117,7 @@ class TestSegmentKind:
             "end_node_id": "N2",
             "kind": "road",
         }
-        assert PathSegment.from_dict(data=data).kind is SegmentKind.ROAD
+        assert enum_eq(PathSegment.from_dict(data=data).kind, SegmentKind.ROAD)
 
 
 class TestBeltWidth:

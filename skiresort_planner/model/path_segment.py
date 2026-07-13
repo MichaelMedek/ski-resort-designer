@@ -20,6 +20,7 @@ from shapely.ops import transform as shapely_transform
 
 from skiresort_planner.constants import EarthworkConfig, SlopeConfig
 from skiresort_planner.core.terrain_analyzer import SideDirection
+from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.path_geometry import Path
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.warning import (
@@ -142,7 +143,7 @@ class PathSegment(Path):
             Width in meters. Constant for roads; for slopes, clamped to difficulty
             limits (max width on flat terrain, side slope < 1%).
         """
-        if self.kind is SegmentKind.ROAD:
+        if enum_eq(self.kind, SegmentKind.ROAD):
             return float(EarthworkConfig.ROAD_WIDTH_M)
 
         # Get difficulty-specific limits

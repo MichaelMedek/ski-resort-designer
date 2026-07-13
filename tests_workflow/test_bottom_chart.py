@@ -174,6 +174,27 @@ class TestProfileChartRendering:
         fig = render_viewing_profile(kind=EntityKind.ROAD, entity_id=road.id, graph=empty_graph)
         assert len(fig.data) > 0
 
+    def test_viewing_profile_kind_compared_by_value_not_identity(self, empty_graph, path_points_blue) -> None:
+        """Viewing a finished ROAD with a reloaded EntityKind class must still render —
+        regression for the `RuntimeError: Unknown viewing kind ROAD` crash after a reload.
+        """
+        from enum import Enum
+
+        from skiresort_planner.model.path_segment import SegmentKind
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
+        from skiresort_planner.ui.bottom_chart import render_viewing_profile
+
+        empty_graph.commit_paths(
+            paths=[ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)],
+            record_undo=False,
+        )
+        road = empty_graph.finish_road(segment_ids=[list(empty_graph.segments.keys())[-1]])
+
+        # Simulate a Streamlit module reload: a fresh EntityKind class with the same values.
+        reloaded_kind = Enum("EntityKind", {"SLOPE": "slope", "ROAD": "road", "LIFT": "lift"}, type=str)
+        fig = render_viewing_profile(kind=reloaded_kind.ROAD, entity_id=road.id, graph=empty_graph)  # type: ignore[arg-type]
+        assert len(fig.data) > 0
+
     def test_viewing_profile_lift(self, empty_graph, mock_dem_blue_slope) -> None:
         """render_viewing_profile renders a lift's profile."""
         from skiresort_planner.ui.bottom_chart import render_viewing_profile

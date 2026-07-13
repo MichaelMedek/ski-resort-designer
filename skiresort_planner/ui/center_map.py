@@ -31,6 +31,7 @@ from skiresort_planner.constants import (
     StyleConfig,
 )
 from skiresort_planner.core.geo_calculator import GeoCalculator
+from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
@@ -412,8 +413,8 @@ class MapRenderer:
                 # A committed segment always has ≥2 points, so its belt polygon is never empty.
                 raise RuntimeError(f"Segment {seg_id} produced an empty belt polygon")
 
-            # == not `is`: reload-safe (Streamlit rebuilds the SegmentKind class).
-            is_road = segment.kind == SegmentKind.ROAD
+            # enum_eq: reload-safe (Streamlit rebuilds the SegmentKind class).
+            is_road = enum_eq(segment.kind, SegmentKind.ROAD)
             flat_z = MapConfig.Z_OFFSET_2D_LIFTS if is_road else MapConfig.Z_OFFSET_2D_SLOPES
             center_line = [
                 [p.lon, p.lat, self._get_z(p.elevation, MarkerConfig.PATH_Z_OFFSET_M, use_3d, flat_z)]
@@ -792,10 +793,10 @@ class MapRenderer:
 
             is_selected = selected_idx is not None and i == selected_idx
             # Road proposals are brown (translucent → solid when selected); slope
-            # proposals are difficulty-colored. Compare by == not `is` (reload-safe).
-            if proposal.kind == SegmentKind.ROAD:
+            # proposals are difficulty-colored. enum_eq is reload-safe.
+            if enum_eq(proposal.kind, SegmentKind.ROAD):
                 color = list(StyleConfig.ROAD_PROPOSAL_COLOR_RGBA)
-            elif proposal.kind == SegmentKind.SLOPE:
+            elif enum_eq(proposal.kind, SegmentKind.SLOPE):
                 color = list(StyleConfig.SLOPE_COLORS_RGBA[proposal.difficulty])
             else:
                 raise ValueError(f"Unexpected {proposal.kind=}")

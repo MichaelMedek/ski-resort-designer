@@ -12,6 +12,7 @@ mode's click flow is exercised the same way:
     handle_road_building_click  → TestRoadBuildingClick
 """
 
+from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.constants import PathConfig
 from skiresort_planner.model.click_info import ClickInfo, MapClickType, MarkerType
 from skiresort_planner.model.path_point import PathPoint
@@ -535,7 +536,7 @@ class TestRoadBuildingClick:
         assert len(ctx.road_build.segments) == 1
         assert len(graph.roads) == 0, "no Road entity until Finish Road"
         # The committed segment's kind IS road — identity lives on the segment, not a UI list.
-        assert graph.segments[ctx.road_build.segments[-1]].kind is SegmentKind.ROAD
+        assert enum_eq(graph.segments[ctx.road_build.segments[-1]].kind, SegmentKind.ROAD)
         # Per-segment undo: the commit pushed an AddSegmentsAction.
         assert graph.undo_stack, "committing a road segment records an undo entry"
         assert graph.undo_stack[-1].action_type.name == "ADD_SEGMENTS"

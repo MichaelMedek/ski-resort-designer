@@ -26,6 +26,7 @@ from skiresort_planner.constants import GeometricTuningConfig, PlannerConfig
 from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
+from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_smoothing import resample_cubic_spline
 from skiresort_planner.model.proposed_path import ProposedPathSegment
@@ -112,9 +113,9 @@ class LeastCostPathPlanner:
         """
         # The segment must actually run in its mode's direction (net drop / net climb).
         net_drop = start_elevation - target_elevation
-        if gradient_mode is GradientMode.DOWNHILL and net_drop <= 0:
+        if enum_eq(gradient_mode, GradientMode.DOWNHILL) and net_drop <= 0:
             return None
-        if gradient_mode is GradientMode.UPHILL and net_drop >= 0:
+        if enum_eq(gradient_mode, GradientMode.UPHILL) and net_drop >= 0:
             return None
 
         direct_distance_m = GeoCalculator.haversine_distance_m(
@@ -427,7 +428,7 @@ class LeastCostPathPlanner:
         # (actual_grade < 0), UPHILL penalizes descending (actual_grade > 0). This
         # one-way monotonicity is what makes loops impossible.
         against_penalty = 1.0
-        wrong_way = actual_grade < 0 if gradient_mode is GradientMode.DOWNHILL else actual_grade > 0
+        wrong_way = actual_grade < 0 if enum_eq(gradient_mode, GradientMode.DOWNHILL) else actual_grade > 0
         if wrong_way:
             against_penalty = exp(abs(actual_grade) / GeometricTuningConfig.COST_SIGMA)
 

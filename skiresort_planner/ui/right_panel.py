@@ -19,6 +19,7 @@ import streamlit as st
 
 from skiresort_planner.constants import MapConfig, SlopeConfig, StyleConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
+from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.message import (
     LiftActionMessage,
     LiftPlacingContextMessage,
@@ -105,10 +106,11 @@ def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, kind: Enti
             ctx.map.bearing = MapConfig.DEFAULT_BEARING
             ctx.map.zoom = MapConfig.DEFAULT_ZOOM
             # Update map center to entity center so we don't jump to stale position.
-            # The viewed entity is guaranteed to exist (caller validated it).
-            if kind is EntityKind.SLOPE or kind is EntityKind.ROAD:
+            # The viewed entity is guaranteed to exist (caller validated it). enum_eq is
+            # reload-safe: EntityKind survives Streamlit reloads while the class is redefined.
+            if enum_eq(kind, EntityKind.SLOPE) or enum_eq(kind, EntityKind.ROAD):
                 # Both are segment groups → center on their segment endpoints.
-                owner = graph.slopes[entity_id] if kind is EntityKind.SLOPE else graph.roads[entity_id]
+                owner = graph.slopes[entity_id] if enum_eq(kind, EntityKind.SLOPE) else graph.roads[entity_id]
                 lats, lons = [], []
                 for seg_id in owner.segment_ids:
                     seg = graph.segments[seg_id]
@@ -118,7 +120,7 @@ def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, kind: Enti
                     lons.append(seg.points[-1].lon)
                 ctx.map.lat = sum(lats) / len(lats)
                 ctx.map.lon = sum(lons) / len(lons)
-            elif kind is EntityKind.LIFT:
+            elif enum_eq(kind, EntityKind.LIFT):
                 lift = graph.lifts[entity_id]
                 start_node = graph.nodes[lift.start_node_id]
                 end_node = graph.nodes[lift.end_node_id]

@@ -8,6 +8,7 @@ delete actions for slope/lift/road uniformly.
 
 import pytest
 
+from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
@@ -319,7 +320,7 @@ class TestRoadBuildingActionFlow:
         assert sm.is_road_building_only, "road commit stays in road_building"
         assert len(ctx.road_build.segments) == 1
         assert len(graph.roads) == 0, "no Road entity until Finish Road"
-        assert graph.segments[ctx.road_build.segments[-1]].kind is SegmentKind.ROAD
+        assert enum_eq(graph.segments[ctx.road_build.segments[-1]].kind, SegmentKind.ROAD)
         assert graph.undo_stack[-1].action_type.name == "ADD_SEGMENTS", "per-segment undo recorded"
 
     def test_finish_then_undo_restores_road_building(
