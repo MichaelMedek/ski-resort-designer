@@ -32,6 +32,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from skiresort_planner.constants import ClickConfig, LiftConfig, MapConfig, OSMConfig, PathConfig
+from skiresort_planner.model.path_segment import SegmentKind
 
 if TYPE_CHECKING:
     from skiresort_planner.model.path_point import PathPoint
@@ -365,6 +366,13 @@ class ViewingContext(BaseContext):
         self.slope_id = None
         self.lift_id = None
 
+    def set_viewed(self, kind: SegmentKind, entity_id: str) -> None:
+        """Set the viewed entity by its SegmentKind (slope or road) — one kind-generic setter."""
+        {
+            SegmentKind.SLOPE: self.set_slope_id,
+            SegmentKind.ROAD: self.set_road_id,
+        }[kind](entity_id)
+
     # =========================================================================
     # STATE CONTROL METHODS (called by enter_*/exit_* lifecycle functions)
     # =========================================================================
@@ -605,7 +613,8 @@ class DeferredContext(BaseContext):
     run with full access to session state after the UI refresh.
     """
 
-    path_generation: bool = False
+    # Kinds whose fan should regenerate on the next render (one entry per building kind) like slopes and roads
+    fan_generation: set[SegmentKind] = field(default_factory=set)
     gradient_target: float | None = None  # For smart path recommendation
     auto_finish: bool = False  # Auto-finish slope after connector commit
     custom_connect: bool = False  # Generate paths to custom target location
@@ -622,7 +631,7 @@ class DeferredContext(BaseContext):
 
     def clear(self) -> None:
         """Clear all deferred flags."""
-        self.path_generation = False
+        self.fan_generation = set()
         self.gradient_target = None
         self.auto_finish = False
         self.custom_connect = False
@@ -682,9 +691,8 @@ class PlannerContext:
     Sub-contexts:
         selection: Current click/selection data
         proposals: Generated path proposals
-        slope_build: Slope building progress (SegmentBuildContext)
+        builds: Per-kind build progress, dict[SegmentKind, SegmentBuildContext]
         lift: Lift placement state
-        road_build: Road building progress (SegmentBuildContext)
         viewing: Which slope/lift is being viewed
         custom_connect: Custom target connection mode
         map: Map center and zoom
@@ -702,9 +710,11 @@ class PlannerContext:
     # Organized sub-contexts
     selection: SelectionContext = field(default_factory=SelectionContext)
     proposals: ProposalContext = field(default_factory=ProposalContext)
-    slope_build: SegmentBuildContext = field(default_factory=SegmentBuildContext)
+    # One build context per buildable SegmentKind (slope, road, …). Keyed by kind. Access via ctx.build(kind).
+    builds: dict[SegmentKind, SegmentBuildContext] = field(
+        default_factory=lambda: {kind: SegmentBuildContext() for kind in SegmentKind}
+    )
     lift: LiftContext = field(default_factory=LiftContext)
-    road_build: SegmentBuildContext = field(default_factory=SegmentBuildContext)
     viewing: ViewingContext = field(default_factory=ViewingContext)
     custom_connect: CustomConnectContext = field(default_factory=CustomConnectContext)
     map: MapContext = field(default_factory=MapContext)
@@ -725,17 +735,18 @@ class PlannerContext:
         """Clear path proposals."""
         self.proposals.clear()
 
-    def clear_building(self) -> None:
-        """Clear slope building state."""
-        self.slope_build.clear()
+    def build(self, kind: SegmentKind) -> SegmentBuildContext:
+        """The build context for a given SegmentKind (slope, road, …)."""
+        return self.builds[kind]
+
+    def clear_builds(self) -> None:
+        """Clear every kind's build progress (slope, road, …)."""
+        for build in self.builds.values():
+            build.clear()
 
     def clear_lift(self) -> None:
         """Clear lift placement state."""
         self.lift.clear()
-
-    def clear_road(self) -> None:
-        """Clear road building state."""
-        self.road_build.clear()
 
     def clear_custom_connect(self) -> None:
         """Clear custom connect mode."""
@@ -757,18 +768,14 @@ class PlannerContext:
 
     def __repr__(self) -> str:
         """Return string representation of context."""
+        segments = {kind.value: len(b.segments) for kind, b in self.builds.items()}
         return (
             f"PlannerContext(state={self.state}, "
             f"coordinate={self.selection.coordinate}, "
-            f"slope={self.slope_build.name}, "
-            f"segments={len(self.slope_build.segments)}, "
+            f"segments={segments}, "
             f"lift_start={self.lift.start_node_id})"
         )
 
     def has_selection(self) -> bool:
         """Check if a point is selected."""
         return self.selection.has_selection()
-
-    def has_committed_segments(self) -> bool:
-        """Check if there are committed segments in current slope."""
-        return self.slope_build.has_committed_segments()

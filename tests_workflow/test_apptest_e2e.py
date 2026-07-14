@@ -36,6 +36,7 @@ from skiresort_planner.constants import MapConfig
 from skiresort_planner.core.path_tracer import PathTracer
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.generators.path_factory import PathFactory
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.resort_graph import ResortGraph
 from tests_workflow.conftest import MockDEMService
 
@@ -146,7 +147,7 @@ def create_command_executor() -> None:
         ctx: PlannerContext = st.session_state.context
         if ctx.deferred.custom_connect:
             process_custom_connect_deferred()
-        elif ctx.deferred.path_generation:
+        elif ctx.deferred.fan_generation:
             process_path_generation_deferred()
         else:
             handle_fast_deferred_actions()
@@ -540,7 +541,7 @@ class TestGrandResortTour:
             at.run()
 
         ctx = at.session_state["context"]
-        segments_before_undo = len(ctx.slope_build.segments)
+        segments_before_undo = len(ctx.build(SegmentKind.SLOPE).segments)
         assert segments_before_undo == 2, f"Should have 2 segments, got {segments_before_undo}"
 
         # UNDO last segment
@@ -548,7 +549,7 @@ class TestGrandResortTour:
         at.run()
 
         ctx = at.session_state["context"]
-        segments_after_undo = len(ctx.slope_build.segments)
+        segments_after_undo = len(ctx.build(SegmentKind.SLOPE).segments)
         assert segments_after_undo == segments_before_undo - 1, (
             f"After undo: expected {segments_before_undo - 1} segments, got {segments_after_undo}"
         )
@@ -607,9 +608,10 @@ class TestGrandResortTour:
         # ================================================================
         # PHASE 4b: ROAD (build → finish → delete → undo), mirroring slopes
         # ================================================================
-        # Roads build like slope custom-connect: a target click generates gentle
-        # proposals (no fan/deferred), commit via the button (commit_path), then
-        # Finish Road. East heading is ~5% on the apptest DEM (within the ±15% band).
+        # Roads build exactly like slope custom-connect: a target click enters
+        # ROAD_CUSTOM_PATH and arms deferred generation; the next run produces the
+        # gentle proposals. Commit via the button, then Finish Road. East heading is
+        # ~5% on the apptest DEM (within the ±15% band).
         at.session_state["command_queue"] = [("close_panel",)]
         at.run()
 
@@ -622,8 +624,13 @@ class TestGrandResortTour:
         sm = at.session_state["state_machine"]
         assert sm.is_road_starting, f"Should be starting a road, got {sm.get_state_name()}"
 
-        # Click terrain to the east (gentle) → road proposals generated directly.
+        # Click terrain to the east (gentle) → routes into ROAD_CUSTOM_PATH; the deferred
+        # pass on the following run generates the proposals.
         at.session_state["command_queue"] = [("click_terrain", 0.004, 0.0)]
+        at.run()
+        sm = at.session_state["state_machine"]
+        assert sm.is_road_custom_path, f"Road target click enters custom-path, got {sm.get_state_name()}"
+        at.session_state["command_queue"] = [("handle_deferred",)]  # generate the road proposals
         at.run()
         ctx = at.session_state["context"]
         assert len(ctx.proposals.paths) > 0, "Road target click should generate proposals"

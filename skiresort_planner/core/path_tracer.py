@@ -1,11 +1,18 @@
-"""Path tracing algorithms for ski slope generation.
+"""Path tracing for slope and road generation.
+
+Traces a route that holds a SIGNED target grade, following the terrain:
+- Positive target descends the fall line (ski slopes, descending roads)
+- Negative target climbs against the fall line (climbing roads)
+- Zero target contours across the slope (flat roads)
 
 Implements the Cumulative Drop Tracking algorithm:
-- Pre-calculates target total drop based on path length and target slope
-- Tracks accumulated drop as path is traced
-- Dynamically adjusts step target to converge on final average
+- Pre-calculates the (signed) target total drop from path length and target grade
+- Tracks accumulated drop as the path is traced
+- Dynamically adjusts the step target to converge on the final average
 
-This self-correcting approach eliminates DEM grid artifacts.
+This self-correcting approach eliminates DEM grid artifacts. Sign handling lives
+in exactly two places: the reference bearing (fall line for descent, +180° for a
+climb) and the step-target clamp; all traverse-angle trig runs on magnitudes.
 
 Reference: DETAILS.md Sections 5, 6
 """
@@ -43,11 +50,11 @@ class TracedPath:
 
     Attributes:
         points: List of PathPoint instances
-        avg_slope_pct: Average slope percentage
-        total_drop_m: Total vertical drop in meters
+        avg_slope_pct: Average grade (SIGNED: + descends, − climbs)
+        total_drop_m: Total vertical drop in meters (SIGNED: + descends, − climbs)
         length_m: Total path length in meters
-        difficulty: Classified difficulty (green/blue/red/black)
-        target_slope_pct: Target slope used for tracing
+        difficulty: Classified difficulty (green/blue/red/black), on grade magnitude
+        target_grade_pct: Signed target grade used for tracing
     """
 
     points: list[PathPoint]
@@ -55,18 +62,19 @@ class TracedPath:
     total_drop_m: float
     length_m: float
     difficulty: str
-    target_slope_pct: float
+    target_grade_pct: float
 
 
 class PathTracer:
-    """Traces ski paths using cumulative drop tracking.
+    """Traces routes using cumulative drop tracking, holding a signed target grade.
 
     The algorithm works by:
-    1. Setting a target total drop based on path length and target slope
+    1. Setting a signed target total drop from path length and target grade
     2. At each step, computing how much drop is remaining
-    3. Adjusting traverse angle to achieve the remaining drop target
+    3. Adjusting the traverse angle to achieve the remaining drop target
 
-    This creates paths that naturally converge to the target average slope.
+    This creates paths that naturally converge to the target average grade,
+    whether descending, climbing, or contouring.
     """
 
     def __init__(
@@ -93,21 +101,24 @@ class PathTracer:
         """Access the terrain analyzer."""
         return self._analyzer
 
-    def trace_downhill(
+    def trace_hill(
         self,
         start_lon: float,
         start_lat: float,
-        target_slope_pct: float,
+        target_grade_pct: float,
         side: str,
         target_length_m: float,
     ) -> TracedPath | None:
-        """Trace a downhill path using cumulative drop tracking.
+        """Trace a route holding a signed target grade, using cumulative drop tracking.
 
         Args:
             start_lon: Starting longitude
             start_lat: Starting latitude
-            target_slope_pct: Target effective slope percentage
-            side: "left", "right", or "center" (traverse direction)
+            target_grade_pct: Signed target grade. Positive descends the fall line,
+                negative climbs against it, zero contours across the slope.
+            side: "left", "right", or "center" (traverse direction). Only affects the
+                path when a traverse angle exists (steeper terrain than the target);
+                on a straight fall-line descent or contour, left/right are symmetric.
             target_length_m: Target path length in meters
 
         Returns:
@@ -138,8 +149,8 @@ class PathTracer:
         smoothing_window = GeometricTuningConfig.BEARING_SMOOTHING_WINDOW
         flat_terrain_threshold = GeometricTuningConfig.FLAT_TERRAIN_THRESHOLD_PCT
 
-        # Cumulative drop tracking
-        target_total_drop = (target_slope_pct / 100.0) * target_length_m
+        # Cumulative drop tracking (signed: + descends, − climbs)
+        target_total_drop = (target_grade_pct / 100.0) * target_length_m
         accumulated_drop = 0.0
 
         while total_dist < target_length_m:
@@ -147,15 +158,21 @@ class PathTracer:
             remaining_drop = target_total_drop - accumulated_drop
             remaining_distance = target_length_m - total_dist
 
-            # Dynamic target slope for this step
+            # Dynamic step target for self-correction, clamped to a band that keeps
+            # the step running in the target's direction (a descent step never climbs,
+            # a climb step never descends, a contour step stays near level).
             if remaining_distance > step_size:
                 step_target = (remaining_drop / remaining_distance) * 100.0
-                # Asymmetric clamping for self-correction
-                upper_clamp = target_slope_pct * GeometricTuningConfig.STEP_TARGET_CLAMP_FACTOR
-                lower_clamp = SlopeConfig.MIN_SKIABLE_PCT
-                step_target = max(lower_clamp, min(upper_clamp, step_target))
+                floor = SlopeConfig.MIN_SKIABLE_PCT
+                span = abs(target_grade_pct) * GeometricTuningConfig.STEP_TARGET_CLAMP_FACTOR
+                if target_grade_pct > 0:  # descend: never gentler than floor, never past span
+                    step_target = max(floor, min(span, step_target))
+                elif target_grade_pct < 0:  # climb: mirror of the descend band
+                    step_target = max(-span, min(-floor, step_target))
+                else:  # contour: hold within ±floor of level
+                    step_target = max(-floor, min(floor, step_target))
             else:
-                step_target = target_slope_pct
+                step_target = target_grade_pct
 
             # Get terrain gradient
             gradient = self._analyzer.compute_gradient(
@@ -165,9 +182,17 @@ class PathTracer:
             terrain_slope = gradient.slope_pct
             fall_line = gradient.bearing_deg
 
-            # Calculate traverse angle
-            if terrain_slope > 0 and step_target < terrain_slope:
-                cos_theta = step_target / terrain_slope
+            # Reference bearing = the direction we progress ALONG the path's length:
+            # descend along the fall line, climb against it, contour along either
+            # (the ~90° traverse below makes it a contour regardless).
+            reference_bearing = (fall_line + 180.0) % 360.0 if target_grade_pct < 0 else fall_line
+
+            # Traverse angle from grade MAGNITUDES (sign-independent): how far off the
+            # reference bearing to hold the target grade on this terrain steepness.
+            # A zero target → cos_theta 0 → ~90° traverse → a contour.
+            step_target_mag = abs(step_target)
+            if terrain_slope > 0 and step_target_mag < terrain_slope:
+                cos_theta = step_target_mag / terrain_slope
                 cos_theta = max(-1.0, min(1.0, cos_theta))
                 traverse_angle = degrees(acos(cos_theta))
                 traverse_angle = min(
@@ -183,7 +208,7 @@ class PathTracer:
             noise = random.gauss(0, GeometricTuningConfig.TRACER_NOISE_BASE * noise_factor)
 
             # Calculate terrain-derived bearing
-            terrain_bearing = (fall_line + side_sign * traverse_angle + noise) % 360
+            terrain_bearing = (reference_bearing + side_sign * traverse_angle + noise) % 360
 
             # Bearing smoothing for flat terrain
             if terrain_slope < flat_terrain_threshold and len(recent_bearings) >= 2:
@@ -253,14 +278,14 @@ class PathTracer:
             points.append(PathPoint(lon=next_lon, lat=next_lat, elevation=next_elev))
             current_lon, current_lat, current_elev = next_lon, next_lat, next_elev
 
-        # Calculate final metrics
+        # Calculate final metrics (signed drop/grade; difficulty on magnitude)
         if len(points) < PathConfig.MIN_PATH_POINTS:
             logger.warning(f"Path too short: {len(points)} points < {PathConfig.MIN_PATH_POINTS} minimum")
             return None
 
         total_drop = points[0].elevation - points[-1].elevation
         avg_slope = (total_drop / total_dist * 100) if total_dist > 0 else 0.0
-        difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=avg_slope)
+        difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=abs(avg_slope))
 
         return TracedPath(
             points=points,
@@ -268,5 +293,5 @@ class PathTracer:
             total_drop_m=total_drop,
             length_m=total_dist,
             difficulty=difficulty,
-            target_slope_pct=target_slope_pct,
+            target_grade_pct=target_grade_pct,
         )

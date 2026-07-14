@@ -16,6 +16,7 @@ Matrix Reference (from state_machine.py docstring):
 import pytest
 from statemachine.exceptions import TransitionNotAllowed
 
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 from tests_workflow.conftest import SMAndCtx
 
@@ -246,7 +247,7 @@ class TestTransitionMatrix:
 
         sm.commit_path(segment_id="S1", endpoint_node_id="N1")  # type: ignore[attr-defined]  # dynamic python-statemachine event
         assert sm.current_state_value == "slope_building"
-        assert ctx.slope_build.segments == ["S1"]
+        assert ctx.build(SegmentKind.SLOPE).segments == ["S1"]
 
 
 def _force_state(sm: PlannerStateMachine, state_name: str) -> None:
@@ -260,7 +261,7 @@ def _force_state(sm: PlannerStateMachine, state_name: str) -> None:
 
 
 # NOTE: Undo transitions removed from state machine.
-# Undo is now handled via force_idle()/force_building() methods in the action layer.
+# Undo is now handled via force_idle()/force_building(SegmentKind.SLOPE) methods in the action layer.
 # See state_machine.py "Undo Architecture" section for details.
 
 
@@ -278,7 +279,7 @@ class TestCancelCustomGuards:
 
         # Setup: Force to slope_custom_path with no committed segments
         _force_state(sm=sm, state_name="slope_custom_path")
-        ctx.slope_build.segments = []  # No segments committed
+        ctx.build(SegmentKind.SLOPE).segments = []  # No segments committed
 
         # Act: Call cancel_custom event
         sm.cancel_custom()  # type: ignore[attr-defined]  # dynamic python-statemachine event
@@ -292,7 +293,7 @@ class TestCancelCustomGuards:
 
         # Setup: Force to slope_custom_path with committed segments
         _force_state(sm=sm, state_name="slope_custom_path")
-        ctx.slope_build.segments = ["S1"]  # Has committed segments
+        ctx.build(SegmentKind.SLOPE).segments = ["S1"]  # Has committed segments
 
         # Act: Call cancel_custom event
         sm.cancel_custom()  # type: ignore[attr-defined]  # dynamic python-statemachine event

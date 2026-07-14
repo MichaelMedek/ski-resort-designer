@@ -103,7 +103,7 @@ def reload_map(before: Callable[[], None] | None = None) -> None:
         # Reload with pre-action
         def setup_for_reload():
             ctx.set_selection(lon=x, lat=y, elevation=e)
-            ctx.deferred.path_generation = True
+            ctx.deferred.fan_generation.add(SegmentKind.SLOPE)
         reload_map(before=setup_for_reload)
     """
     if before is not None:

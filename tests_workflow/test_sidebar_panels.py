@@ -8,6 +8,7 @@ a state maps to) is asserted in test_mode_registry; here we assert each panel's 
 """
 
 from skiresort_planner.model.path_point import PathPoint
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.context import BuildMode
@@ -112,7 +113,7 @@ class TestSlopeSidebarPanel:
         # With no segments the Finish button must render DISABLED. (fake_st.button ignores `disabled`
         # and would fire it, so we assert the computed `disabled=True` kwarg rather than firing it.)
         sm, ctx, graph = self._building(fake_st, mock_dem_blue_slope, path_factory)
-        assert not ctx.has_committed_segments()
+        assert not ctx.build(SegmentKind.SLOPE).has_committed_segments()
         buttons = _capture_buttons(fake_st)
 
         SlopeSidebarPanel(sm=sm, ctx=ctx, graph=graph).controls()
@@ -170,7 +171,7 @@ class TestRoadSidebarPanel:
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
     ) -> None:
         sm, ctx, graph = self._road_building(fake_st, mock_dem_red_slope_diagonal, path_factory)
-        assert not ctx.road_build.has_committed_segments()
+        assert not ctx.build(SegmentKind.ROAD).has_committed_segments()
         buttons = _capture_buttons(fake_st)
 
         RoadSidebarPanel(sm=sm, ctx=ctx, graph=graph).controls()

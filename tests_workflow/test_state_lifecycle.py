@@ -8,6 +8,7 @@ truth" contract (enter guarantees panel visibility/hiding regardless of source) 
 """
 
 from skiresort_planner.model.path_point import PathPoint
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.ui import state_lifecycle as sl
 from skiresort_planner.ui.context import PlannerContext
 
@@ -15,9 +16,9 @@ from skiresort_planner.ui.context import PlannerContext
 def _dirty_ctx() -> PlannerContext:
     """A context polluted with building/placement/viewing state, to prove handlers clean it up."""
     ctx = PlannerContext()
-    ctx.slope_build.segments = ["S1"]
-    ctx.slope_build.name = "Slope 3"
-    ctx.road_build.segments = ["R1"]
+    ctx.build(SegmentKind.SLOPE).segments = ["S1"]
+    ctx.build(SegmentKind.SLOPE).name = "Slope 3"
+    ctx.build(SegmentKind.ROAD).segments = ["R1"]
     ctx.lift.start_node_id = "N9"
     ctx.lift.start_location = PathPoint(lon=0.0, lat=0.0, elevation=2000.0)
     ctx.custom_connect.force_mode = True
@@ -34,8 +35,8 @@ class TestEnterIdleReady:
     def test_clears_all_building_state_and_hides_panel(self) -> None:
         ctx = _dirty_ctx()
         sl.enter_idle_ready(ctx)
-        assert ctx.slope_build.segments == [], "building segments cleared"
-        assert ctx.road_build.segments == [], "road segments cleared"
+        assert ctx.build(SegmentKind.SLOPE).segments == [], "building segments cleared"
+        assert ctx.build(SegmentKind.ROAD).segments == [], "road segments cleared"
         assert ctx.lift.start_node_id is None and ctx.lift.start_location is None, "lift placement cleared"
         assert ctx.custom_connect.force_mode is False, "custom-connect cleared"
         assert ctx.selection.node_id is None, "selection cleared"
@@ -57,7 +58,7 @@ class TestEnterViewingStates:
         ctx.viewing.panel_visible = False  # start hidden, enter must force it visible
         sl.enter_idle_viewing_slope(ctx)
         assert ctx.viewing.panel_visible is True, "single point of truth: enter guarantees panel visible"
-        assert ctx.slope_build.segments == [], "stale building state cleared defensively"
+        assert ctx.build(SegmentKind.SLOPE).segments == [], "stale building state cleared defensively"
         assert ctx.lift.start_node_id is None
 
     def test_enter_viewing_lift_shows_panel(self) -> None:
@@ -65,14 +66,14 @@ class TestEnterViewingStates:
         ctx.viewing.panel_visible = False
         sl.enter_idle_viewing_lift(ctx)
         assert ctx.viewing.panel_visible is True
-        assert ctx.road_build.segments == []
+        assert ctx.build(SegmentKind.ROAD).segments == []
 
     def test_enter_viewing_road_shows_panel(self) -> None:
         ctx = _dirty_ctx()
         ctx.viewing.panel_visible = False
         sl.enter_idle_viewing_road(ctx)
         assert ctx.viewing.panel_visible is True
-        assert ctx.slope_build.segments == []
+        assert ctx.build(SegmentKind.SLOPE).segments == []
 
 
 class TestEnterBuildingStates:
@@ -87,13 +88,17 @@ class TestEnterBuildingStates:
         ctx = _dirty_ctx()
         sl.enter_slope_building(ctx)
         assert ctx.viewing.panel_visible is False, "panel hidden while building"
-        assert ctx.slope_build.segments == ["S1"], "committed segments are preserved on enter_slope_building"
+        assert ctx.build(SegmentKind.SLOPE).segments == ["S1"], (
+            "committed segments are preserved on enter_slope_building"
+        )
 
     def test_enter_road_building_preserves_road_segments(self) -> None:
         ctx = _dirty_ctx()
         sl.enter_road_building(ctx)
         assert ctx.viewing.panel_visible is False
-        assert ctx.road_build.segments == ["R1"], "committed road segments preserved on enter_road_building"
+        assert ctx.build(SegmentKind.ROAD).segments == ["R1"], (
+            "committed road segments preserved on enter_road_building"
+        )
 
     def test_enter_road_starting_hides_panel(self) -> None:
         ctx = _dirty_ctx()
@@ -179,7 +184,7 @@ class TestNoopExitsAreSafe:
             ctx = _dirty_ctx()
             exit_fn(ctx)
             # The committed segments / selection must survive these no-op exits (self-loops rely on it).
-            assert ctx.slope_build.segments == ["S1"], f"{exit_fn.__name__} must not clear building state"
+            assert ctx.build(SegmentKind.SLOPE).segments == ["S1"], f"{exit_fn.__name__} must not clear building state"
             assert ctx.merge.node_ids == ["N3", "N4"], f"{exit_fn.__name__} must not touch the merge selection"
 
     def test_exit_slope_building_preserves_proposals_for_undo_continue(self) -> None:

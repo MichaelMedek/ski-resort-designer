@@ -298,7 +298,7 @@ def _render_map_fragment_inner() -> None:
         return renderer.render(
             proposals=ctx.proposals.paths,
             selected_proposal_idx=ctx.proposals.selected_idx,
-            highlight_segment_ids=ctx.slope_build.segments,
+            highlight_segment_ids=[sid for build in ctx.builds.values() for sid in build.segments],
             is_custom_path=build_state.renders_custom_path(ctx),
             extra_layers=extra_layers,
             terrain_layer=basemap_layer,
@@ -404,7 +404,7 @@ def _run_app_ui() -> None:
     elif ctx.deferred.custom_connect:
         with st.spinner("🎯 Computing custom path options..."):
             process_custom_connect_deferred()
-    elif ctx.deferred.path_generation:
+    elif ctx.deferred.fan_generation:
         with st.spinner("🗺️ Generating path options..."):
             process_path_generation_deferred()
     else:

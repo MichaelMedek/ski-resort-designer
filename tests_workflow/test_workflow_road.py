@@ -37,23 +37,23 @@ class TestRoadBuildingWorkflow:
         # First click sets the origin → road_starting.
         sm.start_road(node_id=None, location=path_points_blue[0])
         assert sm.current_state_value == "road_starting"
-        assert ctx.road_build.start_location is path_points_blue[0]
+        assert ctx.build(SegmentKind.ROAD).start_location is path_points_blue[0]
 
         # First traced segment → road_building, accumulates.
         seg1 = _commit_road_segment(empty_graph, path_points_blue)
         sm.commit_road(segment_id=seg1, endpoint_node_id="N1")
         assert sm.current_state_value == "road_building"
-        assert ctx.road_build.segments == [seg1]
-        assert ctx.road_build.endpoints == ["N1"]
+        assert ctx.build(SegmentKind.ROAD).segments == [seg1]
+        assert ctx.build(SegmentKind.ROAD).endpoints == ["N1"]
 
         # Second segment self-loops, still road_building.
         seg2 = _commit_road_segment(empty_graph, path_points_blue)
         sm.commit_road(segment_id=seg2, endpoint_node_id="N2")
         assert sm.current_state_value == "road_building"
-        assert ctx.road_build.segments == [seg1, seg2]
+        assert ctx.build(SegmentKind.ROAD).segments == [seg1, seg2]
 
         # Finish → idle_viewing_road, panel visible, road context cleared.
-        road = empty_graph.finish_road(segment_ids=ctx.road_build.segments)
+        road = empty_graph.finish_road(segment_ids=ctx.build(SegmentKind.ROAD).segments)
         sm.finish_road(road_id=road.id)
         assert sm.current_state_value == "idle_viewing_road"
         assert ctx.viewing.road_id == road.id
@@ -66,7 +66,7 @@ class TestRoadBuildingWorkflow:
 
         sm.cancel_road()
         assert sm.current_state_value == "idle_ready"
-        assert ctx.road_build.start_location is None  # cleared on exit
+        assert ctx.build(SegmentKind.ROAD).start_location is None  # cleared on exit
 
     def test_cancel_from_building_returns_to_idle(self, empty_graph, path_points_blue) -> None:
         sm, ctx = self._sm(empty_graph)
@@ -77,7 +77,7 @@ class TestRoadBuildingWorkflow:
 
         sm.cancel_road()
         assert sm.current_state_value == "idle_ready"
-        assert ctx.road_build.segments == []  # cleared on cancel
+        assert ctx.build(SegmentKind.ROAD).segments == []  # cleared on cancel
 
     def test_branch_road_from_existing_node(self, empty_graph) -> None:
         """A road can start from an existing junction node (branch point)."""
@@ -86,7 +86,7 @@ class TestRoadBuildingWorkflow:
 
         sm.start_road(node_id=node.id, location=None)
         assert sm.current_state_value == "road_starting"
-        assert ctx.road_build.start_node_id == node.id
+        assert ctx.build(SegmentKind.ROAD).start_node_id == node.id
 
 
 class TestRoadInvalidTransitions:
@@ -130,7 +130,7 @@ class TestRoadConnectorAutoFinish:
         assert ctx.viewing.road_id == road.id
         assert ctx.viewing.panel_visible is True
         # enter_idle_viewing_road clears the build scratch.
-        assert ctx.road_build.segments == []
+        assert ctx.build(SegmentKind.ROAD).segments == []
 
     def test_connector_finish_from_building(self, empty_graph, path_points_blue) -> None:
         sm, ctx = self._sm(empty_graph)
@@ -153,7 +153,7 @@ class TestRoadConnectorAutoFinish:
         sm.start_road(node_id=None, location=path_points_blue[0])
         seg1 = _commit_road_segment(empty_graph, path_points_blue)
         sm.commit_road(segment_id=seg1, endpoint_node_id="N1")
-        assert ctx.road_build.segments == [seg1]
+        assert ctx.build(SegmentKind.ROAD).segments == [seg1]
 
         # seg1 is already in road_build.segments; the finish hook must not double-append.
         road = empty_graph.finish_road(segment_ids=[seg1])
@@ -189,9 +189,9 @@ class TestRoadForceStateMethods:
         ctx.viewing.set_road_id(road_id="R99")
         ctx.viewing.show_panel()
 
-        sm.force_road_building()
+        sm.force_building(SegmentKind.ROAD)
         assert sm.current_state_value == "road_building"
-        assert ctx.road_build.segments == [seg1]
+        assert ctx.build(SegmentKind.ROAD).segments == [seg1]
         assert ctx.viewing.road_id is None  # force_road_building cleared the stale viewing state
         assert ctx.viewing.panel_visible is False
 
@@ -204,7 +204,7 @@ class TestRoadForceStateMethods:
         assert sm.current_state_value == "road_building"
 
         # Peel the segment back to the origin, then force RoadStarting.
-        ctx.road_build.segments = []
-        ctx.road_build.endpoints = []
-        sm.force_road_starting()
+        ctx.build(SegmentKind.ROAD).segments = []
+        ctx.build(SegmentKind.ROAD).endpoints = []
+        sm.force_starting(SegmentKind.ROAD)
         assert sm.current_state_value == "road_starting"

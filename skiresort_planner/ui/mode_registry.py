@@ -33,8 +33,10 @@ import streamlit as st
 
 from skiresort_planner.constants import StyleConfig
 from skiresort_planner.core.dem_service import DEMService
+from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.click_info import ClickInfo, MapClickType
 from skiresort_planner.model.message import OutsideTerrainMessage
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui import actions, bottom_chart, click_handlers, right_panel, sidebar_panels
 from skiresort_planner.ui.center_map import MapRenderer
@@ -66,11 +68,16 @@ class ProfileSpec:
 
 
 @dataclass(frozen=True)
-class StateHeader:
-    """The sidebar header for a state: an icon glyph plus a label (rendered as `### {icon} {label}`)."""
+class InfoBlock:
+    """The sidebar info block for a state: an icon glyph, a label, and how-to bullets.
+
+    Rendered uniformly as a collapsed expander titled `{icon} {label}`, with `bullets` as a
+    markdown list. Each bullet is the text WITHOUT the leading `- `.
+    """
 
     icon: str
     label: str
+    bullets: list[str]
 
 
 # =============================================================================
@@ -133,8 +140,8 @@ class BuildState(ABC):
         """Whether proposals draw as a single freehand path (roads + slope custom-connect)."""
 
     @abstractmethod
-    def header(self, ctx: PlannerContext) -> StateHeader:
-        """The sidebar header (icon + label) shown while in this state."""
+    def info_block(self, ctx: PlannerContext) -> InfoBlock:
+        """The sidebar info block (icon + label + how-to bullets) shown while in this state."""
 
     @abstractmethod
     def sidebar_panel(
@@ -198,11 +205,17 @@ class _IdleReadyState(BuildState):
     def renders_custom_path(self, ctx: PlannerContext) -> bool:
         return False
 
-    def header(self, ctx: PlannerContext) -> StateHeader:
-        # The lift glyph tracks the first lift button so the header matches whatever lift renders first.
-        return StateHeader(
+    def info_block(self, ctx: PlannerContext) -> InfoBlock:
+        # The lift glyph tracks the first lift button so the icon matches whatever lift renders first.
+        return InfoBlock(
             icon=f"{StyleConfig.SLOPE_ICON}{StyleConfig.ROAD_ICON}{StyleConfig.LIFT_ICONS[BuildMode.LIFT_TYPES[0]]}",
             label="Ready to Build",
+            bullets=[
+                "🔘 Select **Slope**, **Road** or **Lift** type below",
+                f"{StyleConfig.BUILDING_ICON} Click terrain/node → start building",
+                f"{StyleConfig.VIEWING_ICON} Click existing slope/road/lift → view stats",
+                "🛠️ Or use **Import** / **Node Merge** utilities below",
+            ],
         )
 
     def sidebar_panel(
@@ -276,8 +289,15 @@ class _EntityViewingState(BuildState):
     def renders_custom_path(self, ctx: PlannerContext) -> bool:
         return False
 
-    def header(self, ctx: PlannerContext) -> StateHeader:
-        return StateHeader(icon=StyleConfig.VIEWING_ICON, label=f"Viewing {self.kind.value.capitalize()}")
+    def info_block(self, ctx: PlannerContext) -> InfoBlock:
+        # Same bullets for every viewed kind; only lifts add the change-type line.
+        # enum_eq is reload-safe: EntityKind survives Streamlit reloads while the class is redefined.
+        bullets = ["🔄 Use lift buttons to change type"] if enum_eq(a=self.kind, b=EntityKind.LIFT) else []
+        bullets.append("✖️ **Close** the right panel to return")
+        bullets.append(f"{StyleConfig.BUILDING_ICON} Click terrain/node → new {self.kind.value}")
+        return InfoBlock(
+            icon=StyleConfig.VIEWING_ICON, label=f"Viewing {self.kind.value.capitalize()}", bullets=bullets
+        )
 
     def sidebar_panel(
         self, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph
@@ -374,10 +394,12 @@ class _SlopeBuildingState(BuildState):
         return _stored_2d_view(ctx)
 
     def bottom_profile(self, ctx: PlannerContext, graph: ResortGraph) -> ProfileSpec | None:
-        if not ctx.slope_build.segments:
+        if not ctx.build(SegmentKind.SLOPE).segments:
             return None
         fig = bottom_chart.render_building_profile(
-            building_segments=ctx.slope_build.segments, building_name=ctx.slope_build.name, graph=graph
+            building_segments=ctx.build(SegmentKind.SLOPE).segments,
+            building_name=ctx.build(SegmentKind.SLOPE).name,
+            graph=graph,
         )
         return ProfileSpec(fig=fig, key="combined_profile")
 
@@ -387,8 +409,12 @@ class _SlopeBuildingState(BuildState):
     def renders_custom_path(self, ctx: PlannerContext) -> bool:
         return ctx.custom_connect.force_mode
 
-    def header(self, ctx: PlannerContext) -> StateHeader:
-        return StateHeader(icon=StyleConfig.BUILDING_ICON, label="Building Slope...")
+    def info_block(self, ctx: PlannerContext) -> InfoBlock:
+        return InfoBlock(
+            icon=StyleConfig.BUILDING_ICON,
+            label="Building Slope...",
+            bullets=["⏳ Complete or cancel current build to change type"],
+        )
 
     def sidebar_panel(
         self, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph
@@ -454,8 +480,12 @@ class _LiftPlacingState(BuildState):
     def renders_custom_path(self, ctx: PlannerContext) -> bool:
         return False
 
-    def header(self, ctx: PlannerContext) -> StateHeader:
-        return StateHeader(icon=StyleConfig.BUILDING_ICON, label="Placing Lift...")
+    def info_block(self, ctx: PlannerContext) -> InfoBlock:
+        return InfoBlock(
+            icon=StyleConfig.BUILDING_ICON,
+            label="Placing Lift...",
+            bullets=["⏳ Complete or cancel current build to change type"],
+        )
 
     def sidebar_panel(
         self, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph
@@ -519,8 +549,12 @@ class _ImportPlacingState(BuildState):
     def renders_custom_path(self, ctx: PlannerContext) -> bool:
         return False
 
-    def header(self, ctx: PlannerContext) -> StateHeader:
-        return StateHeader(icon=StyleConfig.BUILDING_ICON, label="Importing Area...")
+    def info_block(self, ctx: PlannerContext) -> InfoBlock:
+        return InfoBlock(
+            icon=StyleConfig.BUILDING_ICON,
+            label="Importing Area...",
+            bullets=["⏳ Complete or cancel current build to change type"],
+        )
 
     def sidebar_panel(
         self, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph
@@ -573,8 +607,12 @@ class _MergePlacingState(BuildState):
     def renders_custom_path(self, ctx: PlannerContext) -> bool:
         return False
 
-    def header(self, ctx: PlannerContext) -> StateHeader:
-        return StateHeader(icon=StyleConfig.BUILDING_ICON, label="Merging Nodes...")
+    def info_block(self, ctx: PlannerContext) -> InfoBlock:
+        return InfoBlock(
+            icon=StyleConfig.BUILDING_ICON,
+            label="Merging Nodes...",
+            bullets=["⏳ Complete or cancel current build to change type"],
+        )
 
     def sidebar_panel(
         self, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph
@@ -621,13 +659,13 @@ class _RoadBuildingState(BuildState):
         # Only the origin (starting) shows a dot; once segments exist the road draws itself.
         if self.state_key != "road_starting":
             return []
-        if ctx.road_build.start_node_id:
-            node = graph.nodes.get(ctx.road_build.start_node_id)
+        if ctx.build(SegmentKind.ROAD).start_node_id:
+            node = graph.nodes.get(ctx.build(SegmentKind.ROAD).start_node_id)
             if node is None:
-                raise ValueError(f"Road start node {ctx.road_build.start_node_id} not found in graph")
+                raise ValueError(f"Road start node {ctx.build(SegmentKind.ROAD).start_node_id} not found in graph")
             lat, lon, elevation = node.lat, node.lon, node.elevation
-        elif ctx.road_build.start_location:
-            loc = ctx.road_build.start_location
+        elif ctx.build(SegmentKind.ROAD).start_location:
+            loc = ctx.build(SegmentKind.ROAD).start_location
             lat, lon, elevation = loc.lat, loc.lon, loc.elevation
         else:
             return []
@@ -637,10 +675,12 @@ class _RoadBuildingState(BuildState):
         return _stored_2d_view(ctx)
 
     def bottom_profile(self, ctx: PlannerContext, graph: ResortGraph) -> ProfileSpec | None:
-        if not ctx.road_build.segments:
+        if not ctx.build(SegmentKind.ROAD).segments:
             return None
         fig = bottom_chart.render_building_profile(
-            building_segments=ctx.road_build.segments, building_name=ctx.road_build.name, graph=graph
+            building_segments=ctx.build(SegmentKind.ROAD).segments,
+            building_name=ctx.build(SegmentKind.ROAD).name,
+            graph=graph,
         )
         return ProfileSpec(fig=fig, key="combined_road_profile")
 
@@ -650,8 +690,12 @@ class _RoadBuildingState(BuildState):
     def renders_custom_path(self, ctx: PlannerContext) -> bool:
         return True
 
-    def header(self, ctx: PlannerContext) -> StateHeader:
-        return StateHeader(icon=StyleConfig.BUILDING_ICON, label="Building Road...")
+    def info_block(self, ctx: PlannerContext) -> InfoBlock:
+        return InfoBlock(
+            icon=StyleConfig.BUILDING_ICON,
+            label="Building Road...",
+            bullets=["⏳ Complete or cancel current build to change type"],
+        )
 
     def sidebar_panel(
         self, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph
@@ -675,6 +719,7 @@ _BUILD_STATE_LIST: list[BuildState] = [
     _MergePlacingState(),
     _RoadBuildingState("road_starting"),
     _RoadBuildingState("road_building"),
+    _RoadBuildingState("road_custom_path"),
 ]
 
 BUILD_STATES: dict[str, BuildState] = {bs.state_key: bs for bs in _BUILD_STATE_LIST}
@@ -700,9 +745,23 @@ class BuilderOperation(ABC):
     #: OperationGroup.BUILDER or OperationGroup.UTILITY.
     group: str
 
-    @abstractmethod
     def enabled(self, sm: PlannerStateMachine) -> bool:
-        """Whether the button is clickable in the current state."""
+        """Whether the button is clickable — ONE rule for every button.
+
+        Enabled only while idle (never mid-build/placement), and then only in idle_ready or while
+        viewing this button's OWN kind (so a kind-builder can switch straight into rebuilding/
+        re-typing that kind). Utilities have no own kind, so they are idle_ready-only.
+        """
+        if not _idle_not_building(sm):
+            return False
+        return sm.is_idle_ready or self._enabled_while_viewing_own_kind(sm)
+
+    @abstractmethod
+    def _enabled_while_viewing_own_kind(self, sm: PlannerStateMachine) -> bool:
+        """Whether the current viewing state is THIS button's own kind.
+
+        The kind-builders name their own viewing state; utilities have no own kind and return False deliberately.
+        """
 
     @property
     @abstractmethod
@@ -735,8 +794,8 @@ class _SlopeOperation(BuilderOperation):
     group = OperationGroup.BUILDER
     first_instruction = "🗺️ Click terrain or a node to start the slope."
 
-    def enabled(self, sm: PlannerStateMachine) -> bool:
-        return _idle_not_building(sm) and not (sm.is_idle_viewing_lift or sm.is_idle_viewing_road)
+    def _enabled_while_viewing_own_kind(self, sm: PlannerStateMachine) -> bool:
+        return sm.is_idle_viewing_slope
 
 
 class _RoadOperation(BuilderOperation):
@@ -744,8 +803,8 @@ class _RoadOperation(BuilderOperation):
     group = OperationGroup.BUILDER
     first_instruction = "🗺️ Click terrain or a node to start the road."
 
-    def enabled(self, sm: PlannerStateMachine) -> bool:
-        return _idle_not_building(sm) and not (sm.is_idle_viewing_slope or sm.is_idle_viewing_lift)
+    def _enabled_while_viewing_own_kind(self, sm: PlannerStateMachine) -> bool:
+        return sm.is_idle_viewing_road
 
 
 class _LiftOperation(BuilderOperation):
@@ -757,8 +816,8 @@ class _LiftOperation(BuilderOperation):
     def __init__(self, mode: str) -> None:
         self.mode = mode
 
-    def enabled(self, sm: PlannerStateMachine) -> bool:
-        return _idle_not_building(sm) and not (sm.is_idle_viewing_slope or sm.is_idle_viewing_road)
+    def _enabled_while_viewing_own_kind(self, sm: PlannerStateMachine) -> bool:
+        return sm.is_idle_viewing_lift
 
     def on_select(self, ctx: PlannerContext, sm: PlannerStateMachine) -> None:
         # Extra work: track the chosen type and, when viewing a lift, re-type it. Then the shared
@@ -772,8 +831,8 @@ class _ImportOperation(BuilderOperation):
     group = OperationGroup.UTILITY
     first_instruction = "🗺️ Click terrain or a node to place the import area."
 
-    def enabled(self, sm: PlannerStateMachine) -> bool:
-        return _idle_not_building(sm)
+    def _enabled_while_viewing_own_kind(self, sm: PlannerStateMachine) -> bool:
+        return False  # a utility has no own kind — idle_ready only
 
 
 class _MergeOperation(BuilderOperation):
@@ -781,8 +840,8 @@ class _MergeOperation(BuilderOperation):
     group = OperationGroup.UTILITY
     first_instruction = "🔗 Click a node to start merging."
 
-    def enabled(self, sm: PlannerStateMachine) -> bool:
-        return _idle_not_building(sm)
+    def _enabled_while_viewing_own_kind(self, sm: PlannerStateMachine) -> bool:
+        return False  # a utility has no own kind — idle_ready only
 
 
 _OPERATION_LIST: list[BuilderOperation] = [

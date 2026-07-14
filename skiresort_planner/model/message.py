@@ -142,6 +142,32 @@ class RoadTooSteepMessage(ToastMessage):
 
 
 @dataclass(frozen=True)
+class SlopeTooSteepMessage(ToastMessage):
+    """No slope proposal stays within the skiable ceiling to the clicked point.
+
+    Mirrors RoadTooSteepMessage. The slope cap is a single-sided ceiling (the
+    black-slope maximum), so the wording drops the ± the road band uses.
+    """
+
+    gentlest_pct: float | None  # magnitude of the gentlest route found, or None if no route
+    max_grade_pct: float
+
+    @property
+    def icon(self) -> str:
+        return "⚠️"
+
+    @property
+    def message(self) -> str:
+        if self.gentlest_pct is None:
+            return f"Too steep to ski — no route to that point under {self.max_grade_pct:.0f}%."
+        # Round the gentlest UP to 0.1% so it never renders equal to the cap
+        gentlest_shown = math.ceil(self.gentlest_pct * 10) / 10
+        return (
+            f"Too steep to ski — gentlest possible is {gentlest_shown:.1f}%, over the {self.max_grade_pct:.0f}% limit."
+        )
+
+
+@dataclass(frozen=True)
 class OutsideTerrainMessage(ToastMessage):
     """User clicked outside DEM/terrain coverage."""
 

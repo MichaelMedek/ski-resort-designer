@@ -12,23 +12,25 @@ from skiresort_planner.ui.mode_registry import (
     BUILD_STATES,
     ENTITY_KIND_SPECS,
     OPERATIONS,
+    InfoBlock,
     OperationGroup,
-    StateHeader,
 )
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
 
-class TestBuildStateHeader:
-    """Every state must supply a non-empty header + a bool blocks_build_buttons (abstract methods,
-    so this can't be forgotten; this test also pins that headers render for all states).
+class TestBuildStateInfoBlock:
+    """Every state must supply a non-empty info block (icon + label + bullets) and a bool
+    blocks_build_buttons (abstract methods, so this can't be forgotten; this test also pins that
+    info blocks render for all states).
     """
 
-    def test_every_state_has_a_valid_header(self) -> None:
+    def test_every_state_has_a_valid_info_block(self) -> None:
         ctx = PlannerContext()
         for key, bs in BUILD_STATES.items():
-            head = bs.header(ctx)
-            assert isinstance(head, StateHeader), key
-            assert head.icon and head.label, f"{key} header has empty icon/label"
+            block = bs.info_block(ctx)
+            assert isinstance(block, InfoBlock), key
+            assert block.icon and block.label, f"{key} info block has empty icon/label"
+            assert block.bullets, f"{key} info block has no bullets"
             assert isinstance(bs.blocks_build_buttons(), bool), key
 
     def test_placing_and_building_states_block_buttons(self) -> None:
@@ -133,10 +135,10 @@ class TestEntityKindSpecBijection:
 
 
 class TestGreyoutRule:
-    """The bug the refactor fixed: while viewing an entity, the OTHER-kind builders grey out, but
-    Import AND Merge must ALSO be enabled (they're whole-resort utilities usable from any idle
-    state). Before the fix Import stayed clickable via copy-pasted logic that forgot nothing; now
-    every button's enabled() is the same rule, so this is asserted uniformly.
+    """While viewing an entity, EVERY build button greys out except the viewed kind's own builder:
+    the other-kind builders AND the Import / Node Merge utilities all disable (only their own view
+    panel can be re-opened). Every button's enabled() goes through the same rule, so this is
+    asserted uniformly across kinds.
     """
 
     def _sm(self, empty_graph: ResortGraph) -> PlannerStateMachine:
@@ -160,7 +162,7 @@ class TestGreyoutRule:
         for op in OPERATIONS.values():
             assert not op.enabled(sm), f"{op.mode} must be disabled while selecting nodes to merge"
 
-    def test_import_and_merge_still_enabled_while_viewing_a_slope(self, empty_graph, path_points_blue) -> None:
+    def test_import_and_merge_disabled_while_viewing_a_slope(self, empty_graph, path_points_blue) -> None:
         from skiresort_planner.model.proposed_path import ProposedPathSegment
 
         empty_graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
@@ -169,10 +171,10 @@ class TestGreyoutRule:
         sm = self._sm(empty_graph)
         sm.show_slope_info_panel(slope_id=slope.id)
 
-        # Import + Merge stay enabled (the regression) …
-        assert OPERATIONS[BuildMode.IMPORT].enabled(sm), "Import must stay enabled while viewing a slope"
-        assert OPERATIONS[BuildMode.MERGE].enabled(sm), "Merge must stay enabled while viewing a slope"
-        # … while the road + lift builders grey out (must close the slope panel first).
+        # Import + Merge now grey out while viewing (close the panel first) …
+        assert not OPERATIONS[BuildMode.IMPORT].enabled(sm), "Import must grey out while viewing a slope"
+        assert not OPERATIONS[BuildMode.MERGE].enabled(sm), "Merge must grey out while viewing a slope"
+        # … alongside the road + lift builders.
         assert not OPERATIONS[BuildMode.ROAD].enabled(sm)
         assert not OPERATIONS[BuildMode.CHAIRLIFT].enabled(sm)
         # Slope itself stays enabled (switch straight into building a new slope).
@@ -180,14 +182,14 @@ class TestGreyoutRule:
 
     def test_greyout_while_viewing_a_lift(self, empty_graph) -> None:
         # view_lift only sets ctx.viewing.lift_id + enters idle_viewing_lift (no graph lookup), so an
-        # id is enough to exercise the greyout rule. Each builder stays enabled on its OWN kind and
-        # greys out on the two other kinds; Import + Merge are always enabled from any idle state.
+        # id is enough to exercise the greyout rule. Only the lift builders stay enabled (re-type the
+        # viewed lift); slope, road, Import + Merge all grey out.
         sm = self._sm(empty_graph)
         sm.view_lift(lift_id="L1")
         assert sm.is_idle_viewing_lift
 
-        assert OPERATIONS[BuildMode.IMPORT].enabled(sm), "Import must stay enabled while viewing a lift"
-        assert OPERATIONS[BuildMode.MERGE].enabled(sm), "Merge must stay enabled while viewing a lift"
+        assert not OPERATIONS[BuildMode.IMPORT].enabled(sm), "Import must grey out while viewing a lift"
+        assert not OPERATIONS[BuildMode.MERGE].enabled(sm), "Merge must grey out while viewing a lift"
         # Lift stays enabled (re-type the viewed lift); slope + road grey out.
         assert OPERATIONS[BuildMode.CHAIRLIFT].enabled(sm), "Lift builders stay enabled while viewing a lift"
         assert not OPERATIONS[BuildMode.SLOPE].enabled(sm)
@@ -198,8 +200,8 @@ class TestGreyoutRule:
         sm.view_road(road_id="R1")
         assert sm.is_idle_viewing_road
 
-        assert OPERATIONS[BuildMode.IMPORT].enabled(sm), "Import must stay enabled while viewing a road"
-        assert OPERATIONS[BuildMode.MERGE].enabled(sm), "Merge must stay enabled while viewing a road"
+        assert not OPERATIONS[BuildMode.IMPORT].enabled(sm), "Import must grey out while viewing a road"
+        assert not OPERATIONS[BuildMode.MERGE].enabled(sm), "Merge must grey out while viewing a road"
         # Road stays enabled; slope + lift grey out.
         assert OPERATIONS[BuildMode.ROAD].enabled(sm), "Road builder stays enabled while viewing a road"
         assert not OPERATIONS[BuildMode.SLOPE].enabled(sm)

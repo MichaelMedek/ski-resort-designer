@@ -10,6 +10,7 @@ from skiresort_planner.constants import SlopeConfig
 from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.generators.path_factory import GradeConfig, PathFactory, Side
 from skiresort_planner.model.path_point import PathPoint
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 
 
@@ -28,25 +29,22 @@ def make_path(coords: list[tuple[float, float, float]], slope_pct: float = 20.0)
 
 
 class TestGradeConfig:
-    """Unit tests for GradeConfig dataclass."""
+    """Unit tests for GradeConfig.sector_name — the per-kind fan label (dispatched, no branch)."""
 
-    def test_name_format_with_left_side(self) -> None:
-        """GradeConfig.name formats as '{Difficulty} {Side} ({Grade})'."""
+    def test_slope_sector_name_is_difficulty_side_grade(self) -> None:
+        """A slope labels by difficulty + side + grade."""
         config = GradeConfig(difficulty="green", grade="gentle", target_slope_pct=7.0, side=Side.LEFT)
-        assert config.name == "Green Left (Gentle)"
+        assert config.sector_name(SegmentKind.SLOPE) == "Green Left (Gentle)"
 
-    def test_name_format_with_center_side(self) -> None:
-        """Center side formats correctly."""
+    def test_slope_sector_name_center(self) -> None:
+        """Center side formats correctly for a slope."""
         config = GradeConfig(difficulty="blue", grade="steep", target_slope_pct=22.0, side=Side.CENTER)
-        assert config.name == "Blue Center (Steep)"
+        assert config.sector_name(SegmentKind.SLOPE) == "Blue Center (Steep)"
 
-    def test_color_returns_style_config_color(self) -> None:
-        """GradeConfig.color returns correct color for difficulty."""
-        config_green = GradeConfig(difficulty="green", grade="gentle", target_slope_pct=7.0, side=Side.LEFT)
-        config_black = GradeConfig(difficulty="black", grade="steep", target_slope_pct=50.0, side=Side.RIGHT)
-
-        assert config_green.color == "#22C55E"  # green-500
-        assert config_black.color == "#1F2937"  # gray-800
+    def test_road_sector_name_has_no_difficulty(self) -> None:
+        """A road has no ski difficulty, so it labels by side + grade only (kind-dispatched)."""
+        config = GradeConfig(difficulty="", grade="gentle", target_slope_pct=7.0, side=Side.LEFT)
+        assert config.sector_name(SegmentKind.ROAD) == "Road Left (Gentle)"
 
 
 class TestPathSimilarity:
@@ -269,7 +267,7 @@ class TestRoadTargetGrade:
 
 
 class TestRoadModeNoStraightLineFallback:
-    """Road mode (road_mode=True) must NOT fabricate a straight-line fallback.
+    """Road mode (kind=SegmentKind.ROAD) must NOT fabricate a straight-line fallback.
 
     Slope mode always creates a straight-line result when Dijkstra finds nothing,
     so two points always connect. Road mode does not fabricate one.
@@ -293,7 +291,7 @@ class TestRoadModeNoStraightLineFallback:
                 target_lon=300 / M,
                 target_lat=0.0,
                 target_elevation=path_factory.dem_service.get_elevation_or_raise(lon=300 / M, lat=0.0),
-                road_mode=True,
+                kind=SegmentKind.ROAD,
             )
         )
         assert paths, "a gentle reachable target should yield a road path"
@@ -301,14 +299,12 @@ class TestRoadModeNoStraightLineFallback:
             "road mode must never emit the straight-line fallback"
         )
         # Road-mode proposals carry the ROAD kind so the committed segment is a road.
-        from skiresort_planner.model.path_segment import SegmentKind
-
         assert all(enum_eq(a=p.kind, b=SegmentKind.ROAD) for p in paths)
 
-    def test_slope_mode_still_falls_back_to_straight_line(self, path_factory) -> None:
-        # Slope mode always connects, emitting the straight-line fallback result.
-        from skiresort_planner.model.path_segment import SegmentKind
-
+    def test_slope_mode_yields_no_fabricated_fallback(self, path_factory) -> None:
+        # Slope mode no longer fabricates a straight-line fallback: it yields only real
+        # traced routes (or nothing). On this reachable diagonal target it yields routes,
+        # none of which are the old 2-point "Direct Line (fallback)".
         M = 111320.0
         paths = list(
             path_factory.generate_manual_paths(
@@ -318,15 +314,17 @@ class TestRoadModeNoStraightLineFallback:
                 target_lon=0.0,
                 target_lat=-250 / M,
                 target_elevation=path_factory.dem_service.get_elevation_or_raise(lon=0.0, lat=-250 / M),
-                road_mode=False,
+                kind=SegmentKind.SLOPE,
             )
         )
-        assert len(paths) >= 1, "slope mode always connects (straight-line fallback)"
         assert all(enum_eq(a=p.kind, b=SegmentKind.SLOPE) for p in paths), "slope-mode proposals are SLOPE kind"
+        assert all("fallback" not in (p.sector_name or "").lower() for p in paths), (
+            "slope mode no longer fabricates a straight-line fallback"
+        )
 
 
-class TestGenerateFan:
-    """Unit tests for generate_fan - the fan-pattern difficulty/grade/side sweep.
+class TestGenerateSlopeFan:
+    """Unit tests for generate_slope_fan - the fan-pattern difficulty/grade/side sweep.
 
     The path_factory fixture uses a ~31.6% diagonal slope (30% S + 10% E), so the
     green targets (7%/12%) are below terrain and yield LEFT/RIGHT traverse variants.
@@ -337,7 +335,7 @@ class TestGenerateFan:
     def test_fan_yields_proposals_that_are_not_connectors(self, path_factory: PathFactory) -> None:
         """Every fan path is a real slope proposal: is_connector False, valid difficulty."""
         start_elev = 2500.0  # the diagonal mock DEM's base elevation at the origin (0, 0)
-        paths = list(path_factory.generate_fan(lon=0.0, lat=0.0, elevation=start_elev))
+        paths = list(path_factory.generate_fan(kind=SegmentKind.SLOPE, lon=0.0, lat=0.0, elevation=start_elev))
 
         assert paths, "a steep diagonal slope must yield fan proposals"
         assert all(p.is_connector is False for p in paths), "fan paths are slopes, never connectors"
@@ -348,7 +346,96 @@ class TestGenerateFan:
     def test_fan_starts_with_green_left_gentle(self, path_factory: PathFactory) -> None:
         """Loop order (green→gentle→left) + green-always-traces makes the first path 'Green Left (Gentle)'."""
         start_elev = 2500.0  # the diagonal mock DEM's base elevation at the origin (0, 0)
-        paths = list(path_factory.generate_fan(lon=0.0, lat=0.0, elevation=start_elev))
+        paths = list(path_factory.generate_fan(kind=SegmentKind.SLOPE, lon=0.0, lat=0.0, elevation=start_elev))
 
         assert paths[0].sector_name == "Green Left (Gentle)"
         assert paths[0].target_difficulty == "green"
+
+
+class TestGenerateRoadFan:
+    """Unit tests for generate_road_fan - the road fan (signed green targets).
+
+    The path_factory fixture is a ~31.6% diagonal slope, so every green target
+    magnitude (7%/12%/0%) is below terrain and traces as a left/right traverse.
+    A road fan must offer routes in all three sign modes: descend, climb, contour.
+    """
+
+    def test_road_fan_offers_descend_climb_and_contour(self, path_factory: PathFactory) -> None:
+        """The fan traces all three sign modes, proving the tracer is gradient-agnostic.
+
+        A weak 'len > 0' would not catch a sign regression; this asserts each behavior
+        (a descending, a climbing, and a near-level route) is actually produced.
+        """
+        paths = list(path_factory.generate_fan(kind=SegmentKind.ROAD, lon=0.0, lat=0.0, elevation=2500.0))
+
+        assert paths, "a steep diagonal slope must yield road-fan proposals"
+        descends = [p for p in paths if p.avg_slope_pct > SlopeConfig.MIN_SKIABLE_PCT]
+        climbs = [p for p in paths if p.avg_slope_pct < -SlopeConfig.MIN_SKIABLE_PCT]
+        contours = [p for p in paths if abs(p.avg_slope_pct) < SlopeConfig.MIN_SKIABLE_PCT]
+        assert descends, "road fan must include a descending route (+ target)"
+        assert climbs, "road fan must include a climbing route (− target)"
+        assert contours, "road fan must include a near-level contour route (0 target)"
+
+    def test_road_fan_proposals_are_roads_not_connectors(self, path_factory: PathFactory) -> None:
+        """Every road-fan proposal is a ROAD-kind, non-connector segment."""
+        paths = list(path_factory.generate_fan(kind=SegmentKind.ROAD, lon=0.0, lat=0.0, elevation=2500.0))
+        assert paths
+        assert all(enum_eq(a=p.kind, b=SegmentKind.ROAD) for p in paths), "road fan yields ROAD kind"
+        assert all(p.is_connector is False for p in paths), "fan proposals are not connectors"
+
+    def test_road_fan_grades_are_single_sourced_green(self, path_factory: PathFactory) -> None:
+        """Every fan target magnitude comes from DIFFICULTY_TARGETS['green'] (or 0).
+
+        Guards the 'no hardcoded 7/12' rule: if someone hardcodes a grade, the
+        target set diverges from the green config and this fails.
+        """
+        paths = list(path_factory.generate_fan(kind=SegmentKind.ROAD, lon=0.0, lat=0.0, elevation=2500.0))
+        assert paths
+        allowed = set(SlopeConfig.DIFFICULTY_TARGETS["green"].values()) | {0.0}
+        target_mags = {abs(p.target_slope_pct) for p in paths}
+        assert target_mags <= allowed, f"road-fan target magnitudes {target_mags} must be green grades or 0"
+
+    def test_road_fan_covers_the_exact_signed_grade_set(self, path_factory: PathFactory) -> None:
+        """The road fan attempts EXACTLY {+7, +12, −7, −12, 0} — both signs plus a contour.
+
+        The three-sign-mode test proves each sign appears; this pins the full signed set so a
+        missing sign (only descents), a missing contour, or a stray extra grade all fail. On the
+        steep diagonal fixture every target magnitude is below terrain, so all five trace, and
+        the set of SIGNED targets attempted must be exactly the five below.
+        """
+        g = SlopeConfig.DIFFICULTY_TARGETS["green"]  # {"gentle": 7, "steep": 12} (single source)
+        expected_signed = {round(v, 3) for v in g.values()} | {round(-v, 3) for v in g.values()} | {0.0}
+        paths = list(path_factory.generate_fan(kind=SegmentKind.ROAD, lon=0.0, lat=0.0, elevation=2500.0))
+        attempted_signed = {round(p.target_slope_pct, 3) for p in paths}
+        assert attempted_signed == expected_signed, (
+            f"road fan must attempt exactly {expected_signed}, got {attempted_signed}"
+        )
+
+
+class TestStraightLine:
+    """The one direct-line builder, straight_line(kind), used for the road bridge/cut fallback."""
+
+    def _endpoints(self) -> tuple[float, float, float, float, float, float]:
+        # Explicit elevations: the builder does not query the DEM, it wraps the two given
+        # points, so we control the drop directly (250m S, 25m drop → 10%).
+        M = 111320.0
+        return 0.0, 0.0, 2500.0, 0.0, -250 / M, 2475.0
+
+    def test_road_straight_line_is_a_two_point_connector(self, path_factory: PathFactory) -> None:
+        """A direct road is a 2-point ROAD connector with no ski difficulty."""
+        s_lon, s_lat, s_elev, t_lon, t_lat, t_elev = self._endpoints()
+        road = path_factory.straight_line(
+            kind=SegmentKind.ROAD,
+            start_lon=s_lon,
+            start_lat=s_lat,
+            start_elevation=s_elev,
+            target_lon=t_lon,
+            target_lat=t_lat,
+            target_elevation=t_elev,
+        )
+        assert len(road.points) == 2, "a direct line is exactly its two endpoints"
+        assert (road.points[0].lon, road.points[0].lat, road.points[0].elevation) == (s_lon, s_lat, s_elev)
+        assert (road.points[-1].lon, road.points[-1].lat, road.points[-1].elevation) == (t_lon, t_lat, t_elev)
+        assert road.is_connector
+        assert enum_eq(a=road.kind, b=SegmentKind.ROAD)
+        assert road.target_difficulty == "", "a road carries no ski difficulty"

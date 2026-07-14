@@ -36,6 +36,7 @@ from skiresort_planner.model.message import (
     SlopeBuildingContextMessage,
     SlopeStartingContextMessage,
 )
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.actions import (
     confirm_import_action,
@@ -340,10 +341,10 @@ class SlopeBuildingControlPanel(ControlPanel):
     """SLOPE_STARTING / SLOPE_BUILDING / SLOPE_CUSTOM_PATH: progress + path selection."""
 
     def context_message(self) -> "Message | None":
-        name = self.ctx.slope_build.name or "Unnamed Slope"
-        segs = len(self.ctx.slope_build.segments)
+        name = self.ctx.build(SegmentKind.SLOPE).name or "Unnamed Slope"
+        segs = len(self.ctx.build(SegmentKind.SLOPE).segments)
         if segs > 0:
-            stats = self.graph.get_segment_stats(segment_ids=self.ctx.slope_build.segments)
+            stats = self.graph.get_segment_stats(segment_ids=self.ctx.build(SegmentKind.SLOPE).segments)
             return SlopeBuildingContextMessage(
                 slope_name=name,
                 num_segments=segs,
@@ -357,7 +358,7 @@ class SlopeBuildingControlPanel(ControlPanel):
             )
         return SlopeStartingContextMessage(
             slope_name=name,
-            start_node_id=self.ctx.slope_build.start_node_id,
+            start_node_id=self.ctx.build(SegmentKind.SLOPE).start_node_id,
             start_lat=self.ctx.selection.lat,
             start_lon=self.ctx.selection.lon,
         )
@@ -475,21 +476,21 @@ class RoadBuildingControlPanel(ControlPanel):
     """ROAD_STARTING / ROAD_BUILDING: origin context + action + proposal browse/commit."""
 
     def context_message(self) -> "Message | None":
-        if self.ctx.road_build.endpoints:
-            endpoint = self.graph.nodes.get(self.ctx.road_build.endpoints[-1])
+        if self.ctx.build(SegmentKind.ROAD).endpoints:
+            endpoint = self.graph.nodes.get(self.ctx.build(SegmentKind.ROAD).endpoints[-1])
             return RoadPlacingContextMessage(
-                start_node_id=self.ctx.road_build.endpoints[-1],
+                start_node_id=self.ctx.build(SegmentKind.ROAD).endpoints[-1],
                 start_elevation_m=endpoint.elevation if endpoint else 0.0,
-                segment_count=len(self.ctx.road_build.segments),
+                segment_count=len(self.ctx.build(SegmentKind.ROAD).segments),
             )
-        if self.ctx.road_build.start_node_id:
-            node = self.graph.nodes.get(self.ctx.road_build.start_node_id)
+        if self.ctx.build(SegmentKind.ROAD).start_node_id:
+            node = self.graph.nodes.get(self.ctx.build(SegmentKind.ROAD).start_node_id)
             return RoadPlacingContextMessage(
-                start_node_id=self.ctx.road_build.start_node_id,
+                start_node_id=self.ctx.build(SegmentKind.ROAD).start_node_id,
                 start_elevation_m=node.elevation if node else 0.0,
             )
-        if self.ctx.road_build.start_location:
-            loc = self.ctx.road_build.start_location
+        if self.ctx.build(SegmentKind.ROAD).start_location:
+            loc = self.ctx.build(SegmentKind.ROAD).start_location
             return RoadPlacingContextMessage(
                 start_lat=loc.lat,
                 start_lon=loc.lon,

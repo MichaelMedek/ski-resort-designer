@@ -35,10 +35,15 @@ from skiresort_planner.model.actions import (
     UndoAction,
 )
 from skiresort_planner.model.lift import Lift
-from skiresort_planner.model.message import MergeTooFarMessage, OSMImportErrorMessage
+from skiresort_planner.model.message import (
+    MergeTooFarMessage,
+    OSMImportErrorMessage,
+)
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.context import PlannerContext
 from skiresort_planner.ui.infra import bump_map_version, reload_map, trigger_rerun
+from skiresort_planner.ui.kind_spec import KIND_SPECS
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
 if TYPE_CHECKING:
@@ -150,7 +155,7 @@ def handle_fast_deferred_actions() -> None:
         graph: ResortGraph = st.session_state.graph
         node = graph.nodes.get(node_id)
         if node and sm.is_idle:
-            ctx.deferred.path_generation = True
+            ctx.deferred.fan_generation.add(SegmentKind.SLOPE)
             sm.start_building(
                 lon=node.lon,
                 lat=node.lat,
@@ -285,59 +290,88 @@ def process_path_generation_deferred() -> bool:
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
 
-    if not ctx.deferred.path_generation:
+    if not ctx.deferred.fan_generation:
         return False
 
-    if sm.is_any_slope_state:
-        _generate_paths_for_building_state()
+    # Regenerate the fan for each pending kind that is actually the active build.
+    if sm.active_build_kind in ctx.deferred.fan_generation:
+        _generate_fan_for_building_state(kind=sm.active_build_kind)
         bump_map_version()  # Clear stale click state so proposal 1 can be clicked
 
-    ctx.deferred.path_generation = False
+    ctx.deferred.fan_generation.clear()
     return True
 
 
-def _generate_paths_for_building_state() -> None:
-    """Generate path proposals for current building position."""
-    ctx: PlannerContext = st.session_state.context
-    factory: PathFactory = st.session_state.path_factory
+def _generate_fan_for_building_state(kind: SegmentKind) -> None:
+    """Generate the fan of proposals radiating from the active build's endpoint.
 
-    if ctx.selection.lon is None or ctx.selection.lat is None or ctx.selection.elevation is None:
-        logger.warning("Cannot generate paths: no current position set")
-        return
-
-    ctx.proposals.paths = list(
-        factory.generate_fan(
-            lon=ctx.selection.lon,
-            lat=ctx.selection.lat,
-            elevation=ctx.selection.elevation,
-            target_length_m=ctx.segment_length_m,
-        )
-    )
-
-    # Smart recommendation: match gradient if we have a target
-    if ctx.proposals.paths and ctx.deferred.gradient_target is not None:
-        best_idx = _find_closest_gradient_path(
-            paths=ctx.proposals.paths,
-            target_gradient=ctx.deferred.gradient_target,
-        )
-        ctx.proposals.selected_idx = best_idx
-        logger.info(
-            f"Generated {len(ctx.proposals.paths)} fan paths from ({ctx.selection.lat:.6f}, {ctx.selection.lon:.6f}), "
-            f"recommending path {best_idx} (closest to {ctx.deferred.gradient_target:.1f}%)"
-        )
-        ctx.deferred.gradient_target = None
-    else:
-        ctx.proposals.selected_idx = 0 if ctx.proposals.paths else None
-        logger.info(
-            f"Generated {len(ctx.proposals.paths)} fan paths from ({ctx.selection.lat:.6f}, {ctx.selection.lon:.6f})"
-        )
-
-
-def _generate_custom_connect_paths() -> None:
-    """Generate paths from custom connect start to target location."""
+    Kind-generic: the factory builds the kind's target set (slopes descend green→black;
+    roads fan signed green descend/climb/flat), every proposal is hard-capped at the
+    kind's max grade, and if routes existed but all exceed the cap the user is told and
+    the kind supports refusal. On an empty (no-route) fan nothing is shown.
+    """
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
     factory: PathFactory = st.session_state.path_factory
+    spec = KIND_SPECS[kind]
+
+    lon, lat, elevation, start_node_id = _segment_origin(build=ctx.build(kind), graph=graph)
+
+    fan = list(
+        factory.generate_fan(kind=kind, lon=lon, lat=lat, elevation=elevation, target_length_m=ctx.segment_length_m)
+    )
+    kept, gentlest = factory.filter_by_max_grade(paths=fan, cap_pct=spec.max_grade_pct)
+    if fan and not kept:
+        spec.too_steep_message(gentlest).display()
+
+    # Extending from an existing node: reuse it exactly on commit (never duplicate it).
+    if start_node_id is not None:
+        for p in kept:
+            p.start_node_id = start_node_id
+
+    ctx.proposals.paths = kept
+
+    # Smart recommendation: match gradient if we have a target (slopes only set this).
+    if kept and ctx.deferred.gradient_target is not None:
+        best_idx = _find_closest_gradient_path(paths=kept, target_gradient=ctx.deferred.gradient_target)
+        ctx.proposals.selected_idx = best_idx
+        ctx.deferred.gradient_target = None
+    else:
+        ctx.proposals.selected_idx = 0 if kept else None
+    logger.info(f"Generated {len(kept)} {kind.value}-fan paths from ({lat:.6f}, {lon:.6f})")
+
+
+def _segment_origin(build: "SegmentBuildContext", graph: ResortGraph) -> tuple[float, float, float, str | None]:
+    """Resolve the point a new fan segment radiates from — shared by every kind.
+
+    Reads only the SegmentBuildContext: the last committed endpoint, else the origin
+    node, else the pending origin location. Returns (lon, lat, elevation, start_node_id);
+    start_node_id is the node to reuse on commit (None for a brand-new origin point).
+    Raises if the build has no resolvable origin (a programming error — the state machine
+    never queues generation without one).
+    """
+    node_id = build.endpoints[-1] if build.endpoints else build.start_node_id
+    if node_id is not None:
+        node = graph.nodes[node_id]  # must exist: it's a committed endpoint or the origin node
+        return node.lon, node.lat, node.elevation, node.id
+    if build.start_location is not None:
+        loc = build.start_location
+        return loc.lon, loc.lat, loc.elevation, None
+    raise ValueError(f"cannot generate fan: {build=} has no origin (start node or location)")
+
+
+def _generate_custom_connect_paths() -> None:
+    """Generate proposals routing the active build to the clicked custom target (any kind).
+
+    Kind-generic via KIND_SPECS. Every candidate is capped at the kind's max grade. When
+    none fit: a kind with a direct fallback (roads) offers a straight bridge/cut if it is
+    within the cap; otherwise the kind's too-steep message refuses. Slopes have no
+    fallback, so an all-too-steep result simply refuses.
+    """
+    ctx: PlannerContext = st.session_state.context
+    graph: ResortGraph = st.session_state.graph
+    factory: PathFactory = st.session_state.path_factory
+    sm: PlannerStateMachine = st.session_state.state_machine
 
     if not ctx.custom_connect.target_location:
         logger.warning("No custom target location set")
@@ -345,10 +379,13 @@ def _generate_custom_connect_paths() -> None:
         return
 
     target_lon, target_lat, target_elevation = ctx.custom_connect.target_location
+    kind = sm.active_build_kind
+    spec = KIND_SPECS[kind]
+    build = ctx.build(kind)
 
     start_node = None
-    if ctx.slope_build.endpoints:
-        start_node = graph.nodes.get(ctx.slope_build.endpoints[0])
+    if build.endpoints:
+        start_node = graph.nodes.get(build.endpoints[0])
     elif ctx.custom_connect.start_node:
         start_node = graph.nodes.get(ctx.custom_connect.start_node)
 
@@ -357,8 +394,9 @@ def _generate_custom_connect_paths() -> None:
         ctx.clear_custom_connect()
         return
 
-    paths = list(
+    candidates = list(
         factory.generate_manual_paths(
+            kind=kind,
             start_lon=start_node.lon,
             start_lat=start_node.lat,
             start_elevation=start_node.elevation,
@@ -367,13 +405,37 @@ def _generate_custom_connect_paths() -> None:
             target_elevation=target_elevation,
         )
     )
+    cap = spec.max_grade_pct
+    proposals, gentlest = factory.filter_by_max_grade(paths=candidates, cap_pct=cap)
 
-    if not paths:
-        raise ValueError("generate_manual_paths should always return at least one path (fallback straight line)")
+    if not proposals:
+        # No in-cap serpentine. If this kind offers a direct bridge/cut fallback, try it;
+        # otherwise (slopes) refuse. The too-steep message handles gentlest=None ("no route").
+        if spec.has_direct_fallback:
+            direct = factory.straight_line(
+                kind=kind,
+                start_lon=start_node.lon,
+                start_lat=start_node.lat,
+                start_elevation=start_node.elevation,
+                target_lon=target_lon,
+                target_lat=target_lat,
+                target_elevation=target_elevation,
+            )
+            if direct.max_slope_pct <= cap:
+                # A direct line within the cap → offer it
+                proposals = [direct]
+            else:
+                # Even the direct line is too steep → refuse, reporting the gentlest grade
+                # seen (the direct line, or a gentler serpentine candidate if one existed).
+                gentlest_grade = direct.max_slope_pct if gentlest is None else min(gentlest, direct.max_slope_pct)
+                spec.too_steep_message(gentlest_grade).display()
+        else:
+            # No fallback (slopes): refuse. gentlest is the closest over-cap route, or None
+            # if the planner found no route at all — the message renders both cases.
+            spec.too_steep_message(gentlest).display()
 
-    # Always have at least one path (fallback straight line is created if needed)
-    # The path extends from an existing node → reuse it exactly on commit (no duplicate).
-    for p in paths:
+    # Extend from the existing start node → reuse it exactly on commit (no duplicate).
+    for p in proposals:
         p.start_node_id = start_node.id
 
     # Target node: prefer the clicked node's identity (drift-proof); fall back to a
@@ -386,16 +448,16 @@ def _generate_custom_connect_paths() -> None:
             lon=target_lon, lat=target_lat, threshold_m=MapConfig.LIFT_END_NODE_THRESHOLD_M
         )
     if target_node is not None:
-        for p in paths:
+        for p in proposals:
             p.is_connector = True
             p.target_node_id = target_node.id
             p.sector_name = f"🔗 {p.sector_name}"
 
-    ctx.proposals.paths = paths
-    ctx.proposals.selected_idx = 0
-    # Note: force_mode, target_location, start_node already set by the target before-hook
-    # No cleanup here - before_cancel_* and before_commit_* hooks handle it on exit
-    logger.info(f"Generated {len(paths)} custom paths from {start_node.id} to ({target_lat:.6f}, {target_lon:.6f})")
+    ctx.proposals.paths = proposals
+    ctx.proposals.selected_idx = 0 if proposals else None
+    # Note: force_mode, target_location, start_node already set by the target before-hook.
+    # No cleanup here - before_cancel_* and before_commit_* hooks handle it on exit.
+    logger.info(f"Generated {len(proposals)} custom paths from {start_node.id} to ({target_lat:.6f}, {target_lon:.6f})")
 
 
 def _find_closest_gradient_path(paths: "list[ProposedPathSegment]", target_gradient: float) -> int:
@@ -417,73 +479,51 @@ def _find_closest_gradient_path(paths: "list[ProposedPathSegment]", target_gradi
 # =============================================================================
 
 
-def _commit_path_transition(sm: PlannerStateMachine, segment_id: str, endpoint_node_id: str) -> None:
-    """Dispatch a non-connector slope commit to the right state-machine event.
+def _finalize_entity(kind: SegmentKind) -> "SegmentPath":
+    """Finalize the active build's committed segments into an entity and recenter.
 
-    - SlopeStarting/SlopeBuilding + commit_path → commit_first_path / commit_continue_path
-    - SlopeCustomPath + commit_custom_continue (continue building after a custom segment)
-    """
-    if sm.is_slope_custom_path:
-        sm.commit_custom_continue(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
-    else:
-        sm.send("commit_path", segment_id=segment_id, endpoint_node_id=endpoint_node_id)
-
-
-def _finalize_entity(*, is_road: bool) -> "SegmentPath":
-    """Finalize the current build's committed segments into a slope/road and recenter.
-
-    Shared finalization tail: build the entity from ctx.{road,slope}_build.segments,
-    recenter, bump the map. The caller fires the appropriate finish event. Returns the
-    finalized entity so the caller can pass its id to that event.
+    Kind-generic: groups the build's segments via the kind's finish method, recenters,
+    bumps the map. The caller fires the kind's finish event. Returns the finalized entity.
     """
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
+    build = ctx.build(kind)
 
-    build = ctx.road_build if is_road else ctx.slope_build
-    entity = (
-        graph.finish_road(segment_ids=build.segments) if is_road else graph.finish_slope(segment_ids=build.segments)
-    )
+    entity = KIND_SPECS[kind].finish(graph, build.segments)
     if not entity:
-        raise RuntimeError(f"graph.finish_{'road' if is_road else 'slope'}() failed for segments: {build.segments}")
+        raise RuntimeError(f"finishing {kind.value} failed for segments: {build.segments}")
 
-    logger.info(f"{'Road' if is_road else 'Slope'} {entity.name} (id={entity.id}) finalized")
+    logger.info(f"{kind.value.capitalize()} {entity.name} (id={entity.id}) finalized")
     center_on_segment_path(ctx=ctx, graph=graph, path=entity, zoom=MapConfig.VIEWING_ZOOM)
     bump_map_version()  # Clear stale click state
     return entity
 
 
-def _finish_current_entity(*, is_road: bool) -> None:
-    """Finish the current slope/road from committed segments (sidebar Finish buttons)."""
+def _finish_current_entity(kind: SegmentKind) -> None:
+    """Finish the current build from committed segments (sidebar Finish buttons), any kind."""
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
 
-    build = ctx.road_build if is_road else ctx.slope_build
+    build = ctx.build(kind)
     if not build.segments:
-        raise RuntimeError(f"finish called with no segments (is_road={is_road})")
+        raise RuntimeError(f"finish called with no {kind.value} segments")
 
-    entity = _finalize_entity(is_road=is_road)
-    if is_road:
-        sm.finish_road(road_id=entity.id)
-    else:
-        sm.finish_slope(slope_id=entity.id)
+    entity = _finalize_entity(kind)
+    sm.send(KIND_SPECS[kind].finish_event, **{f"{kind.value}_id": entity.id})
 
 
-def _finish_connector(*, segment_id: str, is_road: bool) -> None:
-    """Auto-finish a connector segment (target is an existing node), shared by slopes + roads.
+def _finish_connector(*, segment_id: str, kind: SegmentKind) -> None:
+    """Auto-finish a connector segment (target is an existing node), any kind.
 
-    Appends the segment to the build, finalizes the entity, fires the connector-finish
-    event (commit_road_finish / commit_custom_finish).
+    Appends the segment to the build, finalizes the entity, fires the kind's
+    connector-finish event.
     """
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
 
-    build = ctx.road_build if is_road else ctx.slope_build
-    build.segments.append(segment_id)
-    entity = _finalize_entity(is_road=is_road)
-    if is_road:
-        sm.send("commit_road_finish", segment_id=segment_id, road_id=entity.id)
-    else:
-        sm.commit_custom_finish(segment_id=segment_id, slope_id=entity.id)
+    ctx.build(kind).segments.append(segment_id)
+    entity = _finalize_entity(kind)
+    sm.send(KIND_SPECS[kind].connector_finish_event, segment_id=segment_id, entity_id=entity.id)
 
 
 def commit_selected_path(path_idx: int) -> None:
@@ -502,7 +542,7 @@ def commit_selected_path(path_idx: int) -> None:
 
     path = ctx.proposals.paths[path_idx]
     is_connector = bool(path.is_connector and path.target_node_id)
-    is_road = sm.is_any_road_state
+    kind = sm.active_build_kind
     committed_gradient = path.avg_slope_pct
 
     ctx.custom_connect.clear()
@@ -517,109 +557,43 @@ def commit_selected_path(path_idx: int) -> None:
         f"{path.length_m:.0f}m, {path.avg_slope_pct:.1f}%, endpoint={endpoint_node_id}"
     )
 
-    # Connector → auto-finish the entity (slope or road).
+    # Connector → auto-finish the entity (any kind).
     if is_connector:
-        _finish_connector(segment_id=segment_id, is_road=is_road)
+        _finish_connector(segment_id=segment_id, kind=kind)
         return
 
-    # Road non-connector: add segment, keep extending (commit_road self-loop).
-    if is_road:
-        ctx.clear_proposals()
-        end_node = graph.nodes.get(endpoint_node_id)
-        if end_node is not None:
-            ctx.map.set_building_view(lon=end_node.lon, lat=end_node.lat)
-        bump_map_version()
-        sm.send("commit_road", segment_id=segment_id, endpoint_node_id=endpoint_node_id)
-        return
-
-    # Slope non-connector: continue building, regenerate the fan from the new endpoint.
+    # Non-connector: recenter on the new endpoint, re-arm the fan, and fire the kind's
+    # commit event (fan-state self-loop, or custom-continue when in the custom-path state).
     end_node = graph.nodes.get(endpoint_node_id)
-    if end_node:
-        ctx.set_selection(lon=end_node.lon, lat=end_node.lat, elevation=end_node.elevation)
-        ctx.map.set_center(lon=end_node.lon, lat=end_node.lat)
-        ctx.deferred.path_generation = True
-        ctx.deferred.gradient_target = committed_gradient
+    if end_node is not None:
+        ctx.map.set_building_view(lon=end_node.lon, lat=end_node.lat)
+    ctx.clear_proposals()
+    ctx.deferred.fan_generation.add(kind)
+    ctx.deferred.gradient_target = committed_gradient
+    bump_map_version()
 
-    _commit_path_transition(sm=sm, segment_id=segment_id, endpoint_node_id=endpoint_node_id)
+    sm.commit_active_segment(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
 
 
 def recompute_paths() -> None:
-    """Regenerate path proposals from current position."""
+    """Regenerate proposals from the current position (segment-length slider changed).
+
+    Delegates to the same two generators the click flow uses: the custom-connect
+    generator when a target is locked in, else the active kind's fan.
+    """
+    sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
-    graph: ResortGraph = st.session_state.graph
-    factory: PathFactory = st.session_state.path_factory
-    dem = st.session_state.dem_service
 
     ctx.click_dedup.pending_recompute = False
-    segment_length = ctx.segment_length_m
 
     # Custom target mode - regenerate to stored target
     if ctx.custom_connect.force_mode and ctx.custom_connect.target_location and ctx.custom_connect.start_node:
-        target_lon, target_lat, target_elevation = ctx.custom_connect.target_location
-        start_node = graph.nodes.get(ctx.custom_connect.start_node)
-        if start_node:
-            paths = list(
-                factory.generate_manual_paths(
-                    start_lon=start_node.lon,
-                    start_lat=start_node.lat,
-                    start_elevation=start_node.elevation,
-                    target_lon=target_lon,
-                    target_lat=target_lat,
-                    target_elevation=target_elevation,
-                )
-            )
-            if paths:
-                # Reuse start + target nodes by identity (drift-proof), same as the
-                # initial custom-connect generation; keep them connectors.
-                for p in paths:
-                    p.start_node_id = start_node.id
-                if ctx.custom_connect.target_node and ctx.custom_connect.target_node in graph.nodes:
-                    target_node: Node | None = graph.nodes[ctx.custom_connect.target_node]
-                else:
-                    target_node = graph.find_nearest_node(
-                        lon=target_lon, lat=target_lat, threshold_m=MapConfig.LIFT_END_NODE_THRESHOLD_M
-                    )
-                if target_node is not None:
-                    for p in paths:
-                        p.is_connector = True
-                        p.target_node_id = target_node.id
-                ctx.proposals.paths = paths
-                ctx.proposals.selected_idx = 0
-                logger.info(
-                    f"Recomputed {len(paths)} custom paths from {start_node.id} (segment_length={segment_length}m)"
-                )
-                reload_map()  # Clear stale click state so proposal 1 can be clicked
-            return
-
-    # Clear custom connect when generating fan paths
-    if ctx.custom_connect.force_mode:
-        ctx.clear_custom_connect()
-
-    if ctx.slope_build.endpoints:
-        node = graph.nodes.get(ctx.slope_build.endpoints[0])
-        if node:
-            ctx.proposals.paths = list(
-                factory.generate_fan(
-                    lon=node.lon, lat=node.lat, elevation=node.elevation, target_length_m=segment_length
-                )
-            )
-            ctx.proposals.selected_idx = 0 if ctx.proposals.paths else None
-            logger.info(
-                f"Recomputed {len(ctx.proposals.paths)} fan paths from node {node.id} (segment_length={segment_length}m)"
-            )
-            reload_map()  # Clear stale click state so proposal 1 can be clicked
-    elif ctx.selection.has_selection():
-        lon, lat = ctx.selection.get_lon_lat()
-        elev = dem.get_elevation(lon=lon, lat=lat)
-        if elev:
-            ctx.proposals.paths = list(
-                factory.generate_fan(lon=lon, lat=lat, elevation=elev, target_length_m=segment_length)
-            )
-            ctx.proposals.selected_idx = 0 if ctx.proposals.paths else None
-            logger.info(
-                f"Recomputed {len(ctx.proposals.paths)} fan paths from click (segment_length={segment_length}m)"
-            )
-            reload_map()  # Clear stale click state so proposal 1 can be clicked
+        _generate_custom_connect_paths()
+    else:
+        if ctx.custom_connect.force_mode:
+            ctx.clear_custom_connect()
+        _generate_fan_for_building_state(kind=sm.active_build_kind)
+    reload_map()  # Clear stale click state so proposal 1 can be clicked
 
 
 # =============================================================================
@@ -629,7 +603,7 @@ def recompute_paths() -> None:
 
 def finish_current_slope() -> None:
     """Finish building and create the finalized slope (sidebar Finish button)."""
-    _finish_current_entity(is_road=False)
+    _finish_current_entity(kind=SegmentKind.SLOPE)
 
 
 def _discard_build(build_ctx: "SegmentBuildContext") -> None:
@@ -670,20 +644,20 @@ def cancel_current_slope() -> None:
     """Cancel slope building and discard segments."""
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
-    _discard_build(build_ctx=ctx.slope_build)
+    _discard_build(build_ctx=ctx.build(SegmentKind.SLOPE))
     sm.cancel_slope()
 
 
 def finish_current_road() -> None:
     """Finish building and create the finalized road (sidebar Finish button)."""
-    _finish_current_entity(is_road=True)
+    _finish_current_entity(kind=SegmentKind.ROAD)
 
 
 def cancel_current_road() -> None:
     """Cancel road building and discard its segments (mirrors cancel_current_slope)."""
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
-    _discard_build(build_ctx=ctx.road_build)
+    _discard_build(build_ctx=ctx.build(SegmentKind.ROAD))
     sm.send("cancel_road")
 
 
@@ -697,66 +671,24 @@ def _undo_add_segments(undone: AddSegmentsAction) -> None:
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
-    factory: PathFactory = st.session_state.path_factory
 
-    # Road building: mirror the slope path but on ctx.road_build, with no fan regen
-    # (roads have no fan) and forcing the road states.
-    if sm.is_any_road_state:
-        remaining = [s for s in ctx.road_build.segments if s not in undone.segment_ids]
-        ctx.road_build.segments = remaining
-        ctx.clear_proposals()
-        if remaining:
-            last_seg = graph.segments.get(remaining[-1])
-            ctx.road_build.endpoints = [last_seg.end_node_id] if last_seg else []
-            logger.info(f"[ACTION] Road undo leaves {len(remaining)} segments, forcing RoadBuilding")
-            sm.force_road_building()
-        else:
-            # No segments left, but the origin remains → back to RoadStarting.
-            ctx.road_build.endpoints = []
-            logger.info("[ACTION] Road undo leaves 0 segments, forcing RoadStarting")
-            sm.force_road_starting()
-        bump_map_version()
-        trigger_rerun()
-        return
-
-    removed_segment_id = undone.segment_ids[-1] if undone.segment_ids else ""
-
-    # Calculate remaining segments after undo
-    remaining_segments = [s for s in ctx.slope_build.segments if s not in undone.segment_ids]
-
-    # Step 3: Update context and force appropriate state
-    if remaining_segments:
-        # Update building context
-        ctx.slope_build.segments = remaining_segments
-
-        # Get the new endpoint from the last remaining segment
-        last_seg = graph.segments.get(remaining_segments[-1])
-        if last_seg:
-            ctx.slope_build.endpoints = [last_seg.end_node_id]
-
-            # Regenerate paths from new endpoint
-            if last_seg.points:
-                last_pt = last_seg.points[-1]
-                ctx.set_selection(lon=last_pt.lon, lat=last_pt.lat, elevation=last_pt.elevation)
-                ctx.proposals.paths = list(
-                    factory.generate_fan(
-                        lon=last_pt.lon,
-                        lat=last_pt.lat,
-                        elevation=last_pt.elevation,
-                        target_length_m=ctx.segment_length_m,
-                    )
-                )
-                ctx.proposals.selected_idx = 0 if ctx.proposals.paths else None
-                logger.info(f"Regenerated {len(ctx.proposals.paths)} paths from previous endpoint")
-
-        # Force to building state (exit hooks handle cleanup automatically)
-        logger.info(f"[ACTION] Undo leaves {len(remaining_segments)} segments, forcing SlopeBuilding")
-        sm.force_building()
+    # Kind-generic: peel the undone segments off the active build, then force the kind's
+    # BUILDING state (segments remain) or STARTING state (origin remains, no segments).
+    # force_* re-triggers the kind's fan from the restored endpoint.
+    kind = sm.active_build_kind
+    build = ctx.build(kind)
+    remaining = [s for s in build.segments if s not in undone.segment_ids]
+    build.segments = remaining
+    ctx.clear_proposals()
+    if remaining:
+        last_seg = graph.segments.get(remaining[-1])
+        build.endpoints = [last_seg.end_node_id] if last_seg else []
+        logger.info(f"[ACTION] {kind.value} undo leaves {len(remaining)} segments, forcing building")
+        sm.force_building(kind)
     else:
-        # No segments left - return to idle
-        logger.info(f"[ACTION] No segments left after undo (segment={removed_segment_id}), forcing IdleReady")
-        sm.force_idle()
-
+        build.endpoints = []
+        logger.info(f"[ACTION] {kind.value} undo leaves 0 segments, forcing starting")
+        sm.force_starting(kind)
     bump_map_version()
     trigger_rerun()
 
@@ -787,38 +719,35 @@ def _restore_build_context(
     return last_seg.end_node_id
 
 
-def _undo_finish_slope(undone: FinishSlopeAction) -> None:
-    """Handle undo of FINISH_SLOPE: restore building + regenerate the fan."""
+def _undo_finish(kind: SegmentKind, segment_ids: tuple[str, ...], name: str, start_node_id: str | None) -> None:
+    """Handle undo of a FINISH action (slope or road): restore building + re-arm the fan.
+
+    The graph already ungrouped the entity (segments kept). Restore the kind's build
+    context and force its BUILDING state; force_building re-triggers the fan.
+    """
     ctx: PlannerContext = st.session_state.context
-    graph: ResortGraph = st.session_state.graph
-    factory: PathFactory = st.session_state.path_factory
     sm: PlannerStateMachine = st.session_state.state_machine
 
     _restore_build_context(
-        build_ctx=ctx.slope_build,
+        build_ctx=ctx.build(kind),
+        segment_ids=segment_ids,
+        name=name,
+        start_node_id=start_node_id,
+    )
+    ctx.clear_proposals()  # force_building re-triggers the kind's fan from the endpoint
+    sm.force_building(kind)
+    bump_map_version()
+    trigger_rerun()
+
+
+def _undo_finish_slope(undone: FinishSlopeAction) -> None:
+    """Handle undo of FINISH_SLOPE."""
+    _undo_finish(
+        kind=SegmentKind.SLOPE,
         segment_ids=undone.segment_ids,
         name=undone.slope_name,
         start_node_id=undone.start_node_id,
     )
-
-    # Regenerate the fan from the restored endpoint.
-    last_seg = graph.segments[ctx.slope_build.segments[-1]]
-    last_pt = last_seg.points[-1]
-    ctx.set_selection(lon=last_pt.lon, lat=last_pt.lat, elevation=last_pt.elevation)
-    ctx.proposals.paths = list(
-        factory.generate_fan(
-            lon=last_pt.lon,
-            lat=last_pt.lat,
-            elevation=last_pt.elevation,
-            target_length_m=ctx.segment_length_m,
-        )
-    )
-    ctx.proposals.selected_idx = 0 if ctx.proposals.paths else None
-    logger.info(f"Regenerated {len(ctx.proposals.paths)} paths for restored slope")
-
-    sm.force_building()
-    bump_map_version()
-    trigger_rerun()
 
 
 def _undo_add_lift(undone: AddLiftAction) -> None:
@@ -856,25 +785,13 @@ def _undo_delete_lift(undone: DeleteLiftAction) -> None:
 
 
 def _undo_finish_road(undone: FinishRoadAction) -> None:
-    """Handle undo of FINISH_ROAD (mirrors _undo_finish_slope, minus the fan).
-
-    The graph already ungrouped the Road (segments kept). Restore the road build
-    context and force RoadBuilding so further undos peel segments.
-    """
-    ctx: PlannerContext = st.session_state.context
-    sm: PlannerStateMachine = st.session_state.state_machine
-
-    _restore_build_context(
-        build_ctx=ctx.road_build,
+    """Handle undo of FINISH_ROAD (mirrors _undo_finish_slope)."""
+    _undo_finish(
+        kind=SegmentKind.ROAD,
         segment_ids=undone.segment_ids,
         name=undone.road_name,
         start_node_id=undone.start_node_id,
     )
-
-    ctx.clear_proposals()  # roads have no fan to regenerate
-    sm.force_road_building()
-    bump_map_version()
-    trigger_rerun()
 
 
 def _undo_delete_road(undone: DeleteRoadAction) -> None:
@@ -950,14 +867,11 @@ def undo_last_action() -> None:
     logger.info(f"[ACTION] Undo requested, state={sm.get_state_name()}, undo_stack_size={len(graph.undo_stack)}")
 
     # Special case: in a build state with no committed segments → cancel that
-    # build instead of popping an unrelated undo entry. Slopes and roads mirror.
-    if sm.is_any_slope_state and not ctx.slope_build.segments:
-        logger.info("[ACTION] No segments in slope building state, canceling slope via undo")
-        sm.cancel_slope()
-        return
-    if sm.is_any_road_state and not ctx.road_build.segments:
-        logger.info("[ACTION] No segments in road building state, canceling road via undo")
-        sm.send("cancel_road")
+    # build instead of popping an unrelated undo entry (slopes cancel_slope, roads cancel_road).
+    if (sm.is_any_slope_state or sm.is_any_road_state) and not ctx.build(sm.active_build_kind).segments:
+        kind = sm.active_build_kind
+        logger.info(f"[ACTION] No segments in {kind.value} building state, canceling via undo")
+        sm.send(KIND_SPECS[kind].cancel_event)
         return
 
     undone = graph.undo_last()

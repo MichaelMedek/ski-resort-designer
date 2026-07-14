@@ -410,7 +410,7 @@ class TestSlopeBuildingActionFlow:
         assert ctx.proposals.paths, "recompute must generate fan proposals"
 
         commit_selected_path(path_idx=0)
-        assert ctx.slope_build.segments, "commit must add a segment to the building context"
+        assert ctx.build(SegmentKind.SLOPE).segments, "commit must add a segment to the building context"
 
         finish_current_slope()
         assert sm.is_idle_viewing_slope
@@ -433,6 +433,7 @@ class TestSlopeBuildingActionFlow:
         from skiresort_planner.ui.actions import (
             commit_selected_path,
             finish_current_slope,
+            process_path_generation_deferred,
             recompute_paths,
             undo_last_action,
         )
@@ -441,13 +442,15 @@ class TestSlopeBuildingActionFlow:
         sm, ctx, graph = self._start_building(fake_st, path_factory, dem)
         recompute_paths()
         commit_selected_path(path_idx=0)
-        seg_id = ctx.slope_build.segments[-1]
+        seg_id = ctx.build(SegmentKind.SLOPE).segments[-1]
         finish_current_slope()
         assert sm.is_idle_viewing_slope
 
         undo_last_action()  # undo FINISH_SLOPE
         assert sm.is_slope_building_only, "undo of finish returns to slope building"
-        assert ctx.slope_build.segments == [seg_id], "segments are restored"
+        assert ctx.build(SegmentKind.SLOPE).segments == [seg_id], "segments are restored"
+        # force_building arms the fan on the deferred pass (unified with the live flow).
+        process_path_generation_deferred()
         assert ctx.proposals.paths, "the fan is regenerated from the restored endpoint"
 
 
@@ -474,9 +477,9 @@ class TestRoadBuildingActionFlow:
         commit_selected_path(path_idx=0)
 
         assert sm.is_road_building_only, "road commit stays in road_building"
-        assert len(ctx.road_build.segments) == 1
+        assert len(ctx.build(SegmentKind.ROAD).segments) == 1
         assert len(graph.roads) == 0, "no Road entity until Finish Road"
-        assert enum_eq(a=graph.segments[ctx.road_build.segments[-1]].kind, b=SegmentKind.ROAD)
+        assert enum_eq(a=graph.segments[ctx.build(SegmentKind.ROAD).segments[-1]].kind, b=SegmentKind.ROAD)
         assert graph.undo_stack[-1].action_type.name == "ADD_SEGMENTS", "per-segment undo recorded"
 
     def test_finish_then_undo_restores_road_building(
@@ -493,13 +496,13 @@ class TestRoadBuildingActionFlow:
         ctx.proposals.paths = [ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)]
         ctx.proposals.selected_idx = 0
         commit_selected_path(path_idx=0)
-        seg_id = ctx.road_build.segments[-1]
+        seg_id = ctx.build(SegmentKind.ROAD).segments[-1]
         finish_current_road()
         assert sm.is_idle_viewing_road
 
         undo_last_action()  # undo FINISH_ROAD
         assert sm.is_road_building_only, "undo of finish returns to road building"
-        assert ctx.road_build.segments == [seg_id], "segments are restored"
+        assert ctx.build(SegmentKind.ROAD).segments == [seg_id], "segments are restored"
         assert ctx.proposals.paths == [], "roads have no fan to regenerate"
 
 
@@ -512,7 +515,7 @@ class TestDeferredProcessing:
         from skiresort_planner.ui.actions import process_path_generation_deferred
 
         _sm, ctx = _session(fake_st, ResortGraph(), factory=path_factory, dem=mock_dem_red_slope_diagonal)
-        ctx.deferred.path_generation = False
+        ctx.deferred.fan_generation.discard(SegmentKind.SLOPE)
         assert process_path_generation_deferred() is False
 
     def test_process_path_generation_builds_fan_when_pending(
@@ -526,10 +529,10 @@ class TestDeferredProcessing:
         start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
         sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
         ctx.selection.set(lon=0.0, lat=0.0, elevation=start_elev)
-        ctx.deferred.path_generation = True
+        ctx.deferred.fan_generation.add(SegmentKind.SLOPE)
 
         assert process_path_generation_deferred() is True
-        assert ctx.deferred.path_generation is False, "flag cleared after processing"
+        assert SegmentKind.SLOPE not in ctx.deferred.fan_generation, "flag cleared after processing"
         assert ctx.proposals.paths, "fan proposals generated for the building state"
 
     def test_process_custom_connect_noop_when_not_pending(

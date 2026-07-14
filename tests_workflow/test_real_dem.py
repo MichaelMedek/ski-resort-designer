@@ -6,6 +6,7 @@ They validate that algorithms work correctly with real terrain data.
 
 from skiresort_planner.core.path_tracer import PathTracer
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
+from skiresort_planner.model.path_segment import SegmentKind
 
 
 class TestRealDEMTerrain:
@@ -59,7 +60,7 @@ class TestRealDEMTerrain:
         """PathTracer generates valid paths on real terrain.
 
         Tests:
-        - trace_downhill returns valid TracedPath
+        - trace_hill returns valid TracedPath
         - Path goes downhill (positive drop)
         - Path has multiple points
         """
@@ -67,10 +68,10 @@ class TestRealDEMTerrain:
         tracer = PathTracer(dem=real_dem, analyzer=analyzer)
 
         # Start point at a summit area
-        result = tracer.trace_downhill(
+        result = tracer.trace_hill(
             start_lon=10.32,
             start_lat=46.98,
-            target_slope_pct=20.0,
+            target_grade_pct=20.0,
             side="center",
             target_length_m=400,
         )
@@ -87,7 +88,7 @@ class TestPathGenerationOnRealTerrain:
         """PathFactory generates fan of paths on real terrain.
 
         Tests:
-        - generate_fan produces multiple paths
+        - generate_slope_fan produces multiple paths
         - Paths have different difficulties
         - All paths go downhill
         """
@@ -96,7 +97,7 @@ class TestPathGenerationOnRealTerrain:
         factory = PathFactory(dem_service=real_dem)
 
         # Generate from a summit point
-        paths = list(factory.generate_fan(lon=10.32, lat=46.98, target_length_m=300))
+        paths = list(factory.generate_fan(kind=SegmentKind.SLOPE, lon=10.32, lat=46.98, target_length_m=300))
 
         assert len(paths) > 0, "Should generate at least one path"
 

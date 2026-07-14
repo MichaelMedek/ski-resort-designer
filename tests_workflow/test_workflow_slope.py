@@ -7,6 +7,7 @@ Verifies the Four Pillars (see TEST_REFACTORING_DESIGN.md Section 0) at each ste
 import pytest
 from statemachine.exceptions import TransitionNotAllowed
 
+from skiresort_planner.model.path_segment import SegmentKind
 from tests_workflow.conftest import SMAndCtx, WorkflowSetup
 
 
@@ -33,10 +34,10 @@ class TestSlopeBuildingWorkflow:
         sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
 
         assert sm.current_state_value == "slope_starting", "After start_slope: slope_starting"
-        assert ctx.slope_build.name is not None, "Building context should have slope name"
+        assert ctx.build(SegmentKind.SLOPE).name is not None, "Building context should have slope name"
 
         # === Phase 2: Generate proposals and commit first (SlopeStarting → SlopeBuilding) ===
-        proposals = list(factory.generate_fan(lon=0.0, lat=0.0, elevation=start_elev))
+        proposals = list(factory.generate_fan(kind=SegmentKind.SLOPE, lon=0.0, lat=0.0, elevation=start_elev))
         assert len(proposals) > 0, "Should generate at least one proposal"
 
         # Commit the first proposal
@@ -46,10 +47,10 @@ class TestSlopeBuildingWorkflow:
         sm.commit_path(segment_id=seg_id, endpoint_node_id=endpoint_ids[0])  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
         assert sm.current_state_value == "slope_building", "After commit_path: slope_building"
-        assert seg_id in ctx.slope_build.segments, "Segment should be in building context"
+        assert seg_id in ctx.build(SegmentKind.SLOPE).segments, "Segment should be in building context"
 
         # === Phase 3: Finish Slope (SlopeBuilding → IdleViewingSlope) ===
-        slope = graph.finish_slope(segment_ids=ctx.slope_build.segments)
+        slope = graph.finish_slope(segment_ids=ctx.build(SegmentKind.SLOPE).segments)
         assert slope is not None, "finish_slope should return Slope"
 
         sm.finish_slope(slope_id=slope.id)
@@ -80,12 +81,12 @@ class TestSelfLoopBehavior:
         start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
         sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
 
-        proposals = list(factory.generate_fan(lon=0.0, lat=0.0, elevation=start_elev))
+        proposals = list(factory.generate_fan(kind=SegmentKind.SLOPE, lon=0.0, lat=0.0, elevation=start_elev))
         endpoint_ids = graph.commit_paths(paths=[proposals[0]])
         seg1_id = list(graph.segments.keys())[0]
 
         sm.commit_path(segment_id=seg1_id, endpoint_node_id=endpoint_ids[0])  # type: ignore[attr-defined]  # dynamic python-statemachine event
-        slope1 = graph.finish_slope(segment_ids=ctx.slope_build.segments)
+        slope1 = graph.finish_slope(segment_ids=ctx.build(SegmentKind.SLOPE).segments)
         assert slope1 is not None
         sm.finish_slope(slope_id=slope1.id)
 
@@ -93,12 +94,12 @@ class TestSelfLoopBehavior:
 
         # Create second slope
         sm.start_slope(lon=0.001, lat=0.0, elevation=start_elev - 10, node_id=None)
-        proposals2 = list(factory.generate_fan(lon=0.001, lat=0.0, elevation=start_elev - 10))
+        proposals2 = list(factory.generate_fan(kind=SegmentKind.SLOPE, lon=0.001, lat=0.0, elevation=start_elev - 10))
         endpoint_ids2 = graph.commit_paths(paths=[proposals2[0]])
         seg2_id = [s for s in graph.segments if s != seg1_id][0]
 
         sm.commit_path(segment_id=seg2_id, endpoint_node_id=endpoint_ids2[0])  # type: ignore[attr-defined]  # dynamic python-statemachine event
-        slope2 = graph.finish_slope(segment_ids=ctx.slope_build.segments)
+        slope2 = graph.finish_slope(segment_ids=ctx.build(SegmentKind.SLOPE).segments)
         assert slope2 is not None
         sm.finish_slope(slope_id=slope2.id)
 
@@ -111,7 +112,7 @@ class TestSelfLoopBehavior:
 
 
 class TestForceStateMethods:
-    """Tests for force_idle() and force_building() methods used by action-layer undo.
+    """Tests for force_idle() and force_building(SegmentKind.SLOPE) methods used by action-layer undo.
 
     These methods bypass the normal state machine transitions to reset state
     after graph undo operations. They follow the 'Safe Dynamic Exit' pattern
@@ -126,29 +127,29 @@ class TestForceStateMethods:
         sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
 
         # Commit first segment to get into SlopeBuilding
-        proposals = list(factory.generate_fan(lon=0.0, lat=0.0, elevation=start_elev))
+        proposals = list(factory.generate_fan(kind=SegmentKind.SLOPE, lon=0.0, lat=0.0, elevation=start_elev))
         endpoint_ids = graph.commit_paths(paths=[proposals[0]])
         seg1_id = list(graph.segments.keys())[0]
         sm.commit_path(segment_id=seg1_id, endpoint_node_id=endpoint_ids[0])  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
         assert sm.current_state_value == "slope_building"
-        assert len(ctx.slope_build.segments) == 1
+        assert len(ctx.build(SegmentKind.SLOPE).segments) == 1
 
         # Force to idle (simulates undo removing all segments)
         sm.force_idle()
 
         assert sm.current_state_value == "idle_ready"
-        assert len(ctx.slope_build.segments) == 0, "Building context should be cleared"
+        assert len(ctx.build(SegmentKind.SLOPE).segments) == 0, "Building context should be cleared"
 
     def test_force_building_from_custom_path(self, workflow_setup: WorkflowSetup) -> None:
-        """force_building() from SlopeCustomPath goes to SlopeBuilding."""
+        """force_building(SegmentKind.SLOPE) from SlopeCustomPath goes to SlopeBuilding."""
         sm, ctx, graph, factory, dem = workflow_setup
 
         start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
         sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
 
         # Commit a segment, then click a target to enter custom path.
-        proposals = list(factory.generate_fan(lon=0.0, lat=0.0, elevation=start_elev))
+        proposals = list(factory.generate_fan(kind=SegmentKind.SLOPE, lon=0.0, lat=0.0, elevation=start_elev))
         endpoint_ids = graph.commit_paths(paths=[proposals[0]])
         seg1_id = list(graph.segments.keys())[0]
         sm.commit_path(segment_id=seg1_id, endpoint_node_id=endpoint_ids[0])  # type: ignore[attr-defined]  # dynamic python-statemachine event
@@ -160,11 +161,11 @@ class TestForceStateMethods:
         assert sm.current_state_value == "slope_custom_path"
 
         # Force back to building (simulates undo while in custom path)
-        sm.force_building()
+        sm.force_building(SegmentKind.SLOPE)
 
         assert sm.current_state_value == "slope_building"
         assert ctx.custom_connect.force_mode is False, "Custom connect should be cleared"
-        assert len(ctx.slope_build.segments) == 1, "Committed segment must survive force_building"
+        assert len(ctx.build(SegmentKind.SLOPE).segments) == 1, "Committed segment must survive force_building"
 
     def test_force_idle_from_lift_placing_clears_lift_context(self, workflow_setup: WorkflowSetup) -> None:
         """force_idle() from LiftPlacing calls exit_lift_placing which clears lift context."""
@@ -236,7 +237,7 @@ class TestCancelSlope:
         start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
         sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
 
-        proposals = list(factory.generate_fan(lon=0.0, lat=0.0, elevation=start_elev))
+        proposals = list(factory.generate_fan(kind=SegmentKind.SLOPE, lon=0.0, lat=0.0, elevation=start_elev))
         endpoint_ids = graph.commit_paths(paths=[proposals[0]])
         seg_id = list(graph.segments.keys())[0]
         sm.commit_path(segment_id=seg_id, endpoint_node_id=endpoint_ids[0])  # type: ignore[attr-defined]  # dynamic python-statemachine event
@@ -286,7 +287,7 @@ class TestCustomPathBranch:
         m = MapConfig.METERS_PER_DEGREE_EQUATOR
         sm.select_custom_target(target_location=(0.0, -500 / m, dem.get_elevation_or_raise(lon=0.0, lat=-500 / m)))  # type: ignore[attr-defined]  # dynamic python-statemachine event
         assert sm.current_state_value == "slope_custom_path"
-        assert len(ctx.slope_build.segments) == 0
+        assert len(ctx.build(SegmentKind.SLOPE).segments) == 0
 
         sm.cancel_custom_connect()
 
@@ -302,7 +303,7 @@ class TestCustomPathBranch:
         start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
         sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
 
-        proposals = list(factory.generate_fan(lon=0.0, lat=0.0, elevation=start_elev))
+        proposals = list(factory.generate_fan(kind=SegmentKind.SLOPE, lon=0.0, lat=0.0, elevation=start_elev))
         endpoint_ids = graph.commit_paths(paths=[proposals[0]])
         seg_id = list(graph.segments.keys())[0]
         sm.commit_path(segment_id=seg_id, endpoint_node_id=endpoint_ids[0])  # type: ignore[attr-defined]  # dynamic python-statemachine event
@@ -311,12 +312,12 @@ class TestCustomPathBranch:
         m = MapConfig.METERS_PER_DEGREE_EQUATOR
         sm.select_custom_target(target_location=(0.0, -1000 / m, dem.get_elevation_or_raise(lon=0.0, lat=-1000 / m)))  # type: ignore[attr-defined]  # dynamic python-statemachine event
         assert sm.current_state_value == "slope_custom_path"
-        assert len(ctx.slope_build.segments) == 1
+        assert len(ctx.build(SegmentKind.SLOPE).segments) == 1
 
         sm.cancel_custom_connect()
 
         assert sm.current_state_value == "slope_building", "one segment routes back to building, not starting"
-        assert len(ctx.slope_build.segments) == 1, "committed segment survives cancel_custom"
+        assert len(ctx.build(SegmentKind.SLOPE).segments) == 1, "committed segment survives cancel_custom"
 
 
 class TestInvalidTransitions:
@@ -341,7 +342,7 @@ class TestInvalidTransitions:
         start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
         sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
 
-        proposals = list(factory.generate_fan(lon=0.0, lat=0.0, elevation=start_elev))
+        proposals = list(factory.generate_fan(kind=SegmentKind.SLOPE, lon=0.0, lat=0.0, elevation=start_elev))
         endpoint_ids = graph.commit_paths(paths=[proposals[0]])
         seg_id = list(graph.segments.keys())[0]
         sm.commit_path(segment_id=seg_id, endpoint_node_id=endpoint_ids[0])  # type: ignore[attr-defined]  # dynamic python-statemachine event

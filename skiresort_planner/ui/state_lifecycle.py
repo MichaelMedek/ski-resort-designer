@@ -40,6 +40,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from skiresort_planner.model.path_segment import SegmentKind
+
 if TYPE_CHECKING:
     from skiresort_planner.ui.context import PlannerContext
 
@@ -71,10 +73,9 @@ def enter_idle_ready(ctx: PlannerContext) -> None:
     """
     logger.debug("[LIFECYCLE] ENTER: idle_ready - clearing all building state")
     ctx.clear_proposals()
-    ctx.clear_building()
+    ctx.clear_builds()
     ctx.clear_custom_connect()
     ctx.clear_lift()
-    ctx.clear_road()
     ctx.selection.node_id = None
     ctx.click_dedup.clear_marker()
     ctx.viewing.clear()
@@ -124,10 +125,9 @@ def enter_idle_viewing_slope(ctx: PlannerContext) -> None:
     ctx.viewing.show_panel()
     # Defensive cleanup - clear any stale building state
     ctx.clear_proposals()
-    ctx.clear_building()
+    ctx.clear_builds()
     ctx.clear_custom_connect()
     ctx.clear_lift()
-    ctx.clear_road()
     ctx.selection.node_id = None
     ctx.click_dedup.clear_marker()
 
@@ -176,10 +176,9 @@ def enter_idle_viewing_lift(ctx: PlannerContext) -> None:
     ctx.viewing.show_panel()
     # Defensive cleanup - clear any stale building state
     ctx.clear_proposals()
-    ctx.clear_building()
+    ctx.clear_builds()
     ctx.clear_custom_connect()
     ctx.clear_lift()
-    ctx.clear_road()
     ctx.selection.node_id = None
     ctx.click_dedup.clear_marker()
 
@@ -217,7 +216,7 @@ def enter_slope_starting(ctx: PlannerContext) -> None:
     - selection is set with start point (lon, lat, elevation)
     - building.start_node is set if starting from existing node
     - building.name is assigned (e.g., "Slope 5")
-    - deferred.path_generation is set to trigger path generation
+    - deferred.fan_generation gains this kind to trigger path generation
 
     This function is responsible for:
     - Hiding any viewing panel
@@ -458,10 +457,9 @@ def enter_idle_viewing_road(ctx: PlannerContext) -> None:
     logger.debug("ENTER: idle_viewing_road - showing panel, clearing building state")
     ctx.viewing.show_panel()
     ctx.clear_proposals()
-    ctx.clear_building()
+    ctx.clear_builds()
     ctx.clear_custom_connect()
     ctx.clear_lift()
-    ctx.clear_road()
     ctx.selection.node_id = None
     ctx.click_dedup.clear_marker()
 
@@ -486,11 +484,13 @@ def enter_road_starting(ctx: PlannerContext) -> None:
 
     Mirrors enter_slope_starting. The origin point was stored by
     before_start_road. Guarantees the panel is hidden and the click dedup
-    marker is fresh, regardless of which transition brought us here.
+    marker is fresh, and triggers the road fan from the origin, regardless of
+    which transition brought us here.
     """
-    logger.debug("ENTER: road_starting - hiding panel, clearing marker dedup")
+    logger.debug("ENTER: road_starting - hiding panel, clearing marker dedup, triggering road fan")
     ctx.viewing.hide_panel()
     ctx.click_dedup.clear_marker()
+    ctx.deferred.fan_generation.add(SegmentKind.ROAD)
 
 
 def exit_road_starting(ctx: PlannerContext) -> None:
@@ -507,11 +507,13 @@ def enter_road_building(ctx: PlannerContext) -> None:
     """Enter ROAD_BUILDING: continue building road (Single Point of Truth).
 
     Mirrors enter_slope_building. Sources: first segment committed
-    (commit_road_first), self-loop (commit_road_continue). Preserves the road
-    context (it holds the committed segments!) and only hides the panel.
+    (commit_road_first), self-loop (commit_road_continue), undo. Preserves the road
+    context (it holds the committed segments!), hides the panel, and triggers the
+    road fan from the new endpoint.
     """
-    logger.debug("ENTER: road_building - hiding panel, preserving road context")
+    logger.debug("ENTER: road_building - hiding panel, preserving road context, triggering road fan")
     ctx.viewing.hide_panel()
+    ctx.deferred.fan_generation.add(SegmentKind.ROAD)
 
 
 def exit_road_building(ctx: PlannerContext) -> None:
@@ -522,3 +524,20 @@ def exit_road_building(ctx: PlannerContext) -> None:
     road state here would erase the committed segments on the self-loop.
     """
     logger.debug("EXIT: road_building - no cleanup needed")
+
+
+def enter_road_custom_path(ctx: PlannerContext) -> None:
+    """Enter ROAD_CUSTOM_PATH: show path options routed to a clicked target.
+
+    Mirror of enter_slope_custom_path. The target before-hook set start_node,
+    target_location and force_mode; this triggers the shared deferred custom-connect
+    generation, which resolves the active build (road) and routes to the target.
+    Fires on the retarget self-loop too, so a new target click regenerates proposals.
+    """
+    logger.debug("ENTER: road_custom_path - triggering deferred custom-connect generation")
+    ctx.deferred.custom_connect = True
+
+
+def exit_road_custom_path(ctx: PlannerContext) -> None:
+    """Exit ROAD_CUSTOM_PATH: no-op (destinations handle their own cleanup)."""
+    logger.debug("EXIT: road_custom_path - no cleanup (destination handles it)")

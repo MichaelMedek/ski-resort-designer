@@ -95,12 +95,21 @@ class MapConfig:
     # Small offsets prevent z-fighting while keeping flat appearance
     # Z-offsets for 2D mode - small values for proper layer ordering
     Z_OFFSET_2D_SLOPES = 1  # Slope polygons at base
-    Z_OFFSET_2D_LIFTS = 2  # Lift cables above slopes
-    Z_OFFSET_2D_PYLONS = 3  # Pylons slightly above lift cables
-    Z_OFFSET_2D_ICONS = 4  # Slope/lift icons above pylons
+    Z_OFFSET_2D_ROADS = 2  # Road polygons just above slopes (matches slopes→roads z-order)
+    Z_OFFSET_2D_LIFTS = 3  # Lift cables above roads
+    Z_OFFSET_2D_PYLONS = 4  # Pylons slightly above lift cables
+    Z_OFFSET_2D_ICONS = 5  # Slope/road/lift icons above pylons
     Z_OFFSET_2D_NODE_BIG = 9  # Merge-selected or parking palce (big red or blue) nodes just BELOW plain nodes
     Z_OFFSET_2D_NODES = 10  # Nodes above icons
     Z_OFFSET_2D_MARKERS = 20  # Interactive markers (commit/select) on top
+
+    # Flat-mode z-offset per committed-segment kind, keyed by SegmentKind value. Keyed by
+    # the string value (not the enum) to stay reload-safe and avoid a model import here.
+    # Kept in sync with SegmentKind by an assert in ui/kind_spec.py.
+    SEGMENT_FLAT_Z = {
+        "slope": Z_OFFSET_2D_SLOPES,
+        "road": Z_OFFSET_2D_ROADS,
+    }
 
 
 class DEMConfig:

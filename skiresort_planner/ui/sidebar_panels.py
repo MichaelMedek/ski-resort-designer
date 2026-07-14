@@ -18,6 +18,7 @@ from collections.abc import Callable
 import streamlit as st
 
 from skiresort_planner.constants import OSMConfig, PathConfig
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.actions import (
     cancel_current_road,
@@ -97,7 +98,7 @@ class SlopeSidebarPanel(SidebarPanel):
     """slope_starting / slope_building / slope_custom_path: Finish/Cancel + Path Settings slider."""
 
     def controls(self) -> None:
-        has_segments = self.ctx.has_committed_segments()
+        has_segments = self.ctx.build(SegmentKind.SLOPE).has_committed_segments()
 
         if st.button(
             "🏁 Finish Committed Slope",
@@ -119,7 +120,7 @@ class SlopeSidebarPanel(SidebarPanel):
             help="Discard current slope and return to IDLE",
             key="cancel_slope_btn",
         ):
-            logger.info(f"UI: Cancel slope requested for {self.ctx.slope_build.name}")
+            logger.info(f"UI: Cancel slope requested for {self.ctx.build(SegmentKind.SLOPE).name}")
             cancel_current_slope()
 
         # Path settings apply only to fan-out proposals; hide the whole block while
@@ -158,7 +159,7 @@ class RoadSidebarPanel(SidebarPanel):
     """road_starting / road_building: Finish/Cancel road (mirrors SlopeSidebarPanel)."""
 
     def controls(self) -> None:
-        has_segments = self.ctx.road_build.has_committed_segments()
+        has_segments = self.ctx.build(SegmentKind.ROAD).has_committed_segments()
 
         if st.button(
             "🏁 Finish Committed Road",
