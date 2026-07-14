@@ -6,7 +6,7 @@ Focus on _are_paths_similar and _deduplicate_paths which are mathematical compar
 
 import pytest
 
-from skiresort_planner.constants import SlopeConfig
+from skiresort_planner.constants import GeometricTuningConfig, SlopeConfig
 from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.generators.path_factory import GradeConfig, PathFactory, Side
 from skiresort_planner.model.path_point import PathPoint
@@ -416,13 +416,13 @@ class TestStraightLine:
     """The one direct-line builder, straight_line(kind), used for the road bridge/cut fallback."""
 
     def _endpoints(self) -> tuple[float, float, float, float, float, float]:
-        # Explicit elevations: the builder does not query the DEM, it wraps the two given
-        # points, so we control the drop directly (250m S, 25m drop → 10%).
+        # Explicit elevations: the builder does not query the DEM, it interpolates the two
+        # given points, so we control the drop directly (250m S, 25m drop → 10%).
         M = 111320.0
         return 0.0, 0.0, 2500.0, 0.0, -250 / M, 2475.0
 
-    def test_road_straight_line_is_a_two_point_connector(self, path_factory: PathFactory) -> None:
-        """A direct road is a 2-point ROAD connector with no ski difficulty."""
+    def test_road_straight_line_is_a_densified_connector(self, path_factory: PathFactory) -> None:
+        """A direct road is a ROAD connector, densified to RESAMPLE_STEP_M, no ski difficulty."""
         s_lon, s_lat, s_elev, t_lon, t_lat, t_elev = self._endpoints()
         road = path_factory.straight_line(
             kind=SegmentKind.ROAD,
@@ -433,9 +433,16 @@ class TestStraightLine:
             target_lat=t_lat,
             target_elevation=t_elev,
         )
-        assert len(road.points) == 2, "a direct line is exactly its two endpoints"
+        # 250m / 7m step → 35 whole steps → 36 points, endpoints hit exactly.
+        n_steps = int(250 / GeometricTuningConfig.RESAMPLE_STEP_M)
+        assert len(road.points) == n_steps + 1
         assert (road.points[0].lon, road.points[0].lat, road.points[0].elevation) == (s_lon, s_lat, s_elev)
         assert (road.points[-1].lon, road.points[-1].lat, road.points[-1].elevation) == (t_lon, t_lat, t_elev)
+        # Straight 3D line: every interior point is the linear interpolation of the endpoints.
+        for i, pt in enumerate(road.points):
+            frac = i / n_steps
+            assert pt.lat == pytest.approx(s_lat + (t_lat - s_lat) * frac, abs=1e-12)
+            assert pt.elevation == pytest.approx(s_elev + (t_elev - s_elev) * frac, abs=1e-9)
         assert road.is_connector
         assert enum_eq(a=road.kind, b=SegmentKind.ROAD)
         assert road.target_difficulty == "", "a road carries no ski difficulty"

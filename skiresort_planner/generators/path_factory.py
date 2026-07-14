@@ -31,10 +31,12 @@ from skiresort_planner.constants import (
     StyleConfig,
 )
 from skiresort_planner.core.dem_service import DEMService
+from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.path_tracer import PathTracer
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.generators.connection_planners import GradientMode, LeastCostPathPlanner
+from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 
@@ -519,18 +521,24 @@ class PathFactory:
         target_lat: float,
         target_elevation: float,
     ) -> ProposedPathSegment:
-        """A direct 2-point connector (bridge/cut) between two points, of the given kind.
+        """A direct straight-line connector (bridge/cut) between two points, of the given kind.
 
-        The direct fallback when the grid planner finds no in-grade route. Carries no
-        difficulty; the caller still hard-caps it at the kind's max grade before offering.
-        Only kinds whose KindSpec.has_direct_fallback is True use this.
+        The fallback when the grid planner finds no in-grade route; the caller still
+        hard-caps it at the kind's max grade. Densified to RESAMPLE_STEP_M by linear
+        interpolation (matching the planner/finish density) but stays a straight 3D line,
+        not DEM-sampled. Only kinds whose KindSpec.has_direct_fallback is True use this.
         """
-        from skiresort_planner.model.path_point import PathPoint
-
-        # Create simple 2-point path
+        distance_m = GeoCalculator.haversine_distance_m(
+            lat1=start_lat, lon1=start_lon, lat2=target_lat, lon2=target_lon
+        )
+        n_steps = max(1, int(distance_m / GeometricTuningConfig.RESAMPLE_STEP_M))
         points = [
-            PathPoint(lon=start_lon, lat=start_lat, elevation=start_elevation),
-            PathPoint(lon=target_lon, lat=target_lat, elevation=target_elevation),
+            PathPoint(
+                lon=start_lon + (target_lon - start_lon) * (i / n_steps),
+                lat=start_lat + (target_lat - start_lat) * (i / n_steps),
+                elevation=start_elevation + (target_elevation - start_elevation) * (i / n_steps),
+            )
+            for i in range(n_steps + 1)
         ]
         return ProposedPathSegment(
             points=points,
