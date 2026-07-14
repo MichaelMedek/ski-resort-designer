@@ -7,18 +7,21 @@ state — targeting is map-only, mirroring roads.
 """
 
 from skiresort_planner.constants import MapConfig
+from skiresort_planner.generators.path_factory import PathFactory
+from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.context import CustomConnectContext
+from skiresort_planner.ui.state_machine import PlannerStateMachine
 from tests_workflow.conftest import WorkflowSetup
 
 M = MapConfig.METERS_PER_DEGREE_EQUATOR
 
 
-def _commit_first_segment(sm, graph, factory, start_elev) -> str:
+def _commit_first_segment(sm: PlannerStateMachine, graph: ResortGraph, factory: PathFactory, start_elev: float) -> str:
     """Commit one fan segment from the origin so the SM reaches slope_building."""
     proposals = list(factory.generate_fan(lon=0.0, lat=0.0, elevation=start_elev))
     endpoint_ids = graph.commit_paths(paths=[proposals[0]])
     seg_id = list(graph.segments.keys())[0]
-    sm.commit_path(segment_id=seg_id, endpoint_node_id=endpoint_ids[0])
+    sm.commit_path(segment_id=seg_id, endpoint_node_id=endpoint_ids[0])  # type: ignore[attr-defined]  # dynamic python-statemachine event
     return endpoint_ids[0]
 
 
@@ -76,6 +79,7 @@ class TestSelectCustomTargetWorkflow:
 
         assert sm.current_state_value == "slope_custom_path", "re-target stays in custom path"
         assert ctx.custom_connect.start_node == start_node_first, "start node preserved on re-target"
+        assert ctx.custom_connect.target_location is not None
         assert abs(ctx.custom_connect.target_location[1] - new_lat) < 0.0001, "target moved to new point"
 
     def test_target_node_captured_for_identity_reuse(self, workflow_setup: WorkflowSetup) -> None:

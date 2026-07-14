@@ -159,7 +159,9 @@ class _IdleReadyState(BuildState):
     state_key = "idle_ready"
 
     def control_panel(self, sm, ctx, graph, on_commit, on_cancel_connection):  # type: ignore[no-untyped-def]
-        return right_panel.EmptyControlPanel(sm, ctx, graph, on_commit, on_cancel_connection)
+        return right_panel.EmptyControlPanel(
+            sm=sm, ctx=ctx, graph=graph, on_commit=on_commit, on_cancel_connection=on_cancel_connection
+        )
 
     def click_handler(self) -> ClickHandler:
         return click_handlers.handle_idle_click
@@ -206,7 +208,12 @@ class _EntityViewingState(BuildState):
 
     def control_panel(self, sm, ctx, graph, on_commit, on_cancel_connection):  # type: ignore[no-untyped-def]
         return right_panel.EntityInfoControlPanel(
-            sm, ctx, graph, on_commit, on_cancel_connection, spec=ENTITY_KIND_SPECS[self.kind]
+            sm=sm,
+            ctx=ctx,
+            graph=graph,
+            on_commit=on_commit,
+            on_cancel_connection=on_cancel_connection,
+            spec=ENTITY_KIND_SPECS[self.kind],
         )
 
     def click_handler(self) -> ClickHandler:
@@ -218,7 +225,7 @@ class _EntityViewingState(BuildState):
     def view_state(self, ctx, graph, use_3d):  # type: ignore[no-untyped-def]
         entity_id = ENTITY_KIND_SPECS[self.kind].viewed_entity_id(ctx)
         if use_3d and entity_id is not None:
-            return self._fit_3d_view(graph, entity_id)
+            return self._fit_3d_view(graph=graph, entity_id=entity_id)
         return _stored_2d_view(ctx)
 
     def bottom_profile(self, ctx, graph):  # type: ignore[no-untyped-def]
@@ -278,7 +285,9 @@ class _SlopeBuildingState(BuildState):
         self.state_key = state_key
 
     def control_panel(self, sm, ctx, graph, on_commit, on_cancel_connection):  # type: ignore[no-untyped-def]
-        return right_panel.SlopeBuildingControlPanel(sm, ctx, graph, on_commit, on_cancel_connection)
+        return right_panel.SlopeBuildingControlPanel(
+            sm=sm, ctx=ctx, graph=graph, on_commit=on_commit, on_cancel_connection=on_cancel_connection
+        )
 
     def click_handler(self) -> ClickHandler:
         return click_handlers.handle_slope_building_click
@@ -340,7 +349,9 @@ class _LiftPlacingState(BuildState):
     state_key = "lift_placing"
 
     def control_panel(self, sm, ctx, graph, on_commit, on_cancel_connection):  # type: ignore[no-untyped-def]
-        return right_panel.LiftPlacingControlPanel(sm, ctx, graph, on_commit, on_cancel_connection)
+        return right_panel.LiftPlacingControlPanel(
+            sm=sm, ctx=ctx, graph=graph, on_commit=on_commit, on_cancel_connection=on_cancel_connection
+        )
 
     def click_handler(self) -> ClickHandler:
         return click_handlers.handle_lift_placing_click
@@ -388,7 +399,9 @@ class _ImportPlacingState(BuildState):
     state_key = "import_placing"
 
     def control_panel(self, sm, ctx, graph, on_commit, on_cancel_connection):  # type: ignore[no-untyped-def]
-        return right_panel.ImportPlacingControlPanel(sm, ctx, graph, on_commit, on_cancel_connection)
+        return right_panel.ImportPlacingControlPanel(
+            sm=sm, ctx=ctx, graph=graph, on_commit=on_commit, on_cancel_connection=on_cancel_connection
+        )
 
     def click_handler(self) -> ClickHandler:
         return click_handlers.handle_import_placing_click
@@ -434,7 +447,9 @@ class _MergePlacingState(BuildState):
     state_key = "merge_placing"
 
     def control_panel(self, sm, ctx, graph, on_commit, on_cancel_connection):  # type: ignore[no-untyped-def]
-        return right_panel.MergePlacingControlPanel(sm, ctx, graph, on_commit, on_cancel_connection)
+        return right_panel.MergePlacingControlPanel(
+            sm=sm, ctx=ctx, graph=graph, on_commit=on_commit, on_cancel_connection=on_cancel_connection
+        )
 
     def click_handler(self) -> ClickHandler:
         return click_handlers.handle_merge_placing_click
@@ -474,7 +489,9 @@ class _RoadBuildingState(BuildState):
         self.state_key = state_key
 
     def control_panel(self, sm, ctx, graph, on_commit, on_cancel_connection):  # type: ignore[no-untyped-def]
-        return right_panel.RoadBuildingControlPanel(sm, ctx, graph, on_commit, on_cancel_connection)
+        return right_panel.RoadBuildingControlPanel(
+            sm=sm, ctx=ctx, graph=graph, on_commit=on_commit, on_cancel_connection=on_cancel_connection
+        )
 
     def click_handler(self) -> ClickHandler:
         return click_handlers.handle_road_building_click

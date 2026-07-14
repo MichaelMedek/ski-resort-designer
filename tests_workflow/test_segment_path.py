@@ -10,7 +10,7 @@ import pytest
 from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.path_point import PathPoint
-from skiresort_planner.model.path_segment import SegmentKind
+from skiresort_planner.model.path_segment import PathSegment, SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.model.road import Road
@@ -78,20 +78,18 @@ class TestSegmentKind:
     def test_slope_commit_defaults_to_slope_kind(self, empty_graph, path_points_blue) -> None:
         empty_graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         seg = list(empty_graph.segments.values())[-1]
-        assert enum_eq(seg.kind, SegmentKind.SLOPE)
+        assert enum_eq(a=seg.kind, b=SegmentKind.SLOPE)
 
     def test_road_commit_carries_road_kind(self, empty_graph, path_points_blue) -> None:
         empty_graph.commit_paths(
             paths=[ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)]
         )
         seg = list(empty_graph.segments.values())[-1]
-        assert enum_eq(seg.kind, SegmentKind.ROAD)
+        assert enum_eq(a=seg.kind, b=SegmentKind.ROAD)
 
     def test_from_dict_defaults_to_slope_when_kind_absent(self) -> None:
         # Pre-enum saves have no "kind" key → SLOPE (backward compatible).
-        from skiresort_planner.model.path_segment import PathSegment
-
-        data = {
+        data: dict[str, object] = {
             "id": "S1",
             "name": "Segment 1",
             "points": [
@@ -101,12 +99,10 @@ class TestSegmentKind:
             "start_node_id": "N1",
             "end_node_id": "N2",
         }
-        assert enum_eq(PathSegment.from_dict(data=data).kind, SegmentKind.SLOPE)
+        assert enum_eq(a=PathSegment.from_dict(data=data).kind, b=SegmentKind.SLOPE)
 
     def test_from_dict_reads_road_kind(self) -> None:
-        from skiresort_planner.model.path_segment import PathSegment
-
-        data = {
+        data: dict[str, object] = {
             "id": "S1",
             "name": "Segment 1",
             "points": [
@@ -117,7 +113,7 @@ class TestSegmentKind:
             "end_node_id": "N2",
             "kind": "road",
         }
-        assert enum_eq(PathSegment.from_dict(data=data).kind, SegmentKind.ROAD)
+        assert enum_eq(a=PathSegment.from_dict(data=data).kind, b=SegmentKind.ROAD)
 
 
 class TestBeltWidth:
@@ -125,8 +121,6 @@ class TestBeltWidth:
 
     @staticmethod
     def _segment(kind: SegmentKind, side_slope_pct: float) -> "PathSegment":
-        from skiresort_planner.model.path_segment import PathSegment
-
         return PathSegment(
             points=[
                 PathPoint(lon=0.0, lat=0.0, elevation=2000.0),

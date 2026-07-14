@@ -423,11 +423,22 @@ class MapRenderer:
             is_road = enum_eq(segment.kind, SegmentKind.ROAD)
             flat_z = MapConfig.Z_OFFSET_2D_LIFTS if is_road else MapConfig.Z_OFFSET_2D_SLOPES
             center_line = [
-                [p.lon, p.lat, self._get_z(p.elevation, MarkerConfig.PATH_Z_OFFSET_M, use_3d, flat_z)]
+                [
+                    p.lon,
+                    p.lat,
+                    self._get_z(
+                        elevation=p.elevation, z_offset=MarkerConfig.PATH_Z_OFFSET_M, use_3d=use_3d, flat_z=flat_z
+                    ),
+                ]
                 for p in segment.points
             ]
             mid_pt = segment.points[len(segment.points) // 2]
-            icon_z = self._get_z(mid_pt.elevation, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, MapConfig.Z_OFFSET_2D_ICONS)
+            icon_z = self._get_z(
+                elevation=mid_pt.elevation,
+                z_offset=MarkerConfig.MARKER_Z_OFFSET_M,
+                use_3d=use_3d,
+                flat_z=MapConfig.Z_OFFSET_2D_ICONS,
+            )
             icon_position = [mid_pt.lon, mid_pt.lat, icon_z]
 
             if is_road:
@@ -604,7 +615,12 @@ class MapRenderer:
                 [
                     pt.lon,
                     pt.lat,
-                    self._get_z(pt.elevation, MarkerConfig.PATH_Z_OFFSET_M, use_3d, MapConfig.Z_OFFSET_2D_LIFTS),
+                    self._get_z(
+                        elevation=pt.elevation,
+                        z_offset=MarkerConfig.PATH_Z_OFFSET_M,
+                        use_3d=use_3d,
+                        flat_z=MapConfig.Z_OFFSET_2D_LIFTS,
+                    ),
                 ]
                 for pt in lift.cable_points
             ]
@@ -623,7 +639,10 @@ class MapRenderer:
             # Pylon markers at top of each pylon
             for i, pylon in enumerate(lift.pylons):
                 pylon_z = self._get_z(
-                    pylon.top_elevation_m, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, MapConfig.Z_OFFSET_2D_PYLONS
+                    elevation=pylon.top_elevation_m,
+                    z_offset=MarkerConfig.MARKER_Z_OFFSET_M,
+                    use_3d=use_3d,
+                    flat_z=MapConfig.Z_OFFSET_2D_PYLONS,
                 )
                 pylon_data.append(
                     {
@@ -640,7 +659,12 @@ class MapRenderer:
             mid_lat = (start_node.lat + end_node.lat) / 2
             mid_lon = (start_node.lon + end_node.lon) / 2
             mid_elev = (start_node.elevation + end_node.elevation) / 2
-            icon_z = self._get_z(mid_elev, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, MapConfig.Z_OFFSET_2D_ICONS)
+            icon_z = self._get_z(
+                elevation=mid_elev,
+                z_offset=MarkerConfig.MARKER_Z_OFFSET_M,
+                use_3d=use_3d,
+                flat_z=MapConfig.Z_OFFSET_2D_ICONS,
+            )
             icon_data.append(
                 {
                     "type": ClickConfig.TYPE_LIFT,
@@ -758,7 +782,12 @@ class MapRenderer:
                     "position": [
                         node.lon,
                         node.lat,
-                        self._get_z(node.elevation, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, flat_z),
+                        self._get_z(
+                            elevation=node.elevation,
+                            z_offset=MarkerConfig.MARKER_Z_OFFSET_M,
+                            use_3d=use_3d,
+                            flat_z=flat_z,
+                        ),
                     ],
                     "elevation": node.elevation,
                     "color": color,
@@ -836,7 +865,16 @@ class MapRenderer:
                     "id": f"path_{i}",  # Unique ID for click deduplication
                     "proposal_index": i,
                     "path": [
-                        [p.lon, p.lat, self._get_z(p.elevation, MarkerConfig.PATH_Z_OFFSET_M, use_3d, z_offset_2d)]
+                        [
+                            p.lon,
+                            p.lat,
+                            self._get_z(
+                                elevation=p.elevation,
+                                z_offset=MarkerConfig.PATH_Z_OFFSET_M,
+                                use_3d=use_3d,
+                                flat_z=z_offset_2d,
+                            ),
+                        ]
                         for p in proposal.points
                     ],
                     "color": color,
@@ -856,7 +894,12 @@ class MapRenderer:
                     "position": [
                         start_pt.lon,
                         start_pt.lat,
-                        self._get_z(start_pt.elevation, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, z_offset_2d),
+                        self._get_z(
+                            elevation=start_pt.elevation,
+                            z_offset=MarkerConfig.MARKER_Z_OFFSET_M,
+                            use_3d=use_3d,
+                            flat_z=z_offset_2d,
+                        ),
                     ],
                     "color": [255, 255, 255, 200],
                     "elevation": start_pt.elevation,
@@ -875,7 +918,12 @@ class MapRenderer:
                     "position": [
                         mid_pt.lon,
                         mid_pt.lat,
-                        self._get_z(mid_pt.elevation, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, z_offset_2d),
+                        self._get_z(
+                            elevation=mid_pt.elevation,
+                            z_offset=MarkerConfig.MARKER_Z_OFFSET_M,
+                            use_3d=use_3d,
+                            flat_z=z_offset_2d,
+                        ),
                     ],
                     "color": color,
                     "name": f"Select Proposal {i + 1}",
@@ -895,7 +943,12 @@ class MapRenderer:
                         "position": [
                             end_pt.lon,
                             end_pt.lat,
-                            self._get_z(end_pt.elevation, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, z_offset_2d),
+                            self._get_z(
+                                elevation=end_pt.elevation,
+                                z_offset=MarkerConfig.MARKER_Z_OFFSET_M,
+                                use_3d=use_3d,
+                                flat_z=z_offset_2d,
+                            ),
                         ],
                         "color": ClickConfig.PROPOSAL_ENDPOINT_COLOR,
                         "elevation": end_pt.elevation,
@@ -983,7 +1036,12 @@ class MapRenderer:
             use_3d: If True, render at terrain elevation. If False, render flat.
         """
         arrow_data = []
-        arrow_z = self._get_z(elevation, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, MapConfig.Z_OFFSET_2D_MARKERS)
+        arrow_z = self._get_z(
+            elevation=elevation,
+            z_offset=MarkerConfig.MARKER_Z_OFFSET_M,
+            use_3d=use_3d,
+            flat_z=MapConfig.Z_OFFSET_2D_MARKERS,
+        )
 
         # Fall line arrow (difficulty colored)
         if orientation.fall_line is not None:
@@ -1128,7 +1186,12 @@ class MapRenderer:
             use_3d: If True, render at terrain elevation. If False, render flat.
         """
         layers = []
-        marker_z = self._get_z(elevation, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, MapConfig.Z_OFFSET_2D_MARKERS)
+        marker_z = self._get_z(
+            elevation=elevation,
+            z_offset=MarkerConfig.MARKER_Z_OFFSET_M,
+            use_3d=use_3d,
+            flat_z=MapConfig.Z_OFFSET_2D_MARKERS,
+        )
 
         # Station marker
         station_data = [
@@ -1189,7 +1252,12 @@ class MapRenderer:
             elevation: Ground elevation.
             use_3d: If True, render at terrain elevation. If False, render flat.
         """
-        marker_z = self._get_z(elevation, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, MapConfig.Z_OFFSET_2D_MARKERS)
+        marker_z = self._get_z(
+            elevation=elevation,
+            z_offset=MarkerConfig.MARKER_Z_OFFSET_M,
+            use_3d=use_3d,
+            flat_z=MapConfig.Z_OFFSET_2D_MARKERS,
+        )
         station_data = [
             {
                 "position": [lon, lat, marker_z],
@@ -1242,7 +1310,12 @@ class MapRenderer:
             [min_lon, max_lat],
             [min_lon, min_lat],
         ]
-        marker_z = self._get_z(elevation, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, MapConfig.Z_OFFSET_2D_MARKERS)
+        marker_z = self._get_z(
+            elevation=elevation,
+            z_offset=MarkerConfig.MARKER_Z_OFFSET_M,
+            use_3d=use_3d,
+            flat_z=MapConfig.Z_OFFSET_2D_MARKERS,
+        )
         return [
             pdk.Layer(
                 "PolygonLayer",

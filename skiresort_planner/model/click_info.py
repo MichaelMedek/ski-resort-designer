@@ -19,7 +19,6 @@ STRICT: All click detection flows through ClickInfo. Any deviation is a bug.
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
 
 
 class MapClickType(Enum):
@@ -64,18 +63,18 @@ class ClickInfo:
     """
 
     click_type: MapClickType
-    lat: Optional[float] = None
-    lon: Optional[float] = None
-    marker_type: Optional[MarkerType] = None
+    lat: float | None = None
+    lon: float | None = None
+    marker_type: MarkerType | None = None
 
     # Direct ID storage - exactly ONE set for each marker type
-    node_id: Optional[str] = None  # "N1" for NODE
-    slope_id: Optional[str] = None  # "SL1" for SLOPE
-    segment_id: Optional[str] = None  # "S1" for SEGMENT
-    lift_id: Optional[str] = None  # "L1" for LIFT and PYLON
-    road_id: Optional[str] = None  # "R1" for ROAD
-    pylon_index: Optional[int] = None  # 0-indexed (PYLON only)
-    proposal_index: Optional[int] = None  # 0-indexed (PROPOSAL_* only)
+    node_id: str | None = None  # "N1" for NODE
+    slope_id: str | None = None  # "SL1" for SLOPE
+    segment_id: str | None = None  # "S1" for SEGMENT
+    lift_id: str | None = None  # "L1" for LIFT and PYLON
+    road_id: str | None = None  # "R1" for ROAD
+    pylon_index: int | None = None  # 0-indexed (PYLON only)
+    proposal_index: int | None = None  # 0-indexed (PROPOSAL_* only)
 
     def __post_init__(self) -> None:
         """Validate invariants - STRICT: fail immediately on invalid state."""
@@ -179,14 +178,14 @@ class ClickInfo:
     # =========================================================================
 
     @property
-    def proposal_number(self) -> Optional[int]:
+    def proposal_number(self) -> int | None:
         """Proposal number as 1-indexed for display. Returns None if not a proposal."""
         if self.proposal_index is not None:
             return self.proposal_index + 1
         return None
 
     @property
-    def pylon_number(self) -> Optional[int]:
+    def pylon_number(self) -> int | None:
         """Pylon number as 1-indexed for display. Returns None if not a pylon."""
         if self.pylon_index is not None:
             return self.pylon_index + 1

@@ -14,10 +14,10 @@ Matrix Reference (from state_machine.py docstring):
 """
 
 import pytest
-
-from skiresort_planner.ui.state_machine import PlannerStateMachine
 from statemachine.exceptions import TransitionNotAllowed
 
+from skiresort_planner.ui.state_machine import PlannerStateMachine
+from tests_workflow.conftest import SMAndCtx
 
 # =============================================================================
 # TRUTH TABLE: Valid Transitions
@@ -157,14 +157,14 @@ class TestTransitionMatrix:
     """Parameterized tests validating the complete state machine transition matrix."""
 
     @pytest.fixture
-    def sm_ctx(self, sm_and_ctx: tuple) -> tuple:
+    def sm_ctx(self, sm_and_ctx: SMAndCtx) -> SMAndCtx:
         """Get state machine and context from conftest fixture."""
         return sm_and_ctx
 
     @pytest.mark.parametrize("event,valid_states,_setup", VALID_TRANSITIONS)
     def test_valid_transitions_are_allowed_from_source(
         self,
-        sm_ctx: tuple,
+        sm_ctx: SMAndCtx,
         event: str,
         valid_states: list[str],
         _setup: str | None,
@@ -187,7 +187,7 @@ class TestTransitionMatrix:
     @pytest.mark.parametrize("event,invalid_states", INVALID_TRANSITIONS)
     def test_invalid_transitions_raise_error(
         self,
-        sm_ctx: tuple,
+        sm_ctx: SMAndCtx,
         event: str,
         invalid_states: list[str],
     ) -> None:
@@ -233,7 +233,7 @@ class TestCancelCustomGuards:
     - cancel_custom_to_building: when 1+ segments → SLOPE_BUILDING
     """
 
-    def test_cancel_custom_with_no_segments_goes_to_starting(self, sm_and_ctx: tuple) -> None:
+    def test_cancel_custom_with_no_segments_goes_to_starting(self, sm_and_ctx: SMAndCtx) -> None:
         """Cancel custom with 0 segments returns to SLOPE_STARTING."""
         sm, ctx = sm_and_ctx
 
@@ -242,12 +242,12 @@ class TestCancelCustomGuards:
         ctx.slope_build.segments = []  # No segments committed
 
         # Act: Call cancel_custom event
-        sm.cancel_custom()
+        sm.cancel_custom()  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
         # Assert: Should transition to slope_starting
         assert sm.current_state == sm.slope_starting
 
-    def test_cancel_custom_with_segments_goes_to_building(self, sm_and_ctx: tuple) -> None:
+    def test_cancel_custom_with_segments_goes_to_building(self, sm_and_ctx: SMAndCtx) -> None:
         """Cancel custom with segments returns to SLOPE_BUILDING."""
         sm, ctx = sm_and_ctx
 
@@ -256,7 +256,7 @@ class TestCancelCustomGuards:
         ctx.slope_build.segments = ["S1"]  # Has committed segments
 
         # Act: Call cancel_custom event
-        sm.cancel_custom()
+        sm.cancel_custom()  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
         # Assert: Should transition to slope_building
         assert sm.current_state == sm.slope_building
@@ -292,7 +292,8 @@ class TestViewingEntity:
 
 class TestImportPlacing:
     """The click-to-place OSM import mode: start_import from any idle state stores the box center;
-    retarget re-places it; cancel/complete return to idle (cancel also clears the center)."""
+    retarget re-places it; cancel/complete return to idle (cancel also clears the center).
+    """
 
     def _sm(self):
         from skiresort_planner.model.resort_graph import ResortGraph

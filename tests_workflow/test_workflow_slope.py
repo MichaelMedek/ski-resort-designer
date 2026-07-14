@@ -26,7 +26,8 @@ class TestSlopeBuildingWorkflow:
 
         # === Phase 1: Start Slope (IdleReady → SlopeStarting) ===
         assert sm.current_state_value == "idle_ready", "Should start in idle_ready"
-        assert ctx.viewing.panel_visible is False, "No panel in idle_ready"
+        panel_at_idle = ctx.viewing.panel_visible
+        assert panel_at_idle is False, "No panel in idle_ready"
 
         start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
         sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
@@ -55,14 +56,16 @@ class TestSlopeBuildingWorkflow:
 
         # VERIFY Pillar 1: enter_idle_viewing_slope guarantees panel visible
         assert sm.current_state_value == "idle_viewing_slope", "After finish: idle_viewing_slope"
-        assert ctx.viewing.panel_visible is True, "Panel should be visible in viewing state"
+        panel_at_view = ctx.viewing.panel_visible
+        assert panel_at_view is True, "Panel should be visible in viewing state"
         assert ctx.viewing.slope_id == slope.id, "Viewing context should have slope ID"
 
         # === Phase 4: Close Panel (IdleViewingSlope → IdleReady) ===
-        sm.close_panel()
+        sm.close_panel()  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
         assert sm.current_state_value == "idle_ready", "After close: idle_ready"
-        assert ctx.viewing.panel_visible is False, "Panel should be hidden"
+        panel_after_close = ctx.viewing.panel_visible
+        assert panel_after_close is False, "Panel should be hidden"
         assert ctx.viewing.slope_id is None, "Viewing slope should be cleared"
 
 
@@ -83,6 +86,7 @@ class TestSelfLoopBehavior:
 
         sm.commit_path(segment_id=seg1_id, endpoint_node_id=endpoint_ids[0])  # type: ignore[attr-defined]  # dynamic python-statemachine event
         slope1 = graph.finish_slope(segment_ids=ctx.slope_build.segments)
+        assert slope1 is not None
         sm.finish_slope(slope_id=slope1.id)
 
         assert ctx.viewing.slope_id == slope1.id, "Viewing first slope"
@@ -95,6 +99,7 @@ class TestSelfLoopBehavior:
 
         sm.commit_path(segment_id=seg2_id, endpoint_node_id=endpoint_ids2[0])  # type: ignore[attr-defined]  # dynamic python-statemachine event
         slope2 = graph.finish_slope(segment_ids=ctx.slope_build.segments)
+        assert slope2 is not None
         sm.finish_slope(slope_id=slope2.id)
 
         # Self-loop: switch to first slope

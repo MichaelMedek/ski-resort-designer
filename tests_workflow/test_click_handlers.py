@@ -176,6 +176,7 @@ class TestIdleClickRouting:
         graph = ResortGraph()
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        assert slope is not None
         sm, ctx = _session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
 
         handle_idle_click(
@@ -205,6 +206,7 @@ class TestIdleClickRouting:
         graph = ResortGraph()
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        assert slope is not None
         seg_id = slope.segment_ids[0]
         sm, ctx = _session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
 
@@ -566,7 +568,7 @@ class TestRoadBuildingClick:
         assert len(ctx.road_build.segments) == 1
         assert len(graph.roads) == 0, "no Road entity until Finish Road"
         # The committed segment's kind IS road — identity lives on the segment, not a UI list.
-        assert enum_eq(graph.segments[ctx.road_build.segments[-1]].kind, SegmentKind.ROAD)
+        assert enum_eq(a=graph.segments[ctx.road_build.segments[-1]].kind, b=SegmentKind.ROAD)
         # Per-segment undo: the commit pushed an AddSegmentsAction.
         assert graph.undo_stack, "committing a road segment records an undo entry"
         assert graph.undo_stack[-1].action_type.name == "ADD_SEGMENTS"
@@ -674,6 +676,7 @@ class TestDispatchClick:
         graph = ResortGraph()
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        assert slope is not None
         sm, ctx = _session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
 
         # A marker click carries no lat/lon; dispatch must route it straight to the handler.
@@ -707,7 +710,7 @@ class TestBuildStateMarkerCompleteness:
 
     def _entity_marker_clicks(self):
         for marker_type, kwargs in self._ENTITY_MARKERS.items():
-            yield marker_type, ClickInfo(click_type=MapClickType.MARKER, marker_type=marker_type, **kwargs)
+            yield marker_type, ClickInfo(click_type=MapClickType.MARKER, marker_type=marker_type, **kwargs)  # type: ignore[arg-type]  # dynamic parametrize kwargs
 
     def test_slope_building_rejects_every_entity_marker(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
@@ -841,6 +844,7 @@ class TestMergePlacingClick:
         graph = ResortGraph()
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        assert slope is not None
         _sm, ctx = self._merge_session(fake_st, graph, path_factory, mock_dem_blue_slope)
 
         # A non-node marker must be rejected (InvalidClickMessage), never crash, never select.

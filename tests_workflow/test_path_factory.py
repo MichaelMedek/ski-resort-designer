@@ -6,8 +6,8 @@ Focus on _are_paths_similar and _deduplicate_paths which are mathematical compar
 
 import pytest
 
-from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.constants import SlopeConfig
+from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.generators.path_factory import GradeConfig, PathFactory, Side
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.proposed_path import ProposedPathSegment
@@ -303,7 +303,7 @@ class TestRoadModeNoStraightLineFallback:
         # Road-mode proposals carry the ROAD kind so the committed segment is a road.
         from skiresort_planner.model.path_segment import SegmentKind
 
-        assert all(enum_eq(p.kind, SegmentKind.ROAD) for p in paths)
+        assert all(enum_eq(a=p.kind, b=SegmentKind.ROAD) for p in paths)
 
     def test_slope_mode_still_falls_back_to_straight_line(self, path_factory) -> None:
         # Slope mode always connects, emitting the straight-line fallback result.
@@ -322,4 +322,4 @@ class TestRoadModeNoStraightLineFallback:
             )
         )
         assert len(paths) >= 1, "slope mode always connects (straight-line fallback)"
-        assert all(enum_eq(p.kind, SegmentKind.SLOPE) for p in paths), "slope-mode proposals are SLOPE kind"
+        assert all(enum_eq(a=p.kind, b=SegmentKind.SLOPE) for p in paths), "slope-mode proposals are SLOPE kind"

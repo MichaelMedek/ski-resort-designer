@@ -11,11 +11,10 @@ Reference: DETAILS_UI.md for profile display
 """
 
 import logging
-from typing import Optional
 
 import plotly.graph_objects as go
 
-from skiresort_planner.constants import ChartConfig, LiftConfig, StyleConfig
+from skiresort_planner.constants import ChartConfig, LiftConfig, LiftType, StyleConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.enum_utils import enum_eq
@@ -47,7 +46,7 @@ class ProfileChart:
         self,
         segment: PathSegment,
         difficulty: str,
-        title: Optional[str] = None,
+        title: str | None = None,
     ) -> go.Figure:
         """Render elevation profile for a committed segment.
 
@@ -137,7 +136,7 @@ class ProfileChart:
         self,
         slope: Slope,
         graph: ResortGraph,
-        title: Optional[str] = None,
+        title: str | None = None,
     ) -> go.Figure:
         """Render elevation profile for a complete slope (colored by difficulty)."""
         difficulty = slope.get_difficulty(segments=graph.segments)
@@ -156,7 +155,7 @@ class ProfileChart:
         self,
         road: Road,
         graph: ResortGraph,
-        title: Optional[str] = None,
+        title: str | None = None,
     ) -> go.Figure:
         """Render elevation profile for a road (brown, shows climb/descent)."""
         total_length = road.get_total_length(segments=graph.segments)
@@ -322,7 +321,7 @@ class ProfileChart:
         end_node = graph.nodes[lift.end_node_id]
 
         # Get station height from config
-        config = LiftConfig.PYLON_CONFIG[lift.lift_type]
+        config = LiftConfig.PYLON_CONFIG[LiftType(lift.lift_type)]
         station_height: float = config["station_height_m"]
 
         # Calculate lift metrics
@@ -398,7 +397,7 @@ class ProfileChart:
                     mode="lines",
                     line=dict(color="#333333", width=3),
                     name="Cable",
-                    customdata=list(zip(cable_ground_elevs, cable_heights, cable_percentages)),
+                    customdata=list(zip(cable_ground_elevs, cable_heights, cable_percentages, strict=False)),
                     hovertemplate=(
                         "<b>Distance:</b> %{x:.0f}m (%{customdata[2]:.0f}%)<br>"
                         "<b>Ground:</b> %{customdata[0]:.0f}m<br>"

@@ -14,27 +14,27 @@ from skiresort_planner.ui.context import EntityKind
 
 class TestEnumEq:
     def test_same_member_is_equal(self) -> None:
-        assert enum_eq(SegmentKind.ROAD, SegmentKind.ROAD)
-        assert enum_eq(EntityKind.SLOPE, EntityKind.SLOPE)
+        assert enum_eq(a=SegmentKind.ROAD, b=SegmentKind.ROAD)
+        assert enum_eq(a=EntityKind.SLOPE, b=EntityKind.SLOPE)
 
     def test_different_members_not_equal(self) -> None:
-        assert not enum_eq(SegmentKind.ROAD, SegmentKind.SLOPE)
-        assert not enum_eq(EntityKind.SLOPE, EntityKind.LIFT)
+        assert not enum_eq(a=SegmentKind.ROAD, b=SegmentKind.SLOPE)
+        assert not enum_eq(a=EntityKind.SLOPE, b=EntityKind.LIFT)
 
     def test_reloaded_class_same_member_is_equal(self) -> None:
         # Simulate a Streamlit reload: a fresh class with identical name + values.
         reloaded = Enum("SegmentKind", {"SLOPE": "slope", "ROAD": "road"}, type=str)  # type: ignore[misc]
-        assert enum_eq(reloaded.ROAD, SegmentKind.ROAD)
-        assert enum_eq(SegmentKind.SLOPE, reloaded.SLOPE)
+        assert enum_eq(a=reloaded.ROAD, b=SegmentKind.ROAD)
+        assert enum_eq(a=SegmentKind.SLOPE, b=reloaded.SLOPE)
 
     def test_reloaded_class_different_member_not_equal(self) -> None:
         reloaded = Enum("SegmentKind", {"SLOPE": "slope", "ROAD": "road"}, type=str)  # type: ignore[misc]
-        assert not enum_eq(reloaded.ROAD, SegmentKind.SLOPE)
+        assert not enum_eq(a=reloaded.ROAD, b=SegmentKind.SLOPE)
 
     def test_different_enum_classes_never_equal(self) -> None:
         # repr() form is class-qualified, so members of different enums never match
         # even if their .value strings collide ("slope" == "slope").
-        assert not enum_eq(SegmentKind.SLOPE, EntityKind.SLOPE)
+        assert not enum_eq(a=SegmentKind.SLOPE, b=EntityKind.SLOPE)
 
     def test_plain_enum_reload_safe(self) -> None:
         # Plain (non-str) Enums are the case where `==` itself fails across reloads;
@@ -44,5 +44,5 @@ class TestEnumEq:
             BLUE = 2
 
         reloaded = Enum("Color", {"RED": 1, "BLUE": 2})  # type: ignore[misc]
-        assert enum_eq(Color.RED, reloaded.RED)
-        assert not enum_eq(Color.RED, reloaded.BLUE)
+        assert enum_eq(a=Color.RED, b=reloaded.RED)
+        assert not enum_eq(a=Color.RED, b=reloaded.BLUE)

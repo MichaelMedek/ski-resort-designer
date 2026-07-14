@@ -13,11 +13,7 @@ import pytest
 
 from skiresort_planner.constants import MapConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
-from skiresort_planner.model.node import Node
-from skiresort_planner.model.path_point import PathPoint
-from skiresort_planner.model.path_segment import SegmentKind
-from skiresort_planner.model.proposed_path import ProposedPathSegment
-from skiresort_planner.model.resort_graph import (
+from skiresort_planner.model.actions import (
     AddLiftAction,
     AddSegmentsAction,
     DeleteLiftAction,
@@ -25,8 +21,13 @@ from skiresort_planner.model.resort_graph import (
     DeleteSlopeAction,
     FinishRoadAction,
     FinishSlopeAction,
-    ResortGraph,
 )
+from skiresort_planner.model.node import Node
+from skiresort_planner.model.path_point import PathPoint
+from skiresort_planner.model.path_segment import SegmentKind
+from skiresort_planner.model.proposed_path import ProposedPathSegment
+from skiresort_planner.model.resort_graph import ResortGraph
+from tests_workflow.conftest import MockDEMService
 
 M = MapConfig.METERS_PER_DEGREE_EQUATOR
 
@@ -898,7 +899,7 @@ class TestUndoActionBijection:
     import; this test additionally verifies the dataclass side of the bijection.
     """
 
-    def _action_classes(self):
+    def _action_classes(self) -> list[type]:
         import typing
 
         from skiresort_planner.model import actions as actions_mod
@@ -914,11 +915,12 @@ class TestUndoActionBijection:
         classes = self._action_classes()
         # Each frozen dataclass exposes .action_type as a property; instantiate a zero-arg-free
         # dummy via object.__new__ to read it without constructing real field values.
-        types = []
+        types: list[ActionType] = []
         for cls in classes:
             assert dataclasses.is_dataclass(cls), f"{cls.__name__} in UndoAction union is not a dataclass"
             inst = object.__new__(cls)
-            types.append(inst.action_type)
+            # Every UndoAction member exposes `.action_type`; the union type is opaque to mypy here.
+            types.append(inst.action_type)  # type: ignore[attr-defined]  # union member property
 
         # Surjective: every ActionType is claimed by some dataclass.
         assert set(types) == set(ActionType), (
@@ -952,7 +954,7 @@ class TestMergeNodes:
 
     M = MapConfig.METERS_PER_DEGREE_EQUATOR
 
-    def _node(self, graph, dem, node_id, lon, lat):  # type: ignore[no-untyped-def]
+    def _node(self, graph: ResortGraph, dem: MockDEMService, node_id: str, lon: float, lat: float) -> None:
         graph.nodes[node_id] = Node(
             id=node_id, location=PathPoint(lon=lon, lat=lat, elevation=dem.get_elevation_or_raise(lon=lon, lat=lat))
         )

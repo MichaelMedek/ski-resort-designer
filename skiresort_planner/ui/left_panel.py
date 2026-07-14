@@ -89,7 +89,7 @@ def _perform_reset_resort() -> None:
         st.session_state.pop(key, None)
 
 
-@st.dialog("🆕 Reset to Empty")
+@st.dialog("🗑️ Reset to Empty")
 def _confirm_reset_resort_dialog() -> None:
     """Confirm resetting to a fresh empty resort.
 
@@ -431,7 +431,7 @@ class SidebarRenderer:
                 disabled=not enabled,
                 help=help_text,
             ):
-                op.on_select(self.ctx, self.sm)  # each op owns its own select side effects
+                op.on_select(ctx=self.ctx, sm=self.sm)  # each op owns its own select side effects
 
         # BUILDER group: Slope + Road full-width, then the 4 lift types in a 2x2 grid.
         builders = [op for op in OPERATIONS.values() if op.group == OperationGroup.BUILDER]
@@ -691,7 +691,7 @@ class SidebarRenderer:
             # Reset to a fresh empty resort. Needed because the bare link always
             # reloads the biggest existing backup, so empty must be requested.
             if st.button(
-                "🆕 Reset to Empty",
+                "🗑️ Reset to Empty",
                 width="stretch",
                 help="Clear the current resort and start a new empty one",
                 disabled=not can_save,

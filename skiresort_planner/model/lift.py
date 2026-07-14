@@ -16,7 +16,7 @@ import random
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
-from skiresort_planner.constants import EntityPrefixes, LiftConfig, NameConfig
+from skiresort_planner.constants import EntityPrefixes, LiftConfig, LiftType, NameConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.model.node_connected import NodeConnected
 from skiresort_planner.model.path_point import PathPoint
@@ -477,7 +477,7 @@ class Lift(NodeConnected):
             )
             return []
 
-        config = cast(dict[str, int | float], LiftConfig.PYLON_CONFIG[lift_type])
+        config = cast(dict[str, int | float], LiftConfig.PYLON_CONFIG[LiftType(lift_type)])
         n = len(terrain_points)
         dist_per_step = total_distance_m / (n - 1) if n > 1 else 0
 
@@ -657,7 +657,7 @@ class Lift(NodeConnected):
 
         config = cast(
             dict[str, int | float | None],
-            LiftConfig.PYLON_CONFIG[lift_type],  # strict: lift_type is validated
+            LiftConfig.PYLON_CONFIG[LiftType(lift_type)],  # strict: lift_type is validated
         )
         station_height = cast(int, config["station_height_m"])
         sag_factor = cast(float, config["sag_factor"])

@@ -315,11 +315,11 @@ class EntityInfoControlPanel(ControlPanel):
         entity_id = self.spec.viewed_entity_id(self.ctx)
         if entity_id is None:
             raise ValueError(f"viewing.{kind.value}_id must be set when showing the {kind.value} panel")
-        entity = self.spec.get_entity(self.graph, entity_id)
+        entity = self.spec.get_entity(graph=self.graph, entity_id=entity_id)
         if entity is None:
             raise ValueError(f"{kind.value.capitalize()} {entity_id} must exist when panel shows it")
 
-        self.spec.render_stats(self.graph, entity_id)
+        self.spec.render_stats(graph=self.graph, entity_id=entity_id)
         _render_entity_actions(
             sm=self.sm,
             ctx=self.ctx,

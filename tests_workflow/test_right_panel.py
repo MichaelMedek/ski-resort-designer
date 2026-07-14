@@ -6,10 +6,11 @@ browser. Two flavors: render tests assert the panel runs across slope/lift/road;
 state change (3D toggle, close panel) is asserted.
 """
 
+from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
-from skiresort_planner.ui.context import EntityKind
+from skiresort_planner.ui.context import EntityKind, PlannerContext
 from skiresort_planner.ui.mode_registry import ENTITY_KIND_SPECS, render_control_panel
 from skiresort_planner.ui.right_panel import (
     EntityInfoControlPanel,
@@ -22,7 +23,7 @@ from skiresort_planner.ui.state_machine import PlannerStateMachine
 M = 111320.0
 
 
-def _info_panel(kind, sm, ctx, graph):  # type: ignore[no-untyped-def]
+def _info_panel(kind: EntityKind, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph) -> None:
     """Build the viewing-info ControlPanel for a kind and render it (on_commit/on_cancel unused)."""
     EntityInfoControlPanel(
         sm=sm,
@@ -34,14 +35,14 @@ def _info_panel(kind, sm, ctx, graph):  # type: ignore[no-untyped-def]
     ).render()
 
 
-def _build_slope(graph: ResortGraph, path_points: list) -> str:
+def _build_slope(graph: ResortGraph, path_points: list[PathPoint]) -> str:
     graph.commit_paths(paths=[ProposedPathSegment(points=path_points, target_difficulty="blue")])
     slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
     assert slope is not None
     return slope.id
 
 
-def _build_road(graph: ResortGraph, path_points: list) -> str:
+def _build_road(graph: ResortGraph, path_points: list[PathPoint]) -> str:
     graph.commit_paths(
         paths=[ProposedPathSegment(points=path_points, is_connector=True, kind=SegmentKind.ROAD)], record_undo=False
     )
@@ -71,7 +72,7 @@ def _capture_buttons(fake_st) -> list[str]:
     def spy(*args: object, **kwargs: object) -> bool:
         if args:
             labels.append(str(args[0]))
-        return orig(*args, **kwargs)
+        return bool(orig(*args, **kwargs))
 
     fake_st.button = spy
     return labels
@@ -188,23 +189,24 @@ class TestInfoPanelButtonClicks:
         sm.show_slope_info_panel(slope_id=slope_id)
         self._bump_ready(fake_st, sm, ctx, empty_graph)
 
-        calls: list[dict] = []
+        calls: list[dict[str, object]] = []
 
-        def _record(*_args, **kwargs):
+        def _record(*_args: object, **kwargs: object) -> bool:
             calls.append(kwargs)
             return False  # nothing clicked
 
-        monkeypatch.setattr(right_panel.st, "button", _record)
+        monkeypatch.setattr("skiresort_planner.ui.right_panel.st.button", _record)
         # columns() would raise if used for Close/Delete — assert it's NOT called for the action row.
         monkeypatch.setattr(
-            right_panel.st, "columns", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no columns"))
+            "skiresort_planner.ui.right_panel.st.columns",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("no columns")),
         )
 
         right_panel._render_entity_actions(
             sm=sm,
             ctx=ctx,
             graph=empty_graph,
-            kind=right_panel.EntityKind.SLOPE,
+            kind=EntityKind.SLOPE,
             entity_id=slope_id,
             entity=empty_graph.slopes[slope_id],
             delete_fn=lambda _id: True,
@@ -267,7 +269,12 @@ class TestInfoPanelButtonClicks:
         """
         keys: list[str] = []
         orig_button = fake_st.button
-        fake_st.button = lambda *a, **k: (keys.append(k.get("key")), orig_button(*a, **k))[1]
+
+        def _spy_button(*a: object, **k: object) -> bool:
+            keys.append(str(k.get("key")))
+            return bool(orig_button(*a, **k))
+
+        fake_st.button = _spy_button
 
         slope_id = _build_slope(empty_graph, path_points_blue)
         road_id = _build_road(empty_graph, path_points_blue)

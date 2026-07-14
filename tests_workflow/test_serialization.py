@@ -5,9 +5,18 @@ Tests that resort graphs can be saved and loaded without data loss.
 
 import json
 import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from skiresort_planner.enum_utils import enum_eq
+
+
+def _child_text(element: ET.Element, tag: str) -> str:
+    """Return the text of a required child element, asserting it exists and is non-empty."""
+    child = element.find(tag)
+    assert child is not None, f"expected child <{tag}>"
+    assert child.text is not None, f"<{tag}> must have text"
+    return child.text
 
 
 class TestResortGraphSerialization:
@@ -91,7 +100,8 @@ class TestResortGraphSerialization:
 
     def test_endpoints_survive_roundtrip_keeping_reimport_idempotent(self, empty_graph, mock_dem_blue_slope) -> None:
         """Endpoints are derived from nodes (which serialize), so duplicate detection still works
-        after save/load — a re-import into the reloaded graph adds nothing."""
+        after save/load — a re-import into the reloaded graph adds nothing.
+        """
         from skiresort_planner.model.path_point import PathPoint, endpoints_match
         from skiresort_planner.model.resort_graph import ResortGraph
 
@@ -163,7 +173,7 @@ class TestFileSaveLoad:
             json.dump(graph.to_dict(), f)
 
         try:
-            with open(filepath, "r") as f:
+            with open(filepath) as f:
                 data = json.load(f)
             loaded = ResortGraph.from_dict(data=data)
 
@@ -290,7 +300,7 @@ class TestGPXExport:
         tracks = root.findall(f"{ns}trk")
         assert len(tracks) == 2, "one track for the slope + one for the lift"
 
-        types = {t.find(f"{ns}type").text for t in tracks}
+        types = {_child_text(t, f"{ns}type") for t in tracks}
         assert any(t.startswith("slope_") for t in types)
         assert any(t.startswith("lift_") for t in types)
 
@@ -324,9 +334,9 @@ class TestGPXExport:
 
         root = ET.fromstring(empty_graph.to_gpx())
         ns = "{http://www.topografix.com/GPX/1/1}"
-        road_tracks = [t for t in root.findall(f"{ns}trk") if t.find(f"{ns}type").text == "road"]
+        road_tracks = [t for t in root.findall(f"{ns}trk") if _child_text(t, f"{ns}type") == "road"]
         assert len(road_tracks) == 1, "the road must be exported as a GPX track"
-        assert road_tracks[0].find(f"{ns}name").text == road.name
+        assert _child_text(road_tracks[0], f"{ns}name") == road.name
         pts = road_tracks[0].findall(f"{ns}trkseg/{ns}trkpt")
         assert pts and pts[0].find(f"{ns}ele") is not None
 
@@ -351,7 +361,7 @@ class TestRoadSerialization:
         assert restored.roads[road.id].name == road.name
         assert restored._road_counter == empty_graph._road_counter
         # The segment's road kind survives the round-trip (persisted, not recomputed).
-        assert enum_eq(restored.segments[road_seg_id].kind, SegmentKind.ROAD)
+        assert enum_eq(a=restored.segments[road_seg_id].kind, b=SegmentKind.ROAD)
 
     def test_road_owned_slope_kind_segment_raises(self, empty_graph, path_points_blue) -> None:
         """A road owning a kind=SLOPE segment (corrupt/stale save) fails loudly on load."""

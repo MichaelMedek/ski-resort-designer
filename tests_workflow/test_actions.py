@@ -15,7 +15,6 @@ from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
-
 M = 111320.0  # metres per degree near the equator
 
 
@@ -348,7 +347,7 @@ class TestRoadBuildingActionFlow:
         assert sm.is_road_building_only, "road commit stays in road_building"
         assert len(ctx.road_build.segments) == 1
         assert len(graph.roads) == 0, "no Road entity until Finish Road"
-        assert enum_eq(graph.segments[ctx.road_build.segments[-1]].kind, SegmentKind.ROAD)
+        assert enum_eq(a=graph.segments[ctx.road_build.segments[-1]].kind, b=SegmentKind.ROAD)
         assert graph.undo_stack[-1].action_type.name == "ADD_SEGMENTS", "per-segment undo recorded"
 
     def test_finish_then_undo_restores_road_building(
@@ -443,7 +442,8 @@ class TestDeferredProcessing:
 class TestOSMImport:
     """Click-to-place import: start_import stores the box center; confirm_import_action flags the
     deferred fetch + returns to idle; process_osm_import_deferred runs it (mocked network) as one
-    undoable batch centered on the placed box; undo removes the batch; re-import dedups."""
+    undoable batch centered on the placed box; undo removes the batch; re-import dedups.
+    """
 
     def test_start_import_stores_center_and_confirm_flags_deferred(self, fake_st, mock_dem_blue_slope) -> None:
         from skiresort_planner.ui.actions import confirm_import_action
@@ -466,9 +466,16 @@ class TestOSMImport:
         sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
         ctx.map.lat, ctx.map.lon = 0.9, 0.9  # deliberately NOT the placed center — must be ignored
 
-        seen = {}
-        monkeypatch.setattr(actions.OSMImporter, "fetch", lambda self, bbox: seen.setdefault("bbox", bbox) or [])
-        monkeypatch.setattr(actions.OSMImporter, "convert", lambda self, bbox, elements: ImportSummary())
+        seen: dict[str, tuple[float, float, float, float]] = {}
+
+        def _record_fetch(self: object, bbox: tuple[float, float, float, float]) -> list[object]:
+            seen["bbox"] = bbox
+            return []
+
+        monkeypatch.setattr("skiresort_planner.ui.actions.OSMImporter.fetch", _record_fetch)
+        monkeypatch.setattr(
+            "skiresort_planner.ui.actions.OSMImporter.convert", lambda self, bbox, elements: ImportSummary()
+        )
 
         sm.start_import(lon=0.1, lat=0.3)  # placed center
         ctx.deferred.osm_import_half_width_km = 3.5
@@ -515,9 +522,10 @@ class TestOSMImport:
         )
 
         # Mock the importer so no network happens: fetch returns nothing, convert returns our summary.
-        monkeypatch.setattr(actions.OSMImporter, "fetch", lambda self, bbox: [])
+        monkeypatch.setattr("skiresort_planner.ui.actions.OSMImporter.fetch", lambda self, bbox: [])
         monkeypatch.setattr(
-            actions.OSMImporter, "convert", lambda self, bbox, elements: ImportSummary(pistes=[piste], lifts=[lift])
+            "skiresort_planner.ui.actions.OSMImporter.convert",
+            lambda self, bbox, elements: ImportSummary(pistes=[piste], lifts=[lift]),
         )
         version_before = fake_st.session_state["map_version"]
 
@@ -544,7 +552,7 @@ class TestOSMImport:
         def boom(self, bbox):
             raise RuntimeError("overpass down")
 
-        monkeypatch.setattr(actions.OSMImporter, "fetch", boom)
+        monkeypatch.setattr("skiresort_planner.ui.actions.OSMImporter.fetch", boom)
 
         handled = actions.process_osm_import_deferred()
 
@@ -582,9 +590,10 @@ class TestOSMImport:
             lift_type="chairlift",
             name=None,
         )
-        monkeypatch.setattr(actions.OSMImporter, "fetch", lambda self, bbox: [])
+        monkeypatch.setattr("skiresort_planner.ui.actions.OSMImporter.fetch", lambda self, bbox: [])
         monkeypatch.setattr(
-            actions.OSMImporter, "convert", lambda self, bbox, elements: ImportSummary(pistes=[piste], lifts=[lift])
+            "skiresort_planner.ui.actions.OSMImporter.convert",
+            lambda self, bbox, elements: ImportSummary(pistes=[piste], lifts=[lift]),
         )
 
         actions.process_osm_import_deferred()
@@ -619,9 +628,10 @@ class TestOSMImport:
             lift_type="chairlift",
             name="Gipfelbahn",
         )
-        monkeypatch.setattr(actions.OSMImporter, "fetch", lambda self, bbox: [])
+        monkeypatch.setattr("skiresort_planner.ui.actions.OSMImporter.fetch", lambda self, bbox: [])
         monkeypatch.setattr(
-            actions.OSMImporter, "convert", lambda self, bbox, elements: ImportSummary(pistes=[piste], lifts=[lift])
+            "skiresort_planner.ui.actions.OSMImporter.convert",
+            lambda self, bbox, elements: ImportSummary(pistes=[piste], lifts=[lift]),
         )
 
         def _flag_import() -> None:

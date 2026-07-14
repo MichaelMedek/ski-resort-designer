@@ -11,11 +11,11 @@ Test Categories:
 """
 
 import math
-from typing import Optional
 
 import pytest
 
 from skiresort_planner.constants import GeometricTuningConfig
+from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.generators.connection_planners import (
     GradientMode,
@@ -25,19 +25,22 @@ from skiresort_planner.generators.connection_planners import (
 from skiresort_planner.model.path_point import PathPoint
 
 
-class MockDEMForPlanner:
+class MockDEMForPlanner(DEMService):
     """Minimal mock DEM for testing planner algorithms.
 
     Provides a simple elevation model where elevation = 2000 - (lat * 1000).
     This creates a terrain sloping from north to south.
     """
 
+    def __new__(cls, base_elevation: float = 2000.0, slope_per_degree: float = 1000.0) -> "MockDEMForPlanner":
+        return object.__new__(cls)
+
     def __init__(self, base_elevation: float = 2000.0, slope_per_degree: float = 1000.0) -> None:
         self.base_elevation = base_elevation
         self.slope_per_degree = slope_per_degree
         self._call_count = 0
 
-    def get_elevation(self, lon: float, lat: float) -> Optional[float]:
+    def get_elevation(self, lon: float, lat: float) -> float | None:
         """Return elevation based on latitude (higher north, lower south)."""
         self._call_count += 1
         return self.base_elevation - (lat * self.slope_per_degree)

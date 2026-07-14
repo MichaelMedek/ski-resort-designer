@@ -8,13 +8,17 @@ gate, and that ways reaching outside the box / over nodata are skipped ENTIRELY 
 import).
 """
 
-from skiresort_planner.generators.osm_importer import OSMImporter
+from skiresort_planner.core.dem_service import DEMService
+from skiresort_planner.generators.osm_importer import ImportSummary, OSMImporter, OverpassElement
 
 M = 111320.0  # metres per degree near the equator
 
 
-class _FakeDEM:
+class _FakeDEM(DEMService):
     """20% south slope; a nodata hole for lon > `hole_lon` (returns None there)."""
+
+    def __new__(cls, hole_lon: float = 999.0) -> "_FakeDEM":
+        return object.__new__(cls)
 
     def __init__(self, hole_lon: float = 999.0) -> None:
         self.hole_lon = hole_lon
@@ -30,12 +34,12 @@ class _FakeDEM:
 BBOX = (-0.1, -0.11, 0.1, 0.09)
 
 
-def _way(tags: dict, verts: list[tuple[float, float]]) -> dict:
+def _way(tags: dict[str, str], verts: list[tuple[float, float]]) -> OverpassElement:
     """Build a synthetic Overpass way element with inline geometry."""
     return {"type": "way", "tags": tags, "geometry": [{"lon": x, "lat": y} for x, y in verts]}
 
 
-def _convert(elements: list[dict], dem: _FakeDEM | None = None):
+def _convert(elements: list[OverpassElement], dem: _FakeDEM | None = None) -> ImportSummary:
     return OSMImporter(dem=dem or _FakeDEM()).convert(bbox=BBOX, elements=elements)
 
 
@@ -97,8 +101,6 @@ class TestFetch:
     def test_single_query_no_retry_on_success(self, monkeypatch) -> None:
         import requests
 
-        from skiresort_planner.generators import osm_importer
-
         calls = {"n": 0}
 
         def fake_post(*_args, **_kwargs):
@@ -108,7 +110,7 @@ class TestFetch:
             resp._content = b'{"elements": [{"id": 1}]}'
             return resp
 
-        monkeypatch.setattr(osm_importer.requests, "post", fake_post)
+        monkeypatch.setattr("skiresort_planner.generators.osm_importer.requests.post", fake_post)
         elements = OSMImporter(dem=_FakeDEM()).fetch(BBOX)
         assert elements == [{"id": 1}] and calls["n"] == 1, "one query, no retry when it succeeds"
 
@@ -130,15 +132,13 @@ class TestFetch:
                 resp._content = b'{"elements": [{"id": 2}]}'
             return resp
 
-        monkeypatch.setattr(osm_importer.requests, "post", fake_post)
+        monkeypatch.setattr("skiresort_planner.generators.osm_importer.requests.post", fake_post)
         elements = OSMImporter(dem=_FakeDEM()).fetch(BBOX)
         assert elements == [{"id": 2}] and calls["n"] == 2, "one retry after a transient failure"
 
     def test_non_transient_error_not_retried(self, monkeypatch) -> None:
         import pytest
         import requests
-
-        from skiresort_planner.generators import osm_importer
 
         calls = {"n": 0}
 
@@ -148,7 +148,7 @@ class TestFetch:
             resp.status_code = 406  # missing User-Agent — a client bug, not transient
             return resp
 
-        monkeypatch.setattr(osm_importer.requests, "post", fake_post)
+        monkeypatch.setattr("skiresort_planner.generators.osm_importer.requests.post", fake_post)
         with pytest.raises(requests.HTTPError):
             OSMImporter(dem=_FakeDEM()).fetch(BBOX)
         assert calls["n"] == 1, "a non-transient error is raised at once, not retried"
@@ -158,7 +158,7 @@ class TestFetch:
 
         def status(text: str):
             resp = type("R", (), {"text": text})()
-            monkeypatch.setattr(osm_importer.requests, "get", lambda *a, **k: resp)
+            monkeypatch.setattr("skiresort_planner.generators.osm_importer.requests.get", lambda *a, **k: resp)
 
         status("Rate limit: 2\n2 slots available now.\n")
         assert osm_importer._seconds_until_free_slot() == 0.0, "free slot → no wait"
@@ -328,6 +328,67 @@ class TestDescendingTrim:
             undulating.append(e)
         _first, _last, n = run(undulating)
         assert n == 30, "an undulating-but-descending run is not fragmented by DEM bumps"
+
+
+class TestDedupeByName:
+    """OSM sometimes maps the same run/lift twice (an outdated way + a re-drawn one, same name),
+    which import as two identical entities. We keep the LONGEST per name within each kind and count
+    the shorter same-name duplicates as skipped. Pistes and lifts dedupe independently.
+    """
+
+    def test_shorter_same_name_piste_dropped(self) -> None:
+        # Two 'Ried' downhill runs; the longer (0→-0.02) is kept, the shorter (0→-0.006) dropped.
+        elements = [
+            _way({"piste:type": "downhill", "name": "Ried"}, [(0.0, 0.0), (0.0, -0.006)]),
+            _way({"piste:type": "downhill", "name": "Ried"}, [(0.0, 0.0), (0.0, -0.02)]),
+        ]
+        summary = _convert(elements)
+        assert len(summary.pistes) == 1, "only the longer 'Ried' survives"
+        kept = summary.pistes[0]
+        assert kept.name == "Ried"
+        assert abs(kept.points[0].lat - kept.points[-1].lat) > 0.01, "kept the longer geometry"
+        assert summary.skipped == 1, "the shorter duplicate is counted as skipped"
+
+    def test_shorter_same_name_lift_dropped(self) -> None:
+        elements = [
+            _way({"aerialway": "gondola", "name": "Gipfelbahn"}, [(0.0, 0.0), (0.0, -0.02)]),
+            _way({"aerialway": "gondola", "name": "Gipfelbahn"}, [(0.0, 0.0), (0.0, -0.006)]),
+        ]
+        summary = _convert(elements)
+        assert len(summary.lifts) == 1 and summary.lifts[0].name == "Gipfelbahn"
+        drop = summary.lifts[0].bottom.distance_to(other=summary.lifts[0].top)
+        assert drop > 1000.0, "kept the longer lift"
+        assert summary.skipped == 1
+
+    def test_distinct_names_all_kept(self) -> None:
+        elements = [
+            _way({"piste:type": "downhill", "name": "Ried"}, [(0.0, 0.0), (0.0, -0.02)]),
+            _way({"piste:type": "downhill", "name": "Kessel"}, [(0.001, 0.0), (0.001, -0.02)]),
+        ]
+        summary = _convert(elements)
+        assert {p.name for p in summary.pistes} == {"Ried", "Kessel"}
+        assert summary.skipped == 0
+
+    def test_same_name_different_kind_not_deduped(self) -> None:
+        # A piste and a lift sharing a name must NOT collide — kinds dedupe independently.
+        elements = [
+            _way({"piste:type": "downhill", "name": "Sonnblick"}, [(0.0, 0.0), (0.0, -0.02)]),
+            _way({"aerialway": "gondola", "name": "Sonnblick"}, [(0.001, 0.0), (0.001, -0.02)]),
+        ]
+        summary = _convert(elements)
+        assert len(summary.pistes) == 1 and len(summary.lifts) == 1
+        assert summary.skipped == 0
+
+    def test_three_same_name_keeps_only_longest(self) -> None:
+        elements = [
+            _way({"piste:type": "downhill", "name": "Ried"}, [(0.0, 0.0), (0.0, -0.006)]),
+            _way({"piste:type": "downhill", "name": "Ried"}, [(0.0, 0.0), (0.0, -0.03)]),
+            _way({"piste:type": "downhill", "name": "Ried"}, [(0.0, 0.0), (0.0, -0.01)]),
+        ]
+        summary = _convert(elements)
+        assert len(summary.pistes) == 1, "only the single longest 'Ried' survives"
+        assert abs(summary.pistes[0].points[0].lat - summary.pistes[0].points[-1].lat) > 0.02
+        assert summary.skipped == 2, "the two shorter duplicates are both skipped"
 
 
 class TestEndpointsMatch:

@@ -7,6 +7,7 @@ Uses the shared `fake_st` fixture (no browser).
 
 import pytest
 
+from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
@@ -17,14 +18,14 @@ from skiresort_planner.ui.state_machine import PlannerStateMachine
 M = 111320.0
 
 
-def _build_slope(graph: ResortGraph, path_points: list) -> str:
+def _build_slope(graph: ResortGraph, path_points: list[PathPoint]) -> str:
     graph.commit_paths(paths=[ProposedPathSegment(points=path_points, target_difficulty="blue")])
     slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
     assert slope is not None
     return slope.id
 
 
-def _build_road(graph: ResortGraph, path_points: list) -> str:
+def _build_road(graph: ResortGraph, path_points: list[PathPoint]) -> str:
     graph.commit_paths(paths=[ProposedPathSegment(points=path_points, is_connector=True, kind=SegmentKind.ROAD)])
     road = graph.finish_road(segment_ids=[list(graph.segments.keys())[-1]])
     assert road is not None
@@ -71,8 +72,6 @@ class TestSidebarRuns:
 
     def test_sidebar_during_road_building(self, fake_st, empty_graph) -> None:
         # Road building state renders the Finish Road / Cancel Road controls.
-        from skiresort_planner.model.path_point import PathPoint
-
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         sm.start_road(node_id=None, location=PathPoint(lon=0.0, lat=0.0, elevation=2000.0))
         assert sm.is_road_starting
@@ -139,7 +138,8 @@ class TestImportOSMButton:
 
 class TestPathSettingsVisibility:
     """The ⚙️ Path Settings block only applies to fan-out proposals, so it is hidden
-    while routing a custom-connect path (force_mode)."""
+    while routing a custom-connect path (force_mode).
+    """
 
     @staticmethod
     def _capture_markdown(fake_st) -> list[str]:
@@ -177,7 +177,7 @@ class TestDescribeUndoAction:
     def _describe_top(self, graph: ResortGraph) -> str:
         from skiresort_planner.ui.left_panel import _describe_undo_action
 
-        return _describe_undo_action(graph.undo_stack[-1], graph)
+        return _describe_undo_action(action=graph.undo_stack[-1], graph=graph)
 
     def test_add_segments_label(self, empty_graph, path_points_blue) -> None:
         empty_graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
@@ -221,8 +221,6 @@ class TestDescribeUndoAction:
         assert "Restore deleted road" in self._describe_top(empty_graph)
 
     def test_import_osm_label(self, empty_graph, mock_dem_blue_slope) -> None:
-        from skiresort_planner.model.path_point import PathPoint
-
         dem = mock_dem_blue_slope
         m = 111320.0
         piste = (
@@ -252,8 +250,10 @@ class TestDialogHelpers:
         from skiresort_planner.ui import left_panel
 
         deleted: list[str] = []
-        monkeypatch.setattr(left_panel.backup_store, "delete", lambda resort_id: deleted.append(resort_id))
-        monkeypatch.setattr(left_panel.backup_store, "new_resort_id", lambda: "fresh999")
+        monkeypatch.setattr(
+            "skiresort_planner.ui.left_panel.backup_store.delete", lambda resort_id: deleted.append(resort_id)
+        )
+        monkeypatch.setattr("skiresort_planner.ui.left_panel.backup_store.new_resort_id", lambda: "fresh999")
 
         # Seed a full session that reset must tear down.
         for key in ("resort_id", "graph", "state_machine", "context", "map_renderer", "_saved_token"):

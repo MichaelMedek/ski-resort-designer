@@ -29,6 +29,8 @@ WHY THIS PATTERN MATTERS FOR COVERAGE:
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 from streamlit.testing.v1 import AppTest
 
@@ -150,16 +152,19 @@ def create_command_executor() -> None:
             handle_fast_deferred_actions()
 
     # Initialize state machine if not already done
+    sm: PlannerStateMachine
+    ctx: PlannerContext
+    graph: ResortGraph
     if "state_machine" not in st.session_state:
-        graph: ResortGraph = st.session_state.graph
+        graph = st.session_state.graph
         sm, ctx = PlannerStateMachine.create(graph=graph, add_ui_listener=False)
         st.session_state.state_machine = sm
         st.session_state.context = ctx
 
     # Get references
-    sm: PlannerStateMachine = st.session_state.state_machine
-    ctx: PlannerContext = st.session_state.context
-    graph: ResortGraph = st.session_state.graph
+    sm = st.session_state.state_machine
+    ctx = st.session_state.context
+    graph = st.session_state.graph
     dem: MockDEMService = st.session_state.dem_service
 
     # =========================================================================
@@ -167,8 +172,8 @@ def create_command_executor() -> None:
     # =========================================================================
     # Commands are processed first so that build_mode changes take effect
     # before the radio widget tries to sync.
-    command_queue: list = st.session_state.get("command_queue", [])
-    executed: list = st.session_state.get("executed_commands", [])
+    command_queue: list[tuple[object, ...]] = st.session_state.get("command_queue", [])
+    executed: list[tuple[object, ...]] = st.session_state.get("executed_commands", [])
 
     command_processed = False
     if command_queue:
@@ -184,12 +189,12 @@ def create_command_executor() -> None:
         # Terrain/Marker clicks (via dispatch_click)
         # -------------------------------------------------------------------------
         if cmd_type == "click_terrain":
-            _, lon, lat = cmd
+            _, lon, lat = cast("tuple[str, float, float]", cmd)
             click_info = ClickInfo(click_type=MapClickType.TERRAIN, lon=lon, lat=lat)
             dispatch_click(click_info=click_info)
 
         elif cmd_type == "click_node":
-            _, node_id = cmd
+            _, node_id = cast("tuple[str, str]", cmd)
             click_info = ClickInfo(
                 click_type=MapClickType.MARKER,
                 marker_type=MarkerType.NODE,
@@ -198,7 +203,7 @@ def create_command_executor() -> None:
             dispatch_click(click_info=click_info)
 
         elif cmd_type == "click_slope":
-            _, slope_id = cmd
+            _, slope_id = cast("tuple[str, str]", cmd)
             click_info = ClickInfo(
                 click_type=MapClickType.MARKER,
                 marker_type=MarkerType.SLOPE,
@@ -207,7 +212,7 @@ def create_command_executor() -> None:
             dispatch_click(click_info=click_info)
 
         elif cmd_type == "click_lift":
-            _, lift_id = cmd
+            _, lift_id = cast("tuple[str, str]", cmd)
             click_info = ClickInfo(
                 click_type=MapClickType.MARKER,
                 marker_type=MarkerType.LIFT,
@@ -219,7 +224,7 @@ def create_command_executor() -> None:
         # Path operations (actions.py) - TRUE E2E!
         # -------------------------------------------------------------------------
         elif cmd_type == "commit_path":
-            _, idx = cmd
+            _, idx = cast("tuple[str, int]", cmd)
             commit_selected_path(path_idx=idx)
 
         elif cmd_type == "handle_deferred":
@@ -255,7 +260,7 @@ def create_command_executor() -> None:
             cancel_custom_path()
 
         elif cmd_type == "select_custom_target":
-            _, lon, lat = cmd
+            _, lon, lat = cast("tuple[str, float, float]", cmd)
             elevation = dem.get_elevation_or_raise(lon=lon, lat=lat)
             sm.select_custom_target(target_location=(lon, lat, elevation))  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
@@ -263,15 +268,15 @@ def create_command_executor() -> None:
         # Delete operations (actions.py) - Uses new action functions!
         # -------------------------------------------------------------------------
         elif cmd_type == "delete_slope":
-            _, slope_id = cmd
+            _, slope_id = cast("tuple[str, str]", cmd)
             delete_slope_action(slope_id=slope_id)
 
         elif cmd_type == "delete_lift":
-            _, lift_id = cmd
+            _, lift_id = cast("tuple[str, str]", cmd)
             delete_lift_action(lift_id=lift_id)
 
         elif cmd_type == "delete_road":
-            _, road_id = cmd
+            _, road_id = cast("tuple[str, str]", cmd)
             delete_road_action(road_id=road_id)
 
         # -------------------------------------------------------------------------
@@ -281,7 +286,7 @@ def create_command_executor() -> None:
             undo_last_action()
 
         elif cmd_type == "set_build_mode":
-            _, mode = cmd
+            _, mode = cast("tuple[str, str]", cmd)
             mode_constants = {
                 "SLOPE": BuildMode.SLOPE,
                 "CHAIRLIFT": BuildMode.CHAIRLIFT,

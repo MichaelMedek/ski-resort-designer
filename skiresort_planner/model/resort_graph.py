@@ -772,9 +772,9 @@ class ResortGraph:
         # Re-stitch every affected builder fresh from the moved endpoints (each model owns its
         # recompute; a road is just segments with kind=ROAD, so no per-kind branch is needed).
         for seg in affected_segments:
-            seg.restitch(self.nodes[seg.start_node_id], self.nodes[seg.end_node_id], dem)
+            seg.restitch(start_node=self.nodes[seg.start_node_id], end_node=self.nodes[seg.end_node_id], dem=dem)
         for lift in affected_lifts:
-            lift.rebuild(self.nodes[lift.start_node_id], self.nodes[lift.end_node_id], dem)
+            lift.rebuild(start_node=self.nodes[lift.start_node_id], end_node=self.nodes[lift.end_node_id], dem=dem)
 
         self._push_undo(
             MergeNodesAction(

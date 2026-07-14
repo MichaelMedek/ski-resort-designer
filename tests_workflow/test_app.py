@@ -6,13 +6,13 @@ _render_map_fragment_inner) is driven end-to-end with a seeded session and a
 stubbed st_deckgl so the deck.gl component call returns no event.
 """
 
-import skiresort_planner.app as app
-import skiresort_planner.ui.infra as infra
 import skiresort_planner.ui.pydeck_click_handler as pch
+from skiresort_planner import app
 from skiresort_planner.constants import ChartConfig
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
+from skiresort_planner.ui import infra
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
 M = 111320.0
@@ -48,8 +48,8 @@ def _stub_deckgl(monkeypatch, event=None):
 class TestSessionHelpers:
     def test_init_session_state_seeds_everything(self, fake_st, monkeypatch) -> None:
         # No resort param, no backups → fresh id + fresh graph/sm/renderer.
-        monkeypatch.setattr(app.backup_store, "largest_resort_id", lambda: None)
-        monkeypatch.setattr(app.backup_store, "new_resort_id", lambda: "fresh567")
+        monkeypatch.setattr("skiresort_planner.app.backup_store.largest_resort_id", lambda: None)
+        monkeypatch.setattr("skiresort_planner.app.backup_store.new_resort_id", lambda: "fresh567")
 
         app.init_session_state()
 
@@ -107,6 +107,7 @@ class TestMapHeight:
         monkeypatch.setattr(infra, "streamlit_js_eval", lambda *a, **k: 1080.0)
         full = infra.viewport_map_height(reserved_below_px=0)
         reserved = infra.viewport_map_height(reserved_below_px=ChartConfig.PROFILE_HEIGHT_PX)
+        assert full is not None
         assert reserved == full - ChartConfig.PROFILE_HEIGHT_PX
 
     def test_first_render_shows_message_and_skips_map(self, fake_st, monkeypatch, mock_dem_blue_slope) -> None:
@@ -182,8 +183,8 @@ class TestRenderLoop:
 
     def test_main_runs_full_cycle(self, fake_st, monkeypatch, mock_dem_blue_slope) -> None:
         _stub_deckgl(monkeypatch)
-        monkeypatch.setattr(app.backup_store, "largest_resort_id", lambda: None)
-        monkeypatch.setattr(app.backup_store, "new_resort_id", lambda: "main1234")
+        monkeypatch.setattr("skiresort_planner.app.backup_store.largest_resort_id", lambda: None)
+        monkeypatch.setattr("skiresort_planner.app.backup_store.new_resort_id", lambda: "main1234")
         # DEM already loaded so load_dem_data() returns True and main proceeds.
         fake_st.session_state["dem_service"] = mock_dem_blue_slope
 

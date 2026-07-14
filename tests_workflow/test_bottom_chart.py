@@ -140,8 +140,8 @@ class TestProfileChartRendering:
         seg_id = list(empty_graph.segments.keys())[-1]
 
         # Simulate a module reload: a fresh SegmentKind class with the same values.
-        reloaded_kind = Enum("SegmentKind", {"SLOPE": "slope", "ROAD": "road"}, type=str)
-        empty_graph.segments[seg_id].kind = reloaded_kind.ROAD  # type: ignore[assignment]
+        reloaded_kind = Enum("SegmentKind", {"SLOPE": "slope", "ROAD": "road"}, type=str)  # type: ignore[misc]  # functional enum name intentionally matches the reloaded class, not the variable
+        empty_graph.segments[seg_id].kind = reloaded_kind.ROAD
         assert empty_graph.segments[seg_id].kind is not SegmentKind.ROAD, "must be a different class instance"
 
         # Must not raise 'Unknown segment kind' and must still render the road.
@@ -191,7 +191,7 @@ class TestProfileChartRendering:
         road = empty_graph.finish_road(segment_ids=[list(empty_graph.segments.keys())[-1]])
 
         # Simulate a Streamlit module reload: a fresh EntityKind class with the same values.
-        reloaded_kind = Enum("EntityKind", {"SLOPE": "slope", "ROAD": "road", "LIFT": "lift"}, type=str)
+        reloaded_kind = Enum("EntityKind", {"SLOPE": "slope", "ROAD": "road", "LIFT": "lift"}, type=str)  # type: ignore[misc]  # functional enum name intentionally matches the reloaded class, not the variable
         fig = render_viewing_profile(kind=reloaded_kind.ROAD, entity_id=road.id, graph=empty_graph)  # type: ignore[arg-type]
         assert len(fig.data) > 0
 

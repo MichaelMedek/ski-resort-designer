@@ -21,7 +21,7 @@ import math
 import re
 import time
 from dataclasses import dataclass, field
-from typing import TypedDict, cast
+from typing import TypedDict, TypeVar, cast
 from urllib.parse import urlencode
 
 import requests
@@ -52,6 +52,7 @@ class OverpassElement(TypedDict, total=False):
     """
 
     id: int
+    type: str
     tags: dict[str, str]
     geometry: list[OverpassVertex]
 
@@ -85,6 +86,11 @@ class PisteImport:
     points: list[PathPoint]
     name: str | None
 
+    @property
+    def length_m(self) -> float:
+        """Ground length of the run (sum of legs between consecutive DEM-sampled points)."""
+        return sum(self.points[i].distance_to(other=self.points[i + 1]) for i in range(len(self.points) - 1))
+
 
 @dataclass(frozen=True)
 class LiftImport:
@@ -94,6 +100,11 @@ class LiftImport:
     top: PathPoint
     lift_type: str
     name: str | None
+
+    @property
+    def length_m(self) -> float:
+        """Ground length of the lift line (bottom station to top station)."""
+        return self.bottom.distance_to(other=self.top)
 
 
 @dataclass
@@ -171,9 +182,14 @@ class OSMImporter:
             vertices = [(v["lon"], v["lat"]) for v in el.get("geometry", [])]
             osm_id = el.get("id", 0)
             if "aerialway" in tags:
-                self._add_lift(tags, vertices, bbox, summary, osm_id)
+                self._add_lift(tags=tags, vertices=vertices, bbox=bbox, summary=summary, osm_id=osm_id)
             elif "piste:type" in tags:
-                self._add_piste(tags, vertices, bbox, summary, osm_id)
+                self._add_piste(tags=tags, vertices=vertices, bbox=bbox, summary=summary, osm_id=osm_id)
+        # OSM often maps the same run/lift twice (an old + a re-drawn way share a name). Keep the
+        # LONGEST per name within each kind — pistes and lifts dedupe separately.
+        summary.pistes, dropped_pistes = _dedupe_longest_per_name(items=summary.pistes, kind="piste")
+        summary.lifts, dropped_lifts = _dedupe_longest_per_name(items=summary.lifts, kind="lift")
+        summary.skipped += dropped_pistes + dropped_lifts
         logger.info(f"Converted: {len(summary.pistes)} pistes, {len(summary.lifts)} lifts, {summary.skipped} skipped")
         return summary
 
@@ -191,7 +207,7 @@ class OSMImporter:
             )
             summary.skipped += 1
             return
-        if len(vertices) < 2 or not _fully_inside(vertices, bbox):
+        if len(vertices) < 2 or not _fully_inside(vertices=vertices, bbox=bbox):
             logger.info(f"Skipped piste '{name}' (way/{osm_id}): reaches outside the import area")
             summary.skipped += 1
             return
@@ -231,7 +247,7 @@ class OSMImporter:
             )
             summary.skipped += 1
             return
-        if len(vertices) < 2 or not _fully_inside(vertices, bbox):
+        if len(vertices) < 2 or not _fully_inside(vertices=vertices, bbox=bbox):
             logger.info(f"Skipped lift '{name}' (way/{osm_id}): reaches outside the import area")
             summary.skipped += 1
             return
@@ -329,6 +345,29 @@ def _polyline_length_m(vertices: list[Vertex]) -> float:
         )
         for i in range(len(vertices) - 1)
     )
+
+
+_Named = TypeVar("_Named", PisteImport, LiftImport)
+
+
+def _dedupe_longest_per_name(items: list[_Named], kind: str) -> tuple[list[_Named], int]:
+    """Keep only the LONGEST item per name, dropping shorter same-name duplicates."""
+    longest: dict[str | None, _Named] = {}
+    for item in items:
+        best = longest.get(item.name)
+        if best is None or item.length_m > best.length_m:
+            longest[item.name] = item
+    kept, dropped = [], 0
+    for item in items:
+        if longest[item.name] is item:
+            kept.append(item)
+        else:
+            dropped += 1
+            logger.info(
+                f"Skipped {kind} '{item.name}': duplicate name, {item.length_m:.0f}m "
+                f"< kept {longest[item.name].length_m:.0f}m"
+            )
+    return kept, dropped
 
 
 def _drop_none(points: list[PathPoint | None]) -> list[PathPoint] | None:

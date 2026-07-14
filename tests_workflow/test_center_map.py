@@ -6,6 +6,8 @@ calculate_3d_view_for_* camera calculators.
 """
 
 from skiresort_planner.model.path_segment import SegmentKind
+from skiresort_planner.ui.click_detector import ClickDetector
+from skiresort_planner.ui.context import ClickDeduplicationContext
 
 M = 111320.0  # metres per degree near the equator
 
@@ -325,14 +327,14 @@ class TestThreeDViewCalculators:
         slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
 
         _lat, _lon, bearing, zoom, pitch = MapRenderer.calculate_3d_view_for_slope(graph=graph, slope_id=slope.id)
-        assert isinstance(zoom, int) and pitch > 0 and 0.0 <= bearing <= 360.0
+        assert zoom > 0 and pitch > 0 and 0.0 <= bearing <= 360.0
 
     def test_lift_view(self, empty_graph, mock_dem_blue_slope) -> None:
         from skiresort_planner.ui.center_map import MapRenderer
 
         _road, lift = _populate_full_resort(empty_graph, mock_dem_blue_slope)
         _lat, _lon, bearing, zoom, pitch = MapRenderer.calculate_3d_view_for_lift(graph=empty_graph, lift_id=lift.id)
-        assert isinstance(zoom, int) and pitch > 0 and 0.0 <= bearing <= 360.0
+        assert zoom > 0 and pitch > 0 and 0.0 <= bearing <= 360.0
 
     def test_road_view(self, empty_graph, path_points_blue) -> None:
         from skiresort_planner.model.proposed_path import ProposedPathSegment
@@ -343,7 +345,7 @@ class TestThreeDViewCalculators:
         road = empty_graph.finish_road(segment_ids=[list(empty_graph.segments.keys())[-1]])
 
         _lat, _lon, bearing, zoom, pitch = MapRenderer.calculate_3d_view_for_road(graph=empty_graph, road_id=road.id)
-        assert isinstance(zoom, int) and pitch > 0 and 0.0 <= bearing <= 360.0
+        assert zoom > 0 and pitch > 0 and 0.0 <= bearing <= 360.0
 
 
 class TestLayerCollection:
@@ -377,13 +379,13 @@ class TestLayerCollection:
 
 class TestImportBoxLayers:
     """create_import_bbox_layers draws a square + a PICKABLE center dot tagged so a click on it
-    is classified as an IMPORT_CENTER confirm. Guards the confirm loop end-to-end with the detector."""
+    is classified as an IMPORT_CENTER confirm. Guards the confirm loop end-to-end with the detector.
+    """
 
     def test_box_and_pickable_center_with_confirm_tag(self, empty_graph) -> None:
         from skiresort_planner.constants import ClickConfig, StyleConfig
         from skiresort_planner.model.click_info import MapClickType, MarkerType
         from skiresort_planner.ui.center_map import MapRenderer
-        from skiresort_planner.ui.click_detector import ClickDetector
 
         renderer = MapRenderer(graph=empty_graph)
         layers = renderer.create_import_bbox_layers(
@@ -404,8 +406,8 @@ class TestImportBoxLayers:
         assert marker["type"] == ClickConfig.TYPE_IMPORT_CENTER
 
         # End-to-end: feed the dot's data through the REAL detector → IMPORT_CENTER marker.
-        class _Dedup:
-            def is_new_click(self, coord, obj_id):
+        class _Dedup(ClickDeduplicationContext):
+            def is_new_click(self, coord: tuple[float, ...] | None, obj_id: str | None) -> bool:
                 return True
 
         info = ClickDetector(dedup=_Dedup()).detect(clicked_object=marker, clicked_coordinate=None)

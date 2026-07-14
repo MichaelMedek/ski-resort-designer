@@ -88,8 +88,9 @@ class TestSerializationCompleteness:
         """
         import json
 
+        from skiresort_planner.core.terrain_analyzer import SideDirection
         from skiresort_planner.model.path_point import PathPoint
-        from skiresort_planner.model.path_segment import SegmentKind, SideDirection
+        from skiresort_planner.model.path_segment import SegmentKind
         from skiresort_planner.model.proposed_path import ProposedPathSegment
         from skiresort_planner.model.resort_graph import ResortGraph
 

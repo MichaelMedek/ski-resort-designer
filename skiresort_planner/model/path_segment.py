@@ -249,9 +249,9 @@ class PathSegment(Path):
             start_node_id=cast(str, data["start_node_id"]),
             end_node_id=cast(str, data["end_node_id"]),
             side_slope_pct=cast(float, data.get("side_slope_pct", 0.0)),
-            side_slope_dir=SideDirection(data.get("side_slope_dir", SideDirection.FLAT.value)),
+            side_slope_dir=SideDirection(cast(str, data.get("side_slope_dir", SideDirection.FLAT.value))),
             # Pre-enum saves have no "kind" → default to SLOPE.
-            kind=SegmentKind(data.get("kind", SegmentKind.SLOPE.value)),
+            kind=SegmentKind(cast(str, data.get("kind", SegmentKind.SLOPE.value))),
         )
 
     def __repr__(self) -> str:
