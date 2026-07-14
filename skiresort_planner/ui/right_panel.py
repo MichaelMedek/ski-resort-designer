@@ -476,21 +476,22 @@ class RoadBuildingControlPanel(ControlPanel):
     """ROAD_STARTING / ROAD_BUILDING: origin context + action + proposal browse/commit."""
 
     def context_message(self) -> "Message | None":
-        if self.ctx.build(SegmentKind.ROAD).endpoints:
-            endpoint = self.graph.nodes.get(self.ctx.build(SegmentKind.ROAD).endpoints[-1])
+        build = self.ctx.build(SegmentKind.ROAD)
+        if build.endpoints:
+            endpoint = self.graph.nodes.get(build.endpoints[-1])
             return RoadPlacingContextMessage(
-                start_node_id=self.ctx.build(SegmentKind.ROAD).endpoints[-1],
+                start_node_id=build.endpoints[-1],
                 start_elevation_m=endpoint.elevation if endpoint else 0.0,
-                segment_count=len(self.ctx.build(SegmentKind.ROAD).segments),
+                segment_count=len(build.segments),
             )
-        if self.ctx.build(SegmentKind.ROAD).start_node_id:
-            node = self.graph.nodes.get(self.ctx.build(SegmentKind.ROAD).start_node_id)
+        if build.start_node_id is not None:
+            node = self.graph.nodes.get(build.start_node_id)
             return RoadPlacingContextMessage(
-                start_node_id=self.ctx.build(SegmentKind.ROAD).start_node_id,
+                start_node_id=build.start_node_id,
                 start_elevation_m=node.elevation if node else 0.0,
             )
-        if self.ctx.build(SegmentKind.ROAD).start_location:
-            loc = self.ctx.build(SegmentKind.ROAD).start_location
+        if build.start_location is not None:
+            loc = build.start_location
             return RoadPlacingContextMessage(
                 start_lat=loc.lat,
                 start_lon=loc.lon,

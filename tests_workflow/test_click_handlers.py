@@ -1126,12 +1126,12 @@ class TestRoadBuildingEdgeCases:
         )
         assert sm.is_road_starting, "a too-far target does not leave the building flow"
 
-    def test_proposal_endpoint_click_selects_then_commits(
+    def test_proposal_endpoint_click_commits_immediately(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
     ) -> None:
-        # For roads, endpoint and body clicks share the select-or-commit rule. The suite covers this
-        # via BODY; here we prove PROPOSAL_ENDPOINT behaves identically: click an UNSELECTED endpoint
-        # only selects, then re-clicking the SELECTED one commits.
+        # For roads (as for slopes), the orange ENDPOINT marker is an instant-commit affordance:
+        # one click commits that path outright, even when a DIFFERENT proposal is selected. Only the
+        # in-between BODY markers use the select-then-commit rule.
         from skiresort_planner.ui.click_handlers import handle_road_building_click
 
         dem = mock_dem_red_slope_diagonal
@@ -1140,23 +1140,15 @@ class TestRoadBuildingEdgeCases:
             ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=300 / M),
             elevation=dem.get_elevation_or_raise(lon=300 / M, lat=0.0),
         )
-        # Force a two-proposal browse state with a DIFFERENT one selected (idx 1), so an endpoint
-        # click on idx 0 must only select (not commit).
+        # Two-proposal browse state with a DIFFERENT one selected (idx 1); an endpoint click on
+        # idx 0 must commit idx 0 straight away — no prior selection of it required.
         ctx.proposals.paths = ctx.proposals.paths + ctx.proposals.paths[:1]
         ctx.proposals.selected_idx = 1
         handle_road_building_click(
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_ENDPOINT, proposal_index=0),
             elevation=None,
         )
-        assert ctx.proposals.selected_idx == 0, "endpoint click on an unselected proposal only selects it"
-        assert ctx.build(SegmentKind.ROAD).segments == [], "selecting via endpoint does not commit"
-
-        # Re-click the now-selected endpoint (idx 0) → commit.
-        handle_road_building_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_ENDPOINT, proposal_index=0),
-            elevation=None,
-        )
-        assert len(ctx.build(SegmentKind.ROAD).segments) == 1, "re-clicking the selected endpoint commits it"
+        assert len(ctx.build(SegmentKind.ROAD).segments) == 1, "an endpoint click commits immediately"
         assert sm.is_road_building_only
 
     def test_brand_new_terrain_start_proposals_have_no_node_ids(

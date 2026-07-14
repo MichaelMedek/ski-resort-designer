@@ -6,6 +6,7 @@ The bijection asserts run at import (so a gap crashes on import), and these test
 
 import pytest
 
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.context import BuildMode, EntityKind, PlannerContext
 from skiresort_planner.ui.mode_registry import (
@@ -224,3 +225,91 @@ class TestRegistryReturnsRealObjects:
             assert hasattr(panel, "context_message")
             assert hasattr(panel, "action_message")
             assert hasattr(panel, "buttons")
+
+
+class TestRendersCustomPath:
+    """The fan-vs-freehand distinction that governs whether orange commit-endpoint dots draw.
+
+    The rule is identical for every kind: only a custom-path state (routing to a clicked target,
+    ``force_mode`` set) draws a single freehand route with no endpoints; the fan states show the
+    endpoint dots. This pins the road-parity fix — roads used to hide endpoints in EVERY road
+    state, so the fan showed no orange markers.
+    """
+
+    def test_fan_states_show_endpoints_custom_path_hides_them(self) -> None:
+        ctx = PlannerContext()
+        # force_mode is only ever True inside a custom-path state (set by the target before-hook).
+        ctx.custom_connect.force_mode = False
+        for key in ("slope_starting", "slope_building", "road_starting", "road_building"):
+            assert BUILD_STATES[key].renders_custom_path(ctx) is False, f"{key} must show orange endpoints"
+
+        ctx.custom_connect.force_mode = True
+        for key in ("slope_custom_path", "road_custom_path"):
+            assert BUILD_STATES[key].renders_custom_path(ctx) is True, f"{key} must hide endpoints (freehand)"
+
+    def test_non_build_states_never_render_custom_path(self) -> None:
+        ctx = PlannerContext()
+        ctx.custom_connect.force_mode = True  # even with the flag set, non-build states ignore it
+        for key in ("idle_ready", "idle_viewing_slope", "idle_viewing_road", "lift_placing", "merge_placing"):
+            assert BUILD_STATES[key].renders_custom_path(ctx) is False, key
+
+
+class TestBuildStateMapSurface:
+    """The build states own overlay layers and a bottom profile; exercise both branches (with and
+    without an origin / committed segments) so the road-parity surface is covered like slopes.
+    """
+
+    def test_overlay_and_profile_empty_before_any_origin(self, empty_graph, path_factory) -> None:
+        from skiresort_planner.ui.center_map import MapRenderer
+
+        _sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        renderer = MapRenderer(center_lon=0.0, center_lat=0.0, zoom=13, pitch=0, bearing=0)
+        analyzer = path_factory.terrain_analyzer
+        dem = path_factory.dem_service
+        for key in ("slope_starting", "road_starting"):
+            bs = BUILD_STATES[key]
+            # No origin yet → no overlay dot, no in-build profile.
+            assert (
+                bs.overlay_layers(
+                    ctx=ctx, graph=empty_graph, renderer=renderer, terrain_analyzer=analyzer, dem=dem, use_3d=False
+                )
+                == []
+            )
+            assert bs.bottom_profile(ctx=ctx, graph=empty_graph) is None
+
+    def test_slope_overlay_draws_orientation_and_custom_direction_arrows(self, empty_graph, path_factory) -> None:
+        from skiresort_planner.model.node import Node
+        from skiresort_planner.model.path_point import PathPoint
+        from skiresort_planner.ui.center_map import MapRenderer
+
+        _sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        renderer = MapRenderer(center_lon=0.0, center_lat=0.0, zoom=13, pitch=0, bearing=0)
+        analyzer = path_factory.terrain_analyzer
+        dem = path_factory.dem_service
+        bs = BUILD_STATES["slope_building"]
+
+        # A selection on real (sloped) terrain → orientation arrows are drawn.
+        elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
+        ctx.selection.set(lon=0.0, lat=0.0, elevation=elev)
+        layers_with_selection = bs.overlay_layers(
+            ctx=ctx, graph=empty_graph, renderer=renderer, terrain_analyzer=analyzer, dem=dem, use_3d=False
+        )
+        assert layers_with_selection, "a selection on sloped terrain must draw orientation arrows"
+
+        # Custom-connect routing (force_mode + start_node) adds the downhill direction arrow.
+        empty_graph.nodes["N1"] = Node(id="N1", location=PathPoint(lon=0.0, lat=0.0, elevation=elev))
+        ctx.custom_connect.force_mode = True
+        ctx.custom_connect.start_node = "N1"
+        layers_with_arrow = bs.overlay_layers(
+            ctx=ctx, graph=empty_graph, renderer=renderer, terrain_analyzer=analyzer, dem=dem, use_3d=False
+        )
+        assert len(layers_with_arrow) > len(layers_with_selection), "custom-connect adds a direction arrow"
+
+    def test_build_profile_renders_once_segments_exist(self, empty_graph, path_points_blue) -> None:
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
+
+        _sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        empty_graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        ctx.build(SegmentKind.SLOPE).segments = list(empty_graph.segments.keys())
+        spec = BUILD_STATES["slope_building"].bottom_profile(ctx=ctx, graph=empty_graph)
+        assert spec is not None and spec.key == "combined_profile"

@@ -379,6 +379,9 @@ def _generate_custom_connect_paths() -> None:
         return
 
     target_lon, target_lat, target_elevation = ctx.custom_connect.target_location
+    if target_elevation is None:
+        # The click handler only routes a custom target with a validated elevation.
+        raise RuntimeError(f"custom target ({target_lat:.6f}, {target_lon:.6f}) has no elevation")
     kind = sm.active_build_kind
     spec = KIND_SPECS[kind]
     build = ctx.build(kind)
@@ -509,7 +512,7 @@ def _finish_current_entity(kind: SegmentKind) -> None:
         raise RuntimeError(f"finish called with no {kind.value} segments")
 
     entity = _finalize_entity(kind)
-    sm.send(KIND_SPECS[kind].finish_event, **{f"{kind.value}_id": entity.id})
+    sm.send(KIND_SPECS[kind].finish_event, entity_id=entity.id)
 
 
 def _finish_connector(*, segment_id: str, kind: SegmentKind) -> None:

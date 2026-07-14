@@ -58,8 +58,13 @@ logger = logging.getLogger(__name__)
 # so injection is the only option (the standard community pattern). Each rule is load-bearing:
 _FULLSCREEN_CSS = """
 <style>
-/* Hide the top toolbar (Deploy/menu strip) — reclaims its height for the map. */
-header[data-testid="stHeader"] { display: none; }
+/* Reclaim the top toolbar's height WITHOUT hiding the whole header/toolbar. In Streamlit 1.59
+   the arrow that re-opens a collapsed sidebar (stExpandSidebarButton) is rendered INSIDE the
+   toolbar (stToolbar), next to the Deploy/hamburger menu — so display:none on the header or
+   the toolbar hides that arrow too, leaving no way to reopen the sidebar. Instead: flatten the
+   header, hide only the Deploy menu + status widget, and keep the toolbar/expand arrow visible. */
+header[data-testid="stHeader"] { height: 0; background: transparent; }
+div[data-testid="stDecoration"], div[data-testid="stMainMenu"], div[data-testid="stStatusWidget"] { display: none; }
 /* Collapse the default ~6rem top padding so the map starts near the top. */
 .block-container { padding-top: 1rem; padding-bottom: 0; }
 /* Hide the streamlit-js-eval helper iframe: it only reads the window height and should

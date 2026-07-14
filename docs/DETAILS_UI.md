@@ -12,7 +12,7 @@ Design ski resorts on real Alpine terrain with an interactive map-based tool.
 
 1. **Click** on the map to place a starting point → path proposals appear
 2. **Click** a dashed line to select it → stats appear in right panel
-3. **Click "✅ Commit"** → segment becomes solid, new proposals appear
+3. **Click "✅ Commit This Path"** → segment becomes solid, new proposals appear
 4. **Click "🏁 Finish Committed Slope"** → slope is complete with a name and difficulty rating
 
 ---
@@ -163,8 +163,8 @@ On **flat terrain**, fewer paths appear because left/right variants merge when g
 
 | Warning | Meaning | Action Needed |
 |---------|---------|---------------|
-| **🚜 Side Cut** | Cross-slope requires excavation | Construction work to flatten piste |
-| **⚠️ Too Flat** | Gradient < 5% | Skiers may need to pole; valid for connectors |
+| **🚜 Excavator Warning** | Cross-slope requires excavation | Construction work to flatten piste |
+| **📐 Too Flat Warning** | Gradient < 5% | Skiers may need to pole; valid for connectors |
 
 > **Technical:** See [DETAILS.md](DETAILS.md) Section 4 for earthwork calculations.
 
@@ -314,7 +314,7 @@ As with slopes and lifts, you can view the road's elevation profile, switch to *
 
 Below a divider sit two **utility** buttons:
 
-- **🗺️ Import (OSM)** — load real lifts & pistes for an area.
+- **🗺️ Import** — load real lifts & pistes from OpenStreetMap for an area.
 - **🔗 Node Merge** — collapse selected junction nodes into one
 
 The currently active mode is highlighted.
@@ -387,7 +387,7 @@ Click **📂 Load from File** and select a previously saved JSON file.
 
 ### Export GPX
 
-Click **📤 Export GPX** to download GPS tracks of your slopes for use in other applications.
+Click **📥 Export GPX** to download GPS tracks of your slopes for use in other applications.
 
 ---
 
@@ -396,10 +396,10 @@ Click **📤 Export GPX** to download GPS tracks of your slopes for use in other
 Instead of starting from an empty map, load a real resort's existing lifts and pistes as a
 canvas, then keep editing with the normal tools.
 
-1. Select **🗺️ Import (OSM)** in the build-mode selector (like picking Slope/Road/Lift).
+1. Select **🗺️ Import** in the build-mode selector (like picking Slope/Road/Lift).
 2. Adjust the **Import area half-width (km)** slider (left) to size the box.
 3. **Click the map** to drop the import area — a blue square + center dot appear where you clicked. Click elsewhere to re-place it; move the slider to resize it live.
-4. **Confirm** by clicking the **center dot** on the map, or the **✅ Confirm Import** button in the right panel. The lifts and pistes fully inside the square are then fetched and added. **Cancel** (left) discards the box.
+4. **Confirm** by clicking the **center dot** on the map, or the **✅ Confirm Import** button in the right panel. The lifts and pistes fully inside the square are then fetched and added. **✖️ Cancel Import** (left) discards the box.
 
 **What gets imported**
 

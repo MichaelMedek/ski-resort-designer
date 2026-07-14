@@ -8,6 +8,7 @@ COORDINATE SYSTEM:
     where the math is simple: 1 degree ≈ 111,320 meters in both directions.
 """
 
+import random
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Literal
 from unittest.mock import MagicMock
@@ -55,6 +56,16 @@ def mock_infra_rerun(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyP
     mock = MagicMock()
     monkeypatch.setattr("skiresort_planner.ui.infra.trigger_rerun", mock)
     return mock
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_rng() -> None:
+    """Seed the global RNG before every test so generated geometry is reproducible.
+
+    Production path tracing uses ``random.gauss`` (the global module) on purpose — real users
+    get fresh, varied routes each time. That global state makes the suite order-dependent.
+    """
+    random.seed(3)
 
 
 # =============================================================================

@@ -558,7 +558,7 @@ class PlannerStateMachine(StateMachine):
         slope_custom_path, event="select_custom_target", before="_before_retarget_custom"
     )  # 6.6 [event: select_custom_target] self-loop
     finish_slope_from_custom = slope_custom_path.to(
-        idle_viewing_slope, event="finish_slope", before="_before_finish_slope_from_custom"
+        idle_viewing_slope, event="finish_slope", before="_before_finish_from_custom"
     )  # 6.7 [event: finish_slope]
     cancel_path_to_starting = slope_custom_path.to(
         slope_starting, cond="has_no_segments", event="cancel_custom"
@@ -1078,16 +1078,9 @@ class PlannerStateMachine(StateMachine):
         """Road custom-path connector auto-finish — same body as the slope custom finish."""
         self.before_commit_custom_finish(segment_id=segment_id, entity_id=entity_id)
 
-    def _before_finish_slope_from_custom(self, slope_id: str) -> None:
-        """Sidebar Finish during targeting: drop the in-progress proposal (never in
-        segments) and clear custom-connect + proposals. set_slope_id via before_finish_slope.
-        """
-        self.context.clear_custom_connect()
-        self.context.clear_proposals()
-
-    def before_finish_slope(self, slope_id: str) -> None:
+    def before_finish_slope(self, entity_id: str) -> None:
         """Action before finishing a slope."""
-        self.context.viewing.set_slope_id(slope_id=slope_id)
+        self.context.viewing.set_viewed(kind=SegmentKind.SLOPE, entity_id=entity_id)
 
     def before_view_slope(self, slope_id: str) -> None:
         """Set slope_id before entering viewing state. Panel visibility set by enter function."""
@@ -1185,9 +1178,9 @@ class PlannerStateMachine(StateMachine):
         """Merge confirmed: clear the selection (the graph mutation runs in the action)."""
         self.context.merge.clear()
 
-    def before_finish_road(self, road_id: str) -> None:
-        """Set road_id before finishing. Panel visibility set by enter_idle_viewing_road."""
-        self.context.viewing.set_road_id(road_id=road_id)
+    def before_finish_road(self, entity_id: str) -> None:
+        """Set the viewed road before finishing. Panel visibility set by enter_idle_viewing_road."""
+        self.context.viewing.set_viewed(kind=SegmentKind.ROAD, entity_id=entity_id)
         self.context.build(SegmentKind.ROAD).clear()
 
     # ──────────────────────────────────────────────────────────────────────────────
@@ -1239,11 +1232,11 @@ class PlannerStateMachine(StateMachine):
         self.context.custom_connect.target_node = target_node
         self.context.custom_connect.force_mode = True
 
-    def _before_finish_from_custom(self, **_ids: str) -> None:
-        """Sidebar Finish during targeting (slope + road): drop the in-progress proposal.
+    def _before_finish_from_custom(self, entity_id: str) -> None:
+        """Sidebar Finish during targeting (any kind): drop the in-progress proposal.
 
-        The finish event carries the entity id (slope_id / road_id); it is unused here —
-        the destination viewing state reads it from its own before-hook.
+        The finish event carries the entity id; it is unused here — the destination
+        viewing state's own before-hook records it.
         """
         self.context.clear_custom_connect()
         self.context.clear_proposals()
@@ -1359,22 +1352,27 @@ class PlannerStateMachine(StateMachine):
         restored ctx.build(kind). Kind-generic: resolves the State + enter hook from the
         kind's building_state id.
         """
-        logger.info(f"[STATE] Forcing state from {self.get_state_name()} to {kind.value} building")
-        self.context.clear_custom_connect()
-        self.context.viewing.clear()
-        state: State = getattr(self, KIND_SPECS[kind].building_state)
-        self._set_current_state(state=state)
-        self._run_enter_hook(state)
+        self._force_fan_state(kind=kind, state_id=KIND_SPECS[kind].building_state)
 
     def force_starting(self, kind: SegmentKind) -> None:
         """Force state machine to the kind's STARTING state without transition (undo helper).
 
         Used after undoing the last segment when the origin remains but no segments do.
         """
-        logger.info(f"[STATE] Forcing state from {self.get_state_name()} to {kind.value} starting")
+        self._force_fan_state(kind=kind, state_id=KIND_SPECS[kind].starting_state)
+
+    def _force_fan_state(self, kind: SegmentKind, state_id: str) -> None:
+        """Force the machine into one of the kind's fan states (STARTING/BUILDING) after undo.
+
+        force_* bypasses transitions, so no before_* hook fires to arm the fan the way a
+        normal commit/start does. Re-arm it here from the restored endpoint so the next
+        deferred pass regenerates proposals (both undo callers rely on this).
+        """
+        logger.info(f"[STATE] Forcing state from {self.get_state_name()} to {kind.value} {state_id}")
         self.context.clear_custom_connect()
         self.context.viewing.clear()
-        state = getattr(self, KIND_SPECS[kind].starting_state)
+        self.context.deferred.fan_generation.add(kind)
+        state: State = getattr(self, state_id)
         self._set_current_state(state=state)
         self._run_enter_hook(state)
 

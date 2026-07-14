@@ -69,6 +69,18 @@ def _select_or_commit_proposal(ctx: PlannerContext, idx: int) -> None:
         reload_map()  # first click just selects + redraws
 
 
+def _commit_proposal_endpoint(ctx: PlannerContext, idx: int) -> None:
+    """Endpoint-click behavior shared by road + slope: commit immediately (single click).
+
+    The orange endpoint marker is the "go" affordance — clicking it commits that path
+    outright, no prior selection needed. Out-of-range indices (stale click state after a
+    rerun) are a silent no-op, mirroring the body path's guard.
+    """
+    if not (0 <= idx < len(ctx.proposals.paths)):
+        return
+    commit_selected_path(path_idx=idx)
+
+
 def _start_mode_from_terrain(
     ctx: PlannerContext, sm: PlannerStateMachine, lon: float, lat: float, elevation: float
 ) -> None:
@@ -266,8 +278,8 @@ def handle_slope_building_click(click_info: ClickInfo, elevation: float | None) 
     An invalid target (uphill/too far) shows a warning and does NOT change state.
 
     Valid Click Types:
-        PROPOSAL_ENDPOINT → Commit the path
-        PROPOSAL_BODY → Select the path variant (no commit)
+        PROPOSAL_ENDPOINT → Commit the path immediately (one click)
+        PROPOSAL_BODY → Select the path variant; commit only when re-clicking the selected one
         TERRAIN → Route a custom-connect path to that point
         NODE → Route a custom-connect path to that node (snap + connect)
 
@@ -288,9 +300,14 @@ def handle_slope_building_click(click_info: ClickInfo, elevation: float | None) 
     if click_info.click_type == MapClickType.MARKER:
         marker_type = click_info.marker_type
 
-        # A proposal click SELECTS the variant; re-clicking the already-selected one COMMITS it.
-        # Endpoint and body clicks route through the same select-or-commit rule (identical to roads).
-        if marker_type in {MarkerType.PROPOSAL_ENDPOINT, MarkerType.PROPOSAL_BODY}:
+        # Orange ENDPOINT marker → commit that path immediately (single click).
+        if marker_type == MarkerType.PROPOSAL_ENDPOINT:
+            assert click_info.proposal_number is not None  # Validated in ClickInfo
+            _commit_proposal_endpoint(ctx=ctx, idx=click_info.proposal_number - 1)
+            return
+
+        # In-between BODY marker → select the variant; commit only on re-clicking the selected one.
+        if marker_type == MarkerType.PROPOSAL_BODY:
             assert click_info.proposal_number is not None  # Validated in ClickInfo
             _select_or_commit_proposal(ctx=ctx, idx=click_info.proposal_number - 1)
             return
@@ -662,22 +679,26 @@ def handle_road_building_click(click_info: ClickInfo, elevation: float | None) -
     """Handle a click while building a road (ROAD_STARTING / ROAD_BUILDING / ROAD_CUSTOM_PATH).
 
     Mirror of handle_slope_building_click. A fan of gentle routes radiates from the
-    current endpoint (browse + select-or-commit on the orange endpoints); clicking a
-    TERRAIN point or NODE routes a custom-connect path to that target (ROAD_CUSTOM_PATH).
-    "Finish Road" ends the road. The ±ROAD_MAX_GRADIENT_PCT cap and the direct-line
-    fallback / refusal live in the shared custom-connect generator (actions.py).
+    current endpoint; clicking the orange ENDPOINT commits immediately, an in-between
+    BODY marker selects-then-commits. Clicking a TERRAIN point or NODE routes a
+    custom-connect path to that target (ROAD_CUSTOM_PATH). "Finish Road" ends the road.
+    The ±ROAD_MAX_GRADIENT_PCT cap and the direct-line fallback / refusal live in the
+    shared custom-connect generator (actions.py).
     """
     ctx: PlannerContext = st.session_state.context
 
-    # A proposal click SELECTS the variant; re-clicking the already-selected one COMMITS it
-    # (identical to slopes). Endpoint and body clicks route through the same rule.
-    if click_info.click_type == MapClickType.MARKER and click_info.marker_type in {
-        MarkerType.PROPOSAL_ENDPOINT,
-        MarkerType.PROPOSAL_BODY,
-    }:
-        assert click_info.proposal_number is not None
-        _select_or_commit_proposal(ctx=ctx, idx=click_info.proposal_number - 1)
-        return
+    if click_info.click_type == MapClickType.MARKER:
+        # Orange ENDPOINT marker → commit that path immediately (single click, identical to slopes).
+        if click_info.marker_type == MarkerType.PROPOSAL_ENDPOINT:
+            assert click_info.proposal_number is not None
+            _commit_proposal_endpoint(ctx=ctx, idx=click_info.proposal_number - 1)
+            return
+
+        # In-between BODY marker → select the variant; commit only on re-clicking the selected one.
+        if click_info.marker_type == MarkerType.PROPOSAL_BODY:
+            assert click_info.proposal_number is not None
+            _select_or_commit_proposal(ctx=ctx, idx=click_info.proposal_number - 1)
+            return
 
     # TERRAIN → route a custom-connect road to the clicked point (shared handler).
     if click_info.click_type == MapClickType.TERRAIN:

@@ -198,7 +198,7 @@ class TestFinishSlopeFromCustom:
         # Sidebar Finish fires the finish_slope event — must resolve, not raise.
         slope = graph.finish_slope(segment_ids=ctx.build(SegmentKind.SLOPE).segments)
         assert slope is not None
-        sm.finish_slope(slope_id=slope.id)
+        sm.finish_slope(entity_id=slope.id)
 
         assert sm.current_state_value == "idle_viewing_slope", "Finish during targeting lands in viewing"
         assert not ctx.custom_connect.force_mode, "in-progress target cleared"

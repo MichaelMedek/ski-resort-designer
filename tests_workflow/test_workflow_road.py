@@ -54,7 +54,7 @@ class TestRoadBuildingWorkflow:
 
         # Finish → idle_viewing_road, panel visible, road context cleared.
         road = empty_graph.finish_road(segment_ids=ctx.build(SegmentKind.ROAD).segments)
-        sm.finish_road(road_id=road.id)
+        sm.finish_road(entity_id=road.id)
         assert sm.current_state_value == "idle_viewing_road"
         assert ctx.viewing.road_id == road.id
         assert ctx.viewing.panel_visible is True
@@ -102,7 +102,7 @@ class TestRoadInvalidTransitions:
         assert sm.current_state_value == "road_starting"
 
         with pytest.raises(TransitionNotAllowed):
-            sm.finish_road(road_id="R1")
+            sm.finish_road(entity_id="R1")
 
 
 class TestRoadConnectorAutoFinish:

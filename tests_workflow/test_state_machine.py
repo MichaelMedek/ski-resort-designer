@@ -375,3 +375,46 @@ class TestImportPlacing:
         sm, _ = self._sm()
         sm.start_import(lon=1.0, lat=2.0)
         assert not sm.is_idle and not sm.is_any_slope_state and not sm.is_any_road_state
+
+
+class TestViewSwitching:
+    """Switching between viewed entities (slope↔road↔lift) fires the before_switch_* hooks that
+    set the newly-viewed id. Exercises the full switch chain including the road-view transitions.
+    """
+
+    @staticmethod
+    def _sm() -> SMAndCtx:
+        from skiresort_planner.model.resort_graph import ResortGraph
+
+        return PlannerStateMachine.create(graph=ResortGraph(), add_ui_listener=False)
+
+    def test_switch_chain_updates_viewed_id_and_state(self) -> None:
+        from skiresort_planner.ui.context import EntityKind
+
+        sm, _ctx = self._sm()
+        # idle_ready → view a slope → switch to a road → self-loop to another road → switch to a lift.
+        # viewing_entity encodes both the state's kind and the id set by the before_switch_* hook.
+        sm.show_slope_info_panel(slope_id="SL1")
+        assert sm.viewing_entity == (EntityKind.SLOPE, "SL1")
+
+        sm.show_road_info_panel(road_id="R1")  # switch_slope_to_road_view
+        assert sm.viewing_entity == (EntityKind.ROAD, "R1")
+
+        sm.show_road_info_panel(road_id="R2")  # switch_road self-loop
+        assert sm.viewing_entity == (EntityKind.ROAD, "R2")
+
+        sm.show_lift_info_panel(lift_id="L1")  # switch_road_to_lift_view
+        assert sm.viewing_entity == (EntityKind.LIFT, "L1")
+
+        sm.show_road_info_panel(road_id="R3")  # switch_lift_to_road_view
+        assert sm.viewing_entity == (EntityKind.ROAD, "R3")
+
+    def test_switch_road_to_slope_then_close(self) -> None:
+        from skiresort_planner.ui.context import EntityKind
+
+        sm, _ctx = self._sm()
+        sm.show_road_info_panel(road_id="R1")
+        sm.show_slope_info_panel(slope_id="SL9")  # switch_road_to_slope_view
+        assert sm.viewing_entity == (EntityKind.SLOPE, "SL9")
+        sm.hide_info_panel()  # close_panel → idle_ready
+        assert sm.viewing_entity is None

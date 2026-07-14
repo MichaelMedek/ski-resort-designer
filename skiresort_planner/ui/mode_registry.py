@@ -659,13 +659,14 @@ class _RoadBuildingState(BuildState):
         # Only the origin (starting) shows a dot; once segments exist the road draws itself.
         if self.state_key != "road_starting":
             return []
-        if ctx.build(SegmentKind.ROAD).start_node_id:
-            node = graph.nodes.get(ctx.build(SegmentKind.ROAD).start_node_id)
+        build = ctx.build(SegmentKind.ROAD)
+        if build.start_node_id is not None:
+            node = graph.nodes.get(build.start_node_id)
             if node is None:
-                raise ValueError(f"Road start node {ctx.build(SegmentKind.ROAD).start_node_id} not found in graph")
+                raise ValueError(f"Road start node {build.start_node_id} not found in graph")
             lat, lon, elevation = node.lat, node.lon, node.elevation
-        elif ctx.build(SegmentKind.ROAD).start_location:
-            loc = ctx.build(SegmentKind.ROAD).start_location
+        elif build.start_location is not None:
+            loc = build.start_location
             lat, lon, elevation = loc.lat, loc.lon, loc.elevation
         else:
             return []
@@ -688,7 +689,7 @@ class _RoadBuildingState(BuildState):
         return None
 
     def renders_custom_path(self, ctx: PlannerContext) -> bool:
-        return True
+        return ctx.custom_connect.force_mode
 
     def info_block(self, ctx: PlannerContext) -> InfoBlock:
         return InfoBlock(

@@ -53,7 +53,7 @@ class TestSlopeBuildingWorkflow:
         slope = graph.finish_slope(segment_ids=ctx.build(SegmentKind.SLOPE).segments)
         assert slope is not None, "finish_slope should return Slope"
 
-        sm.finish_slope(slope_id=slope.id)
+        sm.finish_slope(entity_id=slope.id)
 
         # VERIFY Pillar 1: enter_idle_viewing_slope guarantees panel visible
         assert sm.current_state_value == "idle_viewing_slope", "After finish: idle_viewing_slope"
@@ -88,7 +88,7 @@ class TestSelfLoopBehavior:
         sm.commit_path(segment_id=seg1_id, endpoint_node_id=endpoint_ids[0])  # type: ignore[attr-defined]  # dynamic python-statemachine event
         slope1 = graph.finish_slope(segment_ids=ctx.build(SegmentKind.SLOPE).segments)
         assert slope1 is not None
-        sm.finish_slope(slope_id=slope1.id)
+        sm.finish_slope(entity_id=slope1.id)
 
         assert ctx.viewing.slope_id == slope1.id, "Viewing first slope"
 
@@ -101,7 +101,7 @@ class TestSelfLoopBehavior:
         sm.commit_path(segment_id=seg2_id, endpoint_node_id=endpoint_ids2[0])  # type: ignore[attr-defined]  # dynamic python-statemachine event
         slope2 = graph.finish_slope(segment_ids=ctx.build(SegmentKind.SLOPE).segments)
         assert slope2 is not None
-        sm.finish_slope(slope_id=slope2.id)
+        sm.finish_slope(entity_id=slope2.id)
 
         # Self-loop: switch to first slope
         sm.view_slope(slope_id=slope1.id)
@@ -333,7 +333,7 @@ class TestInvalidTransitions:
         # Try to call finish_slope - should raise or be blocked
 
         with pytest.raises(TransitionNotAllowed):
-            sm.finish_slope(slope_id="SL1")
+            sm.finish_slope(entity_id="SL1")
 
     def test_cannot_view_slope_from_building_state(self, workflow_setup: WorkflowSetup) -> None:
         """view_slope is not allowed from SlopeBuilding (must finish/cancel first)."""

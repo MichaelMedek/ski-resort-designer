@@ -361,16 +361,16 @@ When the automatically generated fan paths don't include the direction you want,
 
 ### 7.1 Multi-Grade Path Search
 
-The algorithm tries **16 combinations** (8 difficulty-grade variants × 2 sides) to find viable paths:
+The algorithm tries **8 difficulty-grade targets** (4 difficulties × gentle/steep) to find viable paths:
 
-| Difficulty | Grades | Sides | Total |
-|------------|--------|-------|-------|
-| 🟢 Green | Gentle (7%), Steep (12%) | Left, Right | 4 |
-| 🔵 Blue | Gentle (17%), Steep (22%) | Left, Right | 4 |
-| 🔴 Red | Gentle (28%), Steep (37%) | Left, Right | 4 |
-| ⚫ Black | Gentle (45%), Steep (60%) | Left, Right | 4 |
+| Difficulty | Grades | Total |
+|------------|--------|-------|
+| 🟢 Green | Gentle (7%), Steep (12%) | 2 |
+| 🔵 Blue | Gentle (17%), Steep (22%) | 2 |
+| 🔴 Red | Gentle (28%), Steep (37%) | 2 |
+| ⚫ Black | Gentle (45%), Steep (60%) | 2 |
 
-Similar paths are deduplicated, keeping only the easiest difficulty when paths overlap.
+Unlike the fan tracer (§5.3), the grid-Dijkstra planner has no left/right **side** — it finds the single least-cost route for a target grade, so there are 8 searches, not 16. Similar paths are deduplicated, keeping only the easiest difficulty when paths overlap.
 
 ### 7.2 Grid-Based Dijkstra Algorithm
 
@@ -421,7 +421,7 @@ giving up to five spokes (each a left/right traverse, or a center path where the
 
 Clicking a target routes to it by the same grid-Dijkstra algorithm and cost function as §7.2, against the signed green $g_{\text{target}}$. A road picks its `GradientMode` from the endpoints — `DOWNHILL` when it descends, `UPHILL` when it climbs — and the monotonicity penalty keeps the segment one-way (no looping), exactly as for a descent-only slope. On gentle ground both targets collapse to one straight route; on steep ground each serpentines, giving two proposals.
 
-If **no** serpentine fits within ±15%, the caller offers a **direct road** (a straight 2-point line, treated as a bridge/cut) — but **only if that direct line itself is within ±15%**. This is the key slope-vs-road difference: a slope's straight-line fallback is *always* offered (any grade is a valid, if steep, run), whereas a road is genuinely **refused** ("No car road within ±15% is possible to that point") when even the direct line is too steep.
+If **no** serpentine fits within ±15%, the caller offers a **direct road** (a straight 2-point line, treated as a bridge/cut) — but **only if that direct line itself is within ±15%**. This is the key slope-vs-road difference: a slope's straight-line fallback is *always* offered (any grade is a valid, if steep, run), whereas a road is genuinely **refused** ("Too steep for a car road") when even the direct line is too steep.
 
 #### 7.3.3 ±15% is a HARD cap at build time
 
@@ -462,9 +462,10 @@ Spacing pylons may affect adjacent spans. Re-run Phase 1 to fix new violations.
 
 An **Import from OpenStreetMap** control (sidebar, idle only) fetches the real lifts & pistes within a square area around the map center and adds them to the graph. **Geometry only** — we take just the lon/lat polylines and lift stations; elevation, difficulty, pylons, and **belt width** are all recomputed by our own pipeline. OSM's own attributes (including `piste:width`) are ignored.
 
-### 9.1 Region + tiled fetch
+### 9.1 Region + single-query fetch
 
-A **square bounding box**: the current map center + a half-width from a slider. A single Overpass query over a large box times out (504), and firing every tile at once trips the public endpoint's rate limit (429). So we **tile** the box into a grid of square sub-tiles (each ≤ `2·TILE_HALF_WIDTH_M`, 4 km, squares partition a square exactly — no gaps, no overlap) and fetch them **paced** — a `TILE_THROTTLE_S` wait between requests, each tile retried with exponential backoff on a transient 429/504/network error — then merge the elements deduped by OSM id. A box within the tile size is a single query, sent with Overpass's native bbox filter.
+A **square bounding box**: the current map center + a half-width from a slider (`HALF_WIDTH_MIN/MAX/DEFAULT_KM`). A lift/piste-only query is **light** — even a full-size box returns in a few seconds.
+
 
 ### 9.2 Mapping OSM → graph
 
