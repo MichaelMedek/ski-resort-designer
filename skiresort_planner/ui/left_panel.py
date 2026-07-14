@@ -31,6 +31,7 @@ from skiresort_planner.generators.geocoder import geocode
 from skiresort_planner.model.actions import UndoAction
 from skiresort_planner.model.message import (
     FileLoadErrorMessage,
+    PlaceNotFoundMessage,
 )
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.model.undo_handlers import UNDO_HANDLERS
@@ -125,70 +126,37 @@ class SidebarRenderer:
         self.ctx = context
         self.graph = graph
 
-    @staticmethod
-    def _get_button_help(
-        *,
-        mode: str,
-        label: str,
-        is_disabled: bool,
-        is_building_or_placing: bool,
-        viewing_slope: bool,
-        viewing_lift: bool,
-        viewing_road: bool,
-    ) -> str:
-        """Generate contextual help text for build mode buttons.
-
-        Args:
-            mode: The BuildMode (slope, road, or lift type)
-            label: Display label for the button
-            is_disabled: Whether button is currently disabled
-            is_building_or_placing: True if in a building/placing state
-            viewing_slope: True if viewing a slope panel
-            viewing_lift: True if viewing a lift panel
-            viewing_road: True if viewing a road panel
-
-        Returns:
-            Help text explaining button action or why it's disabled
-
-        Raises:
-            ValueError: If the button is disabled/enabled for a reason this method doesn't recognise.
-        """
-        is_slope_mode = BuildMode.is_slope(mode)
-        is_lift_mode = BuildMode.is_lift(mode)
-        is_road_mode = BuildMode.is_road(mode)
-        is_import_mode = BuildMode.is_import(mode)
-        is_merge_mode = BuildMode.is_merge(mode)
-
-        if is_disabled:
-            if is_building_or_placing:
-                return "Finish or cancel current action first"
-            if viewing_slope and not is_slope_mode:
-                return "Close slope panel to switch build mode"
-            if viewing_lift and not is_lift_mode:
-                return "Close lift panel to switch build mode"
-            if viewing_road and not is_road_mode:
-                return "Close road panel to switch build mode"
-            raise ValueError(
-                f"Button {mode} is disabled but no known reason: "
-                f"is_building_or_placing={is_building_or_placing}, "
-                f"viewing_slope={viewing_slope}, viewing_lift={viewing_lift}, viewing_road={viewing_road}"
-            )
-        if viewing_lift and is_lift_mode:
-            return f"Change viewed lift to {label}"
-        if is_slope_mode:
-            return "Click on map to start building a ski slope"
-        if is_road_mode:
-            return "Click two points on the map to connect them with a gentle car road"
-        if is_lift_mode:
-            return f"Click on map to start placing a {label}"
-        if is_import_mode:
-            return "Select, then click the map to place an import area — real lifts & pistes inside it are added."
-        if is_merge_mode:
-            return "Select, then click node markers to merge them into one (median position)."
+    def _disabled_button_reason(self, mode: str, *, is_building_or_placing: bool) -> str:
+        """Why the button for `mode` is greyed out (helper for _get_button_help's disabled branch)."""
+        if is_building_or_placing:
+            return "Finish or cancel current action first"
+        if self.sm.is_idle_viewing_slope and not BuildMode.is_slope(mode):
+            return "Close slope panel to switch build mode"
+        if self.sm.is_idle_viewing_lift and not BuildMode.is_lift(mode):
+            return "Close lift panel to switch build mode"
+        if self.sm.is_idle_viewing_road and not BuildMode.is_road(mode):
+            return "Close road panel to switch build mode"
         raise ValueError(
-            f"Button {mode} has no help text: is_disabled={is_disabled}, "
-            f"viewing_slope={viewing_slope}, viewing_lift={viewing_lift}, viewing_road={viewing_road}"
+            f"Button {mode} is disabled but no known reason (building_or_placing={is_building_or_placing})"
         )
+
+    def _get_button_help(self, *, mode: str, label: str, is_disabled: bool, is_building_or_placing: bool) -> str:
+        """Generate contextual help text for a build-mode button (disabled reason or enabled action)."""
+        if is_disabled:
+            return self._disabled_button_reason(mode, is_building_or_placing=is_building_or_placing)
+        if self.sm.is_idle_viewing_lift and BuildMode.is_lift(mode):
+            return f"Change viewed lift to {label}"
+        if BuildMode.is_slope(mode):
+            return "Click on map to start building a ski slope"
+        if BuildMode.is_road(mode):
+            return "Click two points on the map to connect them with a gentle car road"
+        if BuildMode.is_lift(mode):
+            return f"Click on map to start placing a {label}"
+        if BuildMode.is_import(mode):
+            return "Select, then click the map to place an import area — real lifts & pistes inside it are added."
+        if BuildMode.is_merge(mode):
+            return "Select, then click node markers to merge them into one (median position)."
+        raise ValueError(f"Button {mode} has no help text (is_disabled={is_disabled})")
 
     def render(self) -> dict[str, bool | str]:
         """Render complete sidebar and return action flags.
@@ -317,7 +285,7 @@ class SidebarRenderer:
 
         result = geocode(query)
         if result is None:
-            st.warning("No place found.")
+            PlaceNotFoundMessage(query=query.strip()).display()
             return
 
         self.ctx.map.set_center(lon=result.lon, lat=result.lat)
@@ -408,11 +376,6 @@ class SidebarRenderer:
         When viewing a lift, the lift type buttons change that lift's type.
         Slope is pre-selected by default.
         """
-        # Use state machine properties for viewing checks
-        viewing_slope = self.sm.is_idle_viewing_slope
-        viewing_lift = self.sm.is_idle_viewing_lift
-        viewing_road = self.sm.is_idle_viewing_road
-
         # Header + body both derive from this one entity so a viewed kind can't drift.
         viewing = self.sm.viewing_entity  # (EntityKind, id) or None
         viewing_kind = viewing[0] if viewing is not None else None
@@ -421,14 +384,14 @@ class SidebarRenderer:
         # bijection-asserted against the SM states), so a new state can't be forgotten here.
         build_state = BUILD_STATES[self.sm.get_current_state_id()]
         head = build_state.header(self.ctx)
-        st.markdown(f"### {head.icon} {head.label}")
-
         buttons_disabled = build_state.blocks_build_buttons()
         current_mode = self.ctx.build_mode.mode
 
         if buttons_disabled:
+            st.markdown(f"### {head.icon} {head.label}")
             st.caption("⏳ Complete or cancel current build to change type")
         elif viewing_kind is not None:
+            st.markdown(f"### {head.icon} {head.label}")
             # Same body for every viewed kind; only lifts add a change-type line.
             # enum_eq is reload-safe: EntityKind survives Streamlit reloads while the class is redefined.
             lines = ["- 🔄 Use lift buttons to change type"] if enum_eq(viewing_kind, EntityKind.LIFT) else []
@@ -436,13 +399,15 @@ class SidebarRenderer:
             lines.append(f"- {StyleConfig.BUILDING_ICON} Click terrain/node → new {viewing_kind.value}")
             st.markdown("\n".join(lines))
         else:
-            # All Idle* states without viewing panel
-            st.markdown(
-                "- 🔘 Select **Slope**, **Road** or **Lift** type below\n"
-                f"- {StyleConfig.BUILDING_ICON} Click terrain/node → start building\n"
-                f"- {StyleConfig.VIEWING_ICON} Click existing slope/road/lift → view stats\n"
-                "- 🛠️ Or use **Import** / **Node Merge** utilities below"
-            )
+            # Idle: the "Ready to Build" header IS the how-to toggle — expand it for the bullets.
+            # Collapsed by default so only that one line shows (saves space on small screens).
+            with st.expander(f"{head.icon} {head.label}", expanded=False):
+                st.markdown(
+                    "- 🔘 Select **Slope**, **Road** or **Lift** type below\n"
+                    f"- {StyleConfig.BUILDING_ICON} Click terrain/node → start building\n"
+                    f"- {StyleConfig.VIEWING_ICON} Click existing slope/road/lift → view stats\n"
+                    "- 🛠️ Or use **Import** / **Node Merge** utilities below"
+                )
 
         def render_op_button(op: BuilderOperation) -> None:
             """Render one registry operation as a full-width button (selected = primary + bold)."""
@@ -457,9 +422,6 @@ class SidebarRenderer:
                 label=label,
                 is_disabled=not enabled,
                 is_building_or_placing=buttons_disabled,
-                viewing_slope=viewing_slope,
-                viewing_lift=viewing_lift,
-                viewing_road=viewing_road,
             )
             if st.button(
                 btn_label,

@@ -126,8 +126,10 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
                 location=PathPoint(lon=lon, lat=lat, elevation=elevation),
             )
         elif ctx.build_mode.is_import():
-            # Place the OSM import box center (keep the map where it is so the box shows in context)
+            # Place the OSM import box center. Center+zoom the map (like slope/lift/road) so it's
+            # framed in context and the view doesn't jump back to a far-away location after Confirm.
             logger.info(f"[IDLE] Terrain click: placing import box center at ({lat:.6f}, {lon:.6f})")
+            ctx.map.set_building_view(lon=lon, lat=lat)
             sm.start_import(lon=lon, lat=lat)
         else:
             raise RuntimeError(
@@ -169,8 +171,9 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
                 ctx.map.set_building_view(lon=node.lon, lat=node.lat)
                 sm.select_road_start(node_id=node.id)
             elif ctx.build_mode.is_import():
-                # Place the import box center on the node's location
+                # Place the import box center on the node; center+zoom (like slope/lift/road) so it stays framed.
                 logger.info(f"[IDLE] Node click: placing import box center at {node.id}")
+                ctx.map.set_building_view(lon=node.lon, lat=node.lat)
                 sm.start_import(lon=node.lon, lat=node.lat)
             else:
                 raise RuntimeError(
@@ -641,11 +644,19 @@ def handle_merge_placing_click(click_info: ClickInfo, elevation: float | None) -
     nodes, and this branch handles every marker type so the dispatch never crashes.
     """
     sm: PlannerStateMachine = st.session_state.state_machine
+    ctx: PlannerContext = st.session_state.context
+    graph: ResortGraph = st.session_state.graph
 
     # NODE marker → toggle it in the selection.
     if click_info.click_type == MapClickType.MARKER and click_info.marker_type == MarkerType.NODE:
         assert click_info.node_id is not None  # Validated in ClickInfo
         logger.info(f"[MERGE] Node click: toggling {click_info.node_id} in the merge selection")
+        # Center+zoom on the FIRST selected node only (selection is still empty at this point),
+        # consistent with slope/lift/road/import; later clicks must not move the view.
+        if not ctx.merge.node_ids:
+            node = graph.nodes.get(click_info.node_id)
+            if node is not None:
+                ctx.map.set_building_view(lon=node.lon, lat=node.lat)
         sm.toggle_merge_node(node_id=click_info.node_id)
         reload_map()
         return

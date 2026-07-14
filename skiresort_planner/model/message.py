@@ -224,10 +224,7 @@ class TargetNotDownhillMessage(ToastMessage):
     @property
     def message(self) -> str:
         drop = self.start_elevation_m - self.target_elevation_m
-        if drop < 0:
-            drop_explainer = f" (Target is {abs(drop):.0f}m above your current point)"
-        else:
-            drop_explainer = ""
+        drop_explainer = f" (Target is {abs(drop):.0f}m above your current point)" if drop < 0 else ""
         # Round the drop DOWN to 0.1 m so it never renders equal to the minimum: this fires
         # only when drop is strictly under min_drop_m, and ".0f" could show "drop: 5m, need at least 5m".
         drop_shown = math.floor(drop * 10) / 10
@@ -247,6 +244,21 @@ class FileLoadErrorMessage(ToastMessage):
     @property
     def message(self) -> str:
         return f"Load Failed — {self.error}"
+
+
+@dataclass(frozen=True)
+class PlaceNotFoundMessage(ToastMessage):
+    """The sidebar place search returned no match (or the lookup failed)."""
+
+    query: str
+
+    @property
+    def icon(self) -> str:
+        return "🔍"
+
+    @property
+    def message(self) -> str:
+        return f"No place found for “{self.query}”."
 
 
 @dataclass(frozen=True)
