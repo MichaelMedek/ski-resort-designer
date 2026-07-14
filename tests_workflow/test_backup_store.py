@@ -129,6 +129,27 @@ class TestBackupStore:
         assert (_isolate_backup_dir / f"{resort_id}.json").exists()
         assert list(_isolate_backup_dir.glob("*.tmp")) == []
 
+    def test_save_persists_segments_without_finished_slope(self, empty_graph: ResortGraph, path_points_blue) -> None:
+        # The save skip-guard keys off `not graph.segments` (not slopes/lifts): a graph with
+        # committed-but-unfinished segments must still be SAVED (skip only truly-empty graphs).
+        proposal = ProposedPathSegment(
+            points=path_points_blue,
+            target_slope_pct=20.0,
+            target_difficulty="blue",
+            sector_name="Test",
+        )
+        empty_graph.commit_paths(paths=[proposal])
+        assert empty_graph.segments and not empty_graph.slopes and not empty_graph.lifts
+
+        resort_id = backup_store.new_resort_id()
+        backup_store.save(graph=empty_graph, resort_id=resort_id)
+
+        # The empty-guard keys off segments, so the file IS written (load returns a graph, not None).
+        # Note: on load the unowned segments + their orphaned nodes are discarded, so the reloaded
+        # graph is empty — this test's point is only that `save` did not skip a segment-bearing graph.
+        loaded = backup_store.load(resort_id=resort_id)
+        assert loaded is not None, "a graph with segments must not be skipped by the empty-guard"
+
 
 # =============================================================================
 # Graph helpers

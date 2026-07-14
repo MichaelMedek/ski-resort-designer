@@ -152,6 +152,12 @@ class TestClickInfoValidation:
                 2,
                 id="proposal_body",
             ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.IMPORT_CENTER},
+                "marker_type",
+                MarkerType.IMPORT_CENTER,
+                id="import_center_no_id_fields",
+            ),
         ],
     )
     def test_valid_construction(self, kwargs: dict[str, object], check_field: str, expected_value: object) -> None:
@@ -210,6 +216,11 @@ class TestClickInfoDisplayName:
                 {"click_type": MapClickType.MARKER, "marker_type": MarkerType.PROPOSAL_BODY, "proposal_index": 4},
                 "Path option 5",
                 id="proposal_body",
+            ),
+            pytest.param(
+                {"click_type": MapClickType.MARKER, "marker_type": MarkerType.IMPORT_CENTER},
+                "Import area center",
+                id="import_center",
             ),
         ],
     )

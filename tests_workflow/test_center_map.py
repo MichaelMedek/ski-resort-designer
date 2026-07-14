@@ -83,10 +83,18 @@ class TestMapRendering:
         graph.commit_paths(paths=[proposal])
         graph.finish_slope(segment_ids=list(graph.segments.keys()))
 
+        from skiresort_planner.constants import StyleConfig
+
         renderer = MapRenderer(graph=graph)
         deck = renderer.render()
 
         assert deck is not None, "Should produce a Deck object"
+        # 2D render: the slope's belt polygon layer exists and is blue-difficulty colored
+        # (alpha dropped to 100 for the non-highlighted, semi-transparent belt).
+        belt = next(layer for layer in deck.layers if layer.id == "segments_belt")
+        expected_color = list(StyleConfig.SLOPE_COLORS_RGBA["blue"])
+        expected_color[3] = 100
+        assert belt.data[0]["color"] == expected_color
 
     def test_map_renderer_renders_proposals(self, empty_graph, path_points_blue) -> None:
         """MapRenderer renders proposal paths."""
@@ -105,6 +113,7 @@ class TestMapRendering:
         deck = renderer.render(proposals=[proposal])
 
         assert deck is not None, "Should produce a Deck object"
+        assert any(layer.id == "proposal_paths" for layer in deck.layers), "proposal path layer must render"
 
     def test_proposal_color_matches_kind(self, empty_graph, path_points_blue) -> None:
         """A ROAD proposal renders translucent brown; a slope proposal difficulty-colored."""
@@ -263,6 +272,48 @@ class TestMapRendering:
             assert point["color"] == list(MarkerConfig.NODE_MARKER_COLOR)
             assert point["radius"] == ClickConfig.NODE_MARKER_RADIUS
 
+    def test_merge_selection_overrides_parking_style(self, empty_graph) -> None:
+        """A node in merge_node_ids renders RED + big with the merge icon; merge styling wins
+        over the parking (blue) style even when the node is a shared road/slope parking node.
+        """
+        from skiresort_planner.constants import ClickConfig, StyleConfig
+        from skiresort_planner.model.path_point import PathPoint
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
+        from skiresort_planner.ui.center_map import MapRenderer
+
+        graph = empty_graph
+        shared = PathPoint(lon=0.0, lat=0.0, elevation=2000.0)
+        graph.commit_paths(
+            paths=[
+                ProposedPathSegment(
+                    points=[shared, PathPoint(lon=0.0, lat=-300 / M, elevation=1900.0)], target_difficulty="blue"
+                )
+            ]
+        )
+        graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        graph.commit_paths(
+            paths=[
+                ProposedPathSegment(
+                    points=[shared, PathPoint(lon=300 / M, lat=0.0, elevation=1990.0)],
+                    is_connector=True,
+                    kind=SegmentKind.ROAD,
+                )
+            ],
+        )
+        graph.finish_road(segment_ids=[list(graph.segments.keys())[-1]])
+
+        parking_ids = {n.id for n in graph.get_parking_nodes()}
+        assert parking_ids, "shared road/slope node should be a parking node"
+        merge_id = next(iter(parking_ids))  # select the parking node itself for merge
+
+        node_layer = MapRenderer(graph=graph)._create_node_layer(use_3d=False, merge_node_ids=[merge_id])
+        record = next(d for d in node_layer.data if d["id"] == merge_id)
+        # Merge wins over parking: red (not parking blue), big radius, merge icon in the tooltip.
+        assert record["color"] == list(StyleConfig.MERGE_SELECTED_RGBA)
+        assert record["color"] != list(StyleConfig.PARKING_COLOR_RGBA)
+        assert record["radius"] == ClickConfig.NODE_MARKER_RADIUS_BIG
+        assert StyleConfig.MERGE_ICON in record["name"]
+
 
 class TestFullResortRendering:
     """Render a populated resort (slope + road + lift + proposals) in 2D and 3D,
@@ -270,18 +321,33 @@ class TestFullResortRendering:
     """
 
     def test_render_2d_produces_layers(self, empty_graph, mock_dem_blue_slope) -> None:
+        from skiresort_planner.constants import MapConfig
         from skiresort_planner.ui.center_map import MapRenderer
 
         _populate_full_resort(empty_graph, mock_dem_blue_slope)
         deck = MapRenderer(graph=empty_graph).render(use_3d=False)
         assert len(deck.layers) > 0
+        # 2D: slopes render a belt polygon, and center lines sit at the flat 2D slope z-offset.
+        assert any(layer.id == "segments_belt" for layer in deck.layers), "2D must build a belt polygon"
+        centerline = next(layer for layer in deck.layers if layer.id == "segments_centerline")
+        assert centerline.data[0]["center_line"][0][2] == MapConfig.Z_OFFSET_2D_SLOPES
 
     def test_render_3d_produces_layers(self, empty_graph, mock_dem_blue_slope) -> None:
+        from skiresort_planner.constants import MarkerConfig
         from skiresort_planner.ui.center_map import MapRenderer
 
         _populate_full_resort(empty_graph, mock_dem_blue_slope)
         deck = MapRenderer(graph=empty_graph).render(use_3d=True)
         assert len(deck.layers) > 0
+        # 3D: PolygonLayer belts are dropped (no z support); center lines carry real terrain
+        # elevation lifted by PATH_Z_OFFSET_M for visibility.
+        assert not any(layer.id.endswith("_belt") for layer in deck.layers), "3D must not build belt polygons"
+        centerline = next(layer for layer in deck.layers if layer.id == "segments_centerline")
+        first = centerline.data[0]["center_line"][0]
+        assert (
+            first[2]
+            == mock_dem_blue_slope.get_elevation_or_raise(lon=first[0], lat=first[1]) + MarkerConfig.PATH_Z_OFFSET_M
+        )
 
     def test_render_with_proposals_and_selection(self, empty_graph, mock_dem_blue_slope, path_points_blue) -> None:
         from skiresort_planner.model.proposed_path import ProposedPathSegment
@@ -326,15 +392,35 @@ class TestThreeDViewCalculators:
         )
         slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
 
-        _lat, _lon, bearing, zoom, pitch = MapRenderer.calculate_3d_view_for_slope(graph=graph, slope_id=slope.id)
-        assert zoom > 0 and pitch > 0 and 0.0 <= bearing <= 360.0
+        from skiresort_planner.constants import MapConfig
+        from skiresort_planner.core.geo_calculator import GeoCalculator
+
+        start = graph.nodes[slope.start_node_id]
+        end = graph.nodes[slope.end_node_id]
+        lat, lon, bearing, zoom, pitch = MapRenderer.calculate_3d_view_for_slope(graph=graph, slope_id=slope.id)
+        assert lat == (start.lat + end.lat) / 2
+        assert lon == (start.lon + end.lon) / 2
+        assert pitch == MapConfig.VIEW_3D_PITCH
+        feature_bearing = GeoCalculator.initial_bearing_deg(lon1=start.lon, lat1=start.lat, lon2=end.lon, lat2=end.lat)
+        assert bearing == (feature_bearing - 90) % 360
+        # High-elevation slope zooms out from the base 3D zoom, but never below the floor.
+        assert MapConfig.VIEW_3D_MIN_ZOOM <= zoom < MapConfig.VIEW_3D_ZOOM
 
     def test_lift_view(self, empty_graph, mock_dem_blue_slope) -> None:
+        from skiresort_planner.constants import MapConfig
+        from skiresort_planner.core.geo_calculator import GeoCalculator
         from skiresort_planner.ui.center_map import MapRenderer
 
         _road, lift = _populate_full_resort(empty_graph, mock_dem_blue_slope)
-        _lat, _lon, bearing, zoom, pitch = MapRenderer.calculate_3d_view_for_lift(graph=empty_graph, lift_id=lift.id)
-        assert zoom > 0 and pitch > 0 and 0.0 <= bearing <= 360.0
+        start = empty_graph.nodes[lift.start_node_id]
+        end = empty_graph.nodes[lift.end_node_id]
+        lat, lon, bearing, zoom, pitch = MapRenderer.calculate_3d_view_for_lift(graph=empty_graph, lift_id=lift.id)
+        assert lat == (start.lat + end.lat) / 2
+        assert lon == (start.lon + end.lon) / 2
+        assert pitch == MapConfig.VIEW_3D_PITCH
+        feature_bearing = GeoCalculator.initial_bearing_deg(lon1=start.lon, lat1=start.lat, lon2=end.lon, lat2=end.lat)
+        assert bearing == (feature_bearing - 90) % 360
+        assert MapConfig.VIEW_3D_MIN_ZOOM <= zoom < MapConfig.VIEW_3D_ZOOM
 
     def test_road_view(self, empty_graph, path_points_blue) -> None:
         from skiresort_planner.model.proposed_path import ProposedPathSegment
@@ -344,8 +430,18 @@ class TestThreeDViewCalculators:
         empty_graph.commit_paths(paths=[proposal], record_undo=False)
         road = empty_graph.finish_road(segment_ids=[list(empty_graph.segments.keys())[-1]])
 
-        _lat, _lon, bearing, zoom, pitch = MapRenderer.calculate_3d_view_for_road(graph=empty_graph, road_id=road.id)
-        assert zoom > 0 and pitch > 0 and 0.0 <= bearing <= 360.0
+        from skiresort_planner.constants import MapConfig
+        from skiresort_planner.core.geo_calculator import GeoCalculator
+
+        start = empty_graph.nodes[road.start_node_id]
+        end = empty_graph.nodes[road.end_node_id]
+        lat, lon, bearing, zoom, pitch = MapRenderer.calculate_3d_view_for_road(graph=empty_graph, road_id=road.id)
+        assert lat == (start.lat + end.lat) / 2
+        assert lon == (start.lon + end.lon) / 2
+        assert pitch == MapConfig.VIEW_3D_PITCH
+        feature_bearing = GeoCalculator.initial_bearing_deg(lon1=start.lon, lat1=start.lat, lon2=end.lon, lat2=end.lat)
+        assert bearing == (feature_bearing - 90) % 360
+        assert MapConfig.VIEW_3D_MIN_ZOOM <= zoom < MapConfig.VIEW_3D_ZOOM
 
 
 class TestLayerCollection:

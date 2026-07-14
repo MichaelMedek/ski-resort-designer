@@ -14,6 +14,7 @@ The ActionType undo-dispatcher guard lives in test_resort_graph.py (it's undo-sp
 import ast
 import dataclasses
 import inspect
+import textwrap
 
 from skiresort_planner.constants import PACKAGE_DIR
 
@@ -232,13 +233,52 @@ class TestEnumDispatchCompleteness:
             ),
         ]
 
+    @staticmethod
+    def _strip_docstring(source: str) -> str:
+        """Return the function/property source with its leading docstring blanked out.
+
+        The scan below asks "is ``Qualifier.MEMBER`` mentioned in the branch logic?" — a docstring
+        that happens to name a member (e.g. ``MarkerType.NODE`` in a handler's prose) would satisfy
+        that substring test even if no branch actually routes it, silently defeating the guard. We
+        strip the docstring so only real code is scanned.
+        """
+        dedented = textwrap.dedent(source)
+        node = ast.parse(dedented).body[0]
+        assert isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)  # every scanned source is a def
+        if ast.get_docstring(node, clean=False) is None:
+            return dedented
+        doc_stmt = node.body[0]
+        assert doc_stmt.end_lineno is not None  # docstring statement always has an end line
+        lines = dedented.splitlines()
+        for i in range(doc_stmt.lineno - 1, doc_stmt.end_lineno):
+            lines[i] = ""
+        return "\n".join(lines)
+
     def test_total_dispatchers_handle_every_member(self) -> None:
         offenders: dict[str, list[str]] = {}
         for label, source, members, qual, allowed in self._cases():
-            missing = [m for m in members if m not in allowed and f"{qual}.{m}" not in source]
+            scanned = self._strip_docstring(source)  # docstring mentions must not satisfy the guard
+            missing = [m for m in members if m not in allowed and f"{qual}.{m}" not in scanned]
             if missing:
                 offenders[f"{label} [{qual}]"] = missing
         assert not offenders, f"total dispatchers missing enum branches: {offenders}"
+
+    def test_docstring_mention_does_not_satisfy_the_guard(self) -> None:
+        """A member named only in a docstring must NOT count as handled.
+
+        Guards the guard: before docstring-stripping, a handler that documents ``MarkerType.SLOPE``
+        in its prose but never routes it would slip through the substring scan. This pins the fix.
+        """
+        handled_only = (
+            "def _handler():\n"
+            '    """Routes MarkerType.NODE and MarkerType.SLOPE clicks."""\n'
+            "    if x == MarkerType.NODE:\n"
+            "        return 1\n"
+            "    raise RuntimeError\n"
+        )
+        scanned = self._strip_docstring(handled_only)
+        assert "MarkerType.NODE" in scanned  # real branch survives stripping
+        assert "MarkerType.SLOPE" not in scanned  # docstring-only mention is gone
 
 
 # =============================================================================

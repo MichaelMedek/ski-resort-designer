@@ -417,3 +417,32 @@ class TestEndpointsMatch:
         b = PathPoint(lon=10.5700, lat=47.1300, elevation=2600.0)
         moved = PathPoint(lon=10.6000, lat=47.1300, elevation=2600.0)  # ~2.4 km away
         assert not endpoints_match(pair_a=(a, b), pair_b=(a, moved), tol_m=30.0)
+
+
+class TestBBoxAround:
+    """bbox_around builds a square-in-metres box centered on a point: the lat half-span is
+    half_width / metres-per-degree; the lon half-span is scaled up by 1/cos(lat) so the box is
+    square on the ground, not in degrees. Tuple order is (min_lon, min_lat, max_lon, max_lat).
+    """
+
+    def test_centered_square_box(self) -> None:
+        import math
+
+        import pytest
+
+        from skiresort_planner.core.geo_calculator import GeoCalculator
+        from skiresort_planner.generators.osm_importer import bbox_around
+
+        min_lon, min_lat, max_lon, max_lat = bbox_around(center_lon=10.0, center_lat=47.0, half_width_m=1000.0)
+        # Box is centered on (10, 47) and ordered min<max on both axes.
+        assert min_lon < max_lon and min_lat < max_lat, "min corner precedes max corner"
+        assert (min_lon + max_lon) / 2 == pytest.approx(10.0), "centered in lon"
+        assert (min_lat + max_lat) / 2 == pytest.approx(47.0), "centered in lat"
+        # Exact half-spans from the same formula the source uses (haversine 1-deg metres).
+        m_per_deg = GeoCalculator.haversine_distance_m(lat1=0.0, lon1=0.0, lat2=1.0, lon2=0.0)
+        dlat = 1000.0 / m_per_deg
+        dlon = dlat / math.cos(math.radians(47.0))
+        assert (max_lat - min_lat) / 2 == pytest.approx(dlat)
+        assert (max_lon - min_lon) / 2 == pytest.approx(dlon)
+        # Lon span is wider than lat span by 1/cos(lat) to stay square on the ground.
+        assert (max_lon - min_lon) / (max_lat - min_lat) == pytest.approx(1.0 / math.cos(math.radians(47.0)))

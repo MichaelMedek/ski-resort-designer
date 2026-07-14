@@ -16,7 +16,9 @@ from skiresort_planner.ui.context import EntityKind, PlannerContext
 from skiresort_planner.ui.mode_registry import ENTITY_KIND_SPECS, render_control_panel
 from skiresort_planner.ui.right_panel import (
     EntityInfoControlPanel,
+    ImportPlacingControlPanel,
     LiftStatsPanel,
+    MergePlacingControlPanel,
     RoadStatsPanel,
     SlopeStatsPanel,
 )
@@ -107,6 +109,37 @@ class TestStatsPanelsRun:
         fake_st.metric = lambda label, *a, **k: labels.append(label)
         fake_st.subheader = lambda text, *a, **k: labels.append(text)
         return labels
+
+    @staticmethod
+    def _capture_metrics(fake_st) -> dict[str, str]:
+        """Map each rendered metric LABEL -> its VALUE string (value is the 2nd positional arg)."""
+        metrics: dict[str, str] = {}
+
+        def _record(label: str, value: str = "", *a: object, **k: object) -> None:
+            metrics[label] = value
+
+        fake_st.metric = _record
+        return metrics
+
+    def test_slope_overall_gradient_value(self, fake_st, empty_graph, path_points_blue) -> None:
+        # drop/length*100 rounded: 160m over ~799m = 20% (the 800m south blue path).
+        metrics = self._capture_metrics(fake_st)
+        SlopeStatsPanel(graph=empty_graph).render(slope_id=_build_slope(empty_graph, path_points_blue))
+        assert metrics["Overall Gradient"] == "20%"
+        assert metrics["Drop"] == "160m"
+
+    def test_road_elevation_change_is_signed_negative(self, fake_st, empty_graph, path_points_blue) -> None:
+        # The path drops 2500m -> 2340m, so end-start = -160m and the metric carries the sign.
+        metrics = self._capture_metrics(fake_st)
+        RoadStatsPanel(graph=empty_graph).render(road_id=_build_road(empty_graph, path_points_blue))
+        assert metrics["Elevation Change"] == "-160m"
+
+    def test_lift_rise_and_inclined_length_values(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
+        # Rise = 2500-2300 = 200m; inclined = sqrt(200^2 + horizontal^2) with horizontal ~= 999m -> 1019m.
+        metrics = self._capture_metrics(fake_st)
+        LiftStatsPanel(graph=empty_graph).render(lift_id=_build_lift(empty_graph, mock_dem_blue_slope))
+        assert metrics["Vertical Rise"] == "200m"
+        assert metrics["Inclined Length"] == "1019m"
 
     def test_slope_stats_panel_shows_slope_metrics(self, fake_st, empty_graph, path_points_blue) -> None:
         labels = self._capture_labels(fake_st)
@@ -449,3 +482,80 @@ class TestPathSelectionPanelRuns:
         assert not any("Cancel Custom Path" in b for b in labels)
         assert any("🏁 Finish → N3" in b for b in labels), "slope connector commit shows the Finish label"
         assert not any("Commit This Path" in b for b in labels)
+
+
+# =============================================================================
+# Merge + Import placing panels (deferred-confirm buttons)
+# =============================================================================
+
+
+class TestMergeAndImportPanels:
+    """The Merge/Import panels each render ONE deferred-confirm button. These drive the
+    button-body logic and disabled-state, asserting the real action fires and the guard raises.
+    """
+
+    def _merge_panel(self, sm, ctx, graph) -> MergePlacingControlPanel:
+        return MergePlacingControlPanel(sm=sm, ctx=ctx, graph=graph, on_commit=_noop, on_cancel_connection=_noop)
+
+    def _import_panel(self, sm, ctx, graph) -> ImportPlacingControlPanel:
+        return ImportPlacingControlPanel(sm=sm, ctx=ctx, graph=graph, on_commit=_noop, on_cancel_connection=_noop)
+
+    def test_confirm_merge_disabled_below_two_nodes(self, fake_st, empty_graph, monkeypatch) -> None:
+        # Confirm Merge is disabled with 0 or 1 selected nodes, enabled at 2 (see buttons()).
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        seen: dict[str, object] = {}
+
+        def _btn(label: str, **kwargs: object) -> bool:
+            seen["label"] = label
+            seen["disabled"] = kwargs.get("disabled")
+            return False
+
+        monkeypatch.setattr("skiresort_planner.ui.right_panel.st.button", _btn)
+        panel = self._merge_panel(sm, ctx, empty_graph)
+
+        ctx.merge.node_ids = []
+        panel.buttons()
+        assert seen["label"] == "🔗 Confirm Merge"
+        assert seen["disabled"] is True
+
+        ctx.merge.node_ids = ["A"]
+        panel.buttons()
+        assert seen["disabled"] is True
+
+        ctx.merge.node_ids = ["A", "B"]
+        panel.buttons()
+        assert seen["disabled"] is False, "two selected nodes must enable Confirm Merge"
+
+    def test_confirm_merge_fires_action(self, fake_st, empty_graph, monkeypatch) -> None:
+        from skiresort_planner.ui import right_panel
+
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        fired: list[bool] = []
+        monkeypatch.setattr(right_panel, "confirm_merge_action", lambda: fired.append(True))
+        # Fire only the enabled button (mirror the real disabled guard).
+        monkeypatch.setattr(
+            "skiresort_planner.ui.right_panel.st.button", lambda label, **k: not bool(k.get("disabled", False))
+        )
+        ctx.merge.node_ids = ["A", "B"]
+        self._merge_panel(sm, ctx, empty_graph).buttons()
+        assert fired == [True], "clicking Confirm Merge must invoke confirm_merge_action"
+
+    def test_confirm_import_fires_action(self, fake_st, empty_graph, monkeypatch) -> None:
+        from skiresort_planner.ui import right_panel
+
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        fired: list[bool] = []
+        monkeypatch.setattr(right_panel, "confirm_import_action", lambda: fired.append(True))
+        monkeypatch.setattr("skiresort_planner.ui.right_panel.st.button", lambda label, **k: True)
+        self._import_panel(sm, ctx, empty_graph).buttons()
+        assert fired == [True], "clicking Confirm Import must invoke confirm_import_action"
+
+    def test_import_context_message_requires_placed_center(self, fake_st, empty_graph) -> None:
+        # A fresh context has no osm_import_center_* → context_message() raises the guard.
+        import pytest
+
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        panel = self._import_panel(sm, ctx, empty_graph)
+        assert ctx.deferred.osm_import_center_lon is None
+        with pytest.raises(RuntimeError, match="requires a placed box center"):
+            panel.context_message()

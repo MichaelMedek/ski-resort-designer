@@ -275,6 +275,87 @@ class TestPlannerIntegration:
 
         assert result is None, "Zero distance path should return None"
 
+    def test_plan_returns_connector_segment_for_downhill_target(self, planner: LeastCostPathPlanner) -> None:
+        """A reachable downhill target yields a connector segment holding the target grade.
+
+        MockDEMForPlanner elevation = 2000 - lat*1000, so a target ~500m NORTH (higher
+        lat) sits lower than the start (net drop). DOWNHILL mode should succeed.
+        """
+        step_deg = 500.0 / 111320.0  # ~500m north in latitude
+        start_elev = planner.dem.get_elevation(lon=10.0, lat=47.0)
+        target_elev = planner.dem.get_elevation(lon=10.0, lat=47.0 + step_deg)
+        assert start_elev is not None and target_elev is not None
+        assert start_elev > target_elev, "target must sit below start for a downhill plan"
+
+        result = planner.plan(
+            start_lon=10.0,
+            start_lat=47.0,
+            start_elevation=start_elev,
+            target_lon=10.0,
+            target_lat=47.0 + step_deg,
+            target_elevation=target_elev,
+            target_grade_pct=20.0,
+            gradient_mode=GradientMode.DOWNHILL,
+        )
+
+        assert result is not None, "reachable downhill target should produce a segment"
+        assert result.is_connector is True
+        assert result.target_slope_pct == 20.0
+        assert len(result.points) >= 2, "a connector path needs at least start and end"
+
+    def test_plan_returns_connector_segment_for_uphill_target(self, planner: LeastCostPathPlanner) -> None:
+        """UPHILL mode is the mirror: a target ~500m SOUTH (higher elevation) net-climbs.
+
+        Elevation = 2000 - lat*1000, so lower lat is higher ground; UPHILL mode with a
+        negative (climbing) target grade should succeed and carry that grade through.
+        """
+        step_deg = 500.0 / 111320.0  # ~500m south in latitude
+        start_elev = planner.dem.get_elevation(lon=10.0, lat=47.0)
+        target_elev = planner.dem.get_elevation(lon=10.0, lat=47.0 - step_deg)
+        assert start_elev is not None and target_elev is not None
+        assert target_elev > start_elev, "target must sit above start for an uphill plan"
+
+        result = planner.plan(
+            start_lon=10.0,
+            start_lat=47.0,
+            start_elevation=start_elev,
+            target_lon=10.0,
+            target_lat=47.0 - step_deg,
+            target_elevation=target_elev,
+            target_grade_pct=-20.0,
+            gradient_mode=GradientMode.UPHILL,
+        )
+
+        assert result is not None, "reachable uphill target should produce a segment"
+        assert result.is_connector is True
+        assert result.target_slope_pct == -20.0
+        assert len(result.points) >= 2
+
+    def test_plan_returns_none_for_downhill_target_in_uphill_mode(self, planner: LeastCostPathPlanner) -> None:
+        """UPHILL mode refuses a net-descending target (net_drop >= 0 guard).
+
+        The target ~500m north sits BELOW the start (net drop > 0). In UPHILL mode the
+        segment must net-climb, so plan() must bail out before building the grid.
+        """
+        step_deg = 500.0 / 111320.0  # ~500m north = lower ground = net drop
+        start_elev = planner.dem.get_elevation(lon=10.0, lat=47.0)
+        target_elev = planner.dem.get_elevation(lon=10.0, lat=47.0 + step_deg)
+        assert start_elev is not None and target_elev is not None
+        assert start_elev > target_elev, "target must be below start to trip the uphill guard"
+
+        result = planner.plan(
+            start_lon=10.0,
+            start_lat=47.0,
+            start_elevation=start_elev,
+            target_lon=10.0,
+            target_lat=47.0 + step_deg,
+            target_elevation=target_elev,
+            target_grade_pct=-20.0,
+            gradient_mode=GradientMode.UPHILL,
+        )
+
+        assert result is None, "UPHILL mode must reject a net-descending target"
+
 
 class TestEdgeCostGradeAttractor:
     """The edge cost pulls the path toward target_grade_pct via one exponential

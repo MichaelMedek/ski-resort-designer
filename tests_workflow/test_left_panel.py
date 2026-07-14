@@ -238,6 +238,18 @@ class TestDescribeUndoAction:
         empty_graph.import_osm(pistes=[piste], lifts=[], dem=dem)
         assert "OSM import" in self._describe_top(empty_graph)
 
+    def test_merge_nodes_label(self, empty_graph, mock_dem_blue_slope) -> None:
+        # The 9th ActionType. Two nodes ~200m apart merge (< MergeConfig.MAX_SPAN_M=500m,
+        # > STEP_SIZE_M=30m so they don't snap into one). deleted_nodes has 1 entry, so
+        # _MergeNodesHandler.describe reports len(deleted_nodes) + 1 == 2 nodes.
+        dem = mock_dem_blue_slope
+        a, _ = empty_graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
+        b, _ = empty_graph.get_or_create_node(
+            lon=0.0, lat=-200 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-200 / M)
+        )
+        empty_graph.merge_nodes(node_ids=[a.id, b.id], dem=dem)
+        assert self._describe_top(empty_graph) == "Un-merge 2 nodes"
+
 
 # =============================================================================
 # Dialog action helpers (extracted from @st.dialog bodies to be testable)

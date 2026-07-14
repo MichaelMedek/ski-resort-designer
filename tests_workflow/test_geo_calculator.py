@@ -38,7 +38,15 @@ class TestGeoCalculator:
         assert 89 < bearing_east < 91, "East should be ~90°"
 
     def test_destination_roundtrip_consistency(self) -> None:
-        """destination() should be consistent with haversine() distance."""
+        """destination() should be consistent in distance AND direction."""
         lon_end, lat_end = GeoCalculator.destination(lon=10.0, lat=46.0, bearing_deg=45.0, distance_m=1000.0)
         dist_check = GeoCalculator.haversine_distance_m(lat1=46.0, lon1=10.0, lat2=lat_end, lon2=lon_end)
         assert abs(dist_check - 1000) < 10, "Roundtrip should be within 10m tolerance"
+
+        # Bearing back to the endpoint must equal the requested 45° (direction preserved)
+        bearing_back = GeoCalculator.initial_bearing_deg(lon1=10.0, lat1=46.0, lon2=lon_end, lat2=lat_end)
+        assert abs(bearing_back - 45.0) < 1.0, "Bearing to endpoint should be ~45°"
+
+        # 45° is NE: endpoint must move both north and east (catches lat/lon sign swaps)
+        assert lat_end > 46.0, "NE bearing should increase latitude"
+        assert lon_end > 10.0, "NE bearing should increase longitude"

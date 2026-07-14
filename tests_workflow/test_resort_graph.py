@@ -13,6 +13,7 @@ import pytest
 
 from skiresort_planner.constants import MapConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
+from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.model.actions import (
     AddLiftAction,
     AddSegmentsAction,
@@ -1161,3 +1162,84 @@ class TestMergeNodes:
             a=PathPoint(lon=0.5, lat=0.5, elevation=0.0), b=PathPoint(lon=0.6, lat=0.6, elevation=0.0)
         )
         assert result is False
+
+
+# =============================================================================
+# Stats: get_segment_stats (running stats) + get_stats (whole-resort summary)
+# =============================================================================
+
+
+class TestSegmentStats:
+    """get_segment_stats aggregates a set of committed segments into running build stats."""
+
+    def test_two_segment_run_reports_computed_metrics(self, empty_graph, mock_dem_blue_slope) -> None:
+        graph = empty_graph
+        seg_ids = _commit_L_slope(graph, mock_dem_blue_slope)
+        first_seg, last_seg = graph.segments[seg_ids[0]], graph.segments[seg_ids[-1]]
+        exp_length = sum(graph.segments[sid].length_m for sid in seg_ids)
+        exp_start_elev = first_seg.start.elevation
+        exp_current_elev = last_seg.end.elevation
+        exp_drop = exp_start_elev - exp_current_elev
+        exp_max = max(graph.segments[sid].max_slope_pct for sid in seg_ids)
+
+        stats = graph.get_segment_stats(segment_ids=seg_ids)
+
+        assert stats["total_length"] == pytest.approx(exp_length)
+        assert stats["start_elev"] == pytest.approx(exp_start_elev)
+        assert stats["current_elev"] == pytest.approx(exp_current_elev)
+        assert stats["total_drop"] == pytest.approx(exp_drop)
+        assert stats["avg_gradient"] == pytest.approx(exp_drop / exp_length * 100)
+        assert stats["max_gradient"] == pytest.approx(exp_max)
+        # Difficulty is derived from the reported steepest section, not some other slope value.
+        assert stats["difficulty"] == TerrainAnalyzer.classify_difficulty(slope_pct=stats["max_gradient"])
+
+    def test_empty_segment_ids_returns_default_stats(self, empty_graph) -> None:
+        stats = empty_graph.get_segment_stats(segment_ids=[])
+        assert stats == {
+            "total_drop": 0.0,
+            "total_length": 0.0,
+            "avg_gradient": 0.0,
+            "max_gradient": 0.0,
+            "difficulty": "green",
+            "start_elev": 0.0,
+            "current_elev": 0.0,
+        }
+
+    def test_missing_segment_id_returns_default_stats(self, empty_graph) -> None:
+        stats = empty_graph.get_segment_stats(segment_ids=["S_missing"])
+        assert stats["difficulty"] == "green"
+        assert stats["total_drop"] == 0.0 and stats["total_length"] == 0.0
+        assert stats["avg_gradient"] == 0.0 and stats["max_gradient"] == 0.0
+
+
+class TestResortStats:
+    """get_stats summarises the whole resort (slope/segment/lift/road counts + totals)."""
+
+    def test_empty_graph_reports_all_zero(self, empty_graph) -> None:
+        assert empty_graph.get_stats() == {
+            "total_slopes": 0,
+            "total_segments": 0,
+            "total_vertical_m": 0,
+            "total_length_m": 0,
+            "longest_run_m": 0,
+            "total_lifts": 0,
+            "total_roads": 0,
+            "total_road_length_m": 0,
+        }
+
+    def test_multi_segment_slope_reports_slope_totals(self, empty_graph, mock_dem_blue_slope) -> None:
+        graph = empty_graph
+        seg_ids = _commit_L_slope(graph, mock_dem_blue_slope)
+        graph.finish_slope(segment_ids=seg_ids)
+        slope = graph.slopes[next(iter(graph.slopes))]
+        exp_vertical = sum(graph.segments[sid].total_drop_m for sid in seg_ids)
+        exp_longest = slope.get_total_length(segments=graph.segments)
+        max_single_seg = max(graph.segments[sid].length_m for sid in seg_ids)
+
+        stats = graph.get_stats()
+
+        assert stats["total_slopes"] == 1
+        assert stats["total_segments"] == len(seg_ids)
+        assert stats["total_vertical_m"] == pytest.approx(exp_vertical)
+        assert stats["longest_run_m"] == pytest.approx(exp_longest)
+        assert stats["longest_run_m"] > max_single_seg, "whole run is longer than any single segment"

@@ -110,8 +110,26 @@ class TestComputeSideSlope:
         side = TerrainAnalyzer.compute_side_slope(
             start_lon=0.0, start_lat=0.0, end_lon=100 / M, end_lat=0.0, analyzer=analyzer
         )
-        assert side.direction in {SideDirection.LEFT, SideDirection.RIGHT}
-        assert abs(side.slope_pct) > 10.0, "crossing the fall line exposes most of the gradient sideways"
+        assert enum_eq(a=side.direction, b=SideDirection.RIGHT), (
+            "east across a south fall line leans right when looking downhill"
+        )
+        assert side.slope_pct > 10.0, "crossing the fall line exposes most of the gradient sideways (positive = right)"
+
+    def test_traversing_west_across_fall_line_leans_left(self, mock_dem_blue_slope) -> None:
+        """Skiing due west across a south-falling slope → terrain leans LEFT with negative side slope.
+
+        Mirror of the east case: the opposite traverse direction flips the side to LEFT and the
+        signed side-slope percentage negative — guarding the sign/direction symmetry.
+        """
+        analyzer = TerrainAnalyzer(dem=mock_dem_blue_slope)
+        M = 111320.0
+        side = TerrainAnalyzer.compute_side_slope(
+            start_lon=0.0, start_lat=0.0, end_lon=-100 / M, end_lat=0.0, analyzer=analyzer
+        )
+        assert enum_eq(a=side.direction, b=SideDirection.LEFT), (
+            "west across a south fall line leans left when looking downhill"
+        )
+        assert side.slope_pct < -10.0, "the opposite traverse flips the side slope negative (left)"
 
     def test_excavator_warning_message_renders_plain_direction_word(self) -> None:
         """ExcavatorWarning renders the SideDirection as its plain value (e.g. 'left'), not 'SideDirection.LEFT'."""

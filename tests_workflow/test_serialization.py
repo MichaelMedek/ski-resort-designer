@@ -225,6 +225,28 @@ class TestLiftSerialization:
         restored_lift = list(restored.lifts.values())[0]
         assert len(restored_lift.pylons) == orig_pylon_count, "Pylon count should match"
 
+        # Identity + type survive the roundtrip.
+        assert restored_lift.lift_type == "chairlift"
+        assert restored_lift.start_node_id == "N1"
+        assert restored_lift.end_node_id == "N2"
+
+        # First pylon survives field-by-field (asdict -> Pylon(**)).
+        assert orig_pylon_count > 0, "a chairlift over this terrain must place pylons"
+        orig_pylon = lift.pylons[0]
+        restored_pylon = restored_lift.pylons[0]
+        assert restored_pylon.index == orig_pylon.index
+        assert abs(restored_pylon.distance_m - orig_pylon.distance_m) < 1e-6
+        assert abs(restored_pylon.lat - orig_pylon.lat) < 1e-9
+        assert abs(restored_pylon.lon - orig_pylon.lon) < 1e-9
+        assert abs(restored_pylon.ground_elevation_m - orig_pylon.ground_elevation_m) < 1e-6
+        assert abs(restored_pylon.height_m - orig_pylon.height_m) < 1e-6
+
+        # Cable points survive (length + first point coordinates).
+        assert len(restored_lift.cable_points) == len(lift.cable_points)
+        assert abs(restored_lift.cable_points[0].lon - lift.cable_points[0].lon) < 1e-9
+        assert abs(restored_lift.cable_points[0].lat - lift.cable_points[0].lat) < 1e-9
+        assert abs(restored_lift.cable_points[0].elevation - lift.cable_points[0].elevation) < 0.1
+
 
 class TestGPXExport:
     """Tests for the 'Export GPX' user action (ResortGraph.to_gpx)."""

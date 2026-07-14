@@ -1,7 +1,9 @@
 """Unit tests for ProposedPathSegment computed metrics (model/proposed_path.py)."""
 
 from skiresort_planner.constants import SlopeConfig
+from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.path_point import PathPoint
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 
 
@@ -21,6 +23,17 @@ class TestProposedSegmentComputedProperties:
         assert 750 < segment.length_m < 850
         assert 15 < segment.avg_slope_pct < 25
         assert segment.difficulty == "blue"
+
+        # ProposedPathSegment-specific fields (what this subclass adds over Path).
+        assert segment.target_slope_pct == 20.0
+        assert segment.target_difficulty == "blue"
+        assert segment.sector_name == "Test"
+
+        # Defaults left untouched by construction.
+        assert segment.is_connector is False
+        assert segment.target_node_id == ""
+        assert segment.start_node_id == ""
+        assert enum_eq(a=segment.kind, b=SegmentKind.SLOPE)
 
 
 class TestMaxSlopeRollingWindow:
@@ -65,3 +78,18 @@ class TestMaxSlopeRollingWindow:
 
         assert seg.max_slope_pct > 40
         assert seg.max_slope_pct < 50
+
+    def test_ascending_path_keeps_max_slope_positive_magnitude(self) -> None:
+        """For a climbing path, avg_slope_pct is negative but max_slope_pct is a positive magnitude."""
+        # ~222m south, climbing 100m (end higher than start) -> shorter than ROLLING_WINDOW_M,
+        # so max_slope_pct returns the abs(avg_slope_pct) seed.
+        points = [
+            PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
+            PathPoint(lon=0.0, lat=-0.002, elevation=2100.0),
+        ]
+        seg = ProposedPathSegment(points=points)
+
+        assert seg.total_drop_m < 0  # climbs: end elevation exceeds start
+        assert seg.avg_slope_pct < 0  # signed average is negative for a climb
+        assert seg.max_slope_pct > 0  # magnitude seed survives the abs()
+        assert seg.max_slope_pct == abs(seg.avg_slope_pct)

@@ -8,7 +8,8 @@ stubbed st_deckgl so the deck.gl component call returns no event.
 
 import skiresort_planner.ui.pydeck_click_handler as pch
 from skiresort_planner import app
-from skiresort_planner.constants import ChartConfig
+from skiresort_planner.constants import ChartConfig, DEMConfig
+from skiresort_planner.model.click_info import ClickInfo
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
@@ -78,6 +79,38 @@ class TestSessionHelpers:
         fake_st.session_state["dem_service"] = mock_dem_blue_slope  # already loaded
         assert app.load_dem_data() is True
 
+    def test_load_dem_data_builds_services_and_reruns_while_loading(self, fake_st, monkeypatch) -> None:
+        # No dem_service in session and the DEM file already present locally: skip download,
+        # build DEMService + PathFactory, request a rerun, and report "still loading" (False).
+        from pathlib import Path
+
+        class _FakeDEM:
+            is_loaded = True
+
+            def get_elevation(self, *, lon: float, lat: float) -> float:
+                return 1000.0
+
+        class _PresentPath(Path):
+            # A Path subclass that always reports the DEM file as present (can't patch .exists on
+            # a bare PosixPath instance — it's read-only — so swap the whole EURODEM_PATH).
+            _flavour = type(Path())._flavour  # type: ignore[attr-defined]  # inherit the OS flavour
+
+            def exists(self, *, follow_symlinks: bool = True) -> bool:
+                return True
+
+        monkeypatch.setattr(DEMConfig, "EURODEM_PATH", _PresentPath("/tmp/fake_eurodem.tif"))
+        monkeypatch.setattr(app, "DEMService", lambda *a, **k: _FakeDEM())
+        monkeypatch.setattr(app, "PathFactory", lambda *a, **k: object())
+        rerun_calls: list[int] = []
+        monkeypatch.setattr(app, "trigger_rerun", lambda *a, **k: rerun_calls.append(1))
+
+        result = app.load_dem_data()
+
+        assert result is False  # DEM not ready this pass; caller returns to show loading screen
+        assert isinstance(fake_st.session_state["dem_service"], _FakeDEM)
+        assert fake_st.session_state["path_factory"] is not None
+        assert rerun_calls == [1]  # a rerun was requested once the services were installed
+
 
 class TestMapHeight:
     """viewport_map_height: js-eval read + session_state cache + reserve/floor math."""
@@ -133,7 +166,24 @@ class TestRenderLoop:
     def test_run_app_ui_idle(self, fake_st, monkeypatch, mock_dem_blue_slope) -> None:
         _stub_deckgl(monkeypatch)
         _seed_full_session(fake_st, mock_dem_blue_slope)
+        # Capture the single deck.gl render call (deck + key) instead of hitting the real component.
+        calls: list[dict[str, object]] = []
+
+        def _record_render(*, deck: object, height: int, key: str) -> pch.PydeckClickResult:
+            calls.append({"deck": deck, "height": height, "key": key})
+            return pch.PydeckClickResult.empty()
+
+        monkeypatch.setattr(app, "render_pydeck_map", _record_render)
+        profile_keys: list[str] = []
+        fake_st.plotly_chart = lambda *a, **k: profile_keys.append(k.get("key"))
+
         app._run_app_ui()  # idle_ready → renders sidebar + map + control panel
+
+        assert len(calls) == 1  # map rendered exactly once
+        assert calls[0]["deck"] is not None  # a real pdk.Deck was built and handed to the component
+        assert isinstance(calls[0]["key"], str) and calls[0]["key"].startswith("main_map_0_")
+        # idle_ready has no bottom_profile, so the profile slot below the map stays empty.
+        assert profile_keys == []
 
     def test_run_app_ui_viewing_slope(self, fake_st, monkeypatch, mock_dem_blue_slope, path_points_blue) -> None:
         _stub_deckgl(monkeypatch)
@@ -175,15 +225,37 @@ class TestRenderLoop:
         )
         sm.start_lift(node_id=None, location=loc)  # exercises pending-lift marker layers
 
+        # Capture the extra_layers the state feeds into the renderer.
+        renderer = fake_st.session_state["map_renderer"]
+        original_render = renderer.render
+        captured: dict[str, object] = {}
+
+        def _spy_render(*args: object, **kwargs: object) -> object:
+            captured["extra_layers"] = kwargs.get("extra_layers")
+            return original_render(*args, **kwargs)
+
+        monkeypatch.setattr(renderer, "render", _spy_render)
+
         app._run_app_ui()
+
+        extra_layers = captured["extra_layers"]
+        assert extra_layers  # pending-lift markers were produced and passed through
+        assert isinstance(extra_layers, list)
+        assert any(getattr(layer, "id", None) == "pending_lift_station" for layer in extra_layers)
 
     def test_render_map_terrain_click_dispatches(self, fake_st, monkeypatch, mock_dem_blue_slope) -> None:
         # A terrain click event flows through detector → dispatch_click.
         _stub_deckgl(monkeypatch, event={"coordinate": [0.0, 0.0], "eventType": "click"})
         _graph, sm, ctx = _seed_full_session(fake_st, mock_dem_blue_slope)
         ctx.build_mode.mode = "slope"
+        dispatched: list[ClickInfo] = []
+        monkeypatch.setattr(app, "dispatch_click", lambda *, click_info: dispatched.append(click_info))
 
         app._render_map_fragment_inner()  # must parse + dispatch without raising
+
+        assert len(dispatched) == 1  # the terrain click reached the dispatcher exactly once
+        click_info = dispatched[0]
+        assert click_info.lon == 0.0 and click_info.lat == 0.0  # coordinate carried through detector
 
     def test_main_runs_full_cycle(self, fake_st, monkeypatch, mock_dem_blue_slope) -> None:
         _stub_deckgl(monkeypatch)

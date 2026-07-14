@@ -84,6 +84,12 @@ class TestClickDetectorParsing:
                 id="proposal",
             ),
             pytest.param(
+                {"type": "proposal_body", "proposal_index": 2},
+                MarkerType.PROPOSAL_BODY,
+                {"proposal_index": 2},
+                id="proposal_body",
+            ),
+            pytest.param(
                 {"type": "import_center"},
                 MarkerType.IMPORT_CENTER,
                 {},  # positionless confirm marker — no id fields
@@ -152,6 +158,20 @@ class TestClickDetectorParsing:
         assert result is not None
         assert result.marker_type == MarkerType.SEGMENT
         assert result.segment_id == "S3"
+
+    def test_get_object_id_dedup_keys(self, detector: ClickDetector, fake_st) -> None:
+        """Dedup keys are formatted per-type; proposals embed map_version so regenerated ones re-click.
+
+        Guards the regression where dropping map_version from the proposal key would make a
+        freshly regenerated proposal collide with the previous generation's key and be swallowed.
+        """
+        fake_st.session_state["map_version"] = 5
+        assert detector._get_object_id(obj={"type": "pylon", "lift_id": "L1", "pylon_index": 3}) == "pylon_L1_3"
+        assert detector._get_object_id(obj={"type": "node", "id": "N42"}) == "node_N42"
+        assert (
+            detector._get_object_id(obj={"type": "proposal_endpoint", "proposal_index": 2}) == "proposal_endpoint_2_v5"
+        )
+        assert detector._get_object_id(obj={}) == ""
 
 
 class TestClickDetectorDeduplication:

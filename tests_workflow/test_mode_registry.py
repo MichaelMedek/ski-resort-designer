@@ -4,6 +4,8 @@ Every dispatch axis is covered EXACTLY, so a new state/mode/kind can't silently 
 The bijection asserts run at import (so a gap crashes on import), and these tests re-assert them.
 """
 
+import pytest
+
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.context import BuildMode, EntityKind, PlannerContext
 from skiresort_planner.ui.mode_registry import (
@@ -103,6 +105,27 @@ class TestOperationBijection:
             assert ctx.build_mode.mode == mode, f"{mode}: on_select must highlight its own mode"
             assert sm.is_idle_ready, f"{mode}: on_select must NOT enter a build state (highlight only)"
 
+    def test_lift_operation_on_select_retypes_via_select_lift_type_action(
+        self, fake_st, empty_graph, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # _LiftOperation overrides on_select to route through actions.select_lift_type_action (which,
+        # when viewing a lift, re-types it via Lift.update_type). Spy that the delegation fires once
+        # with the button's own mode. mode_registry calls it as `actions.select_lift_type_action`.
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        fake_st.session_state["state_machine"] = sm
+        fake_st.session_state["context"] = ctx
+        fake_st.session_state["graph"] = empty_graph
+        fake_st.session_state["map_version"] = 0
+
+        calls: list[str] = []
+        monkeypatch.setattr(
+            "skiresort_planner.ui.actions.select_lift_type_action", lambda lift_type: calls.append(lift_type)
+        )
+
+        OPERATIONS[BuildMode.GONDOLA].on_select(ctx=ctx, sm=sm)
+        assert calls == [BuildMode.GONDOLA]
+        assert ctx.build_mode.mode == BuildMode.GONDOLA, "base on_select still highlights the mode"
+
 
 class TestEntityKindSpecBijection:
     def test_keys_match_entity_kind_members_exactly(self) -> None:
@@ -154,6 +177,33 @@ class TestGreyoutRule:
         assert not OPERATIONS[BuildMode.CHAIRLIFT].enabled(sm)
         # Slope itself stays enabled (switch straight into building a new slope).
         assert OPERATIONS[BuildMode.SLOPE].enabled(sm)
+
+    def test_greyout_while_viewing_a_lift(self, empty_graph) -> None:
+        # view_lift only sets ctx.viewing.lift_id + enters idle_viewing_lift (no graph lookup), so an
+        # id is enough to exercise the greyout rule. Each builder stays enabled on its OWN kind and
+        # greys out on the two other kinds; Import + Merge are always enabled from any idle state.
+        sm = self._sm(empty_graph)
+        sm.view_lift(lift_id="L1")
+        assert sm.is_idle_viewing_lift
+
+        assert OPERATIONS[BuildMode.IMPORT].enabled(sm), "Import must stay enabled while viewing a lift"
+        assert OPERATIONS[BuildMode.MERGE].enabled(sm), "Merge must stay enabled while viewing a lift"
+        # Lift stays enabled (re-type the viewed lift); slope + road grey out.
+        assert OPERATIONS[BuildMode.CHAIRLIFT].enabled(sm), "Lift builders stay enabled while viewing a lift"
+        assert not OPERATIONS[BuildMode.SLOPE].enabled(sm)
+        assert not OPERATIONS[BuildMode.ROAD].enabled(sm)
+
+    def test_greyout_while_viewing_a_road(self, empty_graph) -> None:
+        sm = self._sm(empty_graph)
+        sm.view_road(road_id="R1")
+        assert sm.is_idle_viewing_road
+
+        assert OPERATIONS[BuildMode.IMPORT].enabled(sm), "Import must stay enabled while viewing a road"
+        assert OPERATIONS[BuildMode.MERGE].enabled(sm), "Merge must stay enabled while viewing a road"
+        # Road stays enabled; slope + lift grey out.
+        assert OPERATIONS[BuildMode.ROAD].enabled(sm), "Road builder stays enabled while viewing a road"
+        assert not OPERATIONS[BuildMode.SLOPE].enabled(sm)
+        assert not OPERATIONS[BuildMode.CHAIRLIFT].enabled(sm)
 
 
 class TestRegistryReturnsRealObjects:

@@ -8,12 +8,14 @@ delete actions for slope/lift/road uniformly.
 
 import pytest
 
+from skiresort_planner.constants import MapConfig
 from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.state_machine import PlannerStateMachine
+from tests_workflow.conftest import MockDEMService
 
 M = 111320.0  # metres per degree near the equator
 
@@ -143,6 +145,79 @@ class TestDeleteLiftAction:
         assert delete_lift_action(lift_id=lift.id) is True
         assert lift.id not in empty_graph.lifts
 
+
+def _two_segment_slope(graph: ResortGraph, dem: MockDEMService) -> ResortGraph:
+    """Commit two contiguous 300m slope segments so the graph has 3 nodes with a junction.
+
+    Nodes sit at lat 0, -300/M, -600/M (all lon 0). Adjacent nodes are 300m apart (< 500m,
+    mergeable); the endpoints are 600m apart (> MergeConfig.MAX_SPAN_M, not mergeable).
+    """
+    mid = -300 / M
+    bot = -600 / M
+    seg_a = [
+        PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
+        PathPoint(lon=0.0, lat=mid, elevation=dem.get_elevation_or_raise(lon=0.0, lat=mid)),
+    ]
+    seg_b = [
+        PathPoint(lon=0.0, lat=mid, elevation=dem.get_elevation_or_raise(lon=0.0, lat=mid)),
+        PathPoint(lon=0.0, lat=bot, elevation=dem.get_elevation_or_raise(lon=0.0, lat=bot)),
+    ]
+    graph.commit_paths(paths=[ProposedPathSegment(points=seg_a, target_difficulty="blue")])
+    graph.commit_paths(paths=[ProposedPathSegment(points=seg_b, target_difficulty="blue")])
+    return graph
+
+
+class TestConfirmMergeAction:
+    """confirm_merge_action validates the span, merges as one undoable action, returns to idle."""
+
+    def test_close_nodes_merge_and_return_to_idle(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
+        from skiresort_planner.ui.actions import confirm_merge_action
+
+        dem = mock_dem_blue_slope
+        _two_segment_slope(empty_graph, dem)
+        by_lat = sorted(empty_graph.nodes.values(), key=lambda n: n.lat, reverse=True)
+        top, mid = by_lat[0], by_lat[1]  # 300m apart, within MergeConfig.MAX_SPAN_M
+        sm, ctx = _session(fake_st, empty_graph, dem=dem)
+        count_before = len(empty_graph.nodes)
+        sm.start_merge()
+        sm.toggle_merge_node(node_id=top.id)
+        sm.toggle_merge_node(node_id=mid.id)
+
+        confirm_merge_action()
+
+        assert len(empty_graph.nodes) == count_before - 1, "two close nodes collapsed into one"
+        assert empty_graph.undo_stack[-1].action_type.name == "MERGE_NODES", "one undoable merge action"
+        assert sm.is_idle_ready, "confirm returns to idle"
+        assert ctx.merge.node_ids == [], "selection cleared by the before-hook"
+
+    def test_far_nodes_refused_no_change(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
+        from skiresort_planner.ui.actions import confirm_merge_action
+
+        dem = mock_dem_blue_slope
+        _two_segment_slope(empty_graph, dem)
+        by_lat = sorted(empty_graph.nodes.values(), key=lambda n: n.lat, reverse=True)
+        top, bottom = by_lat[0], by_lat[-1]  # 600m apart, exceeds MergeConfig.MAX_SPAN_M
+        sm, ctx = _session(fake_st, empty_graph, dem=dem)
+        count_before = len(empty_graph.nodes)
+        stack_before = len(empty_graph.undo_stack)
+        sm.start_merge()
+        sm.toggle_merge_node(node_id=top.id)
+        sm.toggle_merge_node(node_id=bottom.id)
+
+        confirm_merge_action()
+
+        assert len(empty_graph.nodes) == count_before, "nothing merged when the span is too large"
+        assert len(empty_graph.undo_stack) == stack_before, "no undo action recorded on refusal"
+        assert sm.is_merge_placing, "stays in merge so the user can adjust the selection"
+        assert ctx.merge.node_ids == [top.id, bottom.id], "selection preserved for retry"
+
+    def test_fewer_than_two_nodes_raises(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
+        from skiresort_planner.ui.actions import confirm_merge_action
+
+        _session(fake_st, empty_graph, dem=mock_dem_blue_slope)
+        with pytest.raises(RuntimeError, match="fewer than 2"):
+            confirm_merge_action()
+
     def test_missing_lift_returns_false(self, fake_st, empty_graph) -> None:
         from skiresort_planner.ui.actions import delete_lift_action
 
@@ -227,7 +302,13 @@ class TestCenterHelpers:
         slope = _make_slope(empty_graph, path_points_blue)
         _sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         center_on_slope(ctx=ctx, graph=empty_graph, slope=slope, zoom=15)
+
+        start_pt = empty_graph.segments[slope.segment_ids[0]].points[0]
+        end_pt = empty_graph.segments[slope.segment_ids[-1]].points[-1]
         assert ctx.map.zoom == 15
+        assert ctx.map.lon == (start_pt.lon + end_pt.lon) / 2, "centered on the path midpoint"
+        assert ctx.map.lat == (start_pt.lat + end_pt.lat) / 2
+        assert ctx.map.pitch == MapConfig.VIEWING_PITCH
 
     def test_center_on_road_sets_map(self, empty_graph) -> None:
         from skiresort_planner.ui.actions import center_on_road
@@ -235,7 +316,13 @@ class TestCenterHelpers:
         road = _make_road(empty_graph)
         _sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         center_on_road(ctx=ctx, graph=empty_graph, road=road, zoom=16)
+
+        start_pt = empty_graph.segments[road.segment_ids[0]].points[0]
+        end_pt = empty_graph.segments[road.segment_ids[-1]].points[-1]
         assert ctx.map.zoom == 16
+        assert ctx.map.lon == (start_pt.lon + end_pt.lon) / 2, "centered on the road midpoint"
+        assert ctx.map.lat == (start_pt.lat + end_pt.lat) / 2
+        assert ctx.map.pitch == MapConfig.VIEWING_PITCH
 
     def test_center_on_lift_sets_map(self, empty_graph, mock_dem_blue_slope) -> None:
         from skiresort_planner.ui.actions import center_on_lift
@@ -253,6 +340,41 @@ class TestCenterHelpers:
 
         center_on_lift(ctx=ctx, graph=empty_graph, lift=lift, zoom=14)
         assert ctx.map.zoom == 14
+        assert ctx.map.lon == (bottom.lon + top.lon) / 2, "centered on the lift-station midpoint"
+        assert ctx.map.lat == (bottom.lat + top.lat) / 2
+        assert ctx.map.pitch == MapConfig.VIEWING_PITCH
+
+
+class TestSelectLiftTypeAction:
+    """The sidebar lift-type buttons set the build mode, and re-type the viewed lift."""
+
+    def test_sets_build_mode_when_not_viewing_a_lift(self, fake_st, empty_graph) -> None:
+        from skiresort_planner.ui.actions import select_lift_type_action
+
+        _sm, ctx = _session(fake_st, empty_graph)
+        select_lift_type_action(lift_type="gondola")
+
+        assert ctx.build_mode.mode == "gondola", "the next lift will be built as a gondola"
+        assert ctx.lift.type == "gondola"
+
+    def test_retypes_the_viewed_lift(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
+        from skiresort_planner.ui.actions import select_lift_type_action
+
+        dem = mock_dem_blue_slope
+        bottom, _ = empty_graph.get_or_create_node(
+            lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M)
+        )
+        top, _ = empty_graph.get_or_create_node(
+            lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)
+        )
+        lift = empty_graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
+        sm, ctx = _session(fake_st, empty_graph, dem=dem)
+        sm.show_lift_info_panel(lift_id=lift.id)
+
+        select_lift_type_action(lift_type="gondola")
+
+        assert empty_graph.lifts[lift.id].lift_type == "gondola", "update_type re-typed the viewed lift"
+        assert ctx.build_mode.mode == "gondola" and ctx.lift.type == "gondola"
 
 
 class TestSlopeBuildingActionFlow:

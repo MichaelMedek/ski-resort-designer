@@ -61,6 +61,17 @@ class TestProfileChartRendering:
 
         fig = ProfileChart(height=300).render_slope(slope=slope, graph=empty_graph)
         assert len(fig.data) > 0
+        # One dotted vline per segment boundary lives in layout.shapes.
+        assert len(fig.layout.shapes) == len(slope.segment_ids)
+        # Fill trace is colored by the slope's derived difficulty (steepest-segment metric).
+        from skiresort_planner.constants import StyleConfig
+
+        difficulty = slope.get_difficulty(segments=empty_graph.segments)
+        line_colors = [tr.line.color for tr in fig.data if tr.line and tr.line.color]
+        assert StyleConfig.SLOPE_COLORS[difficulty] in line_colors
+        # Stats caption carries the slope framing (length + drop).
+        annotations = " ".join(a.text for a in fig.layout.annotations)
+        assert "Length:" in annotations and "Drop:" in annotations
 
     def test_road_chart_renders_brown_with_climb_stats(self, empty_graph) -> None:
         """render_road produces a figure (brown, elevation-change caption)."""
@@ -77,6 +88,12 @@ class TestProfileChartRendering:
 
         fig = ProfileChart(height=300).render_road(road=road, graph=empty_graph)
         assert len(fig.data) > 0
+        from skiresort_planner.constants import StyleConfig
+
+        line_colors = [tr.line.color for tr in fig.data if tr.line and tr.line.color]
+        assert StyleConfig.ROAD_COLOR in line_colors
+        annotations = " ".join(a.text for a in fig.layout.annotations)
+        assert "Elevation change:" in annotations and "Steepest:" in annotations
 
     def test_lift_chart_renders_terrain_cable_pylons(self, empty_graph, mock_dem_blue_slope) -> None:
         """render_lift produces a figure with terrain + cable + pylon traces."""
@@ -93,6 +110,18 @@ class TestProfileChartRendering:
 
         fig = ProfileChart(height=300).render_lift(lift=lift, graph=empty_graph)
         assert len(fig.data) > 0
+        from skiresort_planner.constants import StyleConfig
+
+        trace_names = {tr.name for tr in fig.data if tr.name}
+        assert "Terrain" in trace_names and "Cable" in trace_names
+        # Each pylon is drawn as a width-6 line bar (stations use width 8, cable 3, terrain 2).
+        pylon_bars = [tr for tr in fig.data if tr.line and tr.line.width == 6]
+        assert len(pylon_bars) == len(lift.pylons)
+        # Title reports pylon count, vertical rise, and uses the chairlift color on pylon bars.
+        rise = top.elevation - bottom.elevation
+        assert f"{len(lift.pylons)} pylons" in fig.layout.title.text
+        assert f"{rise:.0f}m rise" in fig.layout.title.text
+        assert all(bar.line.color == StyleConfig.LIFT_COLORS["chairlift"] for bar in pylon_bars)
 
     def test_building_profile_slope(self, empty_graph, path_points_blue) -> None:
         """render_building_profile builds a combined in-progress SLOPE figure (kind-driven)."""

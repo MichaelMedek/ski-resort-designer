@@ -323,3 +323,32 @@ class TestRoadModeNoStraightLineFallback:
         )
         assert len(paths) >= 1, "slope mode always connects (straight-line fallback)"
         assert all(enum_eq(a=p.kind, b=SegmentKind.SLOPE) for p in paths), "slope-mode proposals are SLOPE kind"
+
+
+class TestGenerateFan:
+    """Unit tests for generate_fan - the fan-pattern difficulty/grade/side sweep.
+
+    The path_factory fixture uses a ~31.6% diagonal slope (30% S + 10% E), so the
+    green targets (7%/12%) are below terrain and yield LEFT/RIGHT traverse variants.
+    Green traverses always trace on all terrain (shallow angles), so the sweep
+    starts with 'Green Left (Gentle)' per the difficulty→grade→side loop order.
+    """
+
+    def test_fan_yields_proposals_that_are_not_connectors(self, path_factory: PathFactory) -> None:
+        """Every fan path is a real slope proposal: is_connector False, valid difficulty."""
+        start_elev = 2500.0  # the diagonal mock DEM's base elevation at the origin (0, 0)
+        paths = list(path_factory.generate_fan(lon=0.0, lat=0.0, elevation=start_elev))
+
+        assert paths, "a steep diagonal slope must yield fan proposals"
+        assert all(p.is_connector is False for p in paths), "fan paths are slopes, never connectors"
+        assert all(p.target_difficulty in SlopeConfig.DIFFICULTIES for p in paths), (
+            "every fan path carries a valid difficulty (green/blue/red/black)"
+        )
+
+    def test_fan_starts_with_green_left_gentle(self, path_factory: PathFactory) -> None:
+        """Loop order (green→gentle→left) + green-always-traces makes the first path 'Green Left (Gentle)'."""
+        start_elev = 2500.0  # the diagonal mock DEM's base elevation at the origin (0, 0)
+        paths = list(path_factory.generate_fan(lon=0.0, lat=0.0, elevation=start_elev))
+
+        assert paths[0].sector_name == "Green Left (Gentle)"
+        assert paths[0].target_difficulty == "green"

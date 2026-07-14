@@ -8,8 +8,8 @@ state — targeting is map-only, mirroring roads.
 
 from skiresort_planner.constants import MapConfig
 from skiresort_planner.generators.path_factory import PathFactory
+from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
-from skiresort_planner.ui.context import CustomConnectContext
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 from tests_workflow.conftest import WorkflowSetup
 
@@ -79,8 +79,7 @@ class TestSelectCustomTargetWorkflow:
 
         assert sm.current_state_value == "slope_custom_path", "re-target stays in custom path"
         assert ctx.custom_connect.start_node == start_node_first, "start node preserved on re-target"
-        assert ctx.custom_connect.target_location is not None
-        assert abs(ctx.custom_connect.target_location[1] - new_lat) < 0.0001, "target moved to new point"
+        assert ctx.custom_connect.target_location == (0.0, new_lat, new_elev), "target moved to the new point"
 
     def test_target_node_captured_for_identity_reuse(self, workflow_setup: WorkflowSetup) -> None:
         """When the target is an existing node, its id is captured so commit reuses it
@@ -96,8 +95,26 @@ class TestSelectCustomTargetWorkflow:
         sm.select_custom_target(target_location=(0.0, -600 / M, 1880.0), target_node="N7")  # type: ignore[attr-defined]  # dynamic python-statemachine event
         assert ctx.custom_connect.target_node == "N7", "clicked node's identity is captured"
 
-        # Default (terrain target, no node kwarg) leaves it None → proximity fallback.
-        assert CustomConnectContext().target_node is None
+        # A terrain target (no node kwarg) leaves it None on the SM-mutated context → proximity fallback.
+        sm.select_custom_target(target_location=(0.0, -700 / M, dem.get_elevation_or_raise(lon=0.0, lat=-700 / M)))  # type: ignore[attr-defined]  # dynamic python-statemachine event
+        assert ctx.custom_connect.target_node is None, "terrain re-target clears the captured node id"
+
+    def test_select_target_sets_deferred_flag_cancel_clears_it(self, workflow_setup: WorkflowSetup) -> None:
+        """enter_slope_custom_path arms deferred.custom_connect so the next render generates the
+        target proposals; cancel_custom clears it via clear_custom_connect.
+        """
+        sm, ctx, graph, factory, dem = workflow_setup
+
+        start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
+        sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
+
+        sm.select_custom_target(target_location=(0.0, -500 / M, dem.get_elevation_or_raise(lon=0.0, lat=-500 / M)))  # type: ignore[attr-defined]  # dynamic python-statemachine event
+        assert sm.current_state_value == "slope_custom_path"
+        assert ctx.deferred.custom_connect, "entering custom path arms deferred generation"
+
+        sm.cancel_custom()  # type: ignore[attr-defined]  # dynamic python-statemachine event
+        assert sm.current_state_value == "slope_starting", "no segments → back to fan-out"
+        assert not ctx.deferred.custom_connect, "cancel_custom clears the deferred flag"
 
 
 class TestCancelCustomConnect:
@@ -160,7 +177,9 @@ class TestFinishSlopeFromCustom:
     dropping the in-progress target proposal.
     """
 
-    def test_finish_slope_from_custom_path_no_crash(self, workflow_setup: WorkflowSetup) -> None:
+    def test_finish_slope_from_custom_path_no_crash(
+        self, workflow_setup: WorkflowSetup, proposed_segment_blue: ProposedPathSegment
+    ) -> None:
         sm, ctx, graph, factory, dem = workflow_setup
 
         # Commit one real segment, then start targeting a new point (SlopeCustomPath).
@@ -170,6 +189,11 @@ class TestFinishSlopeFromCustom:
         sm.select_custom_target(target_location=(0.0, -500 / M, dem.get_elevation_or_raise(lon=0.0, lat=-500 / M)))  # type: ignore[attr-defined]  # dynamic python-statemachine event
         assert sm.current_state_value == "slope_custom_path"
 
+        # Seed an in-progress target proposal so the clear is observable (not vacuous):
+        # deferred generation would have populated this before Finish is pressed.
+        ctx.proposals.paths.append(proposed_segment_blue)
+        assert len(ctx.proposals.paths) == 1, "precondition: a target proposal is showing"
+
         # Sidebar Finish fires the finish_slope event — must resolve, not raise.
         slope = graph.finish_slope(segment_ids=ctx.slope_build.segments)
         assert slope is not None
@@ -177,7 +201,8 @@ class TestFinishSlopeFromCustom:
 
         assert sm.current_state_value == "idle_viewing_slope", "Finish during targeting lands in viewing"
         assert not ctx.custom_connect.force_mode, "in-progress target cleared"
-        assert len(ctx.proposals.paths) == 0, "in-progress proposals cleared when finishing from targeting"
+        assert ctx.custom_connect.target_location is None, "in-progress target location cleared"
+        assert len(ctx.proposals.paths) == 0, "the seeded in-progress proposal is cleared on finish"
 
 
 class TestCommitCustomContinue:

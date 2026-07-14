@@ -187,6 +187,25 @@ class TestSmoothJoinedPath:
         out = _smooth([a, b], [a[0], a[-1], b[-1]])
         assert out == [a, b]
 
+    def test_elevation_smoothed_within_raw_band_and_junction_near_node(self) -> None:
+        # The spline's 3rd dimension (elevation) must survive smoothing: a regression that
+        # dropped/zeroed Z would push points far outside the raw descent band. On _sharp_L_path
+        # both legs descend 0.5m/point, so raw elevation runs 2100.0 -> 2071.0.
+        segs = _sharp_L_path()
+        anchors = _anchors(segs)
+        raw = segs[0] + segs[1][1:]
+        raw_min = min(p.elevation for p in raw)
+        raw_max = max(p.elevation for p in raw)
+        out = _smooth(segs, anchors)
+        ribbon = out[0] + out[1][1:]
+        for p in ribbon:
+            assert raw_min - 1.0 <= p.elevation <= raw_max + 1.0, (
+                f"smoothed elevation {p.elevation:.2f} left the raw band "
+                f"[{raw_min:.1f}, {raw_max:.1f}] — is the spline's 3rd dimension dropped?"
+            )
+        # The heavily-weighted junction node keeps its elevation (anchors[1] == seg1 end = 2085.5).
+        assert abs(out[0][-1].elevation - anchors[1].elevation) < 2.0, "junction elevation stays near its node"
+
 
 class TestResampleCubicSpline:
     def test_too_few_points_unchanged(self) -> None:

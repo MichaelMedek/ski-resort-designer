@@ -7,6 +7,7 @@ from skiresort_planner.constants import MapConfig
 from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.resort_graph import ResortGraph
+from skiresort_planner.ui.context import EntityKind
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
 
@@ -66,12 +67,9 @@ class TestLiftPlacementWorkflow:
         assert ctx.viewing.lift_id == lift.id, "Should be viewing created lift"
         assert ctx.viewing.panel_visible is True, "Panel should be visible"
 
-        # Verify lift was created correctly
+        # Workflow post-condition: the placed lift exists and viewing_entity resolves to it.
         assert len(graph.lifts) == 1, "Should have 1 lift"
-        created_lift = graph.lifts[lift.id]
-        assert created_lift.start_node_id == "N1"
-        assert created_lift.end_node_id == "N2"
-        assert created_lift.lift_type == "chairlift"
+        assert sm.viewing_entity == (EntityKind.LIFT, lift.id), "viewing_entity reflects the placed lift"
 
     def test_cancel_lift_returns_to_idle(self, mock_dem_blue_slope) -> None:
         """cancel_lift from LiftPlacing returns to IdleReady."""

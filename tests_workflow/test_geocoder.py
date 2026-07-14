@@ -56,3 +56,27 @@ def test_blank_query_skips_request(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("skiresort_planner.generators.geocoder.requests.get", _boom)
     assert geocoder.geocode("   ") is None
+
+
+def test_request_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    from skiresort_planner.constants import OSMConfig
+
+    captured: dict[str, object] = {}
+
+    def _capture(*args: object, **kwargs: object) -> _FakeResponse:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return _FakeResponse([{"lat": "1.0", "lon": "2.0", "display_name": "x"}])
+
+    monkeypatch.setattr("skiresort_planner.generators.geocoder.requests.get", _capture)
+
+    geocoder.geocode("Ischgl")
+
+    args = captured["args"]
+    kwargs = captured["kwargs"]
+    assert isinstance(args, tuple)
+    assert isinstance(kwargs, dict)
+    assert args[0] == OSMConfig.NOMINATIM_URL
+    assert kwargs["params"] == {"q": "Ischgl", "format": "json", "limit": "1"}
+    assert kwargs["headers"]["User-Agent"] == OSMConfig.USER_AGENT
+    assert kwargs["timeout"] == OSMConfig.NOMINATIM_TIMEOUT_S

@@ -105,6 +105,72 @@ class TestRoadInvalidTransitions:
             sm.finish_road(road_id="R1")
 
 
+class TestRoadConnectorAutoFinish:
+    """commit_road_finish auto-ends the road when a segment connects to an existing node.
+
+    Mirrors commit_custom_finish for slopes: a single event fires from either
+    road_starting or road_building straight to idle_viewing_road.
+    """
+
+    def _sm(self, graph: ResortGraph):
+        return PlannerStateMachine.create(graph=graph, add_ui_listener=False)
+
+    def test_connector_finish_from_starting(self, empty_graph, path_points_blue) -> None:
+        sm, ctx = self._sm(empty_graph)
+        sm.start_road(node_id=None, location=path_points_blue[0])
+        assert sm.current_state_value == "road_starting"
+
+        seg = _commit_road_segment(empty_graph, path_points_blue)
+        road = empty_graph.finish_road(segment_ids=[seg])
+        assert road is not None
+        sm.commit_road_finish(segment_id=seg, road_id=road.id)
+
+        # Connector segment ends the road immediately, straight from road_starting.
+        assert sm.current_state_value == "idle_viewing_road"
+        assert ctx.viewing.road_id == road.id
+        assert ctx.viewing.panel_visible is True
+        # enter_idle_viewing_road clears the build scratch.
+        assert ctx.road_build.segments == []
+
+    def test_connector_finish_from_building(self, empty_graph, path_points_blue) -> None:
+        sm, ctx = self._sm(empty_graph)
+        sm.start_road(node_id=None, location=path_points_blue[0])
+        seg1 = _commit_road_segment(empty_graph, path_points_blue)
+        sm.commit_road(segment_id=seg1, endpoint_node_id="N1")
+        assert sm.current_state_value == "road_building"
+
+        seg2 = _commit_road_segment(empty_graph, path_points_blue)
+        road = empty_graph.finish_road(segment_ids=[seg1, seg2])
+        assert road is not None
+        sm.commit_road_finish(segment_id=seg2, road_id=road.id)
+
+        assert sm.current_state_value == "idle_viewing_road"
+        assert ctx.viewing.road_id == road.id
+
+    def test_connector_finish_is_idempotent_on_already_tracked_segment(self, empty_graph, path_points_blue) -> None:
+        """before_commit_road_finish only appends the segment if not already tracked."""
+        sm, ctx = self._sm(empty_graph)
+        sm.start_road(node_id=None, location=path_points_blue[0])
+        seg1 = _commit_road_segment(empty_graph, path_points_blue)
+        sm.commit_road(segment_id=seg1, endpoint_node_id="N1")
+        assert ctx.road_build.segments == [seg1]
+
+        # seg1 is already in road_build.segments; the finish hook must not double-append.
+        road = empty_graph.finish_road(segment_ids=[seg1])
+        assert road is not None
+        sm.commit_road_finish(segment_id=seg1, road_id=road.id)
+
+        assert sm.current_state_value == "idle_viewing_road"
+        assert ctx.viewing.road_id == road.id
+
+    def test_connector_finish_not_allowed_from_idle(self, empty_graph) -> None:
+        """commit_road_finish has no transition out of idle_ready."""
+        sm, _ctx = self._sm(empty_graph)
+        assert sm.current_state_value == "idle_ready"
+        with pytest.raises(TransitionNotAllowed):
+            sm.commit_road_finish(segment_id="S1", road_id="R1")
+
+
 class TestRoadForceStateMethods:
     """force_road_building / force_road_starting (undo helpers), mirroring slope force methods."""
 
@@ -119,9 +185,15 @@ class TestRoadForceStateMethods:
         sm.commit_road(segment_id=seg1, endpoint_node_id="N1")
         assert sm.current_state_value == "road_building"
 
+        # Seed a stale viewing panel that force_road_building must clear (via viewing.clear()).
+        ctx.viewing.set_road_id(road_id="R99")
+        ctx.viewing.show_panel()
+
         sm.force_road_building()
         assert sm.current_state_value == "road_building"
         assert ctx.road_build.segments == [seg1]
+        assert ctx.viewing.road_id is None  # force_road_building cleared the stale viewing state
+        assert ctx.viewing.panel_visible is False
 
     def test_force_road_starting_when_only_origin_remains(self, empty_graph, path_points_blue) -> None:
         # Simulate undoing the last segment: origin still set, no segments → force RoadStarting.
