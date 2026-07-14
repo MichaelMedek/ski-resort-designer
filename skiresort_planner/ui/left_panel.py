@@ -144,15 +144,15 @@ class SidebarRenderer:
         if self.sm.is_idle_viewing_lift and BuildMode.is_lift(mode):
             return f"Change viewed lift to {label}"
         if BuildMode.is_slope(mode):
-            return "Click on map to start building a ski slope"
+            return "Select, then click on map to start building a ski slope"
         if BuildMode.is_road(mode):
-            return "Click two points on the map to connect them with a gentle car road"
+            return "Select, then click on map to start building a car road"
         if BuildMode.is_lift(mode):
-            return f"Click on map to start placing a {label}"
+            return f"Select, then click on map to start placing a {label}"
         if BuildMode.is_import(mode):
-            return "Select, then click the map to place an import area — real lifts & pistes inside it are added."
+            return "Select, then click the map to place an Open Street Map import area."
         if BuildMode.is_merge(mode):
-            return "Select, then click node markers to merge them into one (median position)."
+            return "Select, then click node markers to merge them into one."
         raise ValueError(f"Button {mode} has no help text (is_disabled={is_disabled})")
 
     def render(self) -> None:

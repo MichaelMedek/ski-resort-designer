@@ -770,7 +770,7 @@ class _LiftOperation(BuilderOperation):
 class _ImportOperation(BuilderOperation):
     mode = BuildMode.IMPORT
     group = OperationGroup.UTILITY
-    first_instruction = "🗺️ Click the map to place the import area."
+    first_instruction = "🗺️ Click terrain or a node to place the import area."
 
     def enabled(self, sm: PlannerStateMachine) -> bool:
         return _idle_not_building(sm)
