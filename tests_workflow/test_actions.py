@@ -190,7 +190,7 @@ class TestConfirmMergeAction:
         assert sm.is_idle_ready, "confirm returns to idle"
         assert ctx.merge.node_ids == [], "selection cleared by the before-hook"
 
-    def test_far_nodes_refused_no_change(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
+    def test_far_nodes_refused_no_change(self, fake_st, empty_graph, mock_dem_blue_slope, monkeypatch) -> None:
         from skiresort_planner.ui.actions import confirm_merge_action
 
         dem = mock_dem_blue_slope
@@ -204,12 +204,20 @@ class TestConfirmMergeAction:
         sm.toggle_merge_node(node_id=top.id)
         sm.toggle_merge_node(node_id=bottom.id)
 
+        # MergeTooFarMessage.display() does a function-local `import streamlit as st; st.toast(...)`,
+        # so it hits the REAL streamlit module (not the fake `st`); capture it to prove the user is told.
+        import streamlit
+
+        toasts: list[str] = []
+        monkeypatch.setattr(streamlit, "toast", lambda text, *a, **k: toasts.append(text))
+
         confirm_merge_action()
 
         assert len(empty_graph.nodes) == count_before, "nothing merged when the span is too large"
         assert len(empty_graph.undo_stack) == stack_before, "no undo action recorded on refusal"
         assert sm.is_merge_placing, "stays in merge so the user can adjust the selection"
         assert ctx.merge.node_ids == [top.id, bottom.id], "selection preserved for retry"
+        assert any("too far" in t.lower() for t in toasts), "the user is told why the merge was refused"
 
     def test_fewer_than_two_nodes_raises(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         from skiresort_planner.ui.actions import confirm_merge_action
