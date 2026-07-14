@@ -737,18 +737,20 @@ class MapRenderer:
         for node_id, node in self.graph.nodes.items():
             is_parking = node_id in parking_ids
             is_merge_selected = node_id in merge_ids
+            is_big = is_merge_selected or is_parking
             if is_merge_selected:
                 color = list(StyleConfig.MERGE_SELECTED_RGBA)
-                radius = ClickConfig.PARKING_MARKER_RADIUS
                 name = f"{StyleConfig.MERGE_ICON} Selected to merge — {node_id}"
             elif is_parking:
                 color = list(StyleConfig.PARKING_COLOR_RGBA)
-                radius = ClickConfig.PARKING_MARKER_RADIUS
                 name = f"{StyleConfig.PARKING_ICON} Parking place — {node_id}"
             else:
                 color = list(MarkerConfig.NODE_MARKER_COLOR)
-                radius = ClickConfig.NODE_MARKER_RADIUS
                 name = f"Node {node_id}"
+            # A big node (merge-red or parking-blue) sits one step below plain nodes so the smaller
+            # plain nodes stay on top and clickable where markers overlap in a cluster.
+            radius = ClickConfig.NODE_MARKER_RADIUS_BIG if is_big else ClickConfig.NODE_MARKER_RADIUS
+            flat_z = MapConfig.Z_OFFSET_2D_NODE_BIG if is_big else MapConfig.Z_OFFSET_2D_NODES
             node_data.append(
                 {
                     "type": ClickConfig.TYPE_NODE,
@@ -756,9 +758,7 @@ class MapRenderer:
                     "position": [
                         node.lon,
                         node.lat,
-                        self._get_z(
-                            node.elevation, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, MapConfig.Z_OFFSET_2D_NODES
-                        ),
+                        self._get_z(node.elevation, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, flat_z),
                     ],
                     "elevation": node.elevation,
                     "color": color,

@@ -251,7 +251,7 @@ class TestMapRendering:
         assert parking_points, "parking node should appear in the nodes layer"
         for point in parking_points:
             assert point["color"] == list(StyleConfig.PARKING_COLOR_RGBA)
-            assert point["radius"] == ClickConfig.PARKING_MARKER_RADIUS
+            assert point["radius"] == ClickConfig.NODE_MARKER_RADIUS_BIG
             assert point["radius"] > ClickConfig.NODE_MARKER_RADIUS, "parking marker must be bigger than a plain node"
             assert StyleConfig.PARKING_ICON in point["name"] and "Parking place" in point["name"]
 

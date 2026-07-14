@@ -98,6 +98,7 @@ class MapConfig:
     Z_OFFSET_2D_LIFTS = 2  # Lift cables above slopes
     Z_OFFSET_2D_PYLONS = 3  # Pylons slightly above lift cables
     Z_OFFSET_2D_ICONS = 4  # Slope/lift icons above pylons
+    Z_OFFSET_2D_NODE_BIG = 9  # Merge-selected or parking palce (big red or blue) nodes just BELOW plain nodes
     Z_OFFSET_2D_NODES = 10  # Nodes above icons
     Z_OFFSET_2D_MARKERS = 20  # Interactive markers (commit/select) on top
 
@@ -340,7 +341,7 @@ class ClickConfig:
 
     # Clickable marker radii (meters for Pydeck ScatterplotLayer)
     NODE_MARKER_RADIUS = 35
-    PARKING_MARKER_RADIUS = 50  # Parking nodes render bigger than plain nodes
+    NODE_MARKER_RADIUS_BIG = 50  # Parking and merge nodes render bigger than plain nodes
     SLOPE_ICON_MARKER_RADIUS = 30
     ROAD_ICON_MARKER_RADIUS = 30
     LIFT_ICON_MARKER_RADIUS = 30
