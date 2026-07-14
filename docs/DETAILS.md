@@ -262,7 +262,7 @@ $$\text{targetTotalDrop} = \frac{S_{\text{target}}}{100} \times L_{\text{target}
 2. $\text{remainingDistance} = L_{\text{target}} - d_{\text{total}}$
 3. $S_{\text{step}} = \frac{\text{remainingDrop}}{\text{remainingDistance}} \times 100$
 
-$S_{\text{step}}$ carries the **sign** of the target. It is clamped to a band that keeps the step running the target's way — a descent step never climbs, a climb step never descends, a contour stays near level: magnitude in $[\text{MIN\_SKIABLE}, |S_{\text{target}}|\cdot\text{CLAMP\_FACTOR}]$ with the target's sign (contour: $[-\text{MIN\_SKIABLE}, +\text{MIN\_SKIABLE}]$). For a descent this reduces exactly to the historical $[\text{MIN\_SKIABLE}, S_{\text{target}}\cdot\text{CLAMP\_FACTOR}]$ rule.
+$S_{\text{step}}$ carries the **sign** of the target. It is clamped to a band that keeps the step running the target's way — a descent step never climbs, a climb step never descends, a contour stays near level: magnitude in $[\,$`MIN_SKIABLE`$, |S_{\text{target}}|\cdot$`CLAMP_FACTOR`$\,]$ with the target's sign (contour: $[-$`MIN_SKIABLE`$, +$`MIN_SKIABLE`$]$). For a descent this reduces exactly to the historical $[\,$`MIN_SKIABLE`$, S_{\text{target}}\cdot$`CLAMP_FACTOR`$\,]$ rule.
 
 **Why this works:** The path self-corrects toward the target average without retries.
 
