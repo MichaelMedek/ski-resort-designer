@@ -127,7 +127,7 @@ def viewport_map_height(reserved_below_px: int = 0) -> int | None:
     thereafter the cached viewport height minus reserved space, floored at a minimum.
     """
     value = streamlit_js_eval(js_expressions="parent.innerHeight", key="window_inner_height")
-    if isinstance(value, (int, float)):
+    if isinstance(value, int | float):
         st.session_state.window_height_px = int(value)
     window_height = st.session_state.get("window_height_px")
     if window_height is None:

@@ -207,10 +207,8 @@ class ResortGraph:
         Returns:
             Total number of segments and lifts connected to this node.
         """
-        segment_count = sum(1 for s in self.segments.values() if s.start_node_id == node_id or s.end_node_id == node_id)
-        lift_count = sum(
-            1 for lift in self.lifts.values() if lift.start_node_id == node_id or lift.end_node_id == node_id
-        )
+        segment_count = sum(1 for s in self.segments.values() if node_id in (s.start_node_id, s.end_node_id))
+        lift_count = sum(1 for lift in self.lifts.values() if node_id in (lift.start_node_id, lift.end_node_id))
         return segment_count + lift_count
 
     # =========================================================================
@@ -220,6 +218,7 @@ class ResortGraph:
     def commit_paths(
         self,
         paths: list[ProposedPathSegment],
+        *,
         record_undo: bool = True,
     ) -> list[str]:
         """Commit proposed paths to the graph.
@@ -402,6 +401,7 @@ class ResortGraph:
         self,
         segment_ids: list[str],
         name: str | None = None,
+        *,
         record_undo: bool = True,
     ) -> Slope | None:
         """Finish a slope by grouping segments.
@@ -554,6 +554,7 @@ class ResortGraph:
         lift_type: str,
         dem: "DEMService",
         name: str | None = None,
+        *,
         record_undo: bool = True,
     ) -> Lift:
         """Add a lift between two nodes.
@@ -1120,7 +1121,7 @@ class ResortGraph:
         for road in graph.roads.values():
             for seg_id in road.segment_ids:
                 seg = graph.segments.get(seg_id)
-                assert seg is not None and enum_eq(seg.kind, SegmentKind.ROAD), (
+                assert seg is not None and enum_eq(a=seg.kind, b=SegmentKind.ROAD), (
                     f"road {road.id} owns segment {seg_id} with kind "
                     f"{seg.kind if seg else 'MISSING'} — expected ROAD (corrupt/stale save)"
                 )

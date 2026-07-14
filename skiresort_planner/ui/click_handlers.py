@@ -557,10 +557,13 @@ def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) ->
         return  # No orphan nodes - nothing was created
 
     # Same-node check only applies if both are existing nodes
-    if ctx.lift.start_node_id is not None and end_node_id is not None:
-        if error := validate_lift_different_nodes(start_node_id=ctx.lift.start_node_id, end_node_id=end_node_id):
-            error.display()
-            return
+    if (
+        ctx.lift.start_node_id is not None
+        and end_node_id is not None
+        and (error := validate_lift_different_nodes(start_node_id=ctx.lift.start_node_id, end_node_id=end_node_id))
+    ):
+        error.display()
+        return
 
     # ─────────────────────────────────────────────────────────────────────────
     # NODE CREATION: Validation passed - now create nodes if needed

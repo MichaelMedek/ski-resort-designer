@@ -40,7 +40,7 @@ def _as_int(value: object) -> int | None:
 
 def _as_float(value: object) -> float | None:
     """Narrow a picked-object numeric field to float, or None if absent/wrong type."""
-    return float(value) if isinstance(value, (int, float)) else None
+    return float(value) if isinstance(value, int | float) else None
 
 
 @dataclass

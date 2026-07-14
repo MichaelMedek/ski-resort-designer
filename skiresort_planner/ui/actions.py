@@ -1029,7 +1029,7 @@ def select_lift_type_action(lift_type: str) -> None:
     reload_map()
 
 
-def _close_panel_and_refresh(deleted: bool, *, is_viewing_deleted: bool) -> bool:
+def _close_panel_and_refresh(*, deleted: bool, is_viewing_deleted: bool) -> bool:
     """Shared delete tail: close the panel if the deleted entity was being viewed, refresh.
 
     `deleted` is the graph.delete_* result; returns it unchanged.

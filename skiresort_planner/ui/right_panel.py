@@ -117,10 +117,10 @@ def _rename_dialog(entity_id: str, current_name: str) -> None:
 def _action_button(
     label: str, *, key: str, help: str, type: Literal["primary", "secondary", "tertiary"] = "secondary"
 ) -> bool:
-    """Render one full-width right-panel action button. Returns True when clicked.
+    """Render one right-panel action button. Returns True when clicked.
 
-    The single width idiom for every right-panel action (3D toggle, rename, close, delete) so they
-    all render as uniform stacked full-width buttons — no columns, no use_container_width mix.
+    width="stretch" so the button fills its container — full-width when stacked, or the column
+    width when placed inside an st.columns cell (the entity-actions 2x2 grid).
     """
     return st.button(label, key=key, width="stretch", help=help, type=type)
 
@@ -139,9 +139,9 @@ def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, kind: Enti
             # Update map center to entity center so we don't jump to stale position.
             # The viewed entity is guaranteed to exist (caller validated it). enum_eq is
             # reload-safe: EntityKind survives Streamlit reloads while the class is redefined.
-            if enum_eq(kind, EntityKind.SLOPE) or enum_eq(kind, EntityKind.ROAD):
+            if enum_eq(a=kind, b=EntityKind.SLOPE) or enum_eq(a=kind, b=EntityKind.ROAD):
                 # Both are segment groups → center on their segment endpoints.
-                owner = graph.slopes[entity_id] if enum_eq(kind, EntityKind.SLOPE) else graph.roads[entity_id]
+                owner = graph.slopes[entity_id] if enum_eq(a=kind, b=EntityKind.SLOPE) else graph.roads[entity_id]
                 lats, lons = [], []
                 for seg_id in owner.segment_ids:
                     seg = graph.segments[seg_id]
@@ -151,7 +151,7 @@ def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, kind: Enti
                     lons.append(seg.points[-1].lon)
                 ctx.map.lat = sum(lats) / len(lats)
                 ctx.map.lon = sum(lons) / len(lons)
-            elif enum_eq(kind, EntityKind.LIFT):
+            elif enum_eq(a=kind, b=EntityKind.LIFT):
                 lift = graph.lifts[entity_id]
                 start_node = graph.nodes[lift.start_node_id]
                 end_node = graph.nodes[lift.end_node_id]
@@ -175,40 +175,45 @@ def _render_entity_actions(
     entity: "Slope | Lift | Road",
     delete_fn: Callable[[str], bool],
 ) -> None:
-    """Render the viewed-entity action buttons: 3D toggle, Rename, Close, Delete.
-
-    All four are full-width and stacked in this fixed order (via _action_button) so every entity
-    panel reads identically. Buttons open dialogs or transition state.
+    """Render the viewed-entity action buttons in a 2x2 grid: 3D toggle + Rename on top,
+    Close + Delete on the bottom, so every entity panel reads identically.
     """
     noun = kind.value
 
-    # 1. 3D / 2D toggle (own reload_map side effects live in the helper)
-    _render_3d_toggle_button(ctx=ctx, graph=graph, kind=kind, entity_id=entity_id)
+    top_left, top_right = st.columns(2)
+    bottom_left, bottom_right = st.columns(2)
 
-    # 2. Rename
-    if _action_button("✏️ Rename", key=f"rename_{noun}", help=f"Give this {noun} a custom name"):
-        _rename_dialog(entity_id=entity_id, current_name=entity.name)
+    # Top-left: 3D / 2D toggle (own reload_map side effects live in the helper).
+    with top_left:
+        _render_3d_toggle_button(ctx=ctx, graph=graph, kind=kind, entity_id=entity_id)
 
-    # 3. Close
-    if _action_button("✖️ Close", key=f"close_{noun}", help="Close this panel to start building again"):
-        logger.info(f"Closing {noun} panel for {entity_id}")
-        ctx.viewing.disable_3d()
-        # Reset pitch and bearing to top-down view (preserve zoom level)
-        ctx.map.pitch = MapConfig.DEFAULT_PITCH
-        ctx.map.bearing = MapConfig.DEFAULT_BEARING
-        bump_map_version()
-        # Uses close_panel event - SM resolves to appropriate transition
-        # State transition triggers st.rerun() via listener - never returns
-        sm.hide_info_panel()
+    # Top-right: Rename.
+    with top_right:
+        if _action_button("✏️ Rename", key=f"rename_{noun}", help=f"Give this {noun} a custom name"):
+            _rename_dialog(entity_id=entity_id, current_name=entity.name)
 
-    # 4. Delete
-    if _action_button("🗑️ Delete", key=f"delete_{noun}", help=f"Permanently remove this {noun}"):
-        _confirm_delete_dialog(
-            kind=kind,
-            entity_name=entity.name,
-            entity_id=entity_id,
-            delete_fn=delete_fn,
-        )
+    # Bottom-left: Close.
+    with bottom_left:
+        if _action_button("✖️ Close", key=f"close_{noun}", help="Close this panel to start building again"):
+            logger.info(f"Closing {noun} panel for {entity_id}")
+            ctx.viewing.disable_3d()
+            # Reset pitch and bearing to top-down view (preserve zoom level)
+            ctx.map.pitch = MapConfig.DEFAULT_PITCH
+            ctx.map.bearing = MapConfig.DEFAULT_BEARING
+            bump_map_version()
+            # Uses close_panel event - SM resolves to appropriate transition
+            # State transition triggers st.rerun() via listener - never returns
+            sm.hide_info_panel()
+
+    # Bottom-right: Delete.
+    with bottom_right:
+        if _action_button("🗑️ Delete", key=f"delete_{noun}", help=f"Permanently remove this {noun}"):
+            _confirm_delete_dialog(
+                kind=kind,
+                entity_name=entity.name,
+                entity_id=entity_id,
+                delete_fn=delete_fn,
+            )
 
 
 # =============================================================================

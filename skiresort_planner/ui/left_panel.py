@@ -273,7 +273,7 @@ class SidebarRenderer:
                 query = st.text_input(
                     "Search place",
                     key="place_search",
-                    placeholder="🔍 Search a resort, town, …",
+                    placeholder="🔍 Search …",
                     label_visibility="collapsed",
                 )
             with col_btn:
@@ -390,7 +390,7 @@ class SidebarRenderer:
             st.markdown(f"### {head.icon} {head.label}")
             # Same body for every viewed kind; only lifts add a change-type line.
             # enum_eq is reload-safe: EntityKind survives Streamlit reloads while the class is redefined.
-            lines = ["- 🔄 Use lift buttons to change type"] if enum_eq(viewing_kind, EntityKind.LIFT) else []
+            lines = ["- 🔄 Use lift buttons to change type"] if enum_eq(a=viewing_kind, b=EntityKind.LIFT) else []
             lines.append("- ✖️ **Close** the right panel to return")
             lines.append(f"- {StyleConfig.BUILDING_ICON} Click terrain/node → new {viewing_kind.value}")
             st.markdown("\n".join(lines))

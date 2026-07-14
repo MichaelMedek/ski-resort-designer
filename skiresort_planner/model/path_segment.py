@@ -147,7 +147,7 @@ class PathSegment(Path):
             Width in meters. Constant for roads; for slopes, clamped to difficulty
             limits (max width on flat terrain, side slope < 1%).
         """
-        if enum_eq(self.kind, SegmentKind.ROAD):
+        if enum_eq(a=self.kind, b=SegmentKind.ROAD):
             return float(EarthworkConfig.ROAD_WIDTH_M)
 
         # Get difficulty-specific limits

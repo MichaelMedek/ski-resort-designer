@@ -94,7 +94,7 @@ def render_pydeck_map(
 
     # Check for coordinate (always present for clicks)
     coord = event.get("coordinate")
-    if isinstance(coord, (list, tuple)) and len(coord) >= 2:
+    if isinstance(coord, list | tuple) and len(coord) >= 2:
         # st_deckgl returns [lon, lat] from deck.gl
         clicked_coordinate = [float(coord[0]), float(coord[1])]
 
@@ -138,7 +138,7 @@ def _get_click_id(obj: dict[str, object] | None, coord: list[float] | None) -> s
         else:
             # Use position as fallback
             pos = obj.get("position")
-            if isinstance(pos, (list, tuple)) and len(pos) >= 2:
+            if isinstance(pos, list | tuple) and len(pos) >= 2:
                 parts.append(f"pos_{float(pos[0]):.6f}_{float(pos[1]):.6f}")
 
     if coord:

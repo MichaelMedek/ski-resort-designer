@@ -348,6 +348,7 @@ class PathFactory:
         target_lon: float,
         target_lat: float,
         target_elevation: float | None = None,
+        *,
         road_mode: bool = False,
     ) -> Iterator[ProposedPathSegment]:
         """Generate paths connecting the start to a user-clicked target.

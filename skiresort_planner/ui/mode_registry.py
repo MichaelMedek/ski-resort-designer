@@ -112,12 +112,13 @@ class BuildState(ABC):
         renderer: MapRenderer,
         terrain_analyzer: TerrainAnalyzer,
         dem: DEMService,
+        *,
         use_3d: bool,
     ) -> list[pdk.Layer]:
         """Extra pydeck layers drawn on top of the base render (empty when the state has none)."""
 
     @abstractmethod
-    def view_state(self, ctx: PlannerContext, graph: ResortGraph, use_3d: bool) -> ViewState:
+    def view_state(self, ctx: PlannerContext, graph: ResortGraph, *, use_3d: bool) -> ViewState:
         """The camera framing for this state: a 3D fit while viewing in 3D, else the stored 2D view."""
 
     @abstractmethod
@@ -158,7 +159,14 @@ def _stored_2d_view(ctx: PlannerContext) -> ViewState:
 class _IdleReadyState(BuildState):
     state_key = "idle_ready"
 
-    def control_panel(self, sm, ctx, graph, on_commit, on_cancel_connection):  # type: ignore[no-untyped-def]
+    def control_panel(
+        self,
+        sm: PlannerStateMachine,
+        ctx: PlannerContext,
+        graph: ResortGraph,
+        on_commit: Callable[[int], None],
+        on_cancel_connection: Callable[[], None],
+    ) -> right_panel.ControlPanel:
         return right_panel.EmptyControlPanel(
             sm=sm, ctx=ctx, graph=graph, on_commit=on_commit, on_cancel_connection=on_cancel_connection
         )
@@ -166,19 +174,28 @@ class _IdleReadyState(BuildState):
     def click_handler(self) -> ClickHandler:
         return click_handlers.handle_idle_click
 
-    def overlay_layers(self, ctx, graph, renderer, terrain_analyzer, dem, use_3d):  # type: ignore[no-untyped-def]
+    def overlay_layers(
+        self,
+        ctx: PlannerContext,
+        graph: ResortGraph,
+        renderer: MapRenderer,
+        terrain_analyzer: TerrainAnalyzer,
+        dem: DEMService,
+        *,
+        use_3d: bool,
+    ) -> list[pdk.Layer]:
         return []
 
-    def view_state(self, ctx, graph, use_3d):  # type: ignore[no-untyped-def]
+    def view_state(self, ctx: PlannerContext, graph: ResortGraph, *, use_3d: bool) -> ViewState:
         return _stored_2d_view(ctx)
 
-    def bottom_profile(self, ctx, graph):  # type: ignore[no-untyped-def]
+    def bottom_profile(self, ctx: PlannerContext, graph: ResortGraph) -> ProfileSpec | None:
         return None
 
-    def merge_highlight_node_ids(self, ctx):  # type: ignore[no-untyped-def]
+    def merge_highlight_node_ids(self, ctx: PlannerContext) -> list[str] | None:
         return None
 
-    def renders_custom_path(self, ctx):  # type: ignore[no-untyped-def]
+    def renders_custom_path(self, ctx: PlannerContext) -> bool:
         return False
 
     def header(self, ctx: PlannerContext) -> StateHeader:
@@ -206,7 +223,14 @@ class _EntityViewingState(BuildState):
         """The 3D camera fit for this kind's viewed entity. Bound per-kind by the subclass."""
         raise NotImplementedError
 
-    def control_panel(self, sm, ctx, graph, on_commit, on_cancel_connection):  # type: ignore[no-untyped-def]
+    def control_panel(
+        self,
+        sm: PlannerStateMachine,
+        ctx: PlannerContext,
+        graph: ResortGraph,
+        on_commit: Callable[[int], None],
+        on_cancel_connection: Callable[[], None],
+    ) -> right_panel.ControlPanel:
         return right_panel.EntityInfoControlPanel(
             sm=sm,
             ctx=ctx,
@@ -219,26 +243,35 @@ class _EntityViewingState(BuildState):
     def click_handler(self) -> ClickHandler:
         return click_handlers.handle_idle_click
 
-    def overlay_layers(self, ctx, graph, renderer, terrain_analyzer, dem, use_3d):  # type: ignore[no-untyped-def]
+    def overlay_layers(
+        self,
+        ctx: PlannerContext,
+        graph: ResortGraph,
+        renderer: MapRenderer,
+        terrain_analyzer: TerrainAnalyzer,
+        dem: DEMService,
+        *,
+        use_3d: bool,
+    ) -> list[pdk.Layer]:
         return []
 
-    def view_state(self, ctx, graph, use_3d):  # type: ignore[no-untyped-def]
+    def view_state(self, ctx: PlannerContext, graph: ResortGraph, *, use_3d: bool) -> ViewState:
         entity_id = ENTITY_KIND_SPECS[self.kind].viewed_entity_id(ctx)
         if use_3d and entity_id is not None:
             return self._fit_3d_view(graph=graph, entity_id=entity_id)
         return _stored_2d_view(ctx)
 
-    def bottom_profile(self, ctx, graph):  # type: ignore[no-untyped-def]
+    def bottom_profile(self, ctx: PlannerContext, graph: ResortGraph) -> ProfileSpec | None:
         entity_id = ENTITY_KIND_SPECS[self.kind].viewed_entity_id(ctx)
         if entity_id is None:
             return None
         fig = bottom_chart.render_viewing_profile(kind=self.kind, entity_id=entity_id, graph=graph)
         return ProfileSpec(fig=fig, key="viewing_profile")
 
-    def merge_highlight_node_ids(self, ctx):  # type: ignore[no-untyped-def]
+    def merge_highlight_node_ids(self, ctx: PlannerContext) -> list[str] | None:
         return None
 
-    def renders_custom_path(self, ctx):  # type: ignore[no-untyped-def]
+    def renders_custom_path(self, ctx: PlannerContext) -> bool:
         return False
 
     def header(self, ctx: PlannerContext) -> StateHeader:
@@ -284,7 +317,14 @@ class _SlopeBuildingState(BuildState):
     def __init__(self, state_key: str) -> None:
         self.state_key = state_key
 
-    def control_panel(self, sm, ctx, graph, on_commit, on_cancel_connection):  # type: ignore[no-untyped-def]
+    def control_panel(
+        self,
+        sm: PlannerStateMachine,
+        ctx: PlannerContext,
+        graph: ResortGraph,
+        on_commit: Callable[[int], None],
+        on_cancel_connection: Callable[[], None],
+    ) -> right_panel.ControlPanel:
         return right_panel.SlopeBuildingControlPanel(
             sm=sm, ctx=ctx, graph=graph, on_commit=on_commit, on_cancel_connection=on_cancel_connection
         )
@@ -292,7 +332,16 @@ class _SlopeBuildingState(BuildState):
     def click_handler(self) -> ClickHandler:
         return click_handlers.handle_slope_building_click
 
-    def overlay_layers(self, ctx, graph, renderer, terrain_analyzer, dem, use_3d):  # type: ignore[no-untyped-def]
+    def overlay_layers(
+        self,
+        ctx: PlannerContext,
+        graph: ResortGraph,
+        renderer: MapRenderer,
+        terrain_analyzer: TerrainAnalyzer,
+        dem: DEMService,
+        *,
+        use_3d: bool,
+    ) -> list[pdk.Layer]:
         layers: list[pdk.Layer] = []
         sel = ctx.selection
         if sel.lon is not None and sel.lat is not None and sel.elevation is not None:
@@ -318,10 +367,10 @@ class _SlopeBuildingState(BuildState):
                 )
         return layers
 
-    def view_state(self, ctx, graph, use_3d):  # type: ignore[no-untyped-def]
+    def view_state(self, ctx: PlannerContext, graph: ResortGraph, *, use_3d: bool) -> ViewState:
         return _stored_2d_view(ctx)
 
-    def bottom_profile(self, ctx, graph):  # type: ignore[no-untyped-def]
+    def bottom_profile(self, ctx: PlannerContext, graph: ResortGraph) -> ProfileSpec | None:
         if not ctx.slope_build.segments:
             return None
         fig = bottom_chart.render_building_profile(
@@ -329,10 +378,10 @@ class _SlopeBuildingState(BuildState):
         )
         return ProfileSpec(fig=fig, key="combined_profile")
 
-    def merge_highlight_node_ids(self, ctx):  # type: ignore[no-untyped-def]
+    def merge_highlight_node_ids(self, ctx: PlannerContext) -> list[str] | None:
         return None
 
-    def renders_custom_path(self, ctx):  # type: ignore[no-untyped-def]
+    def renders_custom_path(self, ctx: PlannerContext) -> bool:
         return ctx.custom_connect.force_mode
 
     def header(self, ctx: PlannerContext) -> StateHeader:
@@ -348,7 +397,14 @@ class _SlopeBuildingState(BuildState):
 class _LiftPlacingState(BuildState):
     state_key = "lift_placing"
 
-    def control_panel(self, sm, ctx, graph, on_commit, on_cancel_connection):  # type: ignore[no-untyped-def]
+    def control_panel(
+        self,
+        sm: PlannerStateMachine,
+        ctx: PlannerContext,
+        graph: ResortGraph,
+        on_commit: Callable[[int], None],
+        on_cancel_connection: Callable[[], None],
+    ) -> right_panel.ControlPanel:
         return right_panel.LiftPlacingControlPanel(
             sm=sm, ctx=ctx, graph=graph, on_commit=on_commit, on_cancel_connection=on_cancel_connection
         )
@@ -356,7 +412,16 @@ class _LiftPlacingState(BuildState):
     def click_handler(self) -> ClickHandler:
         return click_handlers.handle_lift_placing_click
 
-    def overlay_layers(self, ctx, graph, renderer, terrain_analyzer, dem, use_3d):  # type: ignore[no-untyped-def]
+    def overlay_layers(
+        self,
+        ctx: PlannerContext,
+        graph: ResortGraph,
+        renderer: MapRenderer,
+        terrain_analyzer: TerrainAnalyzer,
+        dem: DEMService,
+        *,
+        use_3d: bool,
+    ) -> list[pdk.Layer]:
         if ctx.lift.start_node_id:
             node = graph.nodes.get(ctx.lift.start_node_id)
             if node is None:
@@ -372,16 +437,16 @@ class _LiftPlacingState(BuildState):
             lat=lat, lon=lon, elevation=elevation, fall_line_bearing=gradient.bearing_deg, use_3d=use_3d
         )
 
-    def view_state(self, ctx, graph, use_3d):  # type: ignore[no-untyped-def]
+    def view_state(self, ctx: PlannerContext, graph: ResortGraph, *, use_3d: bool) -> ViewState:
         return _stored_2d_view(ctx)
 
-    def bottom_profile(self, ctx, graph):  # type: ignore[no-untyped-def]
+    def bottom_profile(self, ctx: PlannerContext, graph: ResortGraph) -> ProfileSpec | None:
         return None
 
-    def merge_highlight_node_ids(self, ctx):  # type: ignore[no-untyped-def]
+    def merge_highlight_node_ids(self, ctx: PlannerContext) -> list[str] | None:
         return None
 
-    def renders_custom_path(self, ctx):  # type: ignore[no-untyped-def]
+    def renders_custom_path(self, ctx: PlannerContext) -> bool:
         return False
 
     def header(self, ctx: PlannerContext) -> StateHeader:
@@ -398,7 +463,14 @@ class _LiftPlacingState(BuildState):
 class _ImportPlacingState(BuildState):
     state_key = "import_placing"
 
-    def control_panel(self, sm, ctx, graph, on_commit, on_cancel_connection):  # type: ignore[no-untyped-def]
+    def control_panel(
+        self,
+        sm: PlannerStateMachine,
+        ctx: PlannerContext,
+        graph: ResortGraph,
+        on_commit: Callable[[int], None],
+        on_cancel_connection: Callable[[], None],
+    ) -> right_panel.ControlPanel:
         return right_panel.ImportPlacingControlPanel(
             sm=sm, ctx=ctx, graph=graph, on_commit=on_commit, on_cancel_connection=on_cancel_connection
         )
@@ -406,7 +478,16 @@ class _ImportPlacingState(BuildState):
     def click_handler(self) -> ClickHandler:
         return click_handlers.handle_import_placing_click
 
-    def overlay_layers(self, ctx, graph, renderer, terrain_analyzer, dem, use_3d):  # type: ignore[no-untyped-def]
+    def overlay_layers(
+        self,
+        ctx: PlannerContext,
+        graph: ResortGraph,
+        renderer: MapRenderer,
+        terrain_analyzer: TerrainAnalyzer,
+        dem: DEMService,
+        *,
+        use_3d: bool,
+    ) -> list[pdk.Layer]:
         center_lon = ctx.deferred.osm_import_center_lon
         center_lat = ctx.deferred.osm_import_center_lat
         if center_lon is None or center_lat is None:
@@ -420,16 +501,16 @@ class _ImportPlacingState(BuildState):
             use_3d=use_3d,
         )
 
-    def view_state(self, ctx, graph, use_3d):  # type: ignore[no-untyped-def]
+    def view_state(self, ctx: PlannerContext, graph: ResortGraph, *, use_3d: bool) -> ViewState:
         return _stored_2d_view(ctx)
 
-    def bottom_profile(self, ctx, graph):  # type: ignore[no-untyped-def]
+    def bottom_profile(self, ctx: PlannerContext, graph: ResortGraph) -> ProfileSpec | None:
         return None
 
-    def merge_highlight_node_ids(self, ctx):  # type: ignore[no-untyped-def]
+    def merge_highlight_node_ids(self, ctx: PlannerContext) -> list[str] | None:
         return None
 
-    def renders_custom_path(self, ctx):  # type: ignore[no-untyped-def]
+    def renders_custom_path(self, ctx: PlannerContext) -> bool:
         return False
 
     def header(self, ctx: PlannerContext) -> StateHeader:
@@ -446,7 +527,14 @@ class _ImportPlacingState(BuildState):
 class _MergePlacingState(BuildState):
     state_key = "merge_placing"
 
-    def control_panel(self, sm, ctx, graph, on_commit, on_cancel_connection):  # type: ignore[no-untyped-def]
+    def control_panel(
+        self,
+        sm: PlannerStateMachine,
+        ctx: PlannerContext,
+        graph: ResortGraph,
+        on_commit: Callable[[int], None],
+        on_cancel_connection: Callable[[], None],
+    ) -> right_panel.ControlPanel:
         return right_panel.MergePlacingControlPanel(
             sm=sm, ctx=ctx, graph=graph, on_commit=on_commit, on_cancel_connection=on_cancel_connection
         )
@@ -454,19 +542,28 @@ class _MergePlacingState(BuildState):
     def click_handler(self) -> ClickHandler:
         return click_handlers.handle_merge_placing_click
 
-    def overlay_layers(self, ctx, graph, renderer, terrain_analyzer, dem, use_3d):  # type: ignore[no-untyped-def]
+    def overlay_layers(
+        self,
+        ctx: PlannerContext,
+        graph: ResortGraph,
+        renderer: MapRenderer,
+        terrain_analyzer: TerrainAnalyzer,
+        dem: DEMService,
+        *,
+        use_3d: bool,
+    ) -> list[pdk.Layer]:
         return []
 
-    def view_state(self, ctx, graph, use_3d):  # type: ignore[no-untyped-def]
+    def view_state(self, ctx: PlannerContext, graph: ResortGraph, *, use_3d: bool) -> ViewState:
         return _stored_2d_view(ctx)
 
-    def bottom_profile(self, ctx, graph):  # type: ignore[no-untyped-def]
+    def bottom_profile(self, ctx: PlannerContext, graph: ResortGraph) -> ProfileSpec | None:
         return None
 
-    def merge_highlight_node_ids(self, ctx):  # type: ignore[no-untyped-def]
+    def merge_highlight_node_ids(self, ctx: PlannerContext) -> list[str] | None:
         return ctx.merge.node_ids
 
-    def renders_custom_path(self, ctx):  # type: ignore[no-untyped-def]
+    def renders_custom_path(self, ctx: PlannerContext) -> bool:
         return False
 
     def header(self, ctx: PlannerContext) -> StateHeader:
@@ -488,7 +585,14 @@ class _RoadBuildingState(BuildState):
     def __init__(self, state_key: str) -> None:
         self.state_key = state_key
 
-    def control_panel(self, sm, ctx, graph, on_commit, on_cancel_connection):  # type: ignore[no-untyped-def]
+    def control_panel(
+        self,
+        sm: PlannerStateMachine,
+        ctx: PlannerContext,
+        graph: ResortGraph,
+        on_commit: Callable[[int], None],
+        on_cancel_connection: Callable[[], None],
+    ) -> right_panel.ControlPanel:
         return right_panel.RoadBuildingControlPanel(
             sm=sm, ctx=ctx, graph=graph, on_commit=on_commit, on_cancel_connection=on_cancel_connection
         )
@@ -496,7 +600,16 @@ class _RoadBuildingState(BuildState):
     def click_handler(self) -> ClickHandler:
         return click_handlers.handle_road_building_click
 
-    def overlay_layers(self, ctx, graph, renderer, terrain_analyzer, dem, use_3d):  # type: ignore[no-untyped-def]
+    def overlay_layers(
+        self,
+        ctx: PlannerContext,
+        graph: ResortGraph,
+        renderer: MapRenderer,
+        terrain_analyzer: TerrainAnalyzer,
+        dem: DEMService,
+        *,
+        use_3d: bool,
+    ) -> list[pdk.Layer]:
         # Only the origin (starting) shows a dot; once segments exist the road draws itself.
         if self.state_key != "road_starting":
             return []
@@ -512,10 +625,10 @@ class _RoadBuildingState(BuildState):
             return []
         return renderer.create_pending_road_marker_layers(lat=lat, lon=lon, elevation=elevation, use_3d=use_3d)
 
-    def view_state(self, ctx, graph, use_3d):  # type: ignore[no-untyped-def]
+    def view_state(self, ctx: PlannerContext, graph: ResortGraph, *, use_3d: bool) -> ViewState:
         return _stored_2d_view(ctx)
 
-    def bottom_profile(self, ctx, graph):  # type: ignore[no-untyped-def]
+    def bottom_profile(self, ctx: PlannerContext, graph: ResortGraph) -> ProfileSpec | None:
         if not ctx.road_build.segments:
             return None
         fig = bottom_chart.render_building_profile(
@@ -523,10 +636,10 @@ class _RoadBuildingState(BuildState):
         )
         return ProfileSpec(fig=fig, key="combined_road_profile")
 
-    def merge_highlight_node_ids(self, ctx):  # type: ignore[no-untyped-def]
+    def merge_highlight_node_ids(self, ctx: PlannerContext) -> list[str] | None:
         return None
 
-    def renders_custom_path(self, ctx):  # type: ignore[no-untyped-def]
+    def renders_custom_path(self, ctx: PlannerContext) -> bool:
         return True
 
     def header(self, ctx: PlannerContext) -> StateHeader:
@@ -791,7 +904,7 @@ def dispatch_click(click_info: ClickInfo) -> None:
             return
 
     logger.info(f"Dispatching {click_info.display_name} in state {sm.get_state_name()}")
-    get_click_handler(sm)(click_info, elevation)
+    get_click_handler(sm=sm)(click_info, elevation)
 
 
 # =============================================================================

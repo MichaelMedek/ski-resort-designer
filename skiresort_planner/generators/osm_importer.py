@@ -153,7 +153,7 @@ class OSMImporter:
         # Overpass bbox filter order is (south, west, north, east).
         area = f"({min_lat},{min_lon},{max_lat},{max_lon})"
         query = (
-            "[out:json][timeout:%d];" % OSMConfig.OVERPASS_TIMEOUT_S
+            f"[out:json][timeout:{OSMConfig.OVERPASS_TIMEOUT_S:d}];"
             + f'(way["aerialway"]{area};'
             + f'way["piste:type"]{area};);'
             + "out geom;"

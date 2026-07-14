@@ -156,6 +156,7 @@ class MapRenderer:
         self,
         proposals: list[ProposedPathSegment] | None = None,
         selected_proposal_idx: int | None = None,
+        *,
         show_nodes: bool = True,
         show_segments: bool = True,
         show_lifts: bool = True,
@@ -248,7 +249,7 @@ class MapRenderer:
     # =========================================================================
 
     @staticmethod
-    def _get_z(elevation: float, z_offset: float, use_3d: bool, flat_z: float = 0.0) -> float:
+    def _get_z(elevation: float, z_offset: float, *, use_3d: bool, flat_z: float = 0.0) -> float:
         """Get z-coordinate based on view mode.
 
         Args:
@@ -384,7 +385,7 @@ class MapRenderer:
     # =========================================================================
 
     def _create_segment_layers(
-        self, highlight_ids: list[str] | None = None, use_3d: bool = False
+        self, highlight_ids: list[str] | None = None, *, use_3d: bool = False
     ) -> dict[str, list[pdk.Layer]]:
         """Create belt/center-line/icon layers for slopes AND roads in one pass.
 
@@ -420,7 +421,7 @@ class MapRenderer:
                 raise RuntimeError(f"Segment {seg_id} produced an empty belt polygon")
 
             # enum_eq: reload-safe (Streamlit rebuilds the SegmentKind class).
-            is_road = enum_eq(segment.kind, SegmentKind.ROAD)
+            is_road = enum_eq(a=segment.kind, b=SegmentKind.ROAD)
             flat_z = MapConfig.Z_OFFSET_2D_LIFTS if is_road else MapConfig.Z_OFFSET_2D_SLOPES
             center_line = [
                 [
@@ -507,7 +508,7 @@ class MapRenderer:
             "roads": self._build_path_layers(road_records, id_prefix="roads", use_3d=use_3d),
         }
 
-    def _build_path_layers(self, records: list[dict[str, object]], id_prefix: str, use_3d: bool) -> list[pdk.Layer]:
+    def _build_path_layers(self, records: list[dict[str, object]], id_prefix: str, *, use_3d: bool) -> list[pdk.Layer]:
         """Build belt/center-line/icon layers from segment records.
 
         Shared by slopes and roads so both render identically (belt polygon in
@@ -584,7 +585,7 @@ class MapRenderer:
     # LIFT LAYERS
     # =========================================================================
 
-    def _create_lift_layers(self, use_3d: bool = False) -> dict[str, list[pdk.Layer]]:
+    def _create_lift_layers(self, *, use_3d: bool = False) -> dict[str, list[pdk.Layer]]:
         """Create layers for lift cables, pylons, and icons.
 
         Args:
@@ -732,7 +733,7 @@ class MapRenderer:
     # NODE LAYER
     # =========================================================================
 
-    def _create_node_layer(self, use_3d: bool = False, merge_node_ids: list[str] | None = None) -> pdk.Layer:
+    def _create_node_layer(self, *, use_3d: bool = False, merge_node_ids: list[str] | None = None) -> pdk.Layer:
         """Create layer for junction nodes.
 
         A node that is also a **parking node** (a road junction shared with a
@@ -819,6 +820,7 @@ class MapRenderer:
         self,
         proposals: list[ProposedPathSegment],
         selected_idx: int | None,
+        *,
         is_custom_path: bool = False,
         use_3d: bool = False,
     ) -> list[pdk.Layer]:
@@ -844,9 +846,9 @@ class MapRenderer:
             is_selected = selected_idx is not None and i == selected_idx
             # Road proposals are brown (translucent → solid when selected); slope
             # proposals are difficulty-colored. enum_eq is reload-safe.
-            if enum_eq(proposal.kind, SegmentKind.ROAD):
+            if enum_eq(a=proposal.kind, b=SegmentKind.ROAD):
                 color = list(StyleConfig.ROAD_PROPOSAL_COLOR_RGBA)
-            elif enum_eq(proposal.kind, SegmentKind.SLOPE):
+            elif enum_eq(a=proposal.kind, b=SegmentKind.SLOPE):
                 color = list(StyleConfig.SLOPE_COLORS_RGBA[proposal.difficulty])
             else:
                 raise ValueError(f"Unexpected {proposal.kind=}")
@@ -1025,6 +1027,7 @@ class MapRenderer:
         lon: float,
         elevation: float,
         orientation: "TerrainOrientation",
+        *,
         use_3d: bool = False,
     ) -> list[pdk.Layer]:
         """Create arrow layers showing fall line and contours at selection point.
@@ -1122,6 +1125,7 @@ class MapRenderer:
         start_lon: float,
         bearing_deg: float,
         direction: str = "downhill",
+        *,
         use_3d: bool = False,
     ) -> pdk.Layer:
         """Create directional arrow from a point.
@@ -1175,6 +1179,7 @@ class MapRenderer:
         lon: float,
         elevation: float,
         fall_line_bearing: float,
+        *,
         use_3d: bool = False,
     ) -> list[pdk.Layer]:
         """Create marker for pending lift placement with uphill arrow.
@@ -1239,6 +1244,7 @@ class MapRenderer:
         lat: float,
         lon: float,
         elevation: float,
+        *,
         use_3d: bool = False,
     ) -> list[pdk.Layer]:
         """Create the origin marker for a road being started (no direction arrow).
@@ -1285,6 +1291,7 @@ class MapRenderer:
         center_lat: float,
         half_width_m: float,
         elevation: float,
+        *,
         use_3d: bool = False,
     ) -> list[pdk.Layer]:
         """Draw the OSM import box: a translucent square + a pickable center dot (re-click = confirm).

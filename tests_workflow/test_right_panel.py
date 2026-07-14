@@ -6,6 +6,8 @@ browser. Two flavors: render tests assert the panel runs across slope/lift/road;
 state change (3D toggle, close panel) is asserted.
 """
 
+from typing import Literal
+
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
@@ -176,11 +178,9 @@ class TestInfoPanelButtonClicks:
         _info_panel(EntityKind.ROAD, sm, ctx, empty_graph)
         assert not ctx.viewing.view_3d, "clicking 'Return to 2D' must disable 3D"
 
-    def test_entity_actions_are_wide_stacked_and_ordered(
-        self, fake_st, empty_graph, path_points_blue, monkeypatch
-    ) -> None:
-        """Every viewed-entity action button is full-width (width='stretch'), stacked (no columns),
-        and in the fixed order 3D-toggle → Rename → Close → Delete.
+    def test_entity_actions_are_2x2_grid_and_ordered(self, fake_st, empty_graph, path_points_blue, monkeypatch) -> None:
+        """The viewed-entity actions render as a 2x2 grid (two st.columns(2) rows) in the fixed
+        order 3D-toggle + Rename on top, Close + Delete on the bottom; each fills its column.
         """
         from skiresort_planner.ui import right_panel
 
@@ -196,11 +196,22 @@ class TestInfoPanelButtonClicks:
             return False  # nothing clicked
 
         monkeypatch.setattr("skiresort_planner.ui.right_panel.st.button", _record)
-        # columns() would raise if used for Close/Delete — assert it's NOT called for the action row.
-        monkeypatch.setattr(
-            "skiresort_planner.ui.right_panel.st.columns",
-            lambda *a, **k: (_ for _ in ()).throw(AssertionError("no columns")),
-        )
+
+        # Count st.columns(2) rows and provide context-manager column stubs.
+        columns_calls: list[int] = []
+
+        class _Col:
+            def __enter__(self) -> "_Col":
+                return self
+
+            def __exit__(self, *_exc: object) -> Literal[False]:
+                return False
+
+        def _fake_columns(spec: int, **_k: object) -> tuple[_Col, ...]:
+            columns_calls.append(spec)
+            return tuple(_Col() for _ in range(spec))
+
+        monkeypatch.setattr("skiresort_planner.ui.right_panel.st.columns", _fake_columns)
 
         right_panel._render_entity_actions(
             sm=sm,
@@ -212,9 +223,10 @@ class TestInfoPanelButtonClicks:
             delete_fn=lambda _id: True,
         )
 
+        assert columns_calls == [2, 2], "two rows of st.columns(2) → a 2x2 grid"
         keys = [c["key"] for c in calls]
-        assert keys == ["slope_3d_view", "rename_slope", "close_slope", "delete_slope"], "fixed order"
-        assert all(c.get("width") == "stretch" for c in calls), "all action buttons must be full-width"
+        assert keys == ["slope_3d_view", "rename_slope", "close_slope", "delete_slope"], "fixed grid order"
+        assert all(c.get("width") == "stretch" for c in calls), "each grid button fills its column"
 
     def test_enable_3d_from_lift_panel(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         lift_id = _build_lift(empty_graph, mock_dem_blue_slope)

@@ -208,12 +208,18 @@ Transition Summary Table
     event — there is no picking state and no enter button. Roads are always segment-by-segment.
 
     - From IDLE_READY (5): view_slope, view_lift, view_road, start_slope, start_lift, start_road [all direct]
-    - From IDLE_VIEWING_SLOPE (5+1): close, switch_to_lift, switch_to_road, start_slope, start_lift, start_road, switch_slope (loop)
-    - From IDLE_VIEWING_LIFT (5+1): close, switch_to_slope, switch_to_road, start_slope, start_lift, start_road, switch_lift (loop)
-    - From IDLE_VIEWING_ROAD (5+1): close, switch_to_slope, switch_to_lift, start_slope, start_lift, start_road, switch_road (loop)
-    - From SLOPE_STARTING (3): cancel [cancel_slope], commit_first_path [commit_path], select_target [select_custom_target]
-    - From SLOPE_BUILDING (3+1): cancel [cancel_slope], finish [direct], select_target [select_custom_target], commit_path (loop)
-    - From SLOPE_CUSTOM_PATH (4+1): commit_continue [direct], commit_finish [direct], cancel_slope [cancel_slope], cancel_path_to_* [cancel_custom], retarget (loop) [select_custom_target]
+    - From IDLE_VIEWING_SLOPE (5+1): close, switch_to_lift, switch_to_road, start_slope, start_lift, start_road,
+      switch_slope (loop)
+    - From IDLE_VIEWING_LIFT (5+1): close, switch_to_slope, switch_to_road, start_slope, start_lift, start_road,
+      switch_lift (loop)
+    - From IDLE_VIEWING_ROAD (5+1): close, switch_to_slope, switch_to_lift, start_slope, start_lift, start_road,
+      switch_road (loop)
+    - From SLOPE_STARTING (3): cancel [cancel_slope], commit_first_path [commit_path],
+      select_target [select_custom_target]
+    - From SLOPE_BUILDING (3+1): cancel [cancel_slope], finish [direct], select_target [select_custom_target],
+      commit_path (loop)
+    - From SLOPE_CUSTOM_PATH (4+1): commit_continue [direct], commit_finish [direct], cancel_slope [cancel_slope],
+      cancel_path_to_* [cancel_custom], retarget (loop) [select_custom_target]
     - From LIFT_PLACING (2): cancel [direct], complete [direct]
     - From ROAD_STARTING (2): cancel [cancel_road], commit_road_first [commit_road]
     - From ROAD_BUILDING (2+1): cancel [cancel_road], finish [direct], commit_road_continue (loop) [commit_road]
@@ -1278,11 +1284,13 @@ class PlannerStateMachine(StateMachine):
         exit hook raises an exception. This prevents the app from getting
         stuck in an inconsistent state.
 
-        Important: This method bypasses the normal transition mechanism and should only be used for undo operations!
-                   Also the method does only handle exit hooks, but entry hooks must be called separately by the caller after setting the state.
+        Important: This method bypasses the normal transition mechanism and should only be used for undo
+                   operations! Also the method does only handle exit hooks, but entry hooks must be called
+                   separately by the caller after setting the state.
 
         Raises:
-            KeyError: If current state has no exit hook registered in _EXIT_HOOKS. Adding a new state requires adding its hook.
+            KeyError: If current state has no exit hook registered in _EXIT_HOOKS. Adding a new state requires
+                adding its hook.
         """
         # Use .value (snake_case identifier) not .name (CamelCase display name)
         current_state_value = str(self._active_state.value)
@@ -1387,6 +1395,7 @@ class PlannerStateMachine(StateMachine):
     @staticmethod
     def create(
         graph: ResortGraph,
+        *,
         add_ui_listener: bool = True,
     ) -> tuple[PlannerStateMachine, PlannerContext]:
         """Factory method to create state machine with context and optional UI listener.
@@ -1409,7 +1418,7 @@ class PlannerStateMachine(StateMachine):
         return sm, context
 
 
-# Import-time bijection guard: every state-machine state must have an exit hook. 
+# Import-time bijection guard: every state-machine state must have an exit hook.
 # Mirrors the BUILD_STATES/OPERATIONS bijection asserts in mode_registry.
 _sm_state_ids = {s.id for s in PlannerStateMachine.states}
 assert set(PlannerStateMachine._EXIT_HOOKS) == _sm_state_ids, (

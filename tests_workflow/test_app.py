@@ -116,7 +116,11 @@ class TestMapHeight:
         monkeypatch.setattr(infra, "streamlit_js_eval", lambda *a, **k: None)
         _seed_full_session(fake_st, mock_dem_blue_slope)
         called = {"deck": False}
-        monkeypatch.setattr(pch, "st_deckgl", lambda *a, **k: called.__setitem__("deck", True))
+
+        def _mark_called(*_a: object, **_k: object) -> None:
+            called["deck"] = True
+
+        monkeypatch.setattr(pch, "st_deckgl", _mark_called)
 
         app._render_map_fragment_inner()
 

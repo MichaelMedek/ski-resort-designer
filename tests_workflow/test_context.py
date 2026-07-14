@@ -27,7 +27,7 @@ class TestBuildModeHelpers:
             (BuildMode.AERIAL_TRAM, True, False),
         ],
     )
-    def test_mode_predicates(self, mode: str, is_lift: bool, is_road: bool) -> None:
+    def test_mode_predicates(self, mode: str, *, is_lift: bool, is_road: bool) -> None:
         assert BuildMode.is_lift(mode) is is_lift
         assert BuildMode.is_road(mode) is is_road
 
