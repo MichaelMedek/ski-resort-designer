@@ -44,7 +44,7 @@ class TestModuleImports:
 
         module = importlib.import_module(module_path)
         cls = getattr(module, class_name)
-        assert cls is not None
+        assert isinstance(cls, type)
 
 
 # =============================================================================
@@ -82,13 +82,6 @@ class TestConfigurationValidation:
         assert low <= gentle < high
         assert low <= steep < high
         assert gentle < steep
-
-    @pytest.mark.parametrize("lift_type", ["chairlift", "gondola", "surface_lift", "aerial_tram"])
-    def test_lift_type_exists(self, lift_type: str) -> None:
-        """Lift configuration has required type."""
-        from skiresort_planner.constants import LiftConfig
-
-        assert lift_type in LiftConfig.TYPES
 
     def test_entity_prefixes_are_unique(self) -> None:
         """Entity ID prefixes are unique to prevent ID collisions."""

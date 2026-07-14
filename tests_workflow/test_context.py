@@ -92,6 +92,7 @@ class TestMapContextViews:
         from skiresort_planner.constants import MapConfig
 
         mc = MapContext()
+        mc.pitch = 60.0  # non-default so the pitch assertion is not vacuous
         mc.set_building_view(lon=10.0, lat=46.0)
         assert (mc.lon, mc.lat) == (10.0, 46.0)
         assert mc.zoom == MapConfig.BUILDING_ZOOM

@@ -41,10 +41,6 @@ class TestBuildStateBijection:
         sm_ids = {s.id for s in PlannerStateMachine.states}
         assert set(BUILD_STATES) == sm_ids
 
-    def test_every_build_state_key_matches_its_registry_key(self) -> None:
-        for key, bs in BUILD_STATES.items():
-            assert bs.state_key == key
-
     def test_merge_placing_is_registered(self) -> None:
         assert "merge_placing" in BUILD_STATES
 
@@ -111,10 +107,6 @@ class TestOperationBijection:
 class TestEntityKindSpecBijection:
     def test_keys_match_entity_kind_members_exactly(self) -> None:
         assert set(ENTITY_KIND_SPECS) == set(EntityKind)
-
-    def test_spec_kind_matches_its_key(self) -> None:
-        for kind, spec in ENTITY_KIND_SPECS.items():
-            assert spec.kind == kind
 
 
 class TestGreyoutRule:

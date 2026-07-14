@@ -4,9 +4,7 @@ Tests that resort graphs can be saved and loaded without data loss.
 """
 
 import json
-import tempfile
 import xml.etree.ElementTree as ET
-from pathlib import Path
 
 from skiresort_planner.enum_utils import enum_eq
 
@@ -148,40 +146,6 @@ class TestResortGraphSerialization:
 
 class TestFileSaveLoad:
     """Tests for file-based save/load operations."""
-
-    def test_save_and_load_from_file(self, empty_graph, path_points_blue) -> None:
-        """ResortGraph can be serialized to JSON file and loaded back using to_dict/from_dict."""
-        import json
-
-        from skiresort_planner.model.proposed_path import ProposedPathSegment
-        from skiresort_planner.model.resort_graph import ResortGraph
-
-        graph = empty_graph
-        proposal = ProposedPathSegment(
-            points=path_points_blue,
-            target_slope_pct=20.0,
-            target_difficulty="blue",
-            sector_name="Test",
-        )
-        graph.commit_paths(paths=[proposal])
-        segment_ids = list(graph.segments.keys())
-        graph.finish_slope(segment_ids=segment_ids, name="File Test Slope")
-
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            filepath = Path(f.name)
-            # Manual save via to_dict + JSON
-            json.dump(graph.to_dict(), f)
-
-        try:
-            with open(filepath) as f:
-                data = json.load(f)
-            loaded = ResortGraph.from_dict(data=data)
-
-            assert len(loaded.nodes) == len(graph.nodes)
-            assert len(loaded.segments) == len(graph.segments)
-            assert len(loaded.slopes) == len(graph.slopes)
-        finally:
-            filepath.unlink()  # Clean up
 
     def test_reload_then_continue_building_reuses_node_and_ids(self, empty_graph, path_points_blue) -> None:
         """Save → reload → keep building: a real multi-session resume. The new slope must

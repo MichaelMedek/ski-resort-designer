@@ -49,7 +49,6 @@ class TestProfileChartRendering:
         chart = ProfileChart(height=300)
         fig = chart.render_segment(segment=segment, difficulty="blue", title="Test Segment")
 
-        assert fig is not None, "Should produce a figure"
         assert len(fig.data) > 0, "Figure should have data traces"
 
     def test_slope_chart_renders_with_segment_boundaries(self, empty_graph, path_points_blue) -> None:
@@ -130,6 +129,7 @@ class TestProfileChartRendering:
         """
         from enum import Enum
 
+        from skiresort_planner.enum_utils import enum_eq
         from skiresort_planner.model.path_segment import SegmentKind
         from skiresort_planner.model.proposed_path import ProposedPathSegment
         from skiresort_planner.ui.bottom_chart import render_building_profile
@@ -143,6 +143,9 @@ class TestProfileChartRendering:
         reloaded_kind = Enum("SegmentKind", {"SLOPE": "slope", "ROAD": "road"}, type=str)  # type: ignore[misc]  # functional enum name intentionally matches the reloaded class, not the variable
         empty_graph.segments[seg_id].kind = reloaded_kind.ROAD
         assert empty_graph.segments[seg_id].kind is not SegmentKind.ROAD, "must be a different class instance"
+        assert enum_eq(a=empty_graph.segments[seg_id].kind, b=SegmentKind.ROAD), (
+            "enum_eq must still match ROAD by value"
+        )
 
         # Must not raise 'Unknown segment kind' and must still render the road.
         fig = render_building_profile(building_segments=[seg_id], building_name="Reloaded Road", graph=empty_graph)

@@ -41,7 +41,19 @@ class TestRealDEMTerrain:
 
         assert gradient is not None, "Should compute gradient"
         assert 0 <= gradient.slope_pct <= 100, "Slope should be reasonable"
-        assert 0 <= gradient.bearing_deg < 360, "Bearing should be 0-360"
+
+        # bearing_deg is the fall line (steepest DESCENT). The [0, 360) range is
+        # merely the `% 360` modulo, so instead verify the direction is real:
+        # stepping downhill along the bearing must reach lower terrain.
+        from skiresort_planner.core.geo_calculator import GeoCalculator
+
+        center_elev = real_dem.get_elevation(lon=10.32, lat=46.98)
+        down_lon, down_lat = GeoCalculator.destination(
+            lon=10.32, lat=46.98, bearing_deg=gradient.bearing_deg, distance_m=30.0
+        )
+        down_elev = real_dem.get_elevation(lon=down_lon, lat=down_lat)
+        assert center_elev is not None and down_elev is not None, "sample points need valid elevation"
+        assert down_elev < center_elev, "fall-line bearing must point downhill"
 
     def test_path_tracer_on_real_dem(self, real_dem) -> None:
         """PathTracer generates valid paths on real terrain.

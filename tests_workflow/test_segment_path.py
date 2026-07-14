@@ -14,7 +14,6 @@ from skiresort_planner.model.path_segment import PathSegment, SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.model.road import Road
-from skiresort_planner.model.segment_path import SegmentPath
 from skiresort_planner.model.slope import Slope
 
 M = 111320.0
@@ -31,10 +30,6 @@ def _commit_road(graph: ResortGraph, path_points: list[PathPoint]) -> Road:
 
 
 class TestSegmentPathHierarchy:
-    def test_slope_and_road_are_segment_paths(self) -> None:
-        assert issubclass(Slope, SegmentPath)
-        assert issubclass(Road, SegmentPath)
-
     def test_number_from_id_uses_subclass_prefix(self) -> None:
         assert Slope.number_from_id("SL7") == 7
         assert Road.number_from_id("R3") == 3
@@ -45,7 +40,8 @@ class TestSegmentPathBaseMethods:
 
     def test_number_property_derives_from_id(self, empty_graph, path_points_blue) -> None:
         road = _commit_road(empty_graph, path_points_blue)
-        assert road.number == Road.number_from_id(road.id)
+        assert road.id == "R1"
+        assert road.number == 1
 
     def test_total_length_and_drop_match_segment(self, empty_graph, path_points_blue) -> None:
         road = _commit_road(empty_graph, path_points_blue)

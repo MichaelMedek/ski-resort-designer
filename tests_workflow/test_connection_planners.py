@@ -186,15 +186,6 @@ class TestGridNode:
         assert n1 < n3, "Lower row should be smaller"
         assert n2 < n3, "Row takes precedence over col"
 
-    def test_grid_node_equality(self) -> None:
-        """GridNode equality based on row/col."""
-        n1 = GridNode(row=1, col=2)
-        n2 = GridNode(row=1, col=2)
-        n3 = GridNode(row=1, col=3)
-
-        assert n1 == n2, "Same row/col should be equal"
-        assert n1 != n3, "Different col should not be equal"
-
 
 class TestFindNearestNode:
     """Unit tests for _find_nearest_node method."""

@@ -170,7 +170,11 @@ class TestChangeToken:
 
     def test_token_stable_without_mutation(self, empty_graph: ResortGraph, path_points_blue) -> None:
         _populate(empty_graph, path_points_blue)
-        assert empty_graph.change_token() == empty_graph.change_token()
+        token = empty_graph.change_token()
+        # Read-only accesses (what a rerun performs) must not bump the token.
+        empty_graph.get_center()
+        empty_graph.get_elevation_range()
+        assert empty_graph.change_token() == token
 
 
 # =============================================================================

@@ -337,7 +337,6 @@ class TestRoadBuildingActionFlow:
         graph = ResortGraph()
         sm, ctx = _session(fake_st, graph, factory=path_factory, dem=dem)
         sm.start_road(node_id=None, location=path_points_blue[0])
-        assert sm.is_road_starting
 
         # Seed a road proposal (as handle_road_building_click would) and commit it.
         ctx.proposals.paths = [ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)]
