@@ -12,24 +12,39 @@ Provides operations for:
 Reference: DETAILS.md
 """
 
+import copy
 import logging
-from dataclasses import asdict, dataclass
+import statistics
+from dataclasses import asdict
 from datetime import datetime
-from enum import Enum, auto
-from typing import TYPE_CHECKING, Any, Optional, cast
+from typing import TYPE_CHECKING, NamedTuple, TypedDict, cast
 
-from skiresort_planner.constants import EntityPrefixes, GeometricTuningConfig, UndoConfig
+from skiresort_planner.constants import EntityPrefixes, GeometricTuningConfig, MergeConfig, UndoConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.enum_utils import enum_eq
+from skiresort_planner.model.actions import (
+    AddLiftAction,
+    AddSegmentsAction,
+    DeleteLiftAction,
+    DeleteRoadAction,
+    DeleteSlopeAction,
+    FinishRoadAction,
+    FinishSlopeAction,
+    ImportOSMAction,
+    MergeNodesAction,
+    UndoAction,
+)
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.node import Node
-from skiresort_planner.model.path_point import PathPoint
+from skiresort_planner.model.path_point import PathPoint, endpoints_match
 from skiresort_planner.model.path_segment import PathSegment, SegmentKind
 from skiresort_planner.model.path_smoothing import smooth_joined_path
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.road import Road
+from skiresort_planner.model.segment_path import SegmentPath
 from skiresort_planner.model.slope import Slope
+from skiresort_planner.model.undo_handlers import UNDO_HANDLERS
 
 if TYPE_CHECKING:
     from skiresort_planner.core.dem_service import DEMService
@@ -37,135 +52,37 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# =============================================================================
-# Undo Action Types
-# =============================================================================
+class SegmentStats(TypedDict):
+    """Running stats for a set of segments (numeric fields default to 0.0 when absent)."""
+
+    total_drop: float
+    total_length: float
+    avg_gradient: float
+    max_gradient: float
+    difficulty: str
+    start_elev: float
+    current_elev: float
 
 
-class ActionType(Enum):
-    """Enum identifying the type of (undo) action for reliable dispatch."""
+class ResortStats(TypedDict):
+    """Whole-resort summary counts and totals."""
 
-    ADD_SEGMENTS = auto()
-    FINISH_SLOPE = auto()
-    ADD_LIFT = auto()
-    FINISH_ROAD = auto()
-    DELETE_SLOPE = auto()
-    DELETE_LIFT = auto()
-    DELETE_ROAD = auto()
-
-
-@dataclass(frozen=True)
-class AddSegmentsAction:
-    """Undo action for committed path segments."""
-
-    segment_ids: tuple[str, ...]
-    node_ids: tuple[str, ...]
-
-    @property
-    def action_type(self) -> ActionType:
-        """Return the enum type for dispatch."""
-        return ActionType.ADD_SEGMENTS
+    total_slopes: int
+    total_segments: int
+    total_vertical_m: float
+    total_length_m: float
+    longest_run_m: float
+    total_lifts: int
+    total_roads: int
+    total_road_length_m: float
 
 
-@dataclass(frozen=True)
-class FinishSlopeAction:
-    """Undo action for finishing a slope."""
+class OSMImportResult(NamedTuple):
+    """Counts from one import_osm call (named so callers don't guess tuple positions)."""
 
-    slope_id: str
-    segment_ids: tuple[str, ...]
-    slope_name: str
-    start_node_id: str | None
-
-    @property
-    def action_type(self) -> ActionType:
-        """Return the enum type for dispatch."""
-        return ActionType.FINISH_SLOPE
-
-
-@dataclass(frozen=True)
-class AddLiftAction:
-    """Undo action for creating a lift."""
-
-    lift_id: str
-
-    @property
-    def action_type(self) -> ActionType:
-        """Return the enum type for dispatch."""
-        return ActionType.ADD_LIFT
-
-
-@dataclass(frozen=True)
-class FinishRoadAction:
-    """Undo action for finishing a road (mirrors FinishSlopeAction).
-
-    Ungroups the Road but keeps its segments, so undo returns to road building
-    with the segments intact; further undos peel each segment (AddSegmentsAction).
-    """
-
-    road_id: str
-    segment_ids: tuple[str, ...]
-    road_name: str
-    start_node_id: str | None
-
-    @property
-    def action_type(self) -> ActionType:
-        """Return the enum type for dispatch."""
-        return ActionType.FINISH_ROAD
-
-
-@dataclass(frozen=True)
-class DeleteSlopeAction:
-    """Undo action for deleting a slope (stores data for restore)."""
-
-    slope_id: str
-    deleted_slope: "Slope"
-    deleted_segments: tuple["PathSegment", ...]
-    deleted_nodes: tuple["Node", ...] = ()  # Nodes orphaned by segment removal
-
-    @property
-    def action_type(self) -> ActionType:
-        """Return the enum type for dispatch."""
-        return ActionType.DELETE_SLOPE
-
-
-@dataclass(frozen=True)
-class DeleteLiftAction:
-    """Undo action for deleting a lift (stores data for restore)."""
-
-    lift_id: str
-    deleted_lift: "Lift"
-    deleted_nodes: tuple["Node", ...] = ()  # Nodes orphaned by lift removal
-
-    @property
-    def action_type(self) -> ActionType:
-        """Return the enum type for dispatch."""
-        return ActionType.DELETE_LIFT
-
-
-@dataclass(frozen=True)
-class DeleteRoadAction:
-    """Undo action for deleting a road (stores data for restore)."""
-
-    road_id: str
-    deleted_road: "Road"
-    deleted_segments: tuple["PathSegment", ...]
-    deleted_nodes: tuple["Node", ...] = ()  # Nodes orphaned by segment removal
-
-    @property
-    def action_type(self) -> ActionType:
-        """Return the enum type for dispatch."""
-        return ActionType.DELETE_ROAD
-
-
-UndoAction = (
-    AddSegmentsAction
-    | FinishSlopeAction
-    | AddLiftAction
-    | FinishRoadAction
-    | DeleteSlopeAction
-    | DeleteLiftAction
-    | DeleteRoadAction
-)
+    slopes_added: int
+    lifts_added: int
+    duplicates_skipped: int  # entities skipped because the graph already has that endpoint fingerprint
 
 
 class ResortGraph:
@@ -234,7 +151,7 @@ class ResortGraph:
         lon: float,
         lat: float,
         threshold_m: float = GeometricTuningConfig.STEP_SIZE_M,
-    ) -> Optional[Node]:
+    ) -> Node | None:
         """Find nearest node within threshold distance.
 
         Args:
@@ -290,10 +207,8 @@ class ResortGraph:
         Returns:
             Total number of segments and lifts connected to this node.
         """
-        segment_count = sum(1 for s in self.segments.values() if s.start_node_id == node_id or s.end_node_id == node_id)
-        lift_count = sum(
-            1 for lift in self.lifts.values() if lift.start_node_id == node_id or lift.end_node_id == node_id
-        )
+        segment_count = sum(1 for s in self.segments.values() if node_id in (s.start_node_id, s.end_node_id))
+        lift_count = sum(1 for lift in self.lifts.values() if node_id in (lift.start_node_id, lift.end_node_id))
         return segment_count + lift_count
 
     # =========================================================================
@@ -303,6 +218,7 @@ class ResortGraph:
     def commit_paths(
         self,
         paths: list[ProposedPathSegment],
+        *,
         record_undo: bool = True,
     ) -> list[str]:
         """Commit proposed paths to the graph.
@@ -472,7 +388,7 @@ class ResortGraph:
             node_weight=GeometricTuningConfig.NODE_WEIGHT,
             corridor_weight=GeometricTuningConfig.CORRIDOR_WEIGHT,
         )
-        for seg, pts in zip(segments, smoothed):
+        for seg, pts in zip(segments, smoothed, strict=False):
             seg.points = pts
         after = max(seg.max_slope_pct for seg in segments)
         logger.info(f"Smoothed finished path {segment_ids}: max_slope_pct {before:.1f}% -> {after:.1f}%")
@@ -484,13 +400,16 @@ class ResortGraph:
     def finish_slope(
         self,
         segment_ids: list[str],
-        name: Optional[str] = None,
-    ) -> Optional[Slope]:
+        name: str | None = None,
+        *,
+        record_undo: bool = True,
+    ) -> Slope | None:
         """Finish a slope by grouping segments.
 
         Args:
             segment_ids: List of segment IDs to group
             name: Optional custom name (generates creative name if None)
+            record_undo: Push a FinishSlopeAction. False when a batch (OSM import) owns the undo.
 
         Returns:
             Created Slope or None if invalid.
@@ -527,14 +446,15 @@ class ResortGraph:
         for seg_id in segment_ids:
             self.segments[seg_id].name = name
         logger.info(f"Slope finished: {name}, {len(segment_ids)} segments, difficulty={difficulty}")
-        self._push_undo(
-            FinishSlopeAction(
-                slope_id=slope_id,
-                segment_ids=tuple(segment_ids),
-                slope_name=name,
-                start_node_id=first_seg.start_node_id,
+        if record_undo:
+            self._push_undo(
+                FinishSlopeAction(
+                    slope_id=slope_id,
+                    segment_ids=tuple(segment_ids),
+                    slope_name=name,
+                    start_node_id=first_seg.start_node_id,
+                )
             )
-        )
         return slope
 
     # =========================================================================
@@ -544,8 +464,8 @@ class ResortGraph:
     def finish_road(
         self,
         segment_ids: list[str],
-        name: Optional[str] = None,
-    ) -> Optional[Road]:
+        name: str | None = None,
+    ) -> Road | None:
         """Group committed segments into a vehicle Road.
 
         Records a FinishRoadAction (mirrors finish_slope): undo ungroups the road
@@ -633,6 +553,9 @@ class ResortGraph:
         end_node_id: str,
         lift_type: str,
         dem: "DEMService",
+        name: str | None = None,
+        *,
+        record_undo: bool = True,
     ) -> Lift:
         """Add a lift between two nodes.
 
@@ -641,6 +564,8 @@ class ResortGraph:
             end_node_id: ID of top station
             lift_type: Type of lift
             dem: DEM service for terrain sampling
+            name: Optional custom name (Lift.create generates a creative name if None)
+            record_undo: Push an AddLiftAction. False when a batch (OSM import) owns the undo.
 
         Returns:
             Created Lift.
@@ -660,11 +585,209 @@ class ResortGraph:
             lift_type=lift_type,
             lift_id=lift_id,
         )
+        if name is not None:
+            lift.name = name
 
         self.lifts[lift_id] = lift
-        self._push_undo(AddLiftAction(lift_id=lift_id))
+        if record_undo:
+            self._push_undo(AddLiftAction(lift_id=lift_id))
 
         return lift
+
+    def import_osm(
+        self,
+        pistes: list[tuple[list[PathPoint], str | None]],
+        lifts: list[tuple[PathPoint, PathPoint, str, str | None]],
+        dem: "DEMService",
+    ) -> OSMImportResult:
+        """Add a batch of OSM-derived pistes and lifts as ONE undoable unit.
+
+        Each piste (its DEM-sampled points + optional name) is committed and finished as a slope;
+        each lift (bottom station, top station, lift type, optional name) becomes a lift with
+        regenerated pylons. All individual undo entries are suppressed and replaced by a single
+        ImportOSMAction, so one undo removes the entire import. Nodes the import newly creates are
+        tracked and removed on undo; nodes it reuses (shared with pre-existing entities) are left alone.
+
+        Re-import is idempotent AND source-agnostic: an incoming piste/lift is skipped (counted as
+        a duplicate) if the graph ALREADY contains an entity with the same endpoint fingerprint.
+
+        Args:
+            pistes: (points, name) per downhill run — points already DEM-sampled by the importer.
+            lifts: (bottom, top, lift_type, name) per lift — stations already DEM-sampled.
+            dem: DEM service for lift terrain sampling / pylon placement.
+
+        Returns:
+            OSMImportResult(slopes_added, lifts_added, duplicates_skipped).
+        """
+        nodes_before = set(self.nodes)
+        slope_ids: list[str] = []
+        lift_ids: list[str] = []
+        segment_ids: list[str] = []
+        duplicates = 0
+
+        for points, name in pistes:
+            if self.has_endpoint_duplicate(a=points[0], b=points[-1]):
+                duplicates += 1
+                continue
+            proposal = ProposedPathSegment(points=points, kind=SegmentKind.SLOPE)
+            segments_before = set(self.segments)
+            self.commit_paths(paths=[proposal], record_undo=False)
+            # commit_paths returns endpoint node ids, not segment ids; a single proposal
+            # creates exactly one segment, so the tuple-unpack both finds and asserts it.
+            (seg_id,) = (sid for sid in self.segments if sid not in segments_before)
+            segment_ids.append(seg_id)
+            slope = self.finish_slope(segment_ids=[seg_id], name=name, record_undo=False)
+            if slope is not None:
+                slope_ids.append(slope.id)
+
+        for bottom, top, lift_type, lift_name in lifts:
+            if self.has_endpoint_duplicate(a=bottom, b=top):
+                duplicates += 1
+                continue
+            start, _ = self.get_or_create_node(lon=bottom.lon, lat=bottom.lat, elevation=bottom.elevation)
+            end, _ = self.get_or_create_node(lon=top.lon, lat=top.lat, elevation=top.elevation)
+            lift = self.add_lift(
+                start_node_id=start.id,
+                end_node_id=end.id,
+                lift_type=lift_type,
+                dem=dem,
+                name=lift_name,
+                record_undo=False,
+            )
+            lift_ids.append(lift.id)
+
+        created_node_ids = tuple(nid for nid in self.nodes if nid not in nodes_before)
+        self._push_undo(
+            ImportOSMAction(
+                slope_ids=tuple(slope_ids),
+                lift_ids=tuple(lift_ids),
+                segment_ids=tuple(segment_ids),
+                node_ids=created_node_ids,
+            )
+        )
+        logger.info(
+            f"OSM import: {len(slope_ids)} slopes, {len(lift_ids)} lifts, "
+            f"{len(created_node_ids)} new nodes, {duplicates} duplicates skipped"
+        )
+        return OSMImportResult(slopes_added=len(slope_ids), lifts_added=len(lift_ids), duplicates_skipped=duplicates)
+
+    def has_endpoint_duplicate(self, a: PathPoint, b: PathPoint) -> bool:
+        """True if an existing slope or lift already spans endpoints `a` and `b`.
+
+        Direct geometric comparison against each stored entity's endpoints (endpoints_match, within
+        STEP_SIZE_M — the import snap distance). No coordinate rounding or shared-node lookup, so it
+        stays correct where many runs cluster around one junction. Used to skip re-importing a run
+        the graph already has (whether imported earlier or built by hand).
+        """
+        tol = GeometricTuningConfig.STEP_SIZE_M
+        pair = (a, b)
+        slope_match = any(
+            endpoints_match(pair_a=pair, pair_b=slope.endpoints(nodes=self.nodes), tol_m=tol)
+            for slope in self.slopes.values()
+        )
+        lift_match = any(
+            endpoints_match(pair_a=pair, pair_b=lift.endpoints(nodes=self.nodes), tol_m=tol)
+            for lift in self.lifts.values()
+        )
+        return slope_match or lift_match
+
+    def max_node_span_m(self, node_ids: list[str]) -> float:
+        """Largest pairwise distance (m) among the given nodes; 0 for fewer than two."""
+        pts = [self.nodes[nid] for nid in node_ids]
+        return max(
+            (a.distance_to(lon=b.lon, lat=b.lat) for i, a in enumerate(pts) for b in pts[i + 1 :]),
+            default=0.0,
+        )
+
+    def merge_nodes(self, node_ids: list[str], dem: "DEMService") -> None:
+        """Collapse several nodes into one, at their median lat/lon (elevation re-sampled from DEM).
+
+        The survivor (first id) moves to the median point; every segment/lift endpoint on the other
+        nodes is repointed onto it, then the others are deleted. ONE undoable MergeNodesAction.
+
+        Raises:
+            ValueError: fewer than two nodes, or any pair farther apart than MergeConfig.MAX_SPAN_M
+                (the caller should pre-check via max_node_span_m to show a friendly message).
+        """
+        if len(node_ids) < 2:
+            raise ValueError(f"merge_nodes needs at least two nodes, got {len(node_ids)}")
+        if self.max_node_span_m(node_ids) > MergeConfig.MAX_SPAN_M:
+            raise ValueError(f"nodes span more than {MergeConfig.MAX_SPAN_M:.0f}m apart — refusing to merge")
+
+        survivor_id, merged_ids = node_ids[0], node_ids[1:]
+        survivor = self.nodes[survivor_id]
+        survivor_before = Node(id=survivor.id, location=survivor.location)
+        merged = set(merged_ids)
+        # The survivor moves to the median too, so a builder touching ANY of the selected nodes
+        # (survivor included) needs re-stitching — not just those on the merged-away nodes.
+        touched = set(node_ids)
+
+        # Which builders touch the selected nodes — snapshot them BEFORE any mutation so undo can
+        # restore their exact pre-merge state (all mutated in place below).
+        affected_segments = [
+            s for s in self.segments.values() if s.start_node_id in touched or s.end_node_id in touched
+        ]
+        affected_lifts = [ln for ln in self.lifts.values() if ln.start_node_id in touched or ln.end_node_id in touched]
+        # Slopes/roads store their own boundary node ids (mirroring their first/last segment), so a
+        # merge that repoints those nodes must repoint the entity boundary too.
+        affected_paths: list[SegmentPath] = [
+            p
+            for p in (*self.slopes.values(), *self.roads.values())
+            if p.start_node_id in touched or p.end_node_id in touched
+        ]
+        segments_before = tuple(copy.deepcopy(s) for s in affected_segments)
+        lifts_before = tuple(copy.deepcopy(ln) for ln in affected_lifts)
+        paths_before = tuple(copy.deepcopy(p) for p in affected_paths)
+
+        # Repoint every segment / lift / slope / road endpoint on a merged-away node onto the survivor
+        # (one uniform rule for every id-holder — the same convention the whole model uses).
+        for seg in self.segments.values():
+            if seg.start_node_id in merged:
+                seg.start_node_id = survivor_id
+            if seg.end_node_id in merged:
+                seg.end_node_id = survivor_id
+        for lift in self.lifts.values():
+            if lift.start_node_id in merged:
+                lift.start_node_id = survivor_id
+            if lift.end_node_id in merged:
+                lift.end_node_id = survivor_id
+        for path in (*self.slopes.values(), *self.roads.values()):
+            if path.start_node_id in merged:
+                path.start_node_id = survivor_id
+            if path.end_node_id in merged:
+                path.end_node_id = survivor_id
+
+        # Move the survivor to the median point; drop the merged-away nodes.
+        deleted_nodes = tuple(self.nodes[nid] for nid in merged_ids)
+        lats = [self.nodes[nid].lat for nid in node_ids]
+        lons = [self.nodes[nid].lon for nid in node_ids]
+        med_lat, med_lon = statistics.median(lats), statistics.median(lons)
+        med_elev = dem.get_elevation(lon=med_lon, lat=med_lat)
+        if med_elev is None:
+            raise ValueError(f"median point ({med_lat:.5f}, {med_lon:.5f}) has no DEM elevation")
+        survivor.location = PathPoint(lon=med_lon, lat=med_lat, elevation=med_elev)
+        for nid in merged_ids:
+            del self.nodes[nid]
+        self.cleanup_isolated_nodes()
+
+        # Re-stitch every affected builder fresh from the moved endpoints (each model owns its
+        # recompute; a road is just segments with kind=ROAD, so no per-kind branch is needed).
+        for seg in affected_segments:
+            seg.restitch(start_node=self.nodes[seg.start_node_id], end_node=self.nodes[seg.end_node_id], dem=dem)
+        for lift in affected_lifts:
+            lift.rebuild(start_node=self.nodes[lift.start_node_id], end_node=self.nodes[lift.end_node_id], dem=dem)
+
+        self._push_undo(
+            MergeNodesAction(
+                survivor_id=survivor_id,
+                survivor_before=survivor_before,
+                deleted_nodes=deleted_nodes,
+                segments_before=segments_before,
+                lifts_before=lifts_before,
+                paths_before=paths_before,
+            )
+        )
+        logger.info(f"Merged {len(node_ids)} nodes into {survivor_id} at ({med_lat:.5f}, {med_lon:.5f})")
 
     # =========================================================================
     # Undo Operations
@@ -683,78 +806,23 @@ class ResortGraph:
             raise RuntimeError("undo_last called with empty undo_stack")
 
         action = self.undo_stack.pop()
-
-        # Dispatch via enum_eq (reload-safe): ActionType is a plain Enum and the undo_stack
-        # lives in st.session_state holding OLD-class references after a Streamlit reload,
-        # so plain-enum `is`/`==` would fail. enum_eq compares the stable string form.
-        action_type = action.action_type
-
-        if enum_eq(action_type, ActionType.ADD_SEGMENTS):
-            add_seg = cast(AddSegmentsAction, action)
-            for seg_id in add_seg.segment_ids:
-                self.segments.pop(seg_id, None)
-            self.cleanup_isolated_nodes()  # Remove orphaned nodes from segment removal
-
-        elif enum_eq(action_type, ActionType.ADD_LIFT):
-            add_lift = cast(AddLiftAction, action)
-            self.lifts.pop(add_lift.lift_id, None)
-            self.cleanup_isolated_nodes()  # Remove orphaned station nodes
-
-        elif enum_eq(action_type, ActionType.FINISH_SLOPE):
-            # Ungroup the slope but keep its segments; their own AddSegmentsAction
-            # entries handle per-segment removal on further undo.
-            finish = cast(FinishSlopeAction, action)
-            self.slopes.pop(finish.slope_id, None)
-            for seg_id in finish.segment_ids:
-                self.segments[seg_id].name = f"Segment {seg_id[1:]}"
-
-        elif enum_eq(action_type, ActionType.FINISH_ROAD):
-            # Mirror FINISH_SLOPE: ungroup the road, keep its segments.
-            finish_road = cast(FinishRoadAction, action)
-            self.roads.pop(finish_road.road_id, None)
-            for seg_id in finish_road.segment_ids:
-                self.segments[seg_id].name = f"Segment {seg_id[1:]}"
-
-        elif enum_eq(action_type, ActionType.DELETE_SLOPE):
-            del_slope = cast(DeleteSlopeAction, action)
-            # Restore orphaned nodes first (they're needed by segments)
-            for node in del_slope.deleted_nodes:
-                self.nodes[node.id] = node
-            # Restore deleted slope and its segments
-            self.slopes[del_slope.slope_id] = del_slope.deleted_slope
-            for seg in del_slope.deleted_segments:
-                self.segments[seg.id] = seg
-            logger.info(
-                f"Restored slope {del_slope.slope_id} with {len(del_slope.deleted_segments)} segments "
-                f"and {len(del_slope.deleted_nodes)} nodes"
-            )
-
-        elif enum_eq(action_type, ActionType.DELETE_LIFT):
-            del_lift = cast(DeleteLiftAction, action)
-            # Restore orphaned nodes first (they're needed by lift)
-            for node in del_lift.deleted_nodes:
-                self.nodes[node.id] = node
-            # Restore deleted lift
-            self.lifts[del_lift.lift_id] = del_lift.deleted_lift
-            logger.info(f"Restored lift {del_lift.lift_id} with {len(del_lift.deleted_nodes)} nodes")
-
-        elif enum_eq(action_type, ActionType.DELETE_ROAD):
-            del_road = cast(DeleteRoadAction, action)
-            # Restore orphaned nodes first (they're needed by segments)
-            for node in del_road.deleted_nodes:
-                self.nodes[node.id] = node
-            self.roads[del_road.road_id] = del_road.deleted_road
-            for seg in del_road.deleted_segments:
-                self.segments[seg.id] = seg
-            logger.info(
-                f"Restored road {del_road.road_id} with {len(del_road.deleted_segments)} segments "
-                f"and {len(del_road.deleted_nodes)} nodes"
-            )
-
-        else:
-            raise RuntimeError(f"Unknown action type in undo_last: {action_type}")
-
+        # Dispatch via the UNDO_HANDLERS registry keyed by ActionType.name.
+        UNDO_HANDLERS[action.action_type.name].apply_undo(self, action)
         return action
+
+    def rename(self, entity_id: str, new_name: str) -> None:
+        """Rename a slope, lift, or road by id (and its segments, for segment-path entities).
+
+        Ids are uniquely prefixed (SL/L/R), so no kind is needed. Slopes and roads also rename their
+        segments — finish_slope/finish_road set segment names, and the elevation profile shows them.
+        """
+        entity = self.slopes.get(entity_id) or self.roads.get(entity_id) or self.lifts.get(entity_id)
+        if entity is None:
+            raise KeyError(f"No slope/lift/road with id {entity_id}")
+        entity.name = new_name
+        if isinstance(entity, SegmentPath):
+            for seg_id in entity.segment_ids:
+                self.segments[seg_id].name = new_name
 
     def delete_slope(self, slope_id: str) -> bool:
         """Delete a slope and its segments.
@@ -825,7 +893,7 @@ class ResortGraph:
     # Query Operations
     # =========================================================================
 
-    def get_slope_by_segment_id(self, segment_id: str) -> Optional[Slope]:
+    def get_slope_by_segment_id(self, segment_id: str) -> Slope | None:
         """Find the slope containing a given segment.
         Not applicabale for roads, as they have no segements.
 
@@ -840,7 +908,7 @@ class ResortGraph:
                 return slope
         return None
 
-    def get_segment_stats(self, segment_ids: list[str]) -> dict[str, Any]:
+    def get_segment_stats(self, segment_ids: list[str]) -> SegmentStats:
         """Get statistics for specific segments (used for running stats during building).
 
         Args:
@@ -850,7 +918,7 @@ class ResortGraph:
             Dict with: total_drop, total_length, avg_gradient, max_gradient, difficulty, start_elev, current_elev
             All numeric values are guaranteed non-None (defaults to 0.0 if segments not found).
         """
-        default_stats = {
+        default_stats: SegmentStats = {
             "total_drop": 0.0,
             "total_length": 0.0,
             "avg_gradient": 0.0,
@@ -897,7 +965,7 @@ class ResortGraph:
             "current_elev": current_elev,
         }
 
-    def get_stats(self) -> dict[str, Any]:
+    def get_stats(self) -> ResortStats:
         """Get resort statistics."""
         if not self.segments:
             return {
@@ -917,11 +985,9 @@ class ResortGraph:
         longest = 0.0
         for slope in self.slopes.values():
             slope_length = slope.get_total_length(segments=self.segments)
-            if slope_length > longest:
-                longest = slope_length
+            longest = max(slope_length, longest)
         for seg in self.segments.values():
-            if seg.length_m > longest:
-                longest = seg.length_m
+            longest = max(seg.length_m, longest)
 
         total_road_length = sum(road.get_total_length(segments=self.segments) for road in self.roads.values())
 
@@ -1006,7 +1072,7 @@ class ResortGraph:
     # Serialization
     # =========================================================================
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         """Serialize entire graph to JSON-compatible dict."""
         return {
             "version": "2.0",
@@ -1025,32 +1091,37 @@ class ResortGraph:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "ResortGraph":
+    def from_dict(cls, data: dict[str, object]) -> "ResortGraph":
         """Deserialize graph from dict."""
         graph = cls()
 
-        for nid, node_data in data["nodes"].items():
+        nodes = cast(dict[str, dict[str, object]], data["nodes"])
+        for nid, node_data in nodes.items():
             graph.nodes[nid] = Node.from_dict(data=node_data)
 
-        for sid, seg_data in data["segments"].items():
+        segments = cast(dict[str, dict[str, object]], data["segments"])
+        for sid, seg_data in segments.items():
             graph.segments[sid] = PathSegment.from_dict(data=seg_data)
 
-        for slid, slope_data in data["slopes"].items():
+        slopes = cast(dict[str, dict[str, object]], data["slopes"])
+        for slid, slope_data in slopes.items():
             graph.slopes[slid] = Slope.from_dict(data=slope_data)
 
-        for lid, lift_data in data["lifts"].items():
+        lifts = cast(dict[str, dict[str, object]], data["lifts"])
+        for lid, lift_data in lifts.items():
             graph.lifts[lid] = Lift.from_dict(data=lift_data)
 
         # Roads were added after the first backups shipped, so a pre-roads
         # backup has no "roads" key — default to empty
-        for rid, road_data in data.get("roads", {}).items():
+        roads = cast(dict[str, dict[str, object]], data.get("roads", {}))
+        for rid, road_data in roads.items():
             graph.roads[rid] = Road.from_dict(data=road_data)
 
         # A road-owned segment MUST be kind=ROAD; fail loudly rather than mis-render it as a slope.
         for road in graph.roads.values():
             for seg_id in road.segment_ids:
                 seg = graph.segments.get(seg_id)
-                assert seg is not None and enum_eq(seg.kind, SegmentKind.ROAD), (
+                assert seg is not None and enum_eq(a=seg.kind, b=SegmentKind.ROAD), (
                     f"road {road.id} owns segment {seg_id} with kind "
                     f"{seg.kind if seg else 'MISSING'} — expected ROAD (corrupt/stale save)"
                 )
@@ -1069,7 +1140,7 @@ class ResortGraph:
                 del graph.segments[sid]
             graph.cleanup_isolated_nodes()
 
-        counters = data["counters"]
+        counters = cast(dict[str, int], data["counters"])
         graph._node_counter = counters["node"]
         graph._segment_counter = counters["segment"]
         graph._slope_counter = counters["slope"]

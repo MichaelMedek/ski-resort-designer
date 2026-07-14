@@ -4,10 +4,17 @@ Tests that resort graphs can be saved and loaded without data loss.
 """
 
 import json
-import tempfile
-from pathlib import Path
+import xml.etree.ElementTree as ET
 
 from skiresort_planner.enum_utils import enum_eq
+
+
+def _child_text(element: ET.Element, tag: str) -> str:
+    """Return the text of a required child element, asserting it exists and is non-empty."""
+    child = element.find(tag)
+    assert child is not None, f"expected child <{tag}>"
+    assert child.text is not None, f"<{tag}> must have text"
+    return child.text
 
 
 class TestResortGraphSerialization:
@@ -89,43 +96,56 @@ class TestResortGraphSerialization:
         assert abs(restored_segment.points[0].lat - orig_first_point.lat) < 0.0001
         assert abs(restored_segment.points[0].elevation - orig_first_point.elevation) < 0.1
 
+    def test_endpoints_survive_roundtrip_keeping_reimport_idempotent(self, empty_graph, mock_dem_blue_slope) -> None:
+        """Endpoints are derived from nodes (which serialize), so duplicate detection still works
+        after save/load — a re-import into the reloaded graph adds nothing.
+        """
+        from skiresort_planner.model.path_point import PathPoint, endpoints_match
+        from skiresort_planner.model.resort_graph import ResortGraph
 
-class TestFileSaveLoad:
-    """Tests for file-based save/load operations."""
+        m = 111320.0
+        dem = mock_dem_blue_slope
+        piste = (
+            [
+                PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
+                PathPoint(lon=0.0, lat=-500 / m, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / m)),
+            ],
+            "Run",
+        )
+        lift = (
+            PathPoint(lon=0.02, lat=-500 / m, elevation=dem.get_elevation_or_raise(lon=0.02, lat=-500 / m)),
+            PathPoint(lon=0.02, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.02, lat=0.0)),
+            "chairlift",
+            None,
+        )
+        empty_graph.import_osm(pistes=[piste], lifts=[lift], dem=dem)
+        orig_slope_ends = list(empty_graph.slopes.values())[0].endpoints(nodes=empty_graph.nodes)
 
-    def test_save_and_load_from_file(self, empty_graph, path_points_blue) -> None:
-        """ResortGraph can be serialized to JSON file and loaded back using to_dict/from_dict."""
-        import json
+        restored = ResortGraph.from_dict(data=json.loads(json.dumps(empty_graph.to_dict())))
 
+        restored_slope_ends = list(restored.slopes.values())[0].endpoints(nodes=restored.nodes)
+        assert endpoints_match(pair_a=orig_slope_ends, pair_b=restored_slope_ends, tol_m=0.001)
+        # A re-import into the reloaded graph is still fully deduped.
+        _s, _l, duplicates = restored.import_osm(pistes=[piste], lifts=[lift], dem=dem)
+        assert duplicates == 2
+
+    def test_custom_name_survives_roundtrip(self, empty_graph, path_points_blue) -> None:
+        """A user's rename persists through to_dict → from_dict (issue #12)."""
         from skiresort_planner.model.proposed_path import ProposedPathSegment
         from skiresort_planner.model.resort_graph import ResortGraph
 
         graph = empty_graph
-        proposal = ProposedPathSegment(
-            points=path_points_blue,
-            target_slope_pct=20.0,
-            target_difficulty="blue",
-            sector_name="Test",
-        )
-        graph.commit_paths(paths=[proposal])
-        segment_ids = list(graph.segments.keys())
-        graph.finish_slope(segment_ids=segment_ids, name="File Test Slope")
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        graph.rename(entity_id=slope.id, new_name="My Favourite Run")
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            filepath = Path(f.name)
-            # Manual save via to_dict + JSON
-            json.dump(graph.to_dict(), f)
+        restored = ResortGraph.from_dict(data=json.loads(json.dumps(graph.to_dict())))
 
-        try:
-            with open(filepath, "r") as f:
-                data = json.load(f)
-            loaded = ResortGraph.from_dict(data=data)
+        assert restored.slopes[slope.id].name == "My Favourite Run"
 
-            assert len(loaded.nodes) == len(graph.nodes)
-            assert len(loaded.segments) == len(graph.segments)
-            assert len(loaded.slopes) == len(graph.slopes)
-        finally:
-            filepath.unlink()  # Clean up
+
+class TestFileSaveLoad:
+    """Tests for file-based save/load operations."""
 
     def test_reload_then_continue_building_reuses_node_and_ids(self, empty_graph, path_points_blue) -> None:
         """Save → reload → keep building: a real multi-session resume. The new slope must
@@ -205,6 +225,28 @@ class TestLiftSerialization:
         restored_lift = list(restored.lifts.values())[0]
         assert len(restored_lift.pylons) == orig_pylon_count, "Pylon count should match"
 
+        # Identity + type survive the roundtrip.
+        assert restored_lift.lift_type == "chairlift"
+        assert restored_lift.start_node_id == "N1"
+        assert restored_lift.end_node_id == "N2"
+
+        # First pylon survives field-by-field (asdict -> Pylon(**)).
+        assert orig_pylon_count > 0, "a chairlift over this terrain must place pylons"
+        orig_pylon = lift.pylons[0]
+        restored_pylon = restored_lift.pylons[0]
+        assert restored_pylon.index == orig_pylon.index
+        assert abs(restored_pylon.distance_m - orig_pylon.distance_m) < 1e-6
+        assert abs(restored_pylon.lat - orig_pylon.lat) < 1e-9
+        assert abs(restored_pylon.lon - orig_pylon.lon) < 1e-9
+        assert abs(restored_pylon.ground_elevation_m - orig_pylon.ground_elevation_m) < 1e-6
+        assert abs(restored_pylon.height_m - orig_pylon.height_m) < 1e-6
+
+        # Cable points survive (length + first point coordinates).
+        assert len(restored_lift.cable_points) == len(lift.cable_points)
+        assert abs(restored_lift.cable_points[0].lon - lift.cable_points[0].lon) < 1e-9
+        assert abs(restored_lift.cable_points[0].lat - lift.cable_points[0].lat) < 1e-9
+        assert abs(restored_lift.cable_points[0].elevation - lift.cable_points[0].elevation) < 0.1
+
 
 class TestGPXExport:
     """Tests for the 'Export GPX' user action (ResortGraph.to_gpx)."""
@@ -244,7 +286,7 @@ class TestGPXExport:
         tracks = root.findall(f"{ns}trk")
         assert len(tracks) == 2, "one track for the slope + one for the lift"
 
-        types = {t.find(f"{ns}type").text for t in tracks}
+        types = {_child_text(t, f"{ns}type") for t in tracks}
         assert any(t.startswith("slope_") for t in types)
         assert any(t.startswith("lift_") for t in types)
 
@@ -278,9 +320,9 @@ class TestGPXExport:
 
         root = ET.fromstring(empty_graph.to_gpx())
         ns = "{http://www.topografix.com/GPX/1/1}"
-        road_tracks = [t for t in root.findall(f"{ns}trk") if t.find(f"{ns}type").text == "road"]
+        road_tracks = [t for t in root.findall(f"{ns}trk") if _child_text(t, f"{ns}type") == "road"]
         assert len(road_tracks) == 1, "the road must be exported as a GPX track"
-        assert road_tracks[0].find(f"{ns}name").text == road.name
+        assert _child_text(road_tracks[0], f"{ns}name") == road.name
         pts = road_tracks[0].findall(f"{ns}trkseg/{ns}trkpt")
         assert pts and pts[0].find(f"{ns}ele") is not None
 
@@ -305,7 +347,7 @@ class TestRoadSerialization:
         assert restored.roads[road.id].name == road.name
         assert restored._road_counter == empty_graph._road_counter
         # The segment's road kind survives the round-trip (persisted, not recomputed).
-        assert enum_eq(restored.segments[road_seg_id].kind, SegmentKind.ROAD)
+        assert enum_eq(a=restored.segments[road_seg_id].kind, b=SegmentKind.ROAD)
 
     def test_road_owned_slope_kind_segment_raises(self, empty_graph, path_points_blue) -> None:
         """A road owning a kind=SLOPE segment (corrupt/stale save) fails loudly on load."""

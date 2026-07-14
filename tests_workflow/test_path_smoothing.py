@@ -31,10 +31,12 @@ def _min_curvature_radius_m(points: list[PathPoint]) -> float:
     dx, dy = splev(uu, tck, der=1)
     ddx, ddy = splev(uu, tck, der=2)
     radii = [(dx[i] ** 2 + dy[i] ** 2) ** 1.5 / max(abs(dx[i] * ddy[i] - dy[i] * ddx[i]), 1e-9) for i in range(len(uu))]
-    return min(radii)
+    return float(min(radii))
 
 
-def _leg(start_lon: float, start_lat: float, d_lon: float, d_lat: float, n: int, z0: float, dz: float) -> list:
+def _leg(
+    start_lon: float, start_lat: float, d_lon: float, d_lat: float, n: int, z0: float, dz: float
+) -> list[PathPoint]:
     """A straight leg of n points stepping (d_lon, d_lat) per point, elevation z0 + i*dz."""
     return [PathPoint(lon=start_lon + d_lon * i, lat=start_lat + d_lat * i, elevation=z0 + dz * i) for i in range(n)]
 
@@ -184,6 +186,25 @@ class TestSmoothJoinedPath:
         b = [PathPoint(lon=1 / M, lat=0.0, elevation=1999.0), PathPoint(lon=2 / M, lat=0.0, elevation=1998.0)]
         out = _smooth([a, b], [a[0], a[-1], b[-1]])
         assert out == [a, b]
+
+    def test_elevation_smoothed_within_raw_band_and_junction_near_node(self) -> None:
+        # The spline's 3rd dimension (elevation) must survive smoothing: a regression that
+        # dropped/zeroed Z would push points far outside the raw descent band. On _sharp_L_path
+        # both legs descend 0.5m/point, so raw elevation runs 2100.0 -> 2071.0.
+        segs = _sharp_L_path()
+        anchors = _anchors(segs)
+        raw = segs[0] + segs[1][1:]
+        raw_min = min(p.elevation for p in raw)
+        raw_max = max(p.elevation for p in raw)
+        out = _smooth(segs, anchors)
+        ribbon = out[0] + out[1][1:]
+        for p in ribbon:
+            assert raw_min - 1.0 <= p.elevation <= raw_max + 1.0, (
+                f"smoothed elevation {p.elevation:.2f} left the raw band "
+                f"[{raw_min:.1f}, {raw_max:.1f}] — is the spline's 3rd dimension dropped?"
+            )
+        # The heavily-weighted junction node keeps its elevation (anchors[1] == seg1 end = 2085.5).
+        assert abs(out[0][-1].elevation - anchors[1].elevation) < 2.0, "junction elevation stays near its node"
 
 
 class TestResampleCubicSpline:

@@ -10,7 +10,7 @@ Reference: DETAILS.md
 """
 
 from dataclasses import dataclass
-from typing import Any
+from typing import cast
 
 from skiresort_planner.model.path_point import PathPoint
 
@@ -75,11 +75,11 @@ class Node:
         return self.location.distance_to(other=target)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Node":
+    def from_dict(cls, data: dict[str, object]) -> "Node":
         """Create Node from dictionary."""
         return cls(
-            id=data["id"],
-            location=PathPoint(**data["location"]),
+            id=cast(str, data["id"]),
+            location=PathPoint(**cast(dict[str, float], data["location"])),
         )
 
     def __repr__(self) -> str:

@@ -20,7 +20,7 @@ Reference: DETAILS_UI.md for interaction patterns
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import pydeck as pdk
 
@@ -32,12 +32,16 @@ from skiresort_planner.constants import (
 )
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.enum_utils import enum_eq
+from skiresort_planner.generators.osm_importer import bbox_around
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 
 if TYPE_CHECKING:
     from skiresort_planner.core.terrain_analyzer import TerrainOrientation
+    from skiresort_planner.model.lift import Lift
+    from skiresort_planner.model.road import Road
+    from skiresort_planner.model.slope import Slope
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +156,7 @@ class MapRenderer:
         self,
         proposals: list[ProposedPathSegment] | None = None,
         selected_proposal_idx: int | None = None,
+        *,
         show_nodes: bool = True,
         show_segments: bool = True,
         show_lifts: bool = True,
@@ -160,6 +165,7 @@ class MapRenderer:
         extra_layers: list[pdk.Layer] | None = None,
         terrain_layer: pdk.Layer | None = None,
         use_3d: bool = False,
+        merge_node_ids: list[str] | None = None,
     ) -> pdk.Deck:
         """Render complete map with all layers.
 
@@ -174,6 +180,7 @@ class MapRenderer:
             extra_layers: Additional layers to include (markers always on top)
             terrain_layer: Pre-generated terrain elevation layer (BitmapLayer)
             use_3d: If True, render with 3D terrain elevations. If False, flat 2D at z=0.
+            merge_node_ids: Node ids currently selected for merging — drawn RED.
 
         Returns:
             pdk.Deck object ready for display.
@@ -193,7 +200,7 @@ class MapRenderer:
                 layer_collection.lifts.extend(lift_layers["cables_icons"])
 
             if show_nodes:
-                layer_collection.nodes.append(self._create_node_layer(use_3d=use_3d))
+                layer_collection.nodes.append(self._create_node_layer(use_3d=use_3d, merge_node_ids=merge_node_ids))
 
             if show_segments:
                 # One shared loop builds slope + road layers, returned in
@@ -242,7 +249,7 @@ class MapRenderer:
     # =========================================================================
 
     @staticmethod
-    def _get_z(elevation: float, z_offset: float, use_3d: bool, flat_z: float = 0.0) -> float:
+    def _get_z(elevation: float, z_offset: float, *, use_3d: bool, flat_z: float = 0.0) -> float:
         """Get z-coordinate based on view mode.
 
         Args:
@@ -309,7 +316,7 @@ class MapRenderer:
     @staticmethod
     def _calculate_3d_view_for_entity(
         graph: ResortGraph,
-        entity: Any,
+        entity: "Slope | Road | Lift",
         label: str,
     ) -> tuple[float, float, float, int, float]:
         """Side-view camera for any start/end-node entity (slope, road, or lift).
@@ -378,7 +385,7 @@ class MapRenderer:
     # =========================================================================
 
     def _create_segment_layers(
-        self, highlight_ids: list[str] | None = None, use_3d: bool = False
+        self, highlight_ids: list[str] | None = None, *, use_3d: bool = False
     ) -> dict[str, list[pdk.Layer]]:
         """Create belt/center-line/icon layers for slopes AND roads in one pass.
 
@@ -404,8 +411,8 @@ class MapRenderer:
         # One record per segment, sorted into its owner's bucket by segment.kind.
         # Roads are flat brown; slopes are difficulty-colored. In-build segments
         # (no finished Slope/Road yet) stay segment-typed for clicks.
-        slope_records: list[dict] = []
-        road_records: list[dict] = []
+        slope_records: list[dict[str, object]] = []
+        road_records: list[dict[str, object]] = []
 
         for seg_id, segment in self.graph.segments.items():
             polygon_coords = segment.get_belt_polygon()
@@ -414,14 +421,25 @@ class MapRenderer:
                 raise RuntimeError(f"Segment {seg_id} produced an empty belt polygon")
 
             # enum_eq: reload-safe (Streamlit rebuilds the SegmentKind class).
-            is_road = enum_eq(segment.kind, SegmentKind.ROAD)
+            is_road = enum_eq(a=segment.kind, b=SegmentKind.ROAD)
             flat_z = MapConfig.Z_OFFSET_2D_LIFTS if is_road else MapConfig.Z_OFFSET_2D_SLOPES
             center_line = [
-                [p.lon, p.lat, self._get_z(p.elevation, MarkerConfig.PATH_Z_OFFSET_M, use_3d, flat_z)]
+                [
+                    p.lon,
+                    p.lat,
+                    self._get_z(
+                        elevation=p.elevation, z_offset=MarkerConfig.PATH_Z_OFFSET_M, use_3d=use_3d, flat_z=flat_z
+                    ),
+                ]
                 for p in segment.points
             ]
             mid_pt = segment.points[len(segment.points) // 2]
-            icon_z = self._get_z(mid_pt.elevation, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, MapConfig.Z_OFFSET_2D_ICONS)
+            icon_z = self._get_z(
+                elevation=mid_pt.elevation,
+                z_offset=MarkerConfig.MARKER_Z_OFFSET_M,
+                use_3d=use_3d,
+                flat_z=MapConfig.Z_OFFSET_2D_ICONS,
+            )
             icon_position = [mid_pt.lon, mid_pt.lat, icon_z]
 
             if is_road:
@@ -490,7 +508,7 @@ class MapRenderer:
             "roads": self._build_path_layers(road_records, id_prefix="roads", use_3d=use_3d),
         }
 
-    def _build_path_layers(self, records: list[dict], id_prefix: str, use_3d: bool) -> list[pdk.Layer]:
+    def _build_path_layers(self, records: list[dict[str, object]], id_prefix: str, *, use_3d: bool) -> list[pdk.Layer]:
         """Build belt/center-line/icon layers from segment records.
 
         Shared by slopes and roads so both render identically (belt polygon in
@@ -567,7 +585,7 @@ class MapRenderer:
     # LIFT LAYERS
     # =========================================================================
 
-    def _create_lift_layers(self, use_3d: bool = False) -> dict[str, list[pdk.Layer]]:
+    def _create_lift_layers(self, *, use_3d: bool = False) -> dict[str, list[pdk.Layer]]:
         """Create layers for lift cables, pylons, and icons.
 
         Args:
@@ -598,7 +616,12 @@ class MapRenderer:
                 [
                     pt.lon,
                     pt.lat,
-                    self._get_z(pt.elevation, MarkerConfig.PATH_Z_OFFSET_M, use_3d, MapConfig.Z_OFFSET_2D_LIFTS),
+                    self._get_z(
+                        elevation=pt.elevation,
+                        z_offset=MarkerConfig.PATH_Z_OFFSET_M,
+                        use_3d=use_3d,
+                        flat_z=MapConfig.Z_OFFSET_2D_LIFTS,
+                    ),
                 ]
                 for pt in lift.cable_points
             ]
@@ -617,7 +640,10 @@ class MapRenderer:
             # Pylon markers at top of each pylon
             for i, pylon in enumerate(lift.pylons):
                 pylon_z = self._get_z(
-                    pylon.top_elevation_m, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, MapConfig.Z_OFFSET_2D_PYLONS
+                    elevation=pylon.top_elevation_m,
+                    z_offset=MarkerConfig.MARKER_Z_OFFSET_M,
+                    use_3d=use_3d,
+                    flat_z=MapConfig.Z_OFFSET_2D_PYLONS,
                 )
                 pylon_data.append(
                     {
@@ -634,7 +660,12 @@ class MapRenderer:
             mid_lat = (start_node.lat + end_node.lat) / 2
             mid_lon = (start_node.lon + end_node.lon) / 2
             mid_elev = (start_node.elevation + end_node.elevation) / 2
-            icon_z = self._get_z(mid_elev, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, MapConfig.Z_OFFSET_2D_ICONS)
+            icon_z = self._get_z(
+                elevation=mid_elev,
+                z_offset=MarkerConfig.MARKER_Z_OFFSET_M,
+                use_3d=use_3d,
+                flat_z=MapConfig.Z_OFFSET_2D_ICONS,
+            )
             icon_data.append(
                 {
                     "type": ClickConfig.TYPE_LIFT,
@@ -702,7 +733,7 @@ class MapRenderer:
     # NODE LAYER
     # =========================================================================
 
-    def _create_node_layer(self, use_3d: bool = False) -> pdk.Layer:
+    def _create_node_layer(self, *, use_3d: bool = False, merge_node_ids: list[str] | None = None) -> pdk.Layer:
         """Create layer for junction nodes.
 
         A node that is also a **parking node** (a road junction shared with a
@@ -710,8 +741,13 @@ class MapRenderer:
         with a "Parking place" tooltip — the parking marker IS the node marker,
         so it's always visible and hoverable (no separate under-layer).
 
+        A node in `merge_node_ids` (selected in the node-merge tool) renders RED and bigger, so the
+        user sees exactly which nodes will collapse. Merge-selection takes priority over the parking
+        style (a selected parking node still shows red while selected).
+
         Args:
             use_3d: If True, use terrain elevation. If False, use z-offset.
+            merge_node_ids: Node ids selected for merging (drawn red).
 
         Returns:
             ScatterplotLayer with nodes; per-point color/radius/name.
@@ -720,10 +756,26 @@ class MapRenderer:
             return pdk.Layer("ScatterplotLayer", [], id="nodes")
 
         parking_ids = {n.id for n in self.graph.get_parking_nodes()}
+        merge_ids = set(merge_node_ids or [])
 
         node_data = []
         for node_id, node in self.graph.nodes.items():
             is_parking = node_id in parking_ids
+            is_merge_selected = node_id in merge_ids
+            is_big = is_merge_selected or is_parking
+            if is_merge_selected:
+                color = list(StyleConfig.MERGE_SELECTED_RGBA)
+                name = f"{StyleConfig.MERGE_ICON} Selected to merge — {node_id}"
+            elif is_parking:
+                color = list(StyleConfig.PARKING_COLOR_RGBA)
+                name = f"{StyleConfig.PARKING_ICON} Parking place — {node_id}"
+            else:
+                color = list(MarkerConfig.NODE_MARKER_COLOR)
+                name = f"Node {node_id}"
+            # A big node (merge-red or parking-blue) sits one step below plain nodes so the smaller
+            # plain nodes stay on top and clickable where markers overlap in a cluster.
+            radius = ClickConfig.NODE_MARKER_RADIUS_BIG if is_big else ClickConfig.NODE_MARKER_RADIUS
+            flat_z = MapConfig.Z_OFFSET_2D_NODE_BIG if is_big else MapConfig.Z_OFFSET_2D_NODES
             node_data.append(
                 {
                     "type": ClickConfig.TYPE_NODE,
@@ -732,17 +784,16 @@ class MapRenderer:
                         node.lon,
                         node.lat,
                         self._get_z(
-                            node.elevation, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, MapConfig.Z_OFFSET_2D_NODES
+                            elevation=node.elevation,
+                            z_offset=MarkerConfig.MARKER_Z_OFFSET_M,
+                            use_3d=use_3d,
+                            flat_z=flat_z,
                         ),
                     ],
                     "elevation": node.elevation,
-                    "color": (
-                        list(StyleConfig.PARKING_COLOR_RGBA) if is_parking else list(MarkerConfig.NODE_MARKER_COLOR)
-                    ),
-                    "radius": (ClickConfig.PARKING_MARKER_RADIUS if is_parking else ClickConfig.NODE_MARKER_RADIUS),
-                    "name": (
-                        f"{StyleConfig.PARKING_ICON} Parking place — {node_id}" if is_parking else f"Node {node_id}"
-                    ),
+                    "color": color,
+                    "radius": radius,
+                    "name": name,
                 }
             )
 
@@ -769,6 +820,7 @@ class MapRenderer:
         self,
         proposals: list[ProposedPathSegment],
         selected_idx: int | None,
+        *,
         is_custom_path: bool = False,
         use_3d: bool = False,
     ) -> list[pdk.Layer]:
@@ -780,9 +832,9 @@ class MapRenderer:
             is_custom_path: Whether this is a custom path (no endpoint markers).
             use_3d: If True, use real elevations. If False, use flat z offsets.
         """
-        path_data = []
-        endpoint_data = []
-        body_data = []
+        path_data: list[dict[str, object]] = []
+        endpoint_data: list[dict[str, object]] = []
+        body_data: list[dict[str, object]] = []
 
         # Proposals use marker z-offset for 2D mode
         z_offset_2d = MapConfig.Z_OFFSET_2D_MARKERS
@@ -794,9 +846,9 @@ class MapRenderer:
             is_selected = selected_idx is not None and i == selected_idx
             # Road proposals are brown (translucent → solid when selected); slope
             # proposals are difficulty-colored. enum_eq is reload-safe.
-            if enum_eq(proposal.kind, SegmentKind.ROAD):
+            if enum_eq(a=proposal.kind, b=SegmentKind.ROAD):
                 color = list(StyleConfig.ROAD_PROPOSAL_COLOR_RGBA)
-            elif enum_eq(proposal.kind, SegmentKind.SLOPE):
+            elif enum_eq(a=proposal.kind, b=SegmentKind.SLOPE):
                 color = list(StyleConfig.SLOPE_COLORS_RGBA[proposal.difficulty])
             else:
                 raise ValueError(f"Unexpected {proposal.kind=}")
@@ -815,7 +867,16 @@ class MapRenderer:
                     "id": f"path_{i}",  # Unique ID for click deduplication
                     "proposal_index": i,
                     "path": [
-                        [p.lon, p.lat, self._get_z(p.elevation, MarkerConfig.PATH_Z_OFFSET_M, use_3d, z_offset_2d)]
+                        [
+                            p.lon,
+                            p.lat,
+                            self._get_z(
+                                elevation=p.elevation,
+                                z_offset=MarkerConfig.PATH_Z_OFFSET_M,
+                                use_3d=use_3d,
+                                flat_z=z_offset_2d,
+                            ),
+                        ]
                         for p in proposal.points
                     ],
                     "color": color,
@@ -835,7 +896,12 @@ class MapRenderer:
                     "position": [
                         start_pt.lon,
                         start_pt.lat,
-                        self._get_z(start_pt.elevation, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, z_offset_2d),
+                        self._get_z(
+                            elevation=start_pt.elevation,
+                            z_offset=MarkerConfig.MARKER_Z_OFFSET_M,
+                            use_3d=use_3d,
+                            flat_z=z_offset_2d,
+                        ),
                     ],
                     "color": [255, 255, 255, 200],
                     "elevation": start_pt.elevation,
@@ -854,7 +920,12 @@ class MapRenderer:
                     "position": [
                         mid_pt.lon,
                         mid_pt.lat,
-                        self._get_z(mid_pt.elevation, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, z_offset_2d),
+                        self._get_z(
+                            elevation=mid_pt.elevation,
+                            z_offset=MarkerConfig.MARKER_Z_OFFSET_M,
+                            use_3d=use_3d,
+                            flat_z=z_offset_2d,
+                        ),
                     ],
                     "color": color,
                     "name": f"Select Proposal {i + 1}",
@@ -874,7 +945,12 @@ class MapRenderer:
                         "position": [
                             end_pt.lon,
                             end_pt.lat,
-                            self._get_z(end_pt.elevation, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, z_offset_2d),
+                            self._get_z(
+                                elevation=end_pt.elevation,
+                                z_offset=MarkerConfig.MARKER_Z_OFFSET_M,
+                                use_3d=use_3d,
+                                flat_z=z_offset_2d,
+                            ),
                         ],
                         "color": ClickConfig.PROPOSAL_ENDPOINT_COLOR,
                         "elevation": end_pt.elevation,
@@ -888,7 +964,7 @@ class MapRenderer:
         if path_data:
             logger.info(
                 f"[RENDER] proposal layer: {len(path_data)} path(s), is_custom_path={is_custom_path}, "
-                f"first_color={path_data[0]['color']}, first_path_pts={len(path_data[0]['path'])}"
+                f"first_color={path_data[0]['color']}"
             )
             layers.append(
                 pdk.Layer(
@@ -951,6 +1027,7 @@ class MapRenderer:
         lon: float,
         elevation: float,
         orientation: "TerrainOrientation",
+        *,
         use_3d: bool = False,
     ) -> list[pdk.Layer]:
         """Create arrow layers showing fall line and contours at selection point.
@@ -962,7 +1039,12 @@ class MapRenderer:
             use_3d: If True, render at terrain elevation. If False, render flat.
         """
         arrow_data = []
-        arrow_z = self._get_z(elevation, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, MapConfig.Z_OFFSET_2D_MARKERS)
+        arrow_z = self._get_z(
+            elevation=elevation,
+            z_offset=MarkerConfig.MARKER_Z_OFFSET_M,
+            use_3d=use_3d,
+            flat_z=MapConfig.Z_OFFSET_2D_MARKERS,
+        )
 
         # Fall line arrow (difficulty colored)
         if orientation.fall_line is not None:
@@ -1043,6 +1125,7 @@ class MapRenderer:
         start_lon: float,
         bearing_deg: float,
         direction: str = "downhill",
+        *,
         use_3d: bool = False,
     ) -> pdk.Layer:
         """Create directional arrow from a point.
@@ -1096,6 +1179,7 @@ class MapRenderer:
         lon: float,
         elevation: float,
         fall_line_bearing: float,
+        *,
         use_3d: bool = False,
     ) -> list[pdk.Layer]:
         """Create marker for pending lift placement with uphill arrow.
@@ -1107,7 +1191,12 @@ class MapRenderer:
             use_3d: If True, render at terrain elevation. If False, render flat.
         """
         layers = []
-        marker_z = self._get_z(elevation, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, MapConfig.Z_OFFSET_2D_MARKERS)
+        marker_z = self._get_z(
+            elevation=elevation,
+            z_offset=MarkerConfig.MARKER_Z_OFFSET_M,
+            use_3d=use_3d,
+            flat_z=MapConfig.Z_OFFSET_2D_MARKERS,
+        )
 
         # Station marker
         station_data = [
@@ -1155,6 +1244,7 @@ class MapRenderer:
         lat: float,
         lon: float,
         elevation: float,
+        *,
         use_3d: bool = False,
     ) -> list[pdk.Layer]:
         """Create the origin marker for a road being started (no direction arrow).
@@ -1168,7 +1258,12 @@ class MapRenderer:
             elevation: Ground elevation.
             use_3d: If True, render at terrain elevation. If False, render flat.
         """
-        marker_z = self._get_z(elevation, MarkerConfig.MARKER_Z_OFFSET_M, use_3d, MapConfig.Z_OFFSET_2D_MARKERS)
+        marker_z = self._get_z(
+            elevation=elevation,
+            z_offset=MarkerConfig.MARKER_Z_OFFSET_M,
+            use_3d=use_3d,
+            flat_z=MapConfig.Z_OFFSET_2D_MARKERS,
+        )
         station_data = [
             {
                 "position": [lon, lat, marker_z],
@@ -1188,6 +1283,72 @@ class MapRenderer:
                 line_width_min_pixels=3,
                 id="pending_road_start",
             )
+        ]
+
+    def create_import_bbox_layers(
+        self,
+        center_lon: float,
+        center_lat: float,
+        half_width_m: float,
+        elevation: float,
+        *,
+        use_3d: bool = False,
+    ) -> list[pdk.Layer]:
+        """Draw the OSM import box: a translucent square + a pickable center dot (re-click = confirm).
+
+        The rectangle is the region that will be fetched (corners from bbox_around, same maths the
+        import uses). The center dot carries ClickConfig.TYPE_IMPORT_CENTER so a click on it is
+        classified as MarkerType.IMPORT_CENTER and routed to confirm. PolygonLayer is 2D-only, which
+        is fine — import is a top-down action.
+
+        Args:
+            center_lon, center_lat: Placed box center.
+            half_width_m: Half the box side length in metres (the slider value × 1000).
+            elevation: Ground elevation at the center (for the dot's z in 3D).
+            use_3d: If True, place the dot at terrain elevation.
+        """
+        min_lon, min_lat, max_lon, max_lat = bbox_around(
+            center_lon=center_lon, center_lat=center_lat, half_width_m=half_width_m
+        )
+        ring = [
+            [min_lon, min_lat],
+            [max_lon, min_lat],
+            [max_lon, max_lat],
+            [min_lon, max_lat],
+            [min_lon, min_lat],
+        ]
+        marker_z = self._get_z(
+            elevation=elevation,
+            z_offset=MarkerConfig.MARKER_Z_OFFSET_M,
+            use_3d=use_3d,
+            flat_z=MapConfig.Z_OFFSET_2D_MARKERS,
+        )
+        return [
+            pdk.Layer(
+                "PolygonLayer",
+                [{"polygon": ring}],
+                get_polygon="polygon",
+                get_fill_color=list(StyleConfig.IMPORT_BOX_RGBA),
+                get_line_color=list(StyleConfig.IMPORT_BOX_RGBA),
+                line_width_min_pixels=2,
+                id="import_bbox",
+            ),
+            pdk.Layer(
+                "ScatterplotLayer",
+                [
+                    {
+                        "type": ClickConfig.TYPE_IMPORT_CENTER,
+                        "position": [center_lon, center_lat, marker_z],
+                        "name": f"{StyleConfig.IMPORT_ICON} Import center — click to confirm",
+                    }
+                ],
+                get_position="position",
+                get_radius=MarkerConfig.LIFT_STATION_RADIUS,
+                get_fill_color=list(StyleConfig.IMPORT_CENTER_RGBA),
+                pickable=True,
+                auto_highlight=True,
+                id="import_center",
+            ),
         ]
 
     # =========================================================================

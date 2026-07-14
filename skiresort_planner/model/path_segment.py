@@ -10,9 +10,9 @@ Reference: DETAILS.md
 """
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from math import floor
-from typing import Any
+from typing import TYPE_CHECKING, cast
 
 import pyproj
 from shapely.geometry import LineString
@@ -30,6 +30,10 @@ from skiresort_planner.model.warning import (
     Warning,
 )
 
+if TYPE_CHECKING:
+    from skiresort_planner.core.dem_service import DEMService
+    from skiresort_planner.model.node import Node
+
 
 def _get_utm_zone(lon: float, lat: float) -> str:
     """Get UTM zone EPSG code for given coordinates."""
@@ -39,7 +43,7 @@ def _get_utm_zone(lon: float, lat: float) -> str:
     return f"EPSG:327{zone_number:02d}"
 
 
-class SegmentKind(str, Enum):
+class SegmentKind(StrEnum):
     """What a committed segment IS — a ski slope or a vehicle road."""
 
     SLOPE = "slope"
@@ -143,7 +147,7 @@ class PathSegment(Path):
             Width in meters. Constant for roads; for slopes, clamped to difficulty
             limits (max width on flat terrain, side slope < 1%).
         """
-        if enum_eq(self.kind, SegmentKind.ROAD):
+        if enum_eq(a=self.kind, b=SegmentKind.ROAD):
             return float(EarthworkConfig.ROAD_WIDTH_M)
 
         # Get difficulty-specific limits
@@ -158,6 +162,38 @@ class PathSegment(Path):
 
         # Clamp to allowed range for this difficulty
         return max(min_width, min(max_width, adaptive_width))
+
+    def restitch(self, start_node: "Node", end_node: "Node", dem: "DEMService") -> None:
+        """Re-anchor this segment's drawn polyline after an endpoint node moved.
+
+        Snaps the first point to `start_node` and the last to `end_node` (the same exact-coordinate
+        snap that commit does), then re-drapes every point's elevation from the DEM so the whole
+        polyline sits on current terrain. Keeps identity + styling (id, name, kind, side slope);
+        derived metrics (length/drop/slope/difficulty/belt) are computed from `points`, so they
+        refresh automatically. Route is preserved — this re-drapes existing geometry, it does not
+        re-plan (mirrors OSM import's re-sample-in-place).
+
+        Args:
+            start_node: The (possibly moved) node this segment starts at.
+            end_node: The (possibly moved) node this segment ends at.
+            dem: DEM service for elevation re-draping.
+
+        Raises:
+            ValueError: If any point falls on DEM nodata.
+        """
+        redraped: list[PathPoint] = []
+        for i, p in enumerate(self.points):
+            if i == 0:
+                lon, lat = start_node.lon, start_node.lat
+            elif i == len(self.points) - 1:
+                lon, lat = end_node.lon, end_node.lat
+            else:
+                lon, lat = p.lon, p.lat
+            elevation = dem.get_elevation(lon=lon, lat=lat)
+            if elevation is None:
+                raise ValueError(f"restitch of segment {self.id}: point ({lat:.5f}, {lon:.5f}) has no DEM elevation")
+            redraped.append(PathPoint(lon=lon, lat=lat, elevation=elevation))
+        self.points = redraped
 
     def get_belt_polygon(self) -> list[tuple[float, float]]:
         """Get belt polygon coordinates (buffered ribbon in meters).
@@ -204,18 +240,18 @@ class PathSegment(Path):
         return []
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "PathSegment":
+    def from_dict(cls, data: dict[str, object]) -> "PathSegment":
         """Create PathSegment from dictionary."""
         return cls(
-            id=data["id"],
-            name=data["name"],
-            points=[PathPoint(**p) for p in data["points"]],
-            start_node_id=data["start_node_id"],
-            end_node_id=data["end_node_id"],
-            side_slope_pct=data.get("side_slope_pct", 0.0),
-            side_slope_dir=SideDirection(data.get("side_slope_dir", SideDirection.FLAT.value)),
+            id=cast(str, data["id"]),
+            name=cast(str, data["name"]),
+            points=[PathPoint(**p) for p in cast(list[dict[str, float]], data["points"])],
+            start_node_id=cast(str, data["start_node_id"]),
+            end_node_id=cast(str, data["end_node_id"]),
+            side_slope_pct=cast(float, data.get("side_slope_pct", 0.0)),
+            side_slope_dir=SideDirection(cast(str, data.get("side_slope_dir", SideDirection.FLAT.value))),
             # Pre-enum saves have no "kind" → default to SLOPE.
-            kind=SegmentKind(data.get("kind", SegmentKind.SLOPE.value)),
+            kind=SegmentKind(cast(str, data.get("kind", SegmentKind.SLOPE.value))),
         )
 
     def __repr__(self) -> str:

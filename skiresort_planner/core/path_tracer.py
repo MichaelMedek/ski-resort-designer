@@ -16,7 +16,7 @@ import logging
 import random
 from dataclasses import dataclass
 from math import acos, degrees
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -71,8 +71,8 @@ class PathTracer:
 
     def __init__(
         self,
-        dem: Optional[DEMService] = None,
-        analyzer: Optional[TerrainAnalyzer] = None,
+        dem: DEMService | None = None,
+        analyzer: TerrainAnalyzer | None = None,
     ):
         """Initialize path tracer.
 
@@ -100,7 +100,7 @@ class PathTracer:
         target_slope_pct: float,
         side: str,
         target_length_m: float,
-    ) -> Optional[TracedPath]:
+    ) -> TracedPath | None:
         """Trace a downhill path using cumulative drop tracking.
 
         Args:
@@ -131,7 +131,7 @@ class PathTracer:
 
         # Self-intersection prevention
         max_turn_per_step = GeometricTuningConfig.MAX_TURN_PER_STEP_DEG
-        previous_bearing: Optional[float] = None
+        previous_bearing: float | None = None
 
         # Bearing smoothing for flat terrain
         recent_bearings: list[float] = []

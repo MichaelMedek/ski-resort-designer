@@ -1,0 +1,233 @@
+"""Left-sidebar mode-specific control panels (mirror of right_panel.py's ControlPanel).
+
+Each build state owns a SidebarPanel that renders its mode-specific sidebar controls (the buttons
+and sliders that appear between the mode selector and the always-available controls). Like the
+right panel's ControlPanel, panels are fire-and-forget: a button click calls its action function
+directly (finish_current_slope, sm.cancel_lift, …) rather than returning a flag for app.py to act
+on. This module sits BELOW the dispatch hub (mode_registry) — exactly like right_panel — so the hub
+can construct these panels; it must not import mode_registry or left_panel.
+
+The left panel is simpler than the right (a single control region, no context/action messages), so
+SidebarPanel exposes one hook, `controls()`, where ControlPanel has three.
+"""
+
+import logging
+from abc import ABC, abstractmethod
+from collections.abc import Callable
+
+import streamlit as st
+
+from skiresort_planner.constants import OSMConfig, PathConfig
+from skiresort_planner.model.resort_graph import ResortGraph
+from skiresort_planner.ui.actions import (
+    cancel_current_road,
+    cancel_current_slope,
+    finish_current_road,
+    finish_current_slope,
+    recompute_paths,
+)
+from skiresort_planner.ui.context import PlannerContext
+from skiresort_planner.ui.infra import bump_map_version, reload_map
+from skiresort_planner.ui.state_machine import PlannerStateMachine
+
+logger = logging.getLogger(__name__)
+
+
+def _cancel_button(label: str, on_cancel: Callable[[], None], help: str) -> None:
+    """Render a full-width cancel button that clears stale click state then transitions.
+
+    Shared by the single-step "placing" panels (lift / import / merge) whose cancel just discards
+    the in-progress placement and returns to idle. The state transition triggers st.rerun() via the
+    SM listener.
+    """
+    if st.button(label, width="stretch", help=help):
+        bump_map_version()  # clear stale click state before the transition
+        on_cancel()
+
+
+class SidebarPanel(ABC):
+    """Base class for a build state's mode-specific sidebar controls.
+
+    Fixed template: render() defers to the single controls() hook. Mirrors right_panel.ControlPanel
+    but with one hook instead of three (the left panel has no context/action messages).
+    """
+
+    def __init__(self, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph) -> None:
+        self.sm = sm
+        self.ctx = ctx
+        self.graph = graph
+
+    def render(self) -> None:
+        """Fixed template: render the state's controls. Never overridden."""
+        self.controls()
+
+    @abstractmethod
+    def controls(self) -> None:
+        """Render this state's mode-specific sidebar buttons/sliders (fire actions directly)."""
+
+
+class IdleSidebarPanel(SidebarPanel):
+    """idle_ready: no mode-specific controls (mirrors EmptyControlPanel)."""
+
+    def controls(self) -> None:
+        return None
+
+
+class ViewingSidebarPanel(SidebarPanel):
+    """idle_viewing_{slope,road,lift}: a kind-agnostic Close Right Panel button.
+
+    Unlike the right panel (which needs a per-kind EntityKindSpec for stats/delete), the left close
+    button is identical for every viewed kind, so one panel covers all three viewing states.
+    """
+
+    def controls(self) -> None:
+        if st.button(
+            "✖️ Close Right Panel",
+            width="stretch",
+            help="Close the right panel to start building",
+            key="close_panel_btn",
+        ):
+            bump_map_version()
+            # Uses close_panel event - SM resolves to appropriate transition.
+            # State transition triggers st.rerun() via listener.
+            self.sm.hide_info_panel()
+
+
+class SlopeSidebarPanel(SidebarPanel):
+    """slope_starting / slope_building / slope_custom_path: Finish/Cancel + Path Settings slider."""
+
+    def controls(self) -> None:
+        has_segments = self.ctx.has_committed_segments()
+
+        if st.button(
+            "🏁 Finish Committed Slope",
+            type="primary",
+            width="stretch",
+            disabled=not has_segments,
+            help=(
+                "Commit at least one segment before finishing"
+                if not has_segments
+                else "Finalize the committed segments (any unconfirmed proposal is discarded)"
+            ),
+            key="finish_slope_btn",
+        ):
+            finish_current_slope()
+
+        if st.button(
+            "✖️ Cancel Full Slope",
+            width="stretch",
+            help="Discard current slope and return to IDLE",
+            key="cancel_slope_btn",
+        ):
+            logger.info(f"UI: Cancel slope requested for {self.ctx.slope_build.name}")
+            cancel_current_slope()
+
+        # Path settings apply only to fan-out proposals; hide the whole block while
+        # routing a custom-connect path to a clicked target (force_mode).
+        if self.ctx.custom_connect.force_mode:
+            return
+
+        st.markdown("**⚙️ Path Settings**")
+        segment_length = st.slider(
+            "Segment Length (m)",
+            min_value=PathConfig.SEGMENT_LENGTH_MIN_M,
+            max_value=PathConfig.SEGMENT_LENGTH_MAX_M,
+            value=self.ctx.segment_length_m,
+            step=50,
+            help="Target length for generated path segments",
+            key="segment_length_slider",
+        )
+        if segment_length != self.ctx.segment_length_m:
+            logger.info(f"UI: Segment length changed to {segment_length}m")
+            self.ctx.segment_length_m = segment_length
+            self.ctx.click_dedup.pending_recompute = True
+
+        recompute = st.button(
+            "🔄 Recompute Paths",
+            width="stretch",
+            help="Generate new path variations",
+            key="recompute_btn",
+        )
+        # Set-and-consume in the same frame/state: the slider above sets pending_recompute and the
+        # slider change does not itself rerun, so we honor it here alongside an explicit click.
+        if recompute or self.ctx.click_dedup.pending_recompute:
+            recompute_paths()
+
+
+class RoadSidebarPanel(SidebarPanel):
+    """road_starting / road_building: Finish/Cancel road (mirrors SlopeSidebarPanel)."""
+
+    def controls(self) -> None:
+        has_segments = self.ctx.road_build.has_committed_segments()
+
+        if st.button(
+            "🏁 Finish Committed Road",
+            type="primary",
+            width="stretch",
+            disabled=not has_segments,
+            help=(
+                "Add at least one segment before finishing"
+                if not has_segments
+                else "Finalize the committed segments (any unconfirmed proposal is discarded)"
+            ),
+            key="finish_road_btn",
+        ):
+            finish_current_road()
+
+        if st.button(
+            "✖️ Cancel Road",
+            width="stretch",
+            help="Discard the current road and return to idle",
+            key="cancel_road_btn",
+        ):
+            cancel_current_road()
+
+
+class LiftSidebarPanel(SidebarPanel):
+    """lift_placing: a Cancel button (the map click completes the lift)."""
+
+    def controls(self) -> None:
+        _cancel_button(
+            label="✖️ Cancel Lift Placement",
+            on_cancel=self.sm.cancel_lift,
+            help="Discard start point and return to idle",
+        )
+
+
+class ImportSidebarPanel(SidebarPanel):
+    """import_placing: the area half-width slider + a Cancel button.
+
+    The slider mirrors slope's Segment Length slider (only visible while placing). Changing it writes
+    the new half-width into the deferred state and redraws the box. Confirming happens from the right
+    panel or by re-clicking the box center on the map.
+    """
+
+    def controls(self) -> None:
+        half_width_km = st.slider(
+            "Import area half-width (km)",
+            min_value=OSMConfig.HALF_WIDTH_MIN_KM,
+            max_value=OSMConfig.HALF_WIDTH_MAX_KM,
+            value=self.ctx.deferred.osm_import_half_width_km,
+            step=0.5,
+            key="import_osm_half_width",
+            help="Lifts & pistes fully inside the box (this far from the center in each direction) are imported.",
+        )
+        if half_width_km != self.ctx.deferred.osm_import_half_width_km:
+            self.ctx.deferred.osm_import_half_width_km = half_width_km
+            reload_map()  # redraw the box at the new size
+        _cancel_button(
+            label="✖️ Cancel Import",
+            on_cancel=self.sm.cancel_import,
+            help="Discard the placed area and return to idle",
+        )
+
+
+class MergeSidebarPanel(SidebarPanel):
+    """merge_placing: a Cancel button (selection count + instructions live on the right panel)."""
+
+    def controls(self) -> None:
+        _cancel_button(
+            label="✖️ Cancel Merge",
+            on_cancel=self.sm.cancel_merge,
+            help="Clear the selection and return to idle",
+        )

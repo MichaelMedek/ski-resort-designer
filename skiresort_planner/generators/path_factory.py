@@ -28,9 +28,9 @@ Reference: DETAILS.md Section 7 for algorithm details
 
 import logging
 import math
+from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import Enum
-from typing import Iterator, Optional
 
 from skiresort_planner.constants import (
     GeometricTuningConfig,
@@ -112,9 +112,9 @@ class PathFactory:
 
     def __init__(
         self,
-        dem_service: Optional[DEMService] = None,
-        path_tracer: Optional[PathTracer] = None,
-        terrain_analyzer: Optional[TerrainAnalyzer] = None,
+        dem_service: DEMService | None = None,
+        path_tracer: PathTracer | None = None,
+        terrain_analyzer: TerrainAnalyzer | None = None,
     ) -> None:
         """Initialize path factory with required services."""
         self.dem_service = dem_service or DEMService()
@@ -130,7 +130,7 @@ class PathFactory:
         self,
         lon: float,
         lat: float,
-        elevation: Optional[float] = None,
+        elevation: float | None = None,
         target_length_m: float = PathConfig.SEGMENT_LENGTH_DEFAULT_M,
     ) -> Iterator[ProposedPathSegment]:
         """Generate fan of paths iterating through all difficulty-grade-side combinations.
@@ -236,7 +236,7 @@ class PathFactory:
         lat: float,
         config: GradeConfig,
         target_length_m: float,
-    ) -> Optional[ProposedPathSegment]:
+    ) -> ProposedPathSegment | None:
         """Trace a single path for a given configuration."""
         traced = self.path_tracer.trace_downhill(
             start_lon=lon,
@@ -347,7 +347,8 @@ class PathFactory:
         start_elevation: float,
         target_lon: float,
         target_lat: float,
-        target_elevation: Optional[float] = None,
+        target_elevation: float | None = None,
+        *,
         road_mode: bool = False,
     ) -> Iterator[ProposedPathSegment]:
         """Generate paths connecting the start to a user-clicked target.

@@ -7,6 +7,7 @@ Uses the shared `fake_st` fixture (no browser).
 
 import pytest
 
+from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
@@ -17,14 +18,14 @@ from skiresort_planner.ui.state_machine import PlannerStateMachine
 M = 111320.0
 
 
-def _build_slope(graph: ResortGraph, path_points: list) -> str:
+def _build_slope(graph: ResortGraph, path_points: list[PathPoint]) -> str:
     graph.commit_paths(paths=[ProposedPathSegment(points=path_points, target_difficulty="blue")])
     slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
     assert slope is not None
     return slope.id
 
 
-def _build_road(graph: ResortGraph, path_points: list) -> str:
+def _build_road(graph: ResortGraph, path_points: list[PathPoint]) -> str:
     graph.commit_paths(paths=[ProposedPathSegment(points=path_points, is_connector=True, kind=SegmentKind.ROAD)])
     road = graph.finish_road(segment_ids=[list(graph.segments.keys())[-1]])
     assert road is not None
@@ -50,9 +51,8 @@ class TestSidebarRuns:
     def test_sidebar_runs_in_each_mode(self, fake_st, empty_graph, mode: str) -> None:
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         ctx.build_mode.mode = mode
-        actions = SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
-        # render() returns the action-flag dict the app loop consumes.
-        assert set(actions) >= {"undo", "cancel_slope", "finish_slope", "recompute", "lift_type"}
+        # render() is fire-and-forget (returns None); it just needs to run without raising.
+        SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
 
     def test_sidebar_runs_with_content(self, fake_st, empty_graph, path_points_blue, mock_dem_blue_slope) -> None:
         # A resort with a slope + lift + road exercises every summary section.
@@ -70,14 +70,19 @@ class TestSidebarRuns:
         SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
 
     def test_sidebar_during_road_building(self, fake_st, empty_graph) -> None:
-        # Road building state renders the Finish Road / Cancel Road controls.
-        from skiresort_planner.model.path_point import PathPoint
-
+        # Road building state renders the Finish Road / Cancel Road controls; clicking Cancel Road
+        # fires cancel_current_road directly (fire-and-forget) and returns to idle.
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         sm.start_road(node_id=None, location=PathPoint(lon=0.0, lat=0.0, elevation=2000.0))
         assert sm.is_road_starting
-        actions = SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
-        assert "finish_road" in actions and "cancel_road" in actions
+        fake_st.session_state["state_machine"] = sm
+        fake_st.session_state["context"] = ctx
+        fake_st.session_state["graph"] = empty_graph
+        fake_st.session_state["map_version"] = 0
+
+        fake_st.clicked_keys = {"cancel_road_btn"}
+        SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
+        assert sm.is_idle_ready, "clicking Cancel Road must discard the road and return to idle"
 
     @pytest.mark.parametrize("kind", ["slope", "road", "lift"])
     def test_sidebar_viewing_header_and_body_match_kind(
@@ -121,9 +126,26 @@ class TestModeSelectorButton:
         assert ctx.build_mode.mode == BuildMode.ROAD, "clicking the Road button must switch build mode"
 
 
+class TestImportOSMButton:
+    def test_click_import_button_selects_import_mode(self, fake_st, empty_graph) -> None:
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        fake_st.session_state["state_machine"] = sm
+        fake_st.session_state["context"] = ctx
+        fake_st.session_state["graph"] = empty_graph
+        fake_st.session_state["map_version"] = 0
+
+        fake_st.clicked_keys = {"build_btn_import"}
+        SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
+        # Selecting Import only arms the click-to-place mode; it stays idle and does NOT flag a fetch.
+        assert ctx.build_mode.mode == BuildMode.IMPORT, "clicking Import must select import mode"
+        assert sm.is_idle_ready, "selecting a mode must not leave idle"
+        assert ctx.deferred.osm_import is False, "import is not flagged until the box is placed + confirmed"
+
+
 class TestPathSettingsVisibility:
     """The ⚙️ Path Settings block only applies to fan-out proposals, so it is hidden
-    while routing a custom-connect path (force_mode)."""
+    while routing a custom-connect path (force_mode).
+    """
 
     @staticmethod
     def _capture_markdown(fake_st) -> list[str]:
@@ -143,9 +165,8 @@ class TestPathSettingsVisibility:
         sm.start_building(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
         ctx.custom_connect.force_mode = True  # showing custom-connect proposals
         seen = self._capture_markdown(fake_st)
-        actions = SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
+        SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
         assert not any("Path Settings" in m for m in seen), "custom mode hides the Path Settings block"
-        assert actions["recompute"] is False, "no Recompute button in custom mode"
 
 
 # =============================================================================
@@ -161,7 +182,7 @@ class TestDescribeUndoAction:
     def _describe_top(self, graph: ResortGraph) -> str:
         from skiresort_planner.ui.left_panel import _describe_undo_action
 
-        return _describe_undo_action(graph.undo_stack[-1], graph)
+        return _describe_undo_action(action=graph.undo_stack[-1], graph=graph)
 
     def test_add_segments_label(self, empty_graph, path_points_blue) -> None:
         empty_graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
@@ -204,6 +225,31 @@ class TestDescribeUndoAction:
         empty_graph.delete_road(road_id=road_id)
         assert "Restore deleted road" in self._describe_top(empty_graph)
 
+    def test_import_osm_label(self, empty_graph, mock_dem_blue_slope) -> None:
+        dem = mock_dem_blue_slope
+        m = 111320.0
+        piste = (
+            [
+                PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
+                PathPoint(lon=0.0, lat=-500 / m, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / m)),
+            ],
+            "Run",
+        )
+        empty_graph.import_osm(pistes=[piste], lifts=[], dem=dem)
+        assert "OSM import" in self._describe_top(empty_graph)
+
+    def test_merge_nodes_label(self, empty_graph, mock_dem_blue_slope) -> None:
+        # The 9th ActionType. Two nodes ~200m apart merge (< MergeConfig.MAX_SPAN_M=500m,
+        # > STEP_SIZE_M=30m so they don't snap into one). deleted_nodes has 1 entry, so
+        # _MergeNodesHandler.describe reports len(deleted_nodes) + 1 == 2 nodes.
+        dem = mock_dem_blue_slope
+        a, _ = empty_graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
+        b, _ = empty_graph.get_or_create_node(
+            lon=0.0, lat=-200 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-200 / M)
+        )
+        empty_graph.merge_nodes(node_ids=[a.id, b.id], dem=dem)
+        assert self._describe_top(empty_graph) == "Un-merge 2 nodes"
+
 
 # =============================================================================
 # Dialog action helpers (extracted from @st.dialog bodies to be testable)
@@ -221,8 +267,10 @@ class TestDialogHelpers:
         from skiresort_planner.ui import left_panel
 
         deleted: list[str] = []
-        monkeypatch.setattr(left_panel.backup_store, "delete", lambda resort_id: deleted.append(resort_id))
-        monkeypatch.setattr(left_panel.backup_store, "new_resort_id", lambda: "fresh999")
+        monkeypatch.setattr(
+            "skiresort_planner.ui.left_panel.backup_store.delete", lambda resort_id: deleted.append(resort_id)
+        )
+        monkeypatch.setattr("skiresort_planner.ui.left_panel.backup_store.new_resort_id", lambda: "fresh999")
 
         # Seed a full session that reset must tear down.
         for key in ("resort_id", "graph", "state_machine", "context", "map_renderer", "_saved_token"):

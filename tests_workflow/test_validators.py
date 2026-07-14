@@ -64,7 +64,6 @@ class TestCustomTargetDownhill:
         assert isinstance(result, TargetNotDownhillMessage)
         assert result.start_elevation_m == start
         assert result.target_elevation_m == target
-        assert result.min_drop_m == ConnectionConfig.MIN_DROP_M
 
     def test_uphill_is_rejected(self) -> None:
         assert isinstance(

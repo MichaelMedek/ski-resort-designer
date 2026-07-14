@@ -388,6 +388,62 @@ def exit_lift_placing(ctx: PlannerContext) -> None:
     ctx.lift.clear()
 
 
+def exit_import_placing(ctx: PlannerContext) -> None:
+    """Exit IMPORT_PLACING: clear the placed import-box center.
+
+    Destinations: IDLE_READY (cancel or confirm). The placed box center lives in
+    ctx.deferred.osm_import_center_lon/lat; clearing it here guarantees no stale box survives the
+    exit no matter which transition (or a force_* during undo) leaves the state. The osm_import
+    fetch flag is deliberately left alone — a confirmed import sets it just before this runs and
+    consumes it in process_osm_import_deferred.
+    """
+    logger.debug("EXIT: import_placing - clearing placed import-box center")
+    ctx.deferred.osm_import_center_lon = None
+    ctx.deferred.osm_import_center_lat = None
+
+
+def exit_merge_placing(ctx: PlannerContext) -> None:
+    """Exit MERGE_PLACING: clear the node-merge selection.
+
+    Destinations: IDLE_READY (cancel or confirm). The selected node ids live in ctx.merge; clearing
+    here guarantees no stale selection survives the exit regardless of transition (or a force_*
+    during undo).
+    """
+    logger.debug("EXIT: merge_placing - clearing merge selection")
+    ctx.merge.clear()
+
+
+def enter_import_placing(ctx: PlannerContext) -> None:
+    """Enter IMPORT_PLACING: an import box center has been placed (Single Point of Truth).
+
+    Reached from any idle state on the first map click in import mode, and re-entered on
+    each retarget (self-loop) when the user clicks a new center. The placed center lives in
+    ctx.deferred.osm_import_center_lon/lat (set by before_start_import) — it must NOT be cleared
+    here, or the self-loop would wipe it. Cancel clears it via before_cancel_import; a confirmed
+    import clears it in process_osm_import_deferred after building the bbox.
+
+    End state: Panel hidden, box drawn from the stored center, ready for confirm.
+    """
+    logger.debug("ENTER: import_placing - hiding panel")
+    ctx.viewing.hide_panel()
+    ctx.click_dedup.clear_marker()
+
+
+def enter_merge_placing(ctx: PlannerContext) -> None:
+    """Enter MERGE_PLACING: the user selects node markers to collapse (Single Point of Truth).
+
+    Reached from any idle state on entering merge mode, and re-entered on each node-toggle
+    (self-loop). The selected node ids live in ctx.merge.node_ids (toggled by the click handler) —
+    they must NOT be cleared here, or the self-loop would wipe the selection on every click.
+    Cancel clears it via before_cancel_merge; a confirmed merge clears it in complete_merge.
+
+    End state: Panel hidden, selected nodes drawn red, ready for confirm.
+    """
+    logger.debug("ENTER: merge_placing - hiding panel")
+    ctx.viewing.hide_panel()
+    ctx.click_dedup.clear_marker()
+
+
 # =============================================================================
 # 9. IDLE_VIEWING_ROAD - Panel showing road details
 # =============================================================================

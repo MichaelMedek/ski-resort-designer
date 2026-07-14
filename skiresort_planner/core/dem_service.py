@@ -17,8 +17,9 @@ Reference: DETAILS.md Section 1.1
 import logging
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Optional
 
 import numpy as np
 import numpy.typing as npt
@@ -33,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 def download_dem_from_huggingface(
     target_path: Path = DEMConfig.EURODEM_PATH,
-    progress_callback: Optional[Callable[[float], None]] = None,
+    progress_callback: Callable[[float], None] | None = None,
 ) -> Path:
     """Download Alps DEM from Hugging Face if not already present.
 
@@ -86,13 +87,13 @@ class DEMService:
     _instance: Optional["DEMService"] = None
     _load_lock = threading.Lock()
     _dem_path: Path
-    _dem: Any = None
-    _dem_crs: Optional[str] = None
-    _dem_array: Optional[npt.NDArray[np.floating[Any]]] = None
-    _dem_transform: Any = None
-    _dem_nodata: Any = None
+    _dem: object = None
+    _dem_crs: str | None = None
+    _dem_array: npt.NDArray[np.float64] | None = None
+    _dem_transform: object = None
+    _dem_nodata: object = None
 
-    def __new__(cls, dem_path: Optional[Path] = None) -> "DEMService":
+    def __new__(cls, dem_path: Path | None = None) -> "DEMService":
         """Create or return the singleton instance.
 
         Args:
@@ -133,12 +134,13 @@ class DEMService:
             logger.info(f"Loading EuroDEM from {dem_path}...")
             start_time = time.time()
 
-            self._dem = rasterio.open(dem_path)
-            self._dem_crs = self._dem.crs.to_string() if self._dem.crs else "EPSG:4326"
-            self._dem_array = self._dem.read(1)
-            self._dem_nodata = self._dem.nodata
+            dataset = rasterio.open(dem_path)
+            self._dem = dataset
+            self._dem_crs = dataset.crs.to_string() if dataset.crs else "EPSG:4326"
+            self._dem_array = dataset.read(1)
+            self._dem_nodata = dataset.nodata
             # Set _dem_transform LAST - this is what is_loaded checks
-            self._dem_transform = self._dem.transform
+            self._dem_transform = dataset.transform
 
             elapsed = time.time() - start_time
             logger.info(f"EuroDEM loaded in {elapsed:.2f}s (shape: {self._dem_array.shape}, CRS: {self._dem_crs})")
@@ -165,7 +167,7 @@ class DEMService:
             x, y = lon, lat
 
         # Convert coordinates to array indices using inverse transform
-        col, row = ~self._dem_transform * (x, y)
+        col, row = ~self._dem_transform * (x, y)  # type: ignore[operator]
         col, row = int(col), int(row)
 
         # Check bounds
@@ -198,7 +200,7 @@ class DEMService:
         """
         self._ensure_loaded()
         assert self._dem is not None
-        b = self._dem.bounds
+        b = self._dem.bounds  # type: ignore[attr-defined]
 
         if self._dem_crs != "EPSG:4326":
             # Transform corners to WGS84

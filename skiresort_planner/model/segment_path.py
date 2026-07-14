@@ -11,9 +11,10 @@ Reference: DETAILS.md
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
+from typing import TYPE_CHECKING, ClassVar, TypeVar, cast
 
 from skiresort_planner.constants import SlopeConfig
+from skiresort_planner.model.node_connected import NodeConnected
 
 if TYPE_CHECKING:
     from skiresort_planner.model.path_point import PathPoint
@@ -37,15 +38,15 @@ def steepest_section_pct(segments: list["PathSegment"]) -> float:
 
 
 @dataclass
-class SegmentPath:
+class SegmentPath(NodeConnected):
     """A named chain of segments between two nodes.
 
     Attributes:
         id: Unique identifier (prefix defined by subclass ID_PREFIX).
         name: Display name with number prefix.
         segment_ids: Ordered list of segment IDs.
-        start_node_id: ID of first node.
-        end_node_id: ID of last node.
+        start_node_id: Boundary node the chain starts at (the first segment's start node).
+        end_node_id: Boundary node the chain ends at (the last segment's end node).
     """
 
     id: str
@@ -95,7 +96,7 @@ class SegmentPath:
 
     def get_all_points(self, segments: dict[str, "PathSegment"]) -> list["PathPoint"]:
         """All points across segments, deduplicated at shared junction nodes."""
-        all_points: list["PathPoint"] = []
+        all_points: list[PathPoint] = []
         for seg_id in self.segment_ids:
             seg = segments.get(seg_id)
             if seg:
@@ -112,14 +113,14 @@ class SegmentPath:
         return any(segments[sid].has_warnings for sid in self.segment_ids if sid in segments)
 
     @classmethod
-    def from_dict(cls: type[T], data: dict[str, Any]) -> T:
+    def from_dict(cls: type[T], data: dict[str, object]) -> T:
         """Create an instance from a serialized dict."""
         return cls(
-            id=data["id"],
-            name=data["name"],
-            segment_ids=data["segment_ids"],
-            start_node_id=data["start_node_id"],
-            end_node_id=data["end_node_id"],
+            id=cast(str, data["id"]),
+            name=cast(str, data["name"]),
+            segment_ids=cast(list[str], data["segment_ids"]),
+            start_node_id=cast(str, data["start_node_id"]),
+            end_node_id=cast(str, data["end_node_id"]),
         )
 
     def __repr__(self) -> str:

@@ -38,7 +38,7 @@ class TestGetClickId:
 
     def test_object_and_coord_combined(self) -> None:
         cid = _get_click_id(obj={"type": "lift", "id": "L1"}, coord=[1.0, 2.0])
-        assert "lift_L1" in cid and "coord_" in cid
+        assert cid == "lift_L1_coord_1.00000_2.00000"
 
     def test_no_data_is_empty(self) -> None:
         assert _get_click_id(obj=None, coord=None) == ""
@@ -79,10 +79,14 @@ class TestRenderPydeckMapParsing:
             "eventType": "click",
         }
         result = self._run(fake_st, monkeypatch, event=event)
-        assert result.is_object_click
+        assert result.is_object_click and not result.is_terrain_click
+        assert result.clicked_coordinate == [10.5, 46.5]
+        assert result.clicked_object is not None
         assert result.clicked_object["type"] == "slope"
         assert result.clicked_object["id"] == "SL1"
-        assert "coordinate" not in result.clicked_object  # stripped
+        assert result.clicked_object["position"] == [10.5, 46.5, 1.0]  # object fields survive
+        assert "coordinate" not in result.clicked_object  # only coordinate stripped
+        assert "eventType" not in result.clicked_object  # only eventType stripped
 
     def test_duplicate_click_deduplicated(self, fake_st, monkeypatch) -> None:
         event = {"type": "slope", "id": "SL1", "coordinate": [10.5, 46.5], "eventType": "click"}

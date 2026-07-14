@@ -71,3 +71,21 @@ class PathPoint:
 
     def __repr__(self) -> str:
         return f"PathPoint(lon={self.lon:.5f}, lat={self.lat:.5f}, elev={self.elevation:.1f}m)"
+
+
+def endpoints_match(
+    pair_a: tuple["PathPoint", "PathPoint"],
+    pair_b: tuple["PathPoint", "PathPoint"],
+    tol_m: float,
+) -> bool:
+    """True if the two entities span the same pair of endpoints (each within tol_m, either order).
+
+    A direct geometric comparison of two endpoint pairs — no rounding, no shared node registry, so
+    it stays correct even where many runs cluster around one junction. Used to detect that a run
+    (from OSM re-import or built by hand) already exists: import snaps endpoints onto junction
+    nodes, so tol_m is the snap distance (STEP_SIZE_M) to absorb that shift.
+    """
+    (a1, a2), (b1, b2) = pair_a, pair_b
+    return (a1.distance_to(other=b1) <= tol_m and a2.distance_to(other=b2) <= tol_m) or (
+        a1.distance_to(other=b2) <= tol_m and a2.distance_to(other=b1) <= tol_m
+    )

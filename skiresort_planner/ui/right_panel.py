@@ -13,7 +13,9 @@ Design Principles:
 """
 
 import logging
-from typing import TYPE_CHECKING, Callable
+from abc import ABC, abstractmethod
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Literal
 
 import streamlit as st
 
@@ -21,8 +23,12 @@ from skiresort_planner.constants import MapConfig, SlopeConfig, StyleConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.message import (
+    ImportActionMessage,
+    ImportPlacingContextMessage,
     LiftActionMessage,
     LiftPlacingContextMessage,
+    MergeActionMessage,
+    MergePlacingContextMessage,
     RoadActionMessage,
     RoadPlacingContextMessage,
     SegmentWarningMessage,
@@ -32,21 +38,21 @@ from skiresort_planner.model.message import (
 )
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.actions import (
-    bump_map_version,
-    delete_lift_action,
-    delete_road_action,
-    delete_slope_action,
-    reload_map,
-    trigger_rerun,
+    confirm_import_action,
+    confirm_merge_action,
+    rename_entity_action,
 )
-from skiresort_planner.ui.context import EntityKind
-from skiresort_planner.ui.state_machine import PlannerContext, PlannerStateMachine
+from skiresort_planner.ui.context import EntityKind, PlannerContext
+from skiresort_planner.ui.infra import bump_map_version, reload_map, trigger_rerun
+from skiresort_planner.ui.state_machine import PlannerStateMachine
 
 if TYPE_CHECKING:
     from skiresort_planner.model.lift import Lift
+    from skiresort_planner.model.message import Message
     from skiresort_planner.model.proposed_path import ProposedPathSegment
     from skiresort_planner.model.road import Road
     from skiresort_planner.model.slope import Slope
+    from skiresort_planner.ui.mode_registry import EntityKindSpec
 
 logger = logging.getLogger(__name__)
 
@@ -89,16 +95,41 @@ def _confirm_delete_dialog(
             trigger_rerun()
 
 
+@st.dialog("Rename")
+def _rename_dialog(entity_id: str, current_name: str) -> None:
+    """Prompt for a new name for a slope, road, or lift and apply it on Save."""
+    new_name = st.text_input("Name", value=current_name)
+    col_save, col_cancel = st.columns(2)
+    with col_save:
+        if st.button("💾 Save", type="primary", use_container_width=True):
+            rename_entity_action(entity_id=entity_id, new_name=new_name)
+            trigger_rerun()
+    with col_cancel:
+        if st.button("✖️ Cancel", use_container_width=True):
+            trigger_rerun()
+
+
 # =============================================================================
 # SHARED HELPERS FOR INFO PANELS
 # =============================================================================
+
+
+def _action_button(
+    label: str, *, key: str, help: str, type: Literal["primary", "secondary", "tertiary"] = "secondary"
+) -> bool:
+    """Render one right-panel action button. Returns True when clicked.
+
+    width="stretch" so the button fills its container — full-width when stacked, or the column
+    width when placed inside an st.columns cell (the entity-actions 2x2 grid).
+    """
+    return st.button(label, key=key, width="stretch", help=help, type=type)
 
 
 def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, kind: EntityKind, entity_id: str) -> None:
     """Render 3D/2D view toggle button. Calls reload_map() if button is clicked."""
     noun = kind.value
     if ctx.viewing.view_3d:
-        if st.button("🗺️ Return to 2D View", key=f"{noun}_2d_view", use_container_width=True):
+        if _action_button("🗺️ Return to 2D View", key=f"{noun}_2d_view", help="Return to the top-down 2D map"):
             logger.info(f"Switching to 2D view from {noun} {entity_id}")
             ctx.viewing.disable_3d()
             # Reset pitch, bearing, and zoom to top-down 2D view
@@ -108,9 +139,9 @@ def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, kind: Enti
             # Update map center to entity center so we don't jump to stale position.
             # The viewed entity is guaranteed to exist (caller validated it). enum_eq is
             # reload-safe: EntityKind survives Streamlit reloads while the class is redefined.
-            if enum_eq(kind, EntityKind.SLOPE) or enum_eq(kind, EntityKind.ROAD):
+            if enum_eq(a=kind, b=EntityKind.SLOPE) or enum_eq(a=kind, b=EntityKind.ROAD):
                 # Both are segment groups → center on their segment endpoints.
-                owner = graph.slopes[entity_id] if enum_eq(kind, EntityKind.SLOPE) else graph.roads[entity_id]
+                owner = graph.slopes[entity_id] if enum_eq(a=kind, b=EntityKind.SLOPE) else graph.roads[entity_id]
                 lats, lons = [], []
                 for seg_id in owner.segment_ids:
                     seg = graph.segments[seg_id]
@@ -120,7 +151,7 @@ def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, kind: Enti
                     lons.append(seg.points[-1].lon)
                 ctx.map.lat = sum(lats) / len(lats)
                 ctx.map.lon = sum(lons) / len(lons)
-            elif enum_eq(kind, EntityKind.LIFT):
+            elif enum_eq(a=kind, b=EntityKind.LIFT):
                 lift = graph.lifts[entity_id]
                 start_node = graph.nodes[lift.start_node_id]
                 end_node = graph.nodes[lift.end_node_id]
@@ -129,19 +160,13 @@ def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, kind: Enti
             else:
                 raise ValueError(f"Unknown {kind=}")
             reload_map()  # Never returns - raises StopExecution
-    else:
-        if st.button(
-            "🏔️ View in 3D",
-            key=f"{noun}_3d_view",
-            use_container_width=True,
-            help=f"View {noun} from the side with terrain",
-        ):
-            logger.info(f"Switching to 3D view for {noun} {entity_id}")
-            ctx.viewing.enable_3d()
-            reload_map()  # Never returns - raises StopExecution
+    elif _action_button("🏔️ View in 3D", key=f"{noun}_3d_view", help=f"View {noun} from the side with terrain"):
+        logger.info(f"Switching to 3D view for {noun} {entity_id}")
+        ctx.viewing.enable_3d()
+        reload_map()  # Never returns - raises StopExecution
 
 
-def _render_close_delete_buttons(
+def _render_entity_actions(
     sm: PlannerStateMachine,
     ctx: PlannerContext,
     graph: ResortGraph,
@@ -150,15 +175,26 @@ def _render_close_delete_buttons(
     entity: "Slope | Lift | Road",
     delete_fn: Callable[[str], bool],
 ) -> None:
-    """Render close and delete buttons. Triggers state transition or opens dialog."""
+    """Render the viewed-entity action buttons in a 2x2 grid: 3D toggle + Rename on top,
+    Close + Delete on the bottom, so every entity panel reads identically.
+    """
     noun = kind.value
-    col_close, col_delete = st.columns(2)
-    with col_close:
-        if st.button(
-            "✖️ Close",
-            key=f"close_{noun}",
-            help="Close this panel to start building new slopes and lifts",
-        ):
+
+    top_left, top_right = st.columns(2)
+    bottom_left, bottom_right = st.columns(2)
+
+    # Top-left: 3D / 2D toggle (own reload_map side effects live in the helper).
+    with top_left:
+        _render_3d_toggle_button(ctx=ctx, graph=graph, kind=kind, entity_id=entity_id)
+
+    # Top-right: Rename.
+    with top_right:
+        if _action_button("✏️ Rename", key=f"rename_{noun}", help=f"Give this {noun} a custom name"):
+            _rename_dialog(entity_id=entity_id, current_name=entity.name)
+
+    # Bottom-left: Close.
+    with bottom_left:
+        if _action_button("✖️ Close", key=f"close_{noun}", help="Close this panel to start building again"):
             logger.info(f"Closing {noun} panel for {entity_id}")
             ctx.viewing.disable_3d()
             # Reset pitch and bearing to top-down view (preserve zoom level)
@@ -168,13 +204,10 @@ def _render_close_delete_buttons(
             # Uses close_panel event - SM resolves to appropriate transition
             # State transition triggers st.rerun() via listener - never returns
             sm.hide_info_panel()
-    with col_delete:
-        if st.button(
-            "🗑️ Delete",
-            type="secondary",
-            key=f"delete_{noun}",
-            help=f"Permanently remove this {noun}",
-        ):
+
+    # Bottom-right: Delete.
+    with bottom_right:
+        if _action_button("🗑️ Delete", key=f"delete_{noun}", help=f"Permanently remove this {noun}"):
             _confirm_delete_dialog(
                 kind=kind,
                 entity_name=entity.name,
@@ -184,8 +217,303 @@ def _render_close_delete_buttons(
 
 
 # =============================================================================
-# STATE DISPATCH
+# CONTROL PANEL BASE + PER-STATE PANELS
 # =============================================================================
+
+
+class ControlPanel(ABC):
+    """Base for every right-side control panel — one per BuildState.
+
+    A panel is described by exactly three parts, and `render()` is the fixed template that
+    lays them out in order:
+
+        1. `context_message()` — the BLUE "where you are" message (or None for explicitly none)
+        2. `action_message()`  — the YELLOW "what to do now" message (or None)
+        3. `buttons()`         — the interactive controls (stats, confirm/commit/cancel, entity actions)
+
+    The three methods are abstract, so a new state's panel CANNOT silently forget its blue message,
+    its yellow message, or its buttons — the class won't instantiate until all three exist. Returning
+    None from a message method is the explicit "this panel has no such message" (not a forgotten one).
+    """
+
+    def __init__(
+        self,
+        sm: PlannerStateMachine,
+        ctx: PlannerContext,
+        graph: ResortGraph,
+        on_commit: Callable[[int], None],
+        on_cancel_connection: Callable[[], None],
+    ) -> None:
+        self.sm = sm
+        self.ctx = ctx
+        self.graph = graph
+        self.on_commit = on_commit
+        self.on_cancel_connection = on_cancel_connection
+
+    @abstractmethod
+    def context_message(self) -> "Message | None":
+        """The blue context message, or None if this panel shows none."""
+
+    @abstractmethod
+    def action_message(self) -> "Message | None":
+        """The yellow action instruction, or None if this panel shows none."""
+
+    @abstractmethod
+    def buttons(self) -> None:
+        """Render the panel's interactive controls (stats, confirm/commit/cancel, entity actions)."""
+
+    def render(self) -> None:
+        """Fixed template: blue message → yellow message → buttons. Never overridden."""
+        context = self.context_message()
+        if context is not None:
+            context.display()
+        action = self.action_message()
+        if action is not None:
+            action.display()
+        self.buttons()
+
+
+class EmptyControlPanel(ControlPanel):
+    """IDLE_READY: nothing to show — the map fills the space, no panel content."""
+
+    def context_message(self) -> "Message | None":
+        return None
+
+    def action_message(self) -> "Message | None":
+        return None
+
+    def buttons(self) -> None:
+        return None
+
+
+class EntityInfoControlPanel(ControlPanel):
+    """A viewed slope/road/lift: a stats block + the four entity actions (3D toggle, Rename, Close,
+    Delete), no blue/yellow message. The per-kind pieces come from the injected ``EntityKindSpec``.
+    """
+
+    def __init__(
+        self,
+        sm: PlannerStateMachine,
+        ctx: PlannerContext,
+        graph: ResortGraph,
+        on_commit: Callable[[int], None],
+        on_cancel_connection: Callable[[], None],
+        spec: "EntityKindSpec",
+    ) -> None:
+        super().__init__(
+            sm=sm,
+            ctx=ctx,
+            graph=graph,
+            on_commit=on_commit,
+            on_cancel_connection=on_cancel_connection,
+        )
+        self.spec = spec
+
+    def context_message(self) -> "Message | None":
+        return None
+
+    def action_message(self) -> "Message | None":
+        return None
+
+    def buttons(self) -> None:
+        kind = self.spec.kind
+        entity_id = self.spec.viewed_entity_id(self.ctx)
+        if entity_id is None:
+            raise ValueError(f"viewing.{kind.value}_id must be set when showing the {kind.value} panel")
+        entity = self.spec.get_entity(graph=self.graph, entity_id=entity_id)
+        if entity is None:
+            raise ValueError(f"{kind.value.capitalize()} {entity_id} must exist when panel shows it")
+
+        self.spec.render_stats(graph=self.graph, entity_id=entity_id)
+        _render_entity_actions(
+            sm=self.sm,
+            ctx=self.ctx,
+            graph=self.graph,
+            kind=kind,
+            entity_id=entity_id,
+            entity=entity,
+            delete_fn=self.spec.delete_action,
+        )
+
+
+class SlopeBuildingControlPanel(ControlPanel):
+    """SLOPE_STARTING / SLOPE_BUILDING / SLOPE_CUSTOM_PATH: progress + path selection."""
+
+    def context_message(self) -> "Message | None":
+        name = self.ctx.slope_build.name or "Unnamed Slope"
+        segs = len(self.ctx.slope_build.segments)
+        if segs > 0:
+            stats = self.graph.get_segment_stats(segment_ids=self.ctx.slope_build.segments)
+            return SlopeBuildingContextMessage(
+                slope_name=name,
+                num_segments=segs,
+                difficulty_emoji=StyleConfig.DIFFICULTY_EMOJIS[stats["difficulty"]],
+                total_drop_m=stats["total_drop"],
+                total_length_m=stats["total_length"],
+                avg_gradient_pct=stats["avg_gradient"],
+                max_gradient_pct=stats["max_gradient"],
+                start_elevation_m=stats["start_elev"],
+                current_elevation_m=stats["current_elev"],
+            )
+        return SlopeStartingContextMessage(
+            slope_name=name,
+            start_node_id=self.ctx.slope_build.start_node_id,
+            start_lat=self.ctx.selection.lat,
+            start_lon=self.ctx.selection.lon,
+        )
+
+    def action_message(self) -> "Message | None":
+        # PathSelectionPanel owns the yellow action message (it depends on the selected proposal).
+        return None
+
+    def buttons(self) -> None:
+        PathSelectionPanel(
+            context=self.ctx,
+            graph=self.graph,
+            on_commit=self.on_commit,
+            on_cancel_connection=self.on_cancel_connection,
+        ).render()
+
+
+class LiftPlacingControlPanel(ControlPanel):
+    """LIFT_PLACING: bottom-station context + 'select top station' action (no buttons)."""
+
+    def _start_elevation(self) -> float:
+        if self.ctx.lift.start_node_id:
+            node = self.graph.nodes.get(self.ctx.lift.start_node_id)
+            return node.elevation if node else 0.0
+        if self.ctx.lift.start_location:
+            return self.ctx.lift.start_location.elevation
+        raise RuntimeError("LiftPlacing state requires start_node_id or start_location to be set")
+
+    def context_message(self) -> "Message | None":
+        lift_icon = StyleConfig.LIFT_ICONS[self.ctx.lift.type]
+        if self.ctx.lift.start_node_id:
+            node = self.graph.nodes.get(self.ctx.lift.start_node_id)
+            return LiftPlacingContextMessage(
+                lift_type=self.ctx.lift.type,
+                lift_icon=lift_icon,
+                bottom_node_id=self.ctx.lift.start_node_id,
+                bottom_elevation_m=node.elevation if node else 0.0,
+            )
+        if self.ctx.lift.start_location:
+            loc = self.ctx.lift.start_location
+            return LiftPlacingContextMessage(
+                lift_type=self.ctx.lift.type,
+                lift_icon=lift_icon,
+                bottom_lat=loc.lat,
+                bottom_lon=loc.lon,
+                bottom_elevation_m=loc.elevation,
+            )
+        raise RuntimeError("LiftPlacing state requires start_node_id or start_location to be set")
+
+    def action_message(self) -> "Message | None":
+        return LiftActionMessage(is_awaiting_top=True, bottom_elevation_m=self._start_elevation())
+
+    def buttons(self) -> None:
+        return None
+
+
+class ImportPlacingControlPanel(ControlPanel):
+    """IMPORT_PLACING: box context + confirm-area action + Confirm Import button."""
+
+    def context_message(self) -> "Message | None":
+        center_lon = self.ctx.deferred.osm_import_center_lon
+        center_lat = self.ctx.deferred.osm_import_center_lat
+        if center_lon is None or center_lat is None:
+            raise RuntimeError("ImportPlacing state requires a placed box center")
+        return ImportPlacingContextMessage(
+            center_lat=center_lat,
+            center_lon=center_lon,
+            half_width_km=self.ctx.deferred.osm_import_half_width_km,
+        )
+
+    def action_message(self) -> "Message | None":
+        return ImportActionMessage()
+
+    def buttons(self) -> None:
+        if st.button("✅ Confirm Import", type="primary", width="stretch", help="Fetch and import this area from OSM"):
+            logger.info("UI: Confirm Import clicked")
+            confirm_import_action()
+
+
+class MergePlacingControlPanel(ControlPanel):
+    """MERGE_PLACING: selection context + merge action + Confirm Merge button.
+
+    The Confirm button is disabled until at least two nodes are selected. It stays enabled even when
+    the span exceeds the limit — confirm_merge_action shows a too-far toast and changes nothing, so
+    the user learns why rather than staring at a silently dead button.
+    """
+
+    def _span_m(self) -> float:
+        return self.graph.max_node_span_m(self.ctx.merge.node_ids)
+
+    def context_message(self) -> "Message | None":
+        return MergePlacingContextMessage(
+            selected_count=len(self.ctx.merge.node_ids),
+            span_m=self._span_m(),
+        )
+
+    def action_message(self) -> "Message | None":
+        return MergeActionMessage(selected_count=len(self.ctx.merge.node_ids))
+
+    def buttons(self) -> None:
+        count = len(self.ctx.merge.node_ids)
+        enough = count >= 2
+        if st.button(
+            "🔗 Confirm Merge",
+            type="primary",
+            width="stretch",
+            disabled=not enough,
+            help=("Select at least 2 nodes to merge" if not enough else "Collapse the selected nodes to their median"),
+        ):
+            logger.info(f"UI: Confirm Merge clicked for {count} nodes")
+            confirm_merge_action()
+
+
+class RoadBuildingControlPanel(ControlPanel):
+    """ROAD_STARTING / ROAD_BUILDING: origin context + action + proposal browse/commit."""
+
+    def context_message(self) -> "Message | None":
+        if self.ctx.road_build.endpoints:
+            endpoint = self.graph.nodes.get(self.ctx.road_build.endpoints[-1])
+            return RoadPlacingContextMessage(
+                start_node_id=self.ctx.road_build.endpoints[-1],
+                start_elevation_m=endpoint.elevation if endpoint else 0.0,
+                segment_count=len(self.ctx.road_build.segments),
+            )
+        if self.ctx.road_build.start_node_id:
+            node = self.graph.nodes.get(self.ctx.road_build.start_node_id)
+            return RoadPlacingContextMessage(
+                start_node_id=self.ctx.road_build.start_node_id,
+                start_elevation_m=node.elevation if node else 0.0,
+            )
+        if self.ctx.road_build.start_location:
+            loc = self.ctx.road_build.start_location
+            return RoadPlacingContextMessage(
+                start_lat=loc.lat,
+                start_lon=loc.lon,
+                start_elevation_m=loc.elevation,
+            )
+        raise RuntimeError("Road building state requires an endpoint, start_node_id, or start_location")
+
+    def action_message(self) -> "Message | None":
+        return RoadActionMessage()
+
+    def buttons(self) -> None:
+        num_paths = len(self.ctx.proposals.paths)
+        if num_paths == 0:
+            return
+        selected_idx = self.ctx.proposals.selected_idx if self.ctx.proposals.selected_idx is not None else 0
+        _render_proposal_browser(ctx=self.ctx, key_prefix="road_path", noun="options")
+        label, help_text = _commit_button_label(
+            self.ctx.proposals.paths[selected_idx],
+            continue_label="✅ Commit Road Segment",
+            continue_help="Add this segment and keep extending the road",
+        )
+        if st.button(label, type="primary", width="stretch", help=help_text):
+            logger.info(f"UI: Commit road clicked for proposal {selected_idx}")
+            self.on_commit(selected_idx)
 
 
 def _render_proposal_browser(ctx: PlannerContext, *, key_prefix: str, noun: str) -> None:
@@ -212,302 +540,6 @@ def _render_proposal_browser(ctx: PlannerContext, *, key_prefix: str, noun: str)
         if st.button("▶", key=f"next_{key_prefix}", width="stretch", help="Next"):
             ctx.proposals.selected_idx = (selected_idx + 1) % num_paths
             reload_map()
-
-
-def render_control_panel(
-    sm: PlannerStateMachine,
-    ctx: PlannerContext,
-    graph: ResortGraph,
-    on_commit: Callable[[int], None],
-    on_cancel_connection: Callable[[], None],
-) -> None:
-    """Render the appropriate control panel for the current state.
-
-    Panel visibility is orthogonal to state - the info panel can be shown
-    in any idle state without requiring a state transition.
-
-    Raises:
-        RuntimeError: If current state has no registered panel renderer
-    """
-    # Use state machine properties instead of string comparison
-    if sm.is_idle:
-        renderer = _render_idle_panel
-    elif sm.is_any_slope_state:
-        renderer = _render_slope_building_panel
-    elif sm.is_lift_placing:
-        renderer = _render_lift_placing_panel
-    elif sm.is_any_road_state:
-        renderer = _render_road_building_panel
-    else:
-        raise RuntimeError(
-            f"No control panel renderer for state '{sm.get_state_name()}'. "
-            f"Expected idle, slope building, lift placing, or road building state."
-        )
-
-    renderer(
-        sm=sm,
-        ctx=ctx,
-        graph=graph,
-        on_commit=on_commit,
-        on_cancel_connection=on_cancel_connection,
-    )
-
-
-def _render_idle_panel(
-    sm: PlannerStateMachine,
-    ctx: PlannerContext,
-    graph: ResortGraph,
-    on_commit: Callable[[int], None],
-    on_cancel_connection: Callable[[], None],
-) -> None:
-    """Render control panel for IDLE state.
-
-    If panel is visible, show slope or lift stats depending on what's selected.
-    Otherwise show nothing (empty panel).
-    """
-    if sm.is_idle_viewing_slope:
-        _render_slope_info_panel(sm=sm, ctx=ctx, graph=graph)
-    elif sm.is_idle_viewing_lift:
-        _render_lift_info_panel(sm=sm, ctx=ctx, graph=graph)
-    elif sm.is_idle_viewing_road:
-        _render_road_info_panel(sm=sm, ctx=ctx, graph=graph)
-
-
-def _render_slope_building_panel(
-    sm: PlannerStateMachine,
-    ctx: PlannerContext,
-    graph: ResortGraph,
-    on_commit: Callable[[int], None],
-    on_cancel_connection: Callable[[], None],
-) -> None:
-    """Render control panel for SLOPE_BUILDING state - progress + path selection."""
-    # Render progress context message (blue) first
-    _render_slope_progress_message(ctx=ctx, graph=graph)
-
-    # Then render path selection panel (yellow action message + controls)
-    PathSelectionPanel(
-        context=ctx,
-        graph=graph,
-        on_commit=on_commit,
-        on_cancel_connection=on_cancel_connection,
-    ).render()
-
-
-def _render_slope_progress_message(ctx: PlannerContext, graph: ResortGraph) -> None:
-    """Render the slope progress context message (blue)."""
-    name = ctx.slope_build.name or "Unnamed Slope"
-    segs = len(ctx.slope_build.segments)
-    if segs > 0:
-        stats = graph.get_segment_stats(segment_ids=ctx.slope_build.segments)
-        SlopeBuildingContextMessage(
-            slope_name=name,
-            num_segments=segs,
-            difficulty_emoji=StyleConfig.DIFFICULTY_EMOJIS[stats["difficulty"]],
-            total_drop_m=stats["total_drop"],
-            total_length_m=stats["total_length"],
-            avg_gradient_pct=stats["avg_gradient"],
-            max_gradient_pct=stats["max_gradient"],
-            start_elevation_m=stats["start_elev"],
-            current_elevation_m=stats["current_elev"],
-        ).display()
-    else:
-        # New slope with no segments - show start location
-        SlopeStartingContextMessage(
-            slope_name=name,
-            start_node_id=ctx.slope_build.start_node_id,
-            start_lat=ctx.selection.lat,
-            start_lon=ctx.selection.lon,
-        ).display()
-
-
-def _render_lift_placing_panel(
-    sm: PlannerStateMachine,
-    ctx: PlannerContext,
-    graph: ResortGraph,
-    on_commit: Callable[[int], None],
-    on_cancel_connection: Callable[[], None],
-) -> None:
-    """Render control panel for LIFT_PLACING state - progress + action."""
-    lift_icon = StyleConfig.LIFT_ICONS[ctx.lift.type]
-
-    # Render progress context message (blue) first
-    if ctx.lift.start_node_id:
-        node = graph.nodes.get(ctx.lift.start_node_id)
-        LiftPlacingContextMessage(
-            lift_type=ctx.lift.type,
-            lift_icon=lift_icon,
-            bottom_node_id=ctx.lift.start_node_id,
-            bottom_elevation_m=node.elevation if node else 0.0,
-        ).display()
-    elif ctx.lift.start_location:
-        loc = ctx.lift.start_location
-        LiftPlacingContextMessage(
-            lift_type=ctx.lift.type,
-            lift_icon=lift_icon,
-            bottom_lat=loc.lat,
-            bottom_lon=loc.lon,
-            bottom_elevation_m=loc.elevation,
-        ).display()
-    else:
-        raise RuntimeError("LiftPlacing state requires start_node_id or start_location to be set")
-
-    # Then render action instruction (yellow)
-    start_elev = 0.0
-    if ctx.lift.start_node_id:
-        start_node = graph.nodes.get(ctx.lift.start_node_id)
-        if start_node:
-            start_elev = start_node.elevation
-    elif ctx.lift.start_location:
-        start_elev = ctx.lift.start_location.elevation
-
-    LiftActionMessage(is_awaiting_top=True, bottom_elevation_m=start_elev).display()
-
-
-def _render_road_building_panel(
-    sm: PlannerStateMachine,
-    ctx: PlannerContext,
-    graph: ResortGraph,
-    on_commit: Callable[[int], None],
-    on_cancel_connection: Callable[[], None],
-) -> None:
-    """Render control panel while building a road (ROAD_STARTING / ROAD_BUILDING).
-
-    Shows a progress context message (origin point + committed segment count)
-    then the action instruction. The road is finished from the sidebar.
-    """
-    # Progress context (blue): where the road currently extends from.
-    if ctx.road_build.endpoints:
-        endpoint = graph.nodes.get(ctx.road_build.endpoints[-1])
-        RoadPlacingContextMessage(
-            start_node_id=ctx.road_build.endpoints[-1],
-            start_elevation_m=endpoint.elevation if endpoint else 0.0,
-            segment_count=len(ctx.road_build.segments),
-        ).display()
-    elif ctx.road_build.start_node_id:
-        node = graph.nodes.get(ctx.road_build.start_node_id)
-        RoadPlacingContextMessage(
-            start_node_id=ctx.road_build.start_node_id,
-            start_elevation_m=node.elevation if node else 0.0,
-        ).display()
-    elif ctx.road_build.start_location:
-        loc = ctx.road_build.start_location
-        RoadPlacingContextMessage(
-            start_lat=loc.lat,
-            start_lon=loc.lon,
-            start_elevation_m=loc.elevation,
-        ).display()
-    else:
-        raise RuntimeError("Road building state requires an endpoint, start_node_id, or start_location")
-
-    # Action instruction (yellow).
-    RoadActionMessage().display()
-
-    # Proposal browse + commit — roads work exactly like slope custom-connect:
-    # proposals have NO endpoint markers, so selection is via the ◀ ▶ arrows or a
-    # proposal-body click, and committing is ONLY via this button.
-    num_paths = len(ctx.proposals.paths)
-    if num_paths == 0:
-        return
-
-    selected_idx = ctx.proposals.selected_idx if ctx.proposals.selected_idx is not None else 0
-
-    _render_proposal_browser(ctx=ctx, key_prefix="road_path", noun="options")
-
-    label, help_text = _commit_button_label(
-        ctx.proposals.paths[selected_idx],
-        continue_label="✅ Commit Road Segment",
-        continue_help="Add this segment and keep extending the road",
-    )
-    if st.button(label, type="primary", width="stretch", help=help_text):
-        logger.info(f"UI: Commit road clicked for proposal {selected_idx}")
-        on_commit(selected_idx)
-
-
-def _render_slope_info_panel(
-    sm: PlannerStateMachine,
-    ctx: PlannerContext,
-    graph: ResortGraph,
-) -> None:
-    """Render slope info panel with stats and actions (close/delete/3D view)."""
-    slope_id = ctx.viewing.slope_id
-    if slope_id is None:
-        raise ValueError("viewing.slope_id must be set when showing slope panel")
-
-    slope = graph.slopes.get(slope_id)
-    if slope is None:
-        raise ValueError(f"Slope {slope_id} must exist when panel shows it")
-
-    SlopeStatsPanel(graph=graph).render(slope_id=slope_id)
-
-    _render_3d_toggle_button(ctx=ctx, graph=graph, kind=EntityKind.SLOPE, entity_id=slope_id)
-
-    _render_close_delete_buttons(
-        sm=sm,
-        ctx=ctx,
-        graph=graph,
-        kind=EntityKind.SLOPE,
-        entity_id=slope_id,
-        entity=slope,
-        delete_fn=delete_slope_action,
-    )
-
-
-def _render_lift_info_panel(
-    sm: PlannerStateMachine,
-    ctx: PlannerContext,
-    graph: ResortGraph,
-) -> None:
-    """Render lift info panel with stats and actions (close/delete/3D view)."""
-    lift_id = ctx.viewing.lift_id
-    if lift_id is None:
-        raise ValueError("viewing.lift_id must be set when showing lift panel")
-
-    lift = graph.lifts.get(lift_id)
-    if lift is None:
-        raise ValueError(f"Lift {lift_id} must exist when panel shows it")
-
-    LiftStatsPanel(graph=graph).render(lift_id=lift_id)
-
-    _render_3d_toggle_button(ctx=ctx, graph=graph, kind=EntityKind.LIFT, entity_id=lift_id)
-
-    _render_close_delete_buttons(
-        sm=sm,
-        ctx=ctx,
-        graph=graph,
-        kind=EntityKind.LIFT,
-        entity_id=lift_id,
-        entity=lift,
-        delete_fn=delete_lift_action,
-    )
-
-
-def _render_road_info_panel(
-    sm: PlannerStateMachine,
-    ctx: PlannerContext,
-    graph: ResortGraph,
-) -> None:
-    """Render road info panel with stats and actions (close/delete/3D view)."""
-    road_id = ctx.viewing.road_id
-    if road_id is None:
-        raise ValueError("viewing.road_id must be set when showing road panel")
-
-    road = graph.roads.get(road_id)
-    if road is None:
-        raise ValueError(f"Road {road_id} must exist when panel shows it")
-
-    RoadStatsPanel(graph=graph).render(road_id=road_id)
-
-    _render_3d_toggle_button(ctx=ctx, graph=graph, kind=EntityKind.ROAD, entity_id=road_id)
-
-    _render_close_delete_buttons(
-        sm=sm,
-        ctx=ctx,
-        graph=graph,
-        kind=EntityKind.ROAD,
-        entity_id=road_id,
-        entity=road,
-        delete_fn=delete_road_action,
-    )
 
 
 # =============================================================================

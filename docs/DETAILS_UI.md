@@ -115,6 +115,7 @@ Click **"🏔️ View in 3D"** to see the slope from an angled perspective with 
 
 ### Actions
 
+- **✏️ Rename** — Give the slope a custom name (opens a dialog; the name persists and survives save/reload)
 - **✖️ Close** — Return to build mode
 - **🗑️ Delete** — Remove the slope (confirms first, can be undone)
 
@@ -246,7 +247,11 @@ Click on any **lift** (the purple line or its icon) to open the statistics panel
 
 ### Changing Lift Type
 
-While viewing a lift, click a different lift button in the sidebar to **change its type**. This updates the pylon configuration and cable profile.
+While viewing a lift, click a different lift button in the sidebar to **change its type**. This updates the pylon configuration and cable profile. The lift's **name is kept**.
+
+### Renaming
+
+Click **✏️ Rename** to give a lift (or slope or road) a custom name. It persists in saved resorts and survives reloads and lift-type changes.
 
 ### 3D View
 
@@ -295,7 +300,7 @@ Click any road (its brown line or icon) to open its panel:
 | **Elevation Change** | Net rise/fall (signed) |
 | **Steepest Section** | Steepest 300m section (magnitude), always ≤15% |
 
-As with slopes and lifts, you can view the road's elevation profile, switch to **🏔️ 3D**, **🗑️ Delete** it, or **↩️ Undo**.
+As with slopes and lifts, you can view the road's elevation profile, switch to **🏔️ 3D**, **✏️ Rename** it, **🗑️ Delete** it, or **↩️ Undo**.
 
 ---
 
@@ -304,8 +309,13 @@ As with slopes and lifts, you can view the road's elevation profile, switch to *
 ### Build Mode Selector
 
 - **⛷️ Slope** — Click terrain to start a new ski slope
-- **🪑🚡🎿🚠 Lift buttons** — Click terrain to place a lift
 - **🛣️ Road** — Build a gentle car road segment by segment
+- **🎿🪑🚡🚠 Lift buttons** — Click terrain to place a lift (Surface, Chair, Gondola, Aerial Tram)
+
+Below a divider sit two **utility** buttons:
+
+- **🗺️ Import (OSM)** — load real lifts & pistes for an area.
+- **🔗 Node Merge** — collapse selected junction nodes into one
 
 The currently active mode is highlighted.
 
@@ -315,7 +325,7 @@ The currently active mode is highlighted.
 |---------|--------|
 | **Segment Length Slider** | Adjust path length (100–1000m) |
 | **🏁 Finish Committed Slope** | Complete and name the current slope |
-| **✖️ Cancel Slope** | Discard all uncommitted segments |
+| **✖️ Cancel Full Slope** | Discard all uncommitted segments |
 
 ### During Lift Placement
 
@@ -330,10 +340,18 @@ The currently active mode is highlighted.
 | **🏁 Finish Committed Road** | Finalize the road (enabled after ≥1 segment) |
 | **✖️ Cancel Road** | Discard the whole in-progress road, return to idle |
 
+### Search for a Place
+
+In the **Always Available** controls (alongside Undo and Reset View) is a 🔍 search field. Type a
+place name — a ski resort, a town, a mountain, anything OpenStreetMap knows — and press **Enter**
+(or click the **🔍** button). The map jumps to the best match. If nothing is found you get a
+**"No place found"** notice and the map stays put.
+
 ### Always Available
 
 | Control | Action |
 |---------|--------|
+| **🔍 Search** | Type a place name + Enter to center the map on it |
 | **↩️ Undo Last Action** | Reverse the most recent change |
 | **📷 Reset View** | Return camera to default position |
 
@@ -354,20 +372,47 @@ The sidebar shows cumulative stats:
 
 ## Save and Load
 
+Save and load live under the **💾 Resort Data** expander in the sidebar.
+
 ### Saving Your Resort
 
-Click **💾 Save Resort** to download a JSON file containing:
+Click **💾 Save to File** to download a JSON file containing:
 - All slopes with segments and waypoints
 - All lifts with pylon positions
 - Node connections
 
 ### Loading a Resort
 
-Click **📂 Load Resort** and select a previously saved JSON file.
+Click **📂 Load from File** and select a previously saved JSON file.
 
 ### Export GPX
 
 Click **📤 Export GPX** to download GPS tracks of your slopes for use in other applications.
+
+---
+
+## Import from OpenStreetMap
+
+Instead of starting from an empty map, load a real resort's existing lifts and pistes as a
+canvas, then keep editing with the normal tools.
+
+1. Select **🗺️ Import (OSM)** in the build-mode selector (like picking Slope/Road/Lift).
+2. Adjust the **Import area half-width (km)** slider (left) to size the box.
+3. **Click the map** to drop the import area — a blue square + center dot appear where you clicked. Click elsewhere to re-place it; move the slider to resize it live.
+4. **Confirm** by clicking the **center dot** on the map, or the **✅ Confirm Import** button in the right panel. The lifts and pistes fully inside the square are then fetched and added. **Cancel** (left) discards the box.
+
+**What gets imported**
+
+- **Pistes:** only alpine downhill runs. Their colour (difficulty) is computed from the terrain, not copied from OSM.
+- **Lifts:** drag/T-bar → surface lift, chairlift → chairlift, gondola/mixed (incl. 3S and Funitel gondolas) → gondola, cable car → aerial tram. Everything else — stations, pylons, zip-lines, kiddie lifts (magic carpets, rope tows), funiculars — is ignored. Pylons are placed by the terrain, not taken from OSM.
+
+**Good to know**
+
+- **Only named runs import.** Unnamed lifts and pistes are skipped — in OSM they're frequently outdated or duplicate.
+- **Only runs fully inside the area import.** A piste or lift that reaches outside the box is skipped entirely (never half-imported) — enlarge the area or re-center and re-import to get it whole.
+- **Trivial runs are ignored.** Lifts shorter than 300 m and pistes shorter than 200 m are skipped.
+- **Re-importing won't duplicate.** If you import an overlapping area again, runs already in the resort are recognised and skipped.
+- **One Undo removes the whole import**, so you can undo and import a different area.
 
 ---
 
@@ -379,21 +424,14 @@ Click **📤 Export GPX** to download GPS tracks of your slopes for use in other
 
 | Action | How |
 |--------|-----|
+| **Search** | Type a place name in the 🔍 sidebar field + Enter |
 | **Pan** | Click + drag the map |
 | **Zoom** | Mouse wheel or pinch |
 | **Reset View** | Click 📷 button in sidebar |
 
-### Good Starting Points
+> **Tip:** The fastest way to reach a real resort is the **🔍 search** at the top of the sidebar —
+> type e.g. "Zermatt" and press Enter instead of panning there by hand.
 
-✅ Mountain ridges and summits
-✅ Saddles between peaks
-✅ Areas with varied terrain steepness
-
-### Areas to Avoid
-
-❌ Valley floors (too flat)
-❌ Uniform plateaus (boring slopes)
-❌ Areas outside terrain coverage (no elevation data)
 
 ---
 
@@ -423,6 +461,7 @@ Click **📤 Export GPX** to download GPS tracks of your slopes for use in other
 
 | Action | Input |
 |--------|-------|
+| Search a place | Type in 🔍 field + Enter |
 | Pan map | Click + drag |
 | Zoom in/out | Mouse wheel |
 | Start slope | Click terrain (Slope mode) |

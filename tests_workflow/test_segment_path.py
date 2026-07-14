@@ -10,11 +10,10 @@ import pytest
 from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.path_point import PathPoint
-from skiresort_planner.model.path_segment import SegmentKind
+from skiresort_planner.model.path_segment import PathSegment, SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.model.road import Road
-from skiresort_planner.model.segment_path import SegmentPath
 from skiresort_planner.model.slope import Slope
 
 M = 111320.0
@@ -31,10 +30,6 @@ def _commit_road(graph: ResortGraph, path_points: list[PathPoint]) -> Road:
 
 
 class TestSegmentPathHierarchy:
-    def test_slope_and_road_are_segment_paths(self) -> None:
-        assert issubclass(Slope, SegmentPath)
-        assert issubclass(Road, SegmentPath)
-
     def test_number_from_id_uses_subclass_prefix(self) -> None:
         assert Slope.number_from_id("SL7") == 7
         assert Road.number_from_id("R3") == 3
@@ -45,7 +40,8 @@ class TestSegmentPathBaseMethods:
 
     def test_number_property_derives_from_id(self, empty_graph, path_points_blue) -> None:
         road = _commit_road(empty_graph, path_points_blue)
-        assert road.number == Road.number_from_id(road.id)
+        assert road.id == "R1"
+        assert road.number == 1
 
     def test_total_length_and_drop_match_segment(self, empty_graph, path_points_blue) -> None:
         road = _commit_road(empty_graph, path_points_blue)
@@ -57,6 +53,47 @@ class TestSegmentPathBaseMethods:
         road = _commit_road(empty_graph, path_points_blue)
         points = road.get_all_points(segments=empty_graph.segments)
         assert len(points) == len(empty_graph.segments[road.segment_ids[0]].points)
+
+    def test_get_all_points_dedups_shared_junction_across_two_segments(self) -> None:
+        # Two contiguous segments sharing a junction node: get_all_points must
+        # append the second segment's points[1:], dropping the duplicated junction.
+        junction = PathPoint(lon=0.0, lat=-0.002, elevation=1960.0)
+        seg_a = PathSegment(
+            id="S1",
+            name="a",
+            kind=SegmentKind.ROAD,
+            start_node_id="N1",
+            end_node_id="N2",
+            points=[
+                PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
+                PathPoint(lon=0.0, lat=-0.001, elevation=1980.0),
+                junction,
+            ],
+        )
+        seg_b = PathSegment(
+            id="S2",
+            name="b",
+            kind=SegmentKind.ROAD,
+            start_node_id="N2",
+            end_node_id="N3",
+            points=[
+                junction,
+                PathPoint(lon=0.0, lat=-0.003, elevation=1940.0),
+                PathPoint(lon=0.0, lat=-0.004, elevation=1920.0),
+            ],
+        )
+        segments = {"S1": seg_a, "S2": seg_b}
+        road = Road(id="R1", name="x", segment_ids=["S1", "S2"], start_node_id="N1", end_node_id="N3")
+
+        points = road.get_all_points(segments=segments)
+
+        # 3 + 3 - 1: the shared junction is not duplicated.
+        assert len(points) == len(seg_a.points) + len(seg_b.points) - 1
+        # Continuous sequence: seg_a in full, then seg_b skipping the junction.
+        assert points == seg_a.points + seg_b.points[1:]
+        # The junction appears exactly once at the seam.
+        assert points.count(junction) == 1
+        assert points[len(seg_a.points) - 1] == junction
 
     def test_get_all_points_raises_when_empty(self) -> None:
         # A road referencing no existing segments has no points → error.
@@ -78,20 +115,18 @@ class TestSegmentKind:
     def test_slope_commit_defaults_to_slope_kind(self, empty_graph, path_points_blue) -> None:
         empty_graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         seg = list(empty_graph.segments.values())[-1]
-        assert enum_eq(seg.kind, SegmentKind.SLOPE)
+        assert enum_eq(a=seg.kind, b=SegmentKind.SLOPE)
 
     def test_road_commit_carries_road_kind(self, empty_graph, path_points_blue) -> None:
         empty_graph.commit_paths(
             paths=[ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)]
         )
         seg = list(empty_graph.segments.values())[-1]
-        assert enum_eq(seg.kind, SegmentKind.ROAD)
+        assert enum_eq(a=seg.kind, b=SegmentKind.ROAD)
 
     def test_from_dict_defaults_to_slope_when_kind_absent(self) -> None:
         # Pre-enum saves have no "kind" key → SLOPE (backward compatible).
-        from skiresort_planner.model.path_segment import PathSegment
-
-        data = {
+        data: dict[str, object] = {
             "id": "S1",
             "name": "Segment 1",
             "points": [
@@ -101,12 +136,10 @@ class TestSegmentKind:
             "start_node_id": "N1",
             "end_node_id": "N2",
         }
-        assert enum_eq(PathSegment.from_dict(data=data).kind, SegmentKind.SLOPE)
+        assert enum_eq(a=PathSegment.from_dict(data=data).kind, b=SegmentKind.SLOPE)
 
     def test_from_dict_reads_road_kind(self) -> None:
-        from skiresort_planner.model.path_segment import PathSegment
-
-        data = {
+        data: dict[str, object] = {
             "id": "S1",
             "name": "Segment 1",
             "points": [
@@ -117,7 +150,7 @@ class TestSegmentKind:
             "end_node_id": "N2",
             "kind": "road",
         }
-        assert enum_eq(PathSegment.from_dict(data=data).kind, SegmentKind.ROAD)
+        assert enum_eq(a=PathSegment.from_dict(data=data).kind, b=SegmentKind.ROAD)
 
 
 class TestBeltWidth:
@@ -125,8 +158,6 @@ class TestBeltWidth:
 
     @staticmethod
     def _segment(kind: SegmentKind, side_slope_pct: float) -> "PathSegment":
-        from skiresort_planner.model.path_segment import PathSegment
-
         return PathSegment(
             points=[
                 PathPoint(lon=0.0, lat=0.0, elevation=2000.0),

@@ -208,12 +208,18 @@ Transition Summary Table
     event — there is no picking state and no enter button. Roads are always segment-by-segment.
 
     - From IDLE_READY (5): view_slope, view_lift, view_road, start_slope, start_lift, start_road [all direct]
-    - From IDLE_VIEWING_SLOPE (5+1): close, switch_to_lift, switch_to_road, start_slope, start_lift, start_road, switch_slope (loop)
-    - From IDLE_VIEWING_LIFT (5+1): close, switch_to_slope, switch_to_road, start_slope, start_lift, start_road, switch_lift (loop)
-    - From IDLE_VIEWING_ROAD (5+1): close, switch_to_slope, switch_to_lift, start_slope, start_lift, start_road, switch_road (loop)
-    - From SLOPE_STARTING (3): cancel [cancel_slope], commit_first_path [commit_path], select_target [select_custom_target]
-    - From SLOPE_BUILDING (3+1): cancel [cancel_slope], finish [direct], select_target [select_custom_target], commit_path (loop)
-    - From SLOPE_CUSTOM_PATH (4+1): commit_continue [direct], commit_finish [direct], cancel_slope [cancel_slope], cancel_path_to_* [cancel_custom], retarget (loop) [select_custom_target]
+    - From IDLE_VIEWING_SLOPE (5+1): close, switch_to_lift, switch_to_road, start_slope, start_lift, start_road,
+      switch_slope (loop)
+    - From IDLE_VIEWING_LIFT (5+1): close, switch_to_slope, switch_to_road, start_slope, start_lift, start_road,
+      switch_lift (loop)
+    - From IDLE_VIEWING_ROAD (5+1): close, switch_to_slope, switch_to_lift, start_slope, start_lift, start_road,
+      switch_road (loop)
+    - From SLOPE_STARTING (3): cancel [cancel_slope], commit_first_path [commit_path],
+      select_target [select_custom_target]
+    - From SLOPE_BUILDING (3+1): cancel [cancel_slope], finish [direct], select_target [select_custom_target],
+      commit_path (loop)
+    - From SLOPE_CUSTOM_PATH (4+1): commit_continue [direct], commit_finish [direct], cancel_slope [cancel_slope],
+      cancel_path_to_* [cancel_custom], retarget (loop) [select_custom_target]
     - From LIFT_PLACING (2): cancel [direct], complete [direct]
     - From ROAD_STARTING (2): cancel [cancel_road], commit_road_first [commit_road]
     - From ROAD_BUILDING (2+1): cancel [cancel_road], finish [direct], commit_road_continue (loop) [commit_road]
@@ -250,7 +256,8 @@ Both start and end nodes are only created AFTER validation passes.
 from __future__ import annotations
 
 import logging
-from typing import Callable
+from collections.abc import Callable
+from typing import NoReturn, Protocol, cast
 
 import streamlit as st
 from statemachine import State, StateMachine
@@ -269,7 +276,9 @@ from skiresort_planner.ui.state_lifecycle import (
     enter_idle_viewing_lift,
     enter_idle_viewing_road,
     enter_idle_viewing_slope,
+    enter_import_placing,
     enter_lift_placing,
+    enter_merge_placing,
     enter_road_building,
     enter_road_starting,
     enter_slope_building,
@@ -279,7 +288,9 @@ from skiresort_planner.ui.state_lifecycle import (
     exit_idle_viewing_lift,
     exit_idle_viewing_road,
     exit_idle_viewing_slope,
+    exit_import_placing,
     exit_lift_placing,
+    exit_merge_placing,
     exit_road_building,
     exit_road_starting,
     exit_slope_building,
@@ -334,13 +345,21 @@ class StreamlitUIListener:
         trigger_rerun()
 
 
-def _forbidden_call(name: str):
+class _ForbiddenCall(Protocol):
+    """A blocked transition stand-in: any call raises. Variadic-object so it can replace any bound
+    transition method regardless of that transition's real signature.
+    """
+
+    def __call__(self, *args: object, **kwargs: object) -> NoReturn: ...
+
+
+def _forbidden_call(name: str) -> _ForbiddenCall:
     """Create a function that raises RuntimeError when called.
 
     Used to block direct calls to event-triggered transitions.
     """
 
-    def wrapper(*args, **kwargs):
+    def wrapper(*args: object, **kwargs: object) -> NoReturn:
         raise RuntimeError(
             f"Direct transition '{name}' call forbidden. Use the corresponding event instead (e.g., sm.event_name())."
         )
@@ -372,7 +391,7 @@ class PlannerStateMachine(StateMachine):
     """
 
     # ==========================================================================
-    # State Definitions (10 explicit states)
+    # State Definitions (all explicit states)
     # ==========================================================================
 
     # IDLE states (no building in progress)
@@ -388,6 +407,12 @@ class PlannerStateMachine(StateMachine):
 
     # LIFT state
     lift_placing = State("LiftPlacing")
+
+    # IMPORT state (click-to-place an OSM import bounding box, then confirm)
+    import_placing = State("ImportPlacing")
+
+    # MERGE state (click-to-select node markers to collapse, then confirm)
+    merge_placing = State("MergePlacing")
 
     # ROAD states (segment-by-segment, like a slope: build then finish)
     road_starting = State("RoadStarting")
@@ -405,6 +430,8 @@ class PlannerStateMachine(StateMachine):
     start_slope = idle_ready.to(slope_starting, event="start_slope")  # 1.4 [event: start_slope]
     start_lift = idle_ready.to(lift_placing, event="start_lift")  # 1.8 [event: start_lift]
     start_road = idle_ready.to(road_starting, event="start_road")  # 1.9 [event: start_road]
+    start_import = idle_ready.to(import_placing, event="start_import")  # 1.10 [event: start_import]
+    start_merge = idle_ready.to(merge_placing, event="start_merge")  # 1.11 [event: start_merge]
     view_slope = idle_ready.to(idle_viewing_slope, event="view_slope")  # 1.2 [event: view_slope]
     view_lift = idle_ready.to(idle_viewing_lift, event="view_lift")  # 1.3 [event: view_lift]
     view_road = idle_ready.to(idle_viewing_road, event="view_road")  # 1.5 [event: view_road]
@@ -426,6 +453,10 @@ class PlannerStateMachine(StateMachine):
     start_slope_from_slope_view = idle_viewing_slope.to(slope_starting, event="start_slope")  # 2.4 [event: start_slope]
     start_lift_from_slope_view = idle_viewing_slope.to(lift_placing, event="start_lift")  # 2.8 [event: start_lift]
     start_road_from_slope_view = idle_viewing_slope.to(road_starting, event="start_road")  # 2.9 [event: start_road]
+    start_import_from_slope_view = idle_viewing_slope.to(
+        import_placing, event="start_import"
+    )  # 2.10 [event: start_import]
+    start_merge_from_slope_view = idle_viewing_slope.to(merge_placing, event="start_merge")  # 2.11 [event: start_merge]
 
     # ==========================================================================
     # 3. Transitions: From IDLE_VIEWING_LIFT
@@ -444,6 +475,10 @@ class PlannerStateMachine(StateMachine):
     start_slope_from_lift_view = idle_viewing_lift.to(slope_starting, event="start_slope")  # 3.4 [event: start_slope]
     start_lift_from_lift_view = idle_viewing_lift.to(lift_placing, event="start_lift")  # 3.8 [event: start_lift]
     start_road_from_lift_view = idle_viewing_lift.to(road_starting, event="start_road")  # 3.9 [event: start_road]
+    start_import_from_lift_view = idle_viewing_lift.to(
+        import_placing, event="start_import"
+    )  # 3.10 [event: start_import]
+    start_merge_from_lift_view = idle_viewing_lift.to(merge_placing, event="start_merge")  # 3.11 [event: start_merge]
 
     # ==========================================================================
     # 3b. Transitions: From IDLE_VIEWING_ROAD
@@ -462,6 +497,10 @@ class PlannerStateMachine(StateMachine):
     start_slope_from_road_view = idle_viewing_road.to(slope_starting, event="start_slope")  # 3b.4 [event: start_slope]
     start_lift_from_road_view = idle_viewing_road.to(lift_placing, event="start_lift")  # 3b.8 [event: start_lift]
     start_road_from_road_view = idle_viewing_road.to(road_starting, event="start_road")  # 3b.9 [event: start_road]
+    start_import_from_road_view = idle_viewing_road.to(
+        import_placing, event="start_import"
+    )  # 3b.10 [event: start_import]
+    start_merge_from_road_view = idle_viewing_road.to(merge_placing, event="start_merge")  # 3b.11 [event: start_merge]
 
     # ==========================================================================
     # 4. Transitions: From SLOPE_STARTING (0 segments)
@@ -532,6 +571,30 @@ class PlannerStateMachine(StateMachine):
 
     complete_lift = lift_placing.to(idle_viewing_lift)  # 8.3 [direct]
     cancel_lift = lift_placing.to(idle_ready)  # 8.1 [direct]
+
+    # ==========================================================================
+    # 8b. Transitions: From IMPORT_PLACING
+    # ==========================================================================
+    # All transitions from IMPORT_PLACING are direct (no shared events), mirroring LIFT_PLACING.
+    # 8b.1. cancel_import [direct]: Cancel button
+    # 8b.2. complete_import [direct]: Confirm button or center-dot click → run the deferred fetch
+    # 8b.3. retarget_import [direct, self-loop]: click a new point to re-place the box center
+
+    complete_import = import_placing.to(idle_ready)  # 8b.2 [direct]
+    cancel_import = import_placing.to(idle_ready)  # 8b.1 [direct]
+    retarget_import = import_placing.to(import_placing)  # 8b.3 [direct] self-loop
+
+    # ==========================================================================
+    # 8c. Transitions: From MERGE_PLACING (click-to-select nodes, then confirm)
+    # ==========================================================================
+    # All transitions from MERGE_PLACING are direct (no shared events), mirroring IMPORT_PLACING.
+    # 8c.1. cancel_merge [direct]: Cancel button
+    # 8c.2. complete_merge [direct]: Confirm button → collapse the selected nodes to their median
+    # 8c.3. toggle_merge_node [direct, self-loop]: click a node marker to add/remove it
+
+    complete_merge = merge_placing.to(idle_ready)  # 8c.2 [direct]
+    cancel_merge = merge_placing.to(idle_ready)  # 8c.1 [direct]
+    toggle_merge_node = merge_placing.to(merge_placing)  # 8c.3 [direct] self-loop
 
     # ==========================================================================
     # 9. Transitions: From ROAD_STARTING (0 segments) / ROAD_BUILDING (1+ segments)
@@ -684,6 +747,16 @@ class PlannerStateMachine(StateMachine):
         return bool(self.lift_placing.is_active)
 
     @property
+    def is_import_placing(self) -> bool:
+        """Check if placing an OSM import bounding box."""
+        return bool(self.import_placing.is_active)
+
+    @property
+    def is_merge_placing(self) -> bool:
+        """Check if selecting nodes to merge."""
+        return bool(self.merge_placing.is_active)
+
+    @property
     def is_road_starting(self) -> bool:
         """Check if starting a road (0 segments)."""
         return bool(self.road_starting.is_active)
@@ -771,6 +844,14 @@ class PlannerStateMachine(StateMachine):
     def on_enter_lift_placing(self) -> None:
         """Hook: Entering lift placing state."""
         enter_lift_placing(self.context)
+
+    def on_enter_import_placing(self) -> None:
+        """Hook: Entering import placing state (also fires on retarget self-loop)."""
+        enter_import_placing(self.context)
+
+    def on_enter_merge_placing(self) -> None:
+        """Hook: Entering merge placing state (also fires on toggle self-loop)."""
+        enter_merge_placing(self.context)
 
     def on_enter_road_starting(self) -> None:
         """Hook: Entering road starting state."""
@@ -970,10 +1051,38 @@ class PlannerStateMachine(StateMachine):
     before_start_road_from_lift_view = before_start_road
     before_start_road_from_road_view = before_start_road
 
+    def before_start_import(self, lon: float, lat: float) -> None:
+        """Action before starting import placement: store the first clicked center."""
+        self.context.deferred.osm_import_center_lon = lon
+        self.context.deferred.osm_import_center_lat = lat
+
+    # Reuse start_import logic for the other idle entry points
+    before_start_import_from_slope_view = before_start_import
+    before_start_import_from_lift_view = before_start_import
+    before_start_import_from_road_view = before_start_import
+
     def before_complete_lift(self, lift_id: str) -> None:
         """Set lift_id before completing. Panel visibility set by enter_idle_viewing_lift."""
         self.context.viewing.set_lift_id(lift_id=lift_id)
         self.context.lift.clear()
+
+    def before_cancel_import(self) -> None:
+        """Discard a placed-but-unconfirmed import: clear the box center and the pending flag."""
+        self.context.deferred.osm_import = False
+        self.context.deferred.osm_import_center_lon = None
+        self.context.deferred.osm_import_center_lat = None
+
+    def before_toggle_merge_node(self, node_id: str) -> None:
+        """Self-loop in merge_placing: add/remove the clicked node from the selection."""
+        self.context.merge.toggle(node_id)
+
+    def before_cancel_merge(self) -> None:
+        """Discard an unconfirmed merge: clear the selected-node set."""
+        self.context.merge.clear()
+
+    def before_complete_merge(self) -> None:
+        """Merge confirmed: clear the selection (the graph mutation runs in the action)."""
+        self.context.merge.clear()
 
     def before_finish_road(self, road_id: str) -> None:
         """Set road_id before finishing. Panel visibility set by enter_idle_viewing_road."""
@@ -998,6 +1107,9 @@ class PlannerStateMachine(StateMachine):
         start_node_id = self.context.slope_build.start_node_id
         if start_node_id is None:
             sel = self.context.selection
+            assert sel.lon is not None and sel.lat is not None and sel.elevation is not None, (
+                "starting a custom-connect slope requires a terrain selection with lon/lat/elevation"
+            )
             node, _ = self._resort_graph.get_or_create_node(lon=sel.lon, lat=sel.lat, elevation=sel.elevation)
             start_node_id = node.id
             self.context.slope_build.start_node_id = start_node_id
@@ -1072,7 +1184,14 @@ class PlannerStateMachine(StateMachine):
     @property
     def context(self) -> PlannerContext:
         """Access to the context/model (PlannerContext)."""
-        return self.model  # type: ignore[return-value]
+        return cast(PlannerContext, self.model)
+
+    @property
+    def _active_state(self) -> State:
+        """The single active State. This SM is non-parallel, so current_state is one State (the
+        library types it as a State | set-of-States union); narrow it once here.
+        """
+        return cast(State, self.current_state)
 
     # ==========================================================================
     # Force State Methods (for Undo - bypasses transitions)
@@ -1092,6 +1211,8 @@ class PlannerStateMachine(StateMachine):
         "slope_building": exit_slope_building,
         "slope_custom_path": exit_slope_custom_path,
         "lift_placing": exit_lift_placing,
+        "import_placing": exit_import_placing,
+        "merge_placing": exit_merge_placing,
         "road_starting": exit_road_starting,
         "road_building": exit_road_building,
     }
@@ -1163,14 +1284,16 @@ class PlannerStateMachine(StateMachine):
         exit hook raises an exception. This prevents the app from getting
         stuck in an inconsistent state.
 
-        Important: This method bypasses the normal transition mechanism and should only be used for undo operations!
-                   Also the method does only handle exit hooks, but entry hooks must be called separately by the caller after setting the state.
+        Important: This method bypasses the normal transition mechanism and should only be used for undo
+                   operations! Also the method does only handle exit hooks, but entry hooks must be called
+                   separately by the caller after setting the state.
 
         Raises:
-            KeyError: If current state has no exit hook registered in _EXIT_HOOKS. Adding a new state requires adding its hook.
+            KeyError: If current state has no exit hook registered in _EXIT_HOOKS. Adding a new state requires
+                adding its hook.
         """
         # Use .value (snake_case identifier) not .name (CamelCase display name)
-        current_state_value = str(self.current_state.value)
+        current_state_value = str(self._active_state.value)
         # Direct access - raises KeyError if state not in _EXIT_HOOKS (fail fast)
         exit_hook = PlannerStateMachine._EXIT_HOOKS[current_state_value]
 
@@ -1187,7 +1310,11 @@ class PlannerStateMachine(StateMachine):
 
     def get_state_name(self) -> str:
         """Get current state name for display."""
-        return str(self.current_state.name)
+        return str(self._active_state.name)
+
+    def get_current_state_id(self) -> str:
+        """Get the current state's id (matches BUILD_STATES keys / PlannerStateMachine state ids)."""
+        return str(self._active_state.id)
 
     def __repr__(self) -> str:
         """Return string representation of state machine."""
@@ -1250,7 +1377,7 @@ class PlannerStateMachine(StateMachine):
 
         Uses close_panel event - SM resolves to appropriate transition.
         """
-        self.close_panel()
+        self.send("close_panel")
 
     # NOTE: No restore_building() wrapper - call sm.restore_building() event directly.
     # The event is defined by transitions with event="restore_building" parameter.
@@ -1263,13 +1390,14 @@ class PlannerStateMachine(StateMachine):
 
     def cancel_custom_connect(self) -> None:
         """Leave custom targeting, back to fan-out. SM resolves based on guards."""
-        self.cancel_custom()
+        self.send("cancel_custom")
 
     @staticmethod
     def create(
         graph: ResortGraph,
+        *,
         add_ui_listener: bool = True,
-    ) -> tuple["PlannerStateMachine", PlannerContext]:
+    ) -> tuple[PlannerStateMachine, PlannerContext]:
         """Factory method to create state machine with context and optional UI listener.
 
         Args:
@@ -1288,3 +1416,13 @@ class PlannerStateMachine(StateMachine):
         else:
             logger.info("Created PlannerStateMachine without UI listener")
         return sm, context
+
+
+# Import-time bijection guard: every state-machine state must have an exit hook.
+# Mirrors the BUILD_STATES/OPERATIONS bijection asserts in mode_registry.
+_sm_state_ids = {s.id for s in PlannerStateMachine.states}
+assert set(PlannerStateMachine._EXIT_HOOKS) == _sm_state_ids, (
+    f"_EXIT_HOOKS keys must match state-machine state ids exactly. "
+    f"Missing: {_sm_state_ids - set(PlannerStateMachine._EXIT_HOOKS)}; "
+    f"stray: {set(PlannerStateMachine._EXIT_HOOKS) - _sm_state_ids}"
+)

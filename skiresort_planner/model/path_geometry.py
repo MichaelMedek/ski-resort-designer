@@ -8,7 +8,6 @@ Reference: DETAILS.md
 """
 
 from dataclasses import dataclass
-from typing import Optional
 
 from skiresort_planner.constants import SlopeConfig
 from skiresort_planner.model.path_point import PathPoint
@@ -37,12 +36,12 @@ class Path:
     points: list[PathPoint]
 
     @property
-    def start(self) -> Optional[PathPoint]:
+    def start(self) -> PathPoint | None:
         """First point of the path."""
         return self.points[0] if self.points else None
 
     @property
-    def end(self) -> Optional[PathPoint]:
+    def end(self) -> PathPoint | None:
         """Last point of the path."""
         return self.points[-1] if self.points else None
 

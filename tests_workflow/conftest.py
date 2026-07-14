@@ -8,7 +8,8 @@ COORDINATE SYSTEM:
     where the math is simple: 1 degree ≈ 111,320 meters in both directions.
 """
 
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Literal
 from unittest.mock import MagicMock
 
 import pytest
@@ -25,11 +26,11 @@ from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
 if TYPE_CHECKING:
-    from skiresort_planner.ui.context import UIContext
+    from skiresort_planner.ui.context import PlannerContext
 
 # Type alias for workflow_setup fixture return value
-WorkflowSetup = tuple[PlannerStateMachine, "UIContext", ResortGraph, PathFactory, "MockDEMService"]
-SMAndCtx = tuple[PlannerStateMachine, "UIContext"]
+WorkflowSetup = tuple[PlannerStateMachine, "PlannerContext", ResortGraph, PathFactory, "MockDEMService"]
+SMAndCtx = tuple[PlannerStateMachine, "PlannerContext"]
 
 
 # =============================================================================
@@ -61,7 +62,7 @@ def mock_infra_rerun(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyP
 # =============================================================================
 
 
-class _FakeSessionState(dict):
+class _FakeSessionState(dict[str, object]):
     """Supports both st.session_state.foo and st.session_state['foo']."""
 
     def __getattr__(self, name: str) -> object:
@@ -83,7 +84,7 @@ class _Ctx:
     def __enter__(self) -> "_Ctx":
         return self
 
-    def __exit__(self, *exc: object) -> bool:
+    def __exit__(self, *exc: object) -> Literal[False]:
         return False
 
 
@@ -121,9 +122,18 @@ class FakeStreamlit:
     def spinner(self, *args: object, **kwargs: object) -> _Ctx:
         return _Ctx()
 
+    def form(self, *args: object, **kwargs: object) -> _Ctx:
+        return _Ctx()
+
+    def form_submit_button(self, *args: object, **kwargs: object) -> bool:
+        # Like button(): fires only if its key was pre-registered. Forms often omit an explicit
+        # key, so also honour the label as a fallback key.
+        key = kwargs.get("key") or (args[0] if args else None)
+        return key in self.clicked_keys
+
     # --- dialog: decorator factory -> identity decorator ---
-    def dialog(self, *dargs: object, **dkwargs: object):  # type: ignore[no-untyped-def]
-        def decorator(func):  # type: ignore[no-untyped-def]
+    def dialog(self, *dargs: object, **dkwargs: object) -> Callable[[Callable[..., object]], Callable[..., object]]:
+        def decorator(func: Callable[..., object]) -> Callable[..., object]:
             return func
 
         return decorator
@@ -151,7 +161,7 @@ class FakeStreamlit:
         return opts[index] if opts else None
 
     # --- everything else (metric/markdown/write/success/warning/caption/... ) is a no-op ---
-    def __getattr__(self, name: str):  # type: ignore[no-untyped-def]
+    def __getattr__(self, name: str) -> Callable[..., None]:
         def _noop(*args: object, **kwargs: object) -> None:
             return None
 

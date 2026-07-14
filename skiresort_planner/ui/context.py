@@ -28,17 +28,17 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from skiresort_planner.constants import ClickConfig, LiftConfig, MapConfig, PathConfig
+from skiresort_planner.constants import ClickConfig, LiftConfig, MapConfig, OSMConfig, PathConfig
 
 if TYPE_CHECKING:
     from skiresort_planner.model.path_point import PathPoint
     from skiresort_planner.model.proposed_path import ProposedPathSegment
 
 
-class EntityKind(str, Enum):
+class EntityKind(StrEnum):
     """A viewable resort entity: a ski slope, a vehicle road, or a lift.
 
     The single vocabulary for kind-dispatch in the UI (viewing header/body, the
@@ -182,14 +182,20 @@ class BuildMode:
     SURFACE_LIFT = "surface_lift"
     AERIAL_TRAM = "aerial_tram"
     ROAD = "road"
+    IMPORT = "import"
+    MERGE = "merge"
 
-    assert CHAIRLIFT in LiftConfig.TYPES, f"Invalid lift type '{CHAIRLIFT}'."
-    assert GONDOLA in LiftConfig.TYPES, f"Invalid lift type '{GONDOLA}'."
-    assert SURFACE_LIFT in LiftConfig.TYPES, f"Invalid lift type '{SURFACE_LIFT}'."
-    assert AERIAL_TRAM in LiftConfig.TYPES, f"Invalid lift type '{AERIAL_TRAM}'."
+    # Lift types + their order are OWNED by LiftConfig.TYPES (single source of truth); we don't
+    # re-list them. The named constants above exist for readable references (BuildMode.CHAIRLIFT).
+    LIFT_TYPES = list(LiftConfig.TYPES)
 
-    # All lift types for iteration (matches StyleConfig.LIFT_ICONS keys)
-    LIFT_TYPES = [CHAIRLIFT, GONDOLA, SURFACE_LIFT, AERIAL_TRAM]
+    assert set(LIFT_TYPES) == {CHAIRLIFT, GONDOLA, SURFACE_LIFT, AERIAL_TRAM}, (
+        f"BuildMode lift constants must exactly cover LiftConfig.TYPES; "
+        f"LiftConfig.TYPES={LiftConfig.TYPES}, named={{{SURFACE_LIFT}, {CHAIRLIFT}, {GONDOLA}, {AERIAL_TRAM}}}"
+    )
+
+    # Every build mode, in sidebar order — built from parts so the lift block tracks LIFT_TYPES.
+    ALL = [SLOPE, ROAD, *LIFT_TYPES, IMPORT, MERGE]
 
     @staticmethod
     def is_slope(mode: str) -> bool:
@@ -207,6 +213,16 @@ class BuildMode:
         return mode == BuildMode.ROAD
 
     @staticmethod
+    def is_import(mode: str) -> bool:
+        """Check if mode is OSM import (click-to-place a bounding box)."""
+        return mode == BuildMode.IMPORT
+
+    @staticmethod
+    def is_merge(mode: str) -> bool:
+        """Check if mode is node merge (click-to-select nodes to collapse)."""
+        return mode == BuildMode.MERGE
+
+    @staticmethod
     def display_name(mode: str) -> str:
         """Human-friendly name for display."""
         from skiresort_planner.constants import StyleConfig
@@ -216,6 +232,10 @@ class BuildMode:
                 return "Slope"
             case BuildMode.ROAD:
                 return "Road"
+            case BuildMode.IMPORT:
+                return "Import"
+            case BuildMode.MERGE:
+                return "Node Merge"
             case BuildMode.CHAIRLIFT | BuildMode.GONDOLA | BuildMode.SURFACE_LIFT | BuildMode.AERIAL_TRAM:
                 return StyleConfig.LIFT_DISPLAY_NAMES[mode]
             case _:
@@ -231,6 +251,10 @@ class BuildMode:
                 return StyleConfig.SLOPE_ICON
             case BuildMode.ROAD:
                 return StyleConfig.ROAD_ICON
+            case BuildMode.IMPORT:
+                return StyleConfig.IMPORT_ICON
+            case BuildMode.MERGE:
+                return StyleConfig.MERGE_ICON
             case BuildMode.CHAIRLIFT | BuildMode.GONDOLA | BuildMode.SURFACE_LIFT | BuildMode.AERIAL_TRAM:
                 return StyleConfig.LIFT_ICONS[mode]
             case _:
@@ -262,6 +286,14 @@ class BuildModeContext(BaseContext):
     def is_road(self) -> bool:
         """Check if mode is road building."""
         return self.mode == BuildMode.ROAD
+
+    def is_import(self) -> bool:
+        """Check if mode is OSM import."""
+        return self.mode == BuildMode.IMPORT
+
+    def is_merge(self) -> bool:
+        """Check if mode is node merge."""
+        return self.mode == BuildMode.MERGE
 
 
 @dataclass
@@ -579,6 +611,11 @@ class DeferredContext(BaseContext):
     custom_connect: bool = False  # Generate paths to custom target location
     start_building_from_node_id: str | None = None  # Deferred start_building from node
     start_lift_from_node_id: str | None = None  # Deferred start_lift from node
+    osm_import: bool = False  # Fetch + import OSM lifts/pistes for the chosen area (slow network)
+    osm_import_half_width_km: float = OSMConfig.HALF_WIDTH_DEFAULT_KM  # Square half-width from the import slider
+    # Center of the placed import box (click-to-place). Set by start_import, consumed on confirm.
+    osm_import_center_lon: float | None = None
+    osm_import_center_lat: float | None = None
 
     def clear_custom_connect(self) -> None:
         self.custom_connect = False
@@ -591,6 +628,31 @@ class DeferredContext(BaseContext):
         self.custom_connect = False
         self.start_building_from_node_id = None
         self.start_lift_from_node_id = None
+        self.osm_import = False
+        self.osm_import_half_width_km = OSMConfig.HALF_WIDTH_DEFAULT_KM
+        self.osm_import_center_lon = None
+        self.osm_import_center_lat = None
+
+
+@dataclass
+class MergeContext(BaseContext):
+    """Selection state for the manual node-merge tool.
+
+    Holds the node ids the user has clicked while in merge_placing. Clicking a node toggles it
+    (re-click removes); on confirm the nodes collapse to their median position (see merge_nodes).
+    """
+
+    node_ids: list[str] = field(default_factory=list)
+
+    def toggle(self, node_id: str) -> None:
+        """Add the node to the selection, or remove it if already selected (re-click)."""
+        if node_id in self.node_ids:
+            self.node_ids.remove(node_id)
+        else:
+            self.node_ids.append(node_id)
+
+    def clear(self) -> None:
+        self.node_ids = []
 
 
 @dataclass
@@ -648,6 +710,7 @@ class PlannerContext:
     map: MapContext = field(default_factory=MapContext)
     click_dedup: ClickDeduplicationContext = field(default_factory=ClickDeduplicationContext)
     deferred: DeferredContext = field(default_factory=DeferredContext)
+    merge: MergeContext = field(default_factory=MergeContext)
     messages: UIMessagesContext = field(default_factory=UIMessagesContext)
     build_mode: BuildModeContext = field(default_factory=BuildModeContext)
 
@@ -678,6 +741,10 @@ class PlannerContext:
         """Clear custom connect mode."""
         self.custom_connect.clear()
         self.deferred.clear_custom_connect()
+
+    def clear_merge(self) -> None:
+        """Clear the node-merge selection."""
+        self.merge.clear()
 
     def set_selection(
         self,

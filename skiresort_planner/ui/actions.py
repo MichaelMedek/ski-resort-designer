@@ -13,15 +13,15 @@ This module handles:
 """
 
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
 
 import streamlit as st
 
-from skiresort_planner.constants import MapConfig
-from skiresort_planner.enum_utils import enum_eq
+from skiresort_planner.constants import MapConfig, MergeConfig
+from skiresort_planner.generators.osm_importer import OSMImporter, bbox_around
 from skiresort_planner.generators.path_factory import PathFactory
-from skiresort_planner.model.lift import Lift
-from skiresort_planner.model.resort_graph import (
+from skiresort_planner.model.actions import (
     ActionType,
     AddLiftAction,
     AddSegmentsAction,
@@ -30,12 +30,19 @@ from skiresort_planner.model.resort_graph import (
     DeleteSlopeAction,
     FinishRoadAction,
     FinishSlopeAction,
-    ResortGraph,
+    ImportOSMAction,
+    MergeNodesAction,
+    UndoAction,
 )
+from skiresort_planner.model.lift import Lift
+from skiresort_planner.model.message import MergeTooFarMessage, OSMImportErrorMessage
+from skiresort_planner.model.resort_graph import ResortGraph
+from skiresort_planner.ui.context import PlannerContext
 from skiresort_planner.ui.infra import bump_map_version, reload_map, trigger_rerun
-from skiresort_planner.ui.state_machine import PlannerContext, PlannerStateMachine
+from skiresort_planner.ui.state_machine import PlannerStateMachine
 
 if TYPE_CHECKING:
+    from skiresort_planner.model.node import Node
     from skiresort_planner.model.proposed_path import ProposedPathSegment
     from skiresort_planner.model.road import Road
     from skiresort_planner.model.segment_path import SegmentPath
@@ -179,6 +186,94 @@ def process_custom_connect_deferred() -> bool:
     return True
 
 
+def confirm_import_action() -> None:
+    """Confirm the placed OSM import box: flag the deferred fetch and return to idle.
+
+    Called by both the right-panel "Confirm Import" button and the center-dot click. The box
+    center is already stored in ctx.deferred.osm_import_center_lon/lat (set when the box was
+    placed/retargeted). The slow network fetch + graph mutation happen in
+    process_osm_import_deferred() under a spinner after we return to idle.
+    """
+    ctx: PlannerContext = st.session_state.context
+    sm: PlannerStateMachine = st.session_state.state_machine
+    ctx.deferred.osm_import = True
+    bump_map_version()
+    sm.complete_import()  # → idle_ready; listener triggers the rerun that runs the deferred fetch
+
+
+def confirm_merge_action() -> None:
+    """Confirm the node-merge selection: collapse the selected nodes to their median, return to idle.
+
+    Validates the span first for a friendly toast — if any pair exceeds MergeConfig.MAX_SPAN_M the
+    merge is refused and nothing changes (the state stays in merge_placing so the user can adjust the
+    selection). On success the merge is one undoable action and we return to idle.
+    """
+    ctx: PlannerContext = st.session_state.context
+    sm: PlannerStateMachine = st.session_state.state_machine
+    graph: ResortGraph = st.session_state.graph
+    dem = st.session_state.dem_service
+
+    node_ids = list(ctx.merge.node_ids)
+    if len(node_ids) < 2:
+        # The Confirm button is disabled below 2, so this is a defensive guard, not a user path.
+        raise RuntimeError("confirm_merge_action called with fewer than 2 selected nodes")
+
+    span = graph.max_node_span_m(node_ids)
+    if span > MergeConfig.MAX_SPAN_M:
+        logger.info(f"Merge refused: span {span:.0f}m > {MergeConfig.MAX_SPAN_M:.0f}m")
+        MergeTooFarMessage(span_m=span, max_span_m=MergeConfig.MAX_SPAN_M).display()
+        return  # no state change — the user can deselect the far node and retry
+
+    graph.merge_nodes(node_ids=node_ids, dem=dem)
+    logger.info(f"Merged {len(node_ids)} nodes into {node_ids[0]}")
+    bump_map_version()
+    sm.complete_merge()  # → idle_ready; the before-hook clears the selection
+
+
+def process_osm_import_deferred() -> bool:
+    """Process a pending OSM import: fetch the chosen area, convert, add as one undoable batch.
+
+    The area is the square box the user placed and confirmed (ctx.deferred.osm_import_center_*
+    + half-width). Call this wrapped in st.spinner() from app.py. Returns True if it handled a
+    pending import. Any network/parse error shows an error toast and imports nothing.
+    """
+    ctx: PlannerContext = st.session_state.context
+    graph: ResortGraph = st.session_state.graph
+
+    if not ctx.deferred.osm_import:
+        return False
+    ctx.deferred.osm_import = False
+
+    dem = st.session_state.dem_service
+    # The box center is always placed before confirm (start_import stores it)
+    center_lon = ctx.deferred.osm_import_center_lon
+    center_lat = ctx.deferred.osm_import_center_lat
+    if center_lon is None or center_lat is None:
+        raise RuntimeError("Pending OSM import has no placed center — start_import must set it before confirm.")
+    bbox = bbox_around(
+        center_lon=center_lon, center_lat=center_lat, half_width_m=ctx.deferred.osm_import_half_width_km * 1000.0
+    )
+    # Consume the placed center so a later import can't reuse a stale box.
+    ctx.deferred.osm_import_center_lon = None
+    ctx.deferred.osm_import_center_lat = None
+
+    try:
+        importer = OSMImporter(dem=dem)
+        summary = importer.convert(bbox=bbox, elements=importer.fetch(bbox=bbox))
+    except Exception as exc:  # network / HTTP / parse — report, import nothing
+        logger.warning(f"OSM import failed: {exc}")
+        OSMImportErrorMessage(error=str(exc)).display()
+        return True
+
+    graph.import_osm(
+        pistes=[(p.points, p.name) for p in summary.pistes],
+        lifts=[(lift.bottom, lift.top, lift.lift_type, lift.name) for lift in summary.lifts],
+        dem=dem,
+    )
+    bump_map_version()
+    return True
+
+
 def process_path_generation_deferred() -> bool:
     """Process pending path generation.
 
@@ -283,13 +378,14 @@ def _generate_custom_connect_paths() -> None:
 
     # Target node: prefer the clicked node's identity (drift-proof); fall back to a
     # proximity lookup only for a terrain target that happens to sit on a node.
+    target_node: Node | None
     if ctx.custom_connect.target_node and ctx.custom_connect.target_node in graph.nodes:
         target_node = graph.nodes[ctx.custom_connect.target_node]
     else:
         target_node = graph.find_nearest_node(
             lon=target_lon, lat=target_lat, threshold_m=MapConfig.LIFT_END_NODE_THRESHOLD_M
         )
-    if target_node:
+    if target_node is not None:
         for p in paths:
             p.is_connector = True
             p.target_node_id = target_node.id
@@ -330,7 +426,7 @@ def _commit_path_transition(sm: PlannerStateMachine, segment_id: str, endpoint_n
     if sm.is_slope_custom_path:
         sm.commit_custom_continue(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
     else:
-        sm.commit_path(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
+        sm.send("commit_path", segment_id=segment_id, endpoint_node_id=endpoint_node_id)
 
 
 def _finalize_entity(*, is_road: bool) -> "SegmentPath":
@@ -385,7 +481,7 @@ def _finish_connector(*, segment_id: str, is_road: bool) -> None:
     build.segments.append(segment_id)
     entity = _finalize_entity(is_road=is_road)
     if is_road:
-        sm.commit_road_finish(segment_id=segment_id, road_id=entity.id)
+        sm.send("commit_road_finish", segment_id=segment_id, road_id=entity.id)
     else:
         sm.commit_custom_finish(segment_id=segment_id, slope_id=entity.id)
 
@@ -433,7 +529,7 @@ def commit_selected_path(path_idx: int) -> None:
         if end_node is not None:
             ctx.map.set_building_view(lon=end_node.lon, lat=end_node.lat)
         bump_map_version()
-        sm.commit_road(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
+        sm.send("commit_road", segment_id=segment_id, endpoint_node_id=endpoint_node_id)
         return
 
     # Slope non-connector: continue building, regenerate the fan from the new endpoint.
@@ -478,12 +574,12 @@ def recompute_paths() -> None:
                 for p in paths:
                     p.start_node_id = start_node.id
                 if ctx.custom_connect.target_node and ctx.custom_connect.target_node in graph.nodes:
-                    target_node = graph.nodes[ctx.custom_connect.target_node]
+                    target_node: Node | None = graph.nodes[ctx.custom_connect.target_node]
                 else:
                     target_node = graph.find_nearest_node(
                         lon=target_lon, lat=target_lat, threshold_m=MapConfig.LIFT_END_NODE_THRESHOLD_M
                     )
-                if target_node:
+                if target_node is not None:
                     for p in paths:
                         p.is_connector = True
                         p.target_node_id = target_node.id
@@ -588,7 +684,7 @@ def cancel_current_road() -> None:
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
     _discard_build(build_ctx=ctx.road_build)
-    sm.cancel_road()
+    sm.send("cancel_road")
 
 
 def _undo_add_segments(undone: AddSegmentsAction) -> None:
@@ -787,6 +883,51 @@ def _undo_delete_road(undone: DeleteRoadAction) -> None:
     reload_map()
 
 
+def _undo_import_osm(undone: ImportOSMAction) -> None:
+    """Handle undo of IMPORT_OSM: the batch's slopes/lifts are already gone from the graph.
+
+    If the user was viewing one of the removed entities, exit to idle; otherwise just redraw.
+    """
+    sm: PlannerStateMachine = st.session_state.state_machine
+
+    logger.info(f"Undone OSM import: {len(undone.slope_ids)} slopes, {len(undone.lift_ids)} lifts")
+
+    viewing = sm.viewing_entity
+    if viewing is not None and undone.removed_entity(entity_id=viewing[1]):
+        sm.force_idle()
+        bump_map_version()
+        trigger_rerun()
+    else:
+        reload_map()
+
+
+def _undo_merge_nodes(undone: MergeNodesAction) -> None:
+    """Handle undo of MERGE_NODES: the graph already restored the nodes/endpoints — just redraw."""
+    logger.info(f"Undone node merge into {undone.survivor_id}")
+    reload_map()
+
+
+# UI side-effect per action type, keyed by ActionType.name.
+# The graph mutation itself is done by ResortGraph.undo_last; these handlers only update UI state
+# (rebuild proposals, force SM transitions, redraw). Import-time assert keeps this exhaustive.
+_UNDO_SIDE_EFFECTS: dict[str, "Callable[[UndoAction], None]"] = {
+    ActionType.ADD_SEGMENTS.name: lambda a: _undo_add_segments(undone=cast(AddSegmentsAction, a)),
+    ActionType.FINISH_SLOPE.name: lambda a: _undo_finish_slope(undone=cast(FinishSlopeAction, a)),
+    ActionType.ADD_LIFT.name: lambda a: _undo_add_lift(undone=cast(AddLiftAction, a)),
+    ActionType.FINISH_ROAD.name: lambda a: _undo_finish_road(undone=cast(FinishRoadAction, a)),
+    ActionType.DELETE_SLOPE.name: lambda a: _undo_delete_slope(undone=cast(DeleteSlopeAction, a)),
+    ActionType.DELETE_LIFT.name: lambda a: _undo_delete_lift(undone=cast(DeleteLiftAction, a)),
+    ActionType.DELETE_ROAD.name: lambda a: _undo_delete_road(undone=cast(DeleteRoadAction, a)),
+    ActionType.IMPORT_OSM.name: lambda a: _undo_import_osm(undone=cast(ImportOSMAction, a)),
+    ActionType.MERGE_NODES.name: lambda a: _undo_merge_nodes(undone=cast(MergeNodesAction, a)),
+}
+_action_names = {t.name for t in ActionType}
+assert set(_UNDO_SIDE_EFFECTS) == _action_names, (
+    f"_UNDO_SIDE_EFFECTS keys must match ActionType members exactly. "
+    f"Missing: {_action_names - set(_UNDO_SIDE_EFFECTS)}; stray: {set(_UNDO_SIDE_EFFECTS) - _action_names}"
+)
+
+
 def undo_last_action() -> None:
     """Undo the most recent action.
 
@@ -816,32 +957,14 @@ def undo_last_action() -> None:
         return
     if sm.is_any_road_state and not ctx.road_build.segments:
         logger.info("[ACTION] No segments in road building state, canceling road via undo")
-        sm.cancel_road()
+        sm.send("cancel_road")
         return
 
     undone = graph.undo_last()
-    action_type = undone.action_type
-    logger.info(f"[ACTION] Undone: {action_type.name}")
+    logger.info(f"[ACTION] Undone: {undone.action_type.name}")
 
-    # Dispatch to type-specific handlers via enum_eq (reload-safe): Streamlit's module
-    # reloading creates NEW enum class instances each rerun, and undo_stack holds OLD
-    # ActionType values, so `is`/`==` fail. enum_eq compares the stable string form.
-    if enum_eq(action_type, ActionType.ADD_SEGMENTS):
-        _undo_add_segments(undone=cast(AddSegmentsAction, undone))
-    elif enum_eq(action_type, ActionType.FINISH_SLOPE):
-        _undo_finish_slope(undone=cast(FinishSlopeAction, undone))
-    elif enum_eq(action_type, ActionType.ADD_LIFT):
-        _undo_add_lift(undone=cast(AddLiftAction, undone))
-    elif enum_eq(action_type, ActionType.FINISH_ROAD):
-        _undo_finish_road(undone=cast(FinishRoadAction, undone))
-    elif enum_eq(action_type, ActionType.DELETE_SLOPE):
-        _undo_delete_slope(undone=cast(DeleteSlopeAction, undone))
-    elif enum_eq(action_type, ActionType.DELETE_LIFT):
-        _undo_delete_lift(undone=cast(DeleteLiftAction, undone))
-    elif enum_eq(action_type, ActionType.DELETE_ROAD):
-        _undo_delete_road(undone=cast(DeleteRoadAction, undone))
-    else:
-        raise RuntimeError(f"Unknown action type: {action_type}")
+    # Dispatch UI side-effects via the registry keyed by ActionType.name.
+    _UNDO_SIDE_EFFECTS[undone.action_type.name](undone)
 
 
 # =============================================================================
@@ -865,7 +988,32 @@ def cancel_custom_path() -> None:
 # =============================================================================
 
 
-def _close_panel_and_refresh(deleted: bool, *, is_viewing_deleted: bool) -> bool:
+def select_lift_type_action(lift_type: str) -> None:
+    """Sidebar lift-type button: set the build mode, or re-type the viewed lift.
+
+    When viewing a lift, the four lift buttons change THAT lift's type (Lift.update_type recomputes
+    the pylons/catenary); otherwise they just set the build mode for the next lift. Either way the
+    global build_mode + ctx.lift.type track the chosen type so a new lift uses it.
+    The caller (BuilderOperation.on_select) owns the reload, so this does not reload.
+    """
+    ctx: PlannerContext = st.session_state.context
+    sm: PlannerStateMachine = st.session_state.state_machine
+    graph: ResortGraph = st.session_state.graph
+
+    ctx.build_mode.mode = lift_type
+    ctx.lift.type = lift_type
+
+    if sm.is_idle_viewing_lift and ctx.viewing.lift_id:
+        lift = graph.lifts.get(ctx.viewing.lift_id)
+        if lift is not None and lift.lift_type != lift_type:
+            start_node = graph.nodes.get(lift.start_node_id)
+            end_node = graph.nodes.get(lift.end_node_id)
+            assert start_node and end_node, f"lift {lift.id} references missing nodes (data integrity bug)"
+            lift.update_type(new_type=lift_type, start_node=start_node, end_node=end_node)
+            logger.info(f"UI: Changed viewed lift {lift.id} type to {lift_type}")
+
+
+def _close_panel_and_refresh(*, deleted: bool, is_viewing_deleted: bool) -> bool:
     """Shared delete tail: close the panel if the deleted entity was being viewed, refresh.
 
     `deleted` is the graph.delete_* result; returns it unchanged.
@@ -874,7 +1022,7 @@ def _close_panel_and_refresh(deleted: bool, *, is_viewing_deleted: bool) -> bool
         return False
     sm: PlannerStateMachine = st.session_state.state_machine
     if is_viewing_deleted:
-        sm.close_panel()
+        sm.send("close_panel")
     bump_map_version()
     return True
 
@@ -888,6 +1036,20 @@ def delete_slope_action(slope_id: str) -> bool:
     return _close_panel_and_refresh(
         deleted=deleted, is_viewing_deleted=sm.is_idle_viewing_slope and ctx.viewing.slope_id == slope_id
     )
+
+
+def rename_entity_action(entity_id: str, new_name: str) -> None:
+    """Set a custom name on the viewed slope/lift/road; ignore an empty name.
+
+    Kind-agnostic (ids are uniquely prefixed), so one action covers all three. The panel header
+    re-renders from the entity's name; bump the map so labels redraw.
+    """
+    name = new_name.strip()
+    if not name:
+        return
+    graph: ResortGraph = st.session_state.graph
+    graph.rename(entity_id=entity_id, new_name=name)
+    bump_map_version()
 
 
 def delete_lift_action(lift_id: str) -> bool:

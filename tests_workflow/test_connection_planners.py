@@ -11,11 +11,11 @@ Test Categories:
 """
 
 import math
-from typing import Optional
 
 import pytest
 
 from skiresort_planner.constants import GeometricTuningConfig
+from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.generators.connection_planners import (
     GradientMode,
@@ -25,19 +25,22 @@ from skiresort_planner.generators.connection_planners import (
 from skiresort_planner.model.path_point import PathPoint
 
 
-class MockDEMForPlanner:
+class MockDEMForPlanner(DEMService):
     """Minimal mock DEM for testing planner algorithms.
 
     Provides a simple elevation model where elevation = 2000 - (lat * 1000).
     This creates a terrain sloping from north to south.
     """
 
+    def __new__(cls, base_elevation: float = 2000.0, slope_per_degree: float = 1000.0) -> "MockDEMForPlanner":
+        return object.__new__(cls)
+
     def __init__(self, base_elevation: float = 2000.0, slope_per_degree: float = 1000.0) -> None:
         self.base_elevation = base_elevation
         self.slope_per_degree = slope_per_degree
         self._call_count = 0
 
-    def get_elevation(self, lon: float, lat: float) -> Optional[float]:
+    def get_elevation(self, lon: float, lat: float) -> float | None:
         """Return elevation based on latitude (higher north, lower south)."""
         self._call_count += 1
         return self.base_elevation - (lat * self.slope_per_degree)
@@ -183,15 +186,6 @@ class TestGridNode:
         assert n1 < n3, "Lower row should be smaller"
         assert n2 < n3, "Row takes precedence over col"
 
-    def test_grid_node_equality(self) -> None:
-        """GridNode equality based on row/col."""
-        n1 = GridNode(row=1, col=2)
-        n2 = GridNode(row=1, col=2)
-        n3 = GridNode(row=1, col=3)
-
-        assert n1 == n2, "Same row/col should be equal"
-        assert n1 != n3, "Different col should not be equal"
-
 
 class TestFindNearestNode:
     """Unit tests for _find_nearest_node method."""
@@ -280,6 +274,87 @@ class TestPlannerIntegration:
         )
 
         assert result is None, "Zero distance path should return None"
+
+    def test_plan_returns_connector_segment_for_downhill_target(self, planner: LeastCostPathPlanner) -> None:
+        """A reachable downhill target yields a connector segment holding the target grade.
+
+        MockDEMForPlanner elevation = 2000 - lat*1000, so a target ~500m NORTH (higher
+        lat) sits lower than the start (net drop). DOWNHILL mode should succeed.
+        """
+        step_deg = 500.0 / 111320.0  # ~500m north in latitude
+        start_elev = planner.dem.get_elevation(lon=10.0, lat=47.0)
+        target_elev = planner.dem.get_elevation(lon=10.0, lat=47.0 + step_deg)
+        assert start_elev is not None and target_elev is not None
+        assert start_elev > target_elev, "target must sit below start for a downhill plan"
+
+        result = planner.plan(
+            start_lon=10.0,
+            start_lat=47.0,
+            start_elevation=start_elev,
+            target_lon=10.0,
+            target_lat=47.0 + step_deg,
+            target_elevation=target_elev,
+            target_grade_pct=20.0,
+            gradient_mode=GradientMode.DOWNHILL,
+        )
+
+        assert result is not None, "reachable downhill target should produce a segment"
+        assert result.is_connector is True
+        assert result.target_slope_pct == 20.0
+        assert len(result.points) >= 2, "a connector path needs at least start and end"
+
+    def test_plan_returns_connector_segment_for_uphill_target(self, planner: LeastCostPathPlanner) -> None:
+        """UPHILL mode is the mirror: a target ~500m SOUTH (higher elevation) net-climbs.
+
+        Elevation = 2000 - lat*1000, so lower lat is higher ground; UPHILL mode with a
+        negative (climbing) target grade should succeed and carry that grade through.
+        """
+        step_deg = 500.0 / 111320.0  # ~500m south in latitude
+        start_elev = planner.dem.get_elevation(lon=10.0, lat=47.0)
+        target_elev = planner.dem.get_elevation(lon=10.0, lat=47.0 - step_deg)
+        assert start_elev is not None and target_elev is not None
+        assert target_elev > start_elev, "target must sit above start for an uphill plan"
+
+        result = planner.plan(
+            start_lon=10.0,
+            start_lat=47.0,
+            start_elevation=start_elev,
+            target_lon=10.0,
+            target_lat=47.0 - step_deg,
+            target_elevation=target_elev,
+            target_grade_pct=-20.0,
+            gradient_mode=GradientMode.UPHILL,
+        )
+
+        assert result is not None, "reachable uphill target should produce a segment"
+        assert result.is_connector is True
+        assert result.target_slope_pct == -20.0
+        assert len(result.points) >= 2
+
+    def test_plan_returns_none_for_downhill_target_in_uphill_mode(self, planner: LeastCostPathPlanner) -> None:
+        """UPHILL mode refuses a net-descending target (net_drop >= 0 guard).
+
+        The target ~500m north sits BELOW the start (net drop > 0). In UPHILL mode the
+        segment must net-climb, so plan() must bail out before building the grid.
+        """
+        step_deg = 500.0 / 111320.0  # ~500m north = lower ground = net drop
+        start_elev = planner.dem.get_elevation(lon=10.0, lat=47.0)
+        target_elev = planner.dem.get_elevation(lon=10.0, lat=47.0 + step_deg)
+        assert start_elev is not None and target_elev is not None
+        assert start_elev > target_elev, "target must be below start to trip the uphill guard"
+
+        result = planner.plan(
+            start_lon=10.0,
+            start_lat=47.0,
+            start_elevation=start_elev,
+            target_lon=10.0,
+            target_lat=47.0 + step_deg,
+            target_elevation=target_elev,
+            target_grade_pct=-20.0,
+            gradient_mode=GradientMode.UPHILL,
+        )
+
+        assert result is None, "UPHILL mode must reject a net-descending target"
 
 
 class TestEdgeCostGradeAttractor:

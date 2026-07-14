@@ -14,60 +14,67 @@ Matrix Reference (from state_machine.py docstring):
 """
 
 import pytest
-
-from skiresort_planner.ui.state_machine import PlannerStateMachine
 from statemachine.exceptions import TransitionNotAllowed
 
+from skiresort_planner.ui.state_machine import PlannerStateMachine
+from tests_workflow.conftest import SMAndCtx
 
 # =============================================================================
 # TRUTH TABLE: Valid Transitions
 # =============================================================================
-# Format: (event_name, valid_source_states, setup_function_name)
-# setup_function_name refers to a fixture/helper that prepares guards/context
+# Format: (event_name, valid_source_states, expected_target_state_ids)
+# expected_target_state_ids is the SET of destination state ids that firing the
+# event from each source is allowed to reach (guarded events like cancel_custom
+# reach more than one). The test asserts the transition graph maps exactly to it.
 
-VALID_TRANSITIONS: list[tuple[str, list[str], str | None]] = [
+VALID_TRANSITIONS: list[tuple[str, list[str], set[str]]] = [
     # From IDLE_READY
-    ("start_slope", ["idle_ready"], "setup_slope_start"),
-    ("start_lift", ["idle_ready"], "setup_lift_mode"),
-    ("view_slope", ["idle_ready"], "setup_viewed_slope"),
-    ("view_lift", ["idle_ready"], "setup_viewed_lift"),
+    ("start_slope", ["idle_ready"], {"slope_starting"}),
+    ("start_lift", ["idle_ready"], {"lift_placing"}),
+    ("view_slope", ["idle_ready"], {"idle_viewing_slope"}),
+    ("view_lift", ["idle_ready"], {"idle_viewing_lift"}),
     # From IDLE_VIEWING_SLOPE
-    ("close_panel", ["idle_viewing_slope"], None),
-    ("view_slope", ["idle_viewing_slope"], "setup_viewed_slope"),  # self-loop (switch)
-    ("view_lift", ["idle_viewing_slope"], "setup_viewed_lift"),
-    ("start_slope", ["idle_viewing_slope"], "setup_slope_start"),
-    ("start_lift", ["idle_viewing_slope"], "setup_lift_mode"),
+    ("close_panel", ["idle_viewing_slope"], {"idle_ready"}),
+    ("view_slope", ["idle_viewing_slope"], {"idle_viewing_slope"}),  # self-loop (switch)
+    ("view_lift", ["idle_viewing_slope"], {"idle_viewing_lift"}),
+    ("start_slope", ["idle_viewing_slope"], {"slope_starting"}),
+    ("start_lift", ["idle_viewing_slope"], {"lift_placing"}),
     # From IDLE_VIEWING_LIFT
-    ("close_panel", ["idle_viewing_lift"], None),
-    ("view_slope", ["idle_viewing_lift"], "setup_viewed_slope"),
-    ("view_lift", ["idle_viewing_lift"], "setup_viewed_lift"),  # self-loop (switch)
-    ("start_slope", ["idle_viewing_lift"], "setup_slope_start"),
-    ("start_lift", ["idle_viewing_lift"], "setup_lift_mode"),
+    ("close_panel", ["idle_viewing_lift"], {"idle_ready"}),
+    ("view_slope", ["idle_viewing_lift"], {"idle_viewing_slope"}),
+    ("view_lift", ["idle_viewing_lift"], {"idle_viewing_lift"}),  # self-loop (switch)
+    ("start_slope", ["idle_viewing_lift"], {"slope_starting"}),
+    ("start_lift", ["idle_viewing_lift"], {"lift_placing"}),
     # From SLOPE_STARTING
-    ("cancel_slope", ["slope_starting"], None),
-    ("commit_path", ["slope_starting"], "setup_commit_first"),
-    ("select_custom_target", ["slope_starting"], None),
+    ("cancel_slope", ["slope_starting"], {"idle_ready"}),
+    ("commit_path", ["slope_starting"], {"slope_building"}),
+    ("select_custom_target", ["slope_starting"], {"slope_custom_path"}),
     # From SLOPE_BUILDING (with guards)
-    ("cancel_slope", ["slope_building"], None),
-    ("commit_path", ["slope_building"], "setup_commit_continue"),  # self-loop
-    ("select_custom_target", ["slope_building"], None),
-    ("finish_slope", ["slope_building"], None),
+    ("cancel_slope", ["slope_building"], {"idle_ready"}),
+    ("commit_path", ["slope_building"], {"slope_building"}),  # self-loop
+    ("select_custom_target", ["slope_building"], {"slope_custom_path"}),
+    ("finish_slope", ["slope_building"], {"idle_viewing_slope"}),
     # From SLOPE_CUSTOM_PATH
-    ("cancel_slope", ["slope_custom_path"], None),
-    ("cancel_custom", ["slope_custom_path"], None),
-    ("select_custom_target", ["slope_custom_path"], None),  # self-loop (re-target)
-    ("finish_slope", ["slope_custom_path"], None),  # sidebar Finish during targeting
+    ("cancel_slope", ["slope_custom_path"], {"idle_ready"}),
+    # cancel_custom is guarded: has_no_segments → slope_starting, else → slope_building
+    ("cancel_custom", ["slope_custom_path"], {"slope_starting", "slope_building"}),
+    ("select_custom_target", ["slope_custom_path"], {"slope_custom_path"}),  # self-loop (re-target)
+    ("finish_slope", ["slope_custom_path"], {"idle_viewing_slope"}),  # sidebar Finish during targeting
     # From LIFT_PLACING
-    ("cancel_lift", ["lift_placing"], None),
+    ("cancel_lift", ["lift_placing"], {"idle_ready"}),
     # From IDLE (road build entry) — road mirrors slope
-    ("start_road", ["idle_ready", "idle_viewing_slope", "idle_viewing_lift", "idle_viewing_road"], "setup_road_start"),
-    ("view_road", ["idle_ready"], "setup_viewed_road"),
+    (
+        "start_road",
+        ["idle_ready", "idle_viewing_slope", "idle_viewing_lift", "idle_viewing_road"],
+        {"road_starting"},
+    ),
+    ("view_road", ["idle_ready"], {"idle_viewing_road"}),
     # From ROAD_STARTING / ROAD_BUILDING
-    ("cancel_road", ["road_starting"], None),
-    ("commit_road", ["road_starting"], "setup_commit_road_first"),
-    ("cancel_road", ["road_building"], None),
-    ("commit_road", ["road_building"], "setup_commit_road_continue"),  # self-loop
-    ("commit_road_finish", ["road_starting", "road_building"], None),  # connector auto-finish
+    ("cancel_road", ["road_starting"], {"idle_ready"}),
+    ("commit_road", ["road_starting"], {"road_building"}),
+    ("cancel_road", ["road_building"], {"idle_ready"}),
+    ("commit_road", ["road_building"], {"road_building"}),  # self-loop
+    ("commit_road_finish", ["road_starting", "road_building"], {"idle_viewing_road"}),  # connector auto-finish
 ]
 
 
@@ -157,23 +164,24 @@ class TestTransitionMatrix:
     """Parameterized tests validating the complete state machine transition matrix."""
 
     @pytest.fixture
-    def sm_ctx(self, sm_and_ctx: tuple) -> tuple:
+    def sm_ctx(self, sm_and_ctx: SMAndCtx) -> SMAndCtx:
         """Get state machine and context from conftest fixture."""
         return sm_and_ctx
 
-    @pytest.mark.parametrize("event,valid_states,_setup", VALID_TRANSITIONS)
+    @pytest.mark.parametrize("event,valid_states,expected_targets", VALID_TRANSITIONS)
     def test_valid_transitions_are_allowed_from_source(
         self,
-        sm_ctx: tuple,
+        sm_ctx: SMAndCtx,
         event: str,
         valid_states: list[str],
-        _setup: str | None,
+        expected_targets: set[str],
     ) -> None:
-        """Each VALID_TRANSITIONS event is defined on the SM and allowed from its source states.
+        """Each VALID_TRANSITIONS event routes from its source states to the expected targets.
 
-        Asserts the transition graph (not context-guarded firing): every listed
-        (event, source) pair must appear among that state's outgoing transitions,
-        so the table is live data — not the dead reference it was before.
+        Asserts the transition graph (not context-guarded firing): from every listed
+        source, the set of destination state ids reachable via `event` must equal
+        the expected target set exactly. This catches a mis-wired destination
+        (e.g. finish_slope routed to idle_ready), not just a missing event.
         """
         sm, _ctx = sm_ctx
         assert hasattr(sm, event), f"event {event} must be defined on the state machine"
@@ -181,13 +189,15 @@ class TestTransitionMatrix:
         for state_name in valid_states:
             state = getattr(sm, state_name)
             # A transition's `event` may bundle multiple aliases separated by spaces.
-            outgoing_events = {name for t in state.transitions for name in t.event.split()}
-            assert event in outgoing_events, f"{event} must be an allowed transition from {state_name}"
+            reached_targets = {t.target.id for t in state.transitions for name in t.event.split() if name == event}
+            assert reached_targets == expected_targets, (
+                f"{event} from {state_name} must reach {expected_targets}, got {reached_targets}"
+            )
 
     @pytest.mark.parametrize("event,invalid_states", INVALID_TRANSITIONS)
     def test_invalid_transitions_raise_error(
         self,
-        sm_ctx: tuple,
+        sm_ctx: SMAndCtx,
         event: str,
         invalid_states: list[str],
     ) -> None:
@@ -208,6 +218,35 @@ class TestTransitionMatrix:
             with pytest.raises(TransitionNotAllowed):
                 # Call with minimal args (events accept **kwargs)
                 event_func()
+
+    @pytest.mark.parametrize("variant", sorted(PlannerStateMachine._EVENT_ONLY_TRANSITIONS))
+    def test_direct_variant_calls_are_forbidden(self, sm_ctx: SMAndCtx, variant: str) -> None:
+        """Each _EVENT_ONLY_TRANSITIONS variant is blocked at runtime.
+
+        __init__ replaces every listed variant with _forbidden_call, so calling it
+        directly (e.g. sm.commit_first_path()) raises RuntimeError telling the caller
+        to use the event instead — preventing bypass of the event dispatch.
+        """
+        sm, _ctx = sm_ctx
+        with pytest.raises(RuntimeError, match="forbidden"):
+            getattr(sm, variant)()
+
+    def test_event_entry_point_fires_while_its_variant_is_forbidden(self, sm_ctx: SMAndCtx) -> None:
+        """commit_first_path is forbidden, but the commit_path EVENT it backs is allowed.
+
+        From slope_starting the commit_path event resolves to commit_first_path and
+        drives the SM to slope_building (recording the segment), proving the block is
+        scoped to the variant name, not the shared event entry point.
+        """
+        sm, ctx = sm_ctx
+        _force_state(sm=sm, state_name="slope_starting")
+
+        with pytest.raises(RuntimeError, match="forbidden"):
+            sm.commit_first_path()
+
+        sm.commit_path(segment_id="S1", endpoint_node_id="N1")  # type: ignore[attr-defined]  # dynamic python-statemachine event
+        assert sm.current_state_value == "slope_building"
+        assert ctx.slope_build.segments == ["S1"]
 
 
 def _force_state(sm: PlannerStateMachine, state_name: str) -> None:
@@ -233,7 +272,7 @@ class TestCancelCustomGuards:
     - cancel_custom_to_building: when 1+ segments → SLOPE_BUILDING
     """
 
-    def test_cancel_custom_with_no_segments_goes_to_starting(self, sm_and_ctx: tuple) -> None:
+    def test_cancel_custom_with_no_segments_goes_to_starting(self, sm_and_ctx: SMAndCtx) -> None:
         """Cancel custom with 0 segments returns to SLOPE_STARTING."""
         sm, ctx = sm_and_ctx
 
@@ -242,12 +281,12 @@ class TestCancelCustomGuards:
         ctx.slope_build.segments = []  # No segments committed
 
         # Act: Call cancel_custom event
-        sm.cancel_custom()
+        sm.cancel_custom()  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
         # Assert: Should transition to slope_starting
         assert sm.current_state == sm.slope_starting
 
-    def test_cancel_custom_with_segments_goes_to_building(self, sm_and_ctx: tuple) -> None:
+    def test_cancel_custom_with_segments_goes_to_building(self, sm_and_ctx: SMAndCtx) -> None:
         """Cancel custom with segments returns to SLOPE_BUILDING."""
         sm, ctx = sm_and_ctx
 
@@ -256,7 +295,7 @@ class TestCancelCustomGuards:
         ctx.slope_build.segments = ["S1"]  # Has committed segments
 
         # Act: Call cancel_custom event
-        sm.cancel_custom()
+        sm.cancel_custom()  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
         # Assert: Should transition to slope_building
         assert sm.current_state == sm.slope_building
@@ -288,3 +327,50 @@ class TestViewingEntity:
         _force_state(sm=sm, state_name="idle_viewing_lift")
         ctx.viewing.set_lift_id(lift_id="L3")
         assert sm.viewing_entity == (EntityKind.LIFT, "L3")
+
+
+class TestImportPlacing:
+    """The click-to-place OSM import mode: start_import from any idle state stores the box center;
+    retarget re-places it; cancel/complete return to idle (cancel also clears the center).
+    """
+
+    def _sm(self):
+        from skiresort_planner.model.resort_graph import ResortGraph
+
+        return PlannerStateMachine.create(graph=ResortGraph(), add_ui_listener=False)
+
+    @pytest.mark.parametrize(
+        "idle_state",
+        ["idle_ready", "idle_viewing_slope", "idle_viewing_lift", "idle_viewing_road"],
+    )
+    def test_start_import_from_every_idle_state(self, idle_state) -> None:
+        sm, ctx = self._sm()
+        _force_state(sm=sm, state_name=idle_state)
+        sm.start_import(lon=10.3, lat=47.0)
+        assert sm.is_import_placing
+        assert ctx.deferred.osm_import_center_lon == 10.3 and ctx.deferred.osm_import_center_lat == 47.0
+
+    def test_retarget_keeps_placing(self) -> None:
+        sm, ctx = self._sm()
+        sm.start_import(lon=1.0, lat=2.0)
+        sm.retarget_import()
+        assert sm.is_import_placing, "retarget is a self-loop"
+
+    def test_cancel_returns_to_idle_and_clears_center(self) -> None:
+        sm, ctx = self._sm()
+        sm.start_import(lon=1.0, lat=2.0)
+        sm.cancel_import()
+        assert sm.is_idle_ready
+        assert ctx.deferred.osm_import_center_lon is None and ctx.deferred.osm_import_center_lat is None
+        assert ctx.deferred.osm_import is False
+
+    def test_complete_returns_to_idle(self) -> None:
+        sm, ctx = self._sm()
+        sm.start_import(lon=1.0, lat=2.0)
+        sm.complete_import()
+        assert sm.is_idle_ready
+
+    def test_import_placing_is_not_idle(self) -> None:
+        sm, _ = self._sm()
+        sm.start_import(lon=1.0, lat=2.0)
+        assert not sm.is_idle and not sm.is_any_slope_state and not sm.is_any_road_state

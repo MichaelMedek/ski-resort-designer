@@ -14,10 +14,11 @@ Reference: DETAILS.md
 import logging
 import random
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
-from skiresort_planner.constants import EntityPrefixes, LiftConfig, NameConfig
+from skiresort_planner.constants import EntityPrefixes, LiftConfig, LiftType, NameConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
+from skiresort_planner.model.node_connected import NodeConnected
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.pylon import Pylon
 
@@ -29,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class Lift:
+class Lift(NodeConnected):
     """A ski lift connecting two nodes.
 
     Lifts store only IDs of start/end nodes. Derived properties
@@ -387,10 +388,11 @@ class Lift:
         )
 
     def update_type(self, new_type: str, start_node: "Node", end_node: "Node") -> None:
-        """Change lift type and update all dependent fields.
+        """Change lift type and refresh type-dependent geometry.
 
         Uses _compute_type_dependent_data() to ensure consistency with create().
-        Updates: lift_type, name, pylons, cable_points.
+        Updates: lift_type, pylons, cable_points. The NAME is deliberately kept — a type change
+        must not clobber a user's (or OSM's) name; rename it explicitly via the UI if desired.
 
         Args:
             new_type: New lift type (must be valid from LiftConfig.TYPES)
@@ -406,8 +408,8 @@ class Lift:
 
         self.lift_type = new_type
 
-        # Recompute all type-dependent data via shared helper
-        self.name, self.pylons, self.cable_points, _ = self._compute_type_dependent_data(
+        # Recompute type-dependent geometry via shared helper; keep the existing name.
+        _name, self.pylons, self.cable_points, _length = self._compute_type_dependent_data(
             terrain_points=self.terrain_points,
             start_node=start_node,
             end_node=end_node,
@@ -416,6 +418,30 @@ class Lift:
         )
 
         logger.info(f"Updated lift {self.id} type to {new_type}")
+
+    def rebuild(self, start_node: "Node", end_node: "Node", dem: "DEMService") -> None:
+        """Recompute all geometry for moved station endpoints, keeping identity (id, name, type).
+
+        Used when a station node moves (e.g. node-merge): re-samples terrain along the NEW station
+        line, then recomputes pylons + cable_points via the same _compute_type_dependent_data helper
+        that create()/update_type() use. Unlike update_type (which changes the type and reuses stale
+        terrain_points), this refreshes terrain_points from the moved endpoints. The regenerated name
+        is discarded — a rebuild must not clobber the existing (user/OSM) name.
+
+        Args:
+            start_node: Bottom station node (new position).
+            end_node: Top station node (new position).
+            dem: DEM service for terrain sampling.
+        """
+        self.terrain_points = self.sample_terrain(start_node=start_node, end_node=end_node, dem=dem)
+        _name, self.pylons, self.cable_points, _length = self._compute_type_dependent_data(
+            terrain_points=self.terrain_points,
+            start_node=start_node,
+            end_node=end_node,
+            lift_type=self.lift_type,
+            lift_id=self.id,
+        )
+        logger.info(f"Rebuilt lift {self.id} geometry for moved endpoints")
 
     @staticmethod
     def calculate_pylons(
@@ -451,7 +477,7 @@ class Lift:
             )
             return []
 
-        config = cast(dict[str, int | float], LiftConfig.PYLON_CONFIG[lift_type])
+        config = cast(dict[str, int | float], LiftConfig.PYLON_CONFIG[LiftType(lift_type)])
         n = len(terrain_points)
         dist_per_step = total_distance_m / (n - 1) if n > 1 else 0
 
@@ -631,7 +657,7 @@ class Lift:
 
         config = cast(
             dict[str, int | float | None],
-            LiftConfig.PYLON_CONFIG[lift_type],  # strict: lift_type is validated
+            LiftConfig.PYLON_CONFIG[LiftType(lift_type)],  # strict: lift_type is validated
         )
         station_height = cast(int, config["station_height_m"])
         sag_factor = cast(float, config["sag_factor"])
@@ -648,7 +674,7 @@ class Lift:
         anchor_y.append(end_elevation + station_height)
 
         # Sort anchor points by distance
-        anchor_sorted = sorted(zip(anchor_x, anchor_y), key=lambda p: p[0])
+        anchor_sorted = sorted(zip(anchor_x, anchor_y, strict=False), key=lambda p: p[0])
         anchor_x = [p[0] for p in anchor_sorted]
         anchor_y = [p[1] for p in anchor_sorted]
 
@@ -700,20 +726,30 @@ class Lift:
         return cable_points
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Lift":
+    def from_dict(cls, data: dict[str, object]) -> "Lift":
         """Create Lift from dictionary.
 
         All fields are required - raises KeyError if missing.
         """
         return cls(
-            id=data["id"],
-            name=data["name"],
-            start_node_id=data["start_node_id"],
-            end_node_id=data["end_node_id"],
-            lift_type=data["lift_type"],
-            terrain_points=[PathPoint(**p) for p in data["terrain_points"]],
-            pylons=[Pylon(**p) for p in data["pylons"]],
-            cable_points=[PathPoint(**p) for p in data["cable_points"]],
+            id=cast(str, data["id"]),
+            name=cast(str, data["name"]),
+            start_node_id=cast(str, data["start_node_id"]),
+            end_node_id=cast(str, data["end_node_id"]),
+            lift_type=cast(str, data["lift_type"]),
+            terrain_points=[PathPoint(**p) for p in cast(list[dict[str, float]], data["terrain_points"])],
+            pylons=[
+                Pylon(
+                    index=int(p["index"]),
+                    distance_m=float(p["distance_m"]),
+                    lat=float(p["lat"]),
+                    lon=float(p["lon"]),
+                    ground_elevation_m=float(p["ground_elevation_m"]),
+                    height_m=float(p["height_m"]),
+                )
+                for p in cast(list[dict[str, float]], data["pylons"])
+            ],
+            cable_points=[PathPoint(**p) for p in cast(list[dict[str, float]], data["cable_points"])],
         )
 
     def __repr__(self) -> str:

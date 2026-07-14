@@ -18,8 +18,11 @@ Classes:
     StyleConfig: Visual colors and styling
     NameConfig: Creative naming components
     ChartConfig: Chart rendering dimensions
+    OSMConfig: OpenStreetMap import (Overpass query, aerialway→lift-type map)
+    MergeConfig: Manual node-merge tool
 """
 
+from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
@@ -95,6 +98,7 @@ class MapConfig:
     Z_OFFSET_2D_LIFTS = 2  # Lift cables above slopes
     Z_OFFSET_2D_PYLONS = 3  # Pylons slightly above lift cables
     Z_OFFSET_2D_ICONS = 4  # Slope/lift icons above pylons
+    Z_OFFSET_2D_NODE_BIG = 9  # Merge-selected or parking palce (big red or blue) nodes just BELOW plain nodes
     Z_OFFSET_2D_NODES = 10  # Nodes above icons
     Z_OFFSET_2D_MARKERS = 20  # Interactive markers (commit/select) on top
 
@@ -142,6 +146,10 @@ class SlopeConfig:
         "black": {"gentle": 45.0, "steep": 60.0},  # Threshold: 40%+
     }
     assert set(DIFFICULTY_TARGETS.keys()) == set(DIFFICULTIES)
+    # Every target sub-dict must define exactly the two grade knobs path generation reads.
+    assert all(set(v.keys()) == {"gentle", "steep"} for v in DIFFICULTY_TARGETS.values()), (
+        "each DIFFICULTY_TARGETS entry must define exactly {'gentle', 'steep'}"
+    )
 
     # Rolling window for steepness calculation
     # Used to find the steepest section within a segment or across the full path
@@ -157,6 +165,15 @@ assert all(
     SlopeConfig.DIFFICULTY_TARGETS[diff]["steep"] > SlopeConfig.DIFFICULTY_THRESHOLDS[diff][0]
     for diff in SlopeConfig.DIFFICULTY_TARGETS
 ), "Steep targets must be above lower threshold"
+
+# DIFFICULTIES order is LOAD-BEARING: path_factory uses DIFFICULTIES[:-1] ("all but the hardest"),
+# so the last entry MUST be the steepest. Enforce strictly-ascending thresholds.
+_ordered_lowers = [SlopeConfig.DIFFICULTY_THRESHOLDS[d][0] for d in SlopeConfig.DIFFICULTIES]
+_ordered_uppers = [SlopeConfig.DIFFICULTY_THRESHOLDS[d][1] for d in SlopeConfig.DIFFICULTIES]
+assert _ordered_lowers == sorted(_ordered_lowers) and _ordered_uppers == sorted(_ordered_uppers), (
+    f"DIFFICULTIES must be ordered easiest→hardest (strictly ascending thresholds); "
+    f"got lowers={_ordered_lowers}, uppers={_ordered_uppers}"
+)
 
 
 class PathConfig:
@@ -320,10 +337,11 @@ class ClickConfig:
     TYPE_PROPOSAL_ENDPOINT = "proposal_endpoint"
     TYPE_PROPOSAL_BODY = "proposal_body"
     TYPE_START_MARKER = "start_marker"  # non-interactive origin dot on a proposal
+    TYPE_IMPORT_CENTER = "import_center"  # clickable center dot of the OSM import box (re-click = confirm)
 
     # Clickable marker radii (meters for Pydeck ScatterplotLayer)
     NODE_MARKER_RADIUS = 35
-    PARKING_MARKER_RADIUS = 50  # Parking nodes render bigger than plain nodes
+    NODE_MARKER_RADIUS_BIG = 50  # Parking and merge nodes render bigger than plain nodes
     SLOPE_ICON_MARKER_RADIUS = 30
     ROAD_ICON_MARKER_RADIUS = 30
     LIFT_ICON_MARKER_RADIUS = 30
@@ -337,6 +355,18 @@ class ClickConfig:
     DEBOUNCE_TIME_DELAY = 0.15  # Minimum time between clicks (150ms debounce)
 
 
+class LiftType(StrEnum):
+    """The kinds of lift the app builds. A StrEnum, so a member IS its string value — every dict
+    keyed/valued by these (PYLON_CONFIG, LIFT_ICONS, AERIALWAY_TO_LIFT_TYPE, …), every JSON round-trip,
+    and str(LiftType.CHAIRLIFT) == "chairlift" all work transparently.
+    """
+
+    SURFACE_LIFT = "surface_lift"
+    CHAIRLIFT = "chairlift"
+    GONDOLA = "gondola"
+    AERIAL_TRAM = "aerial_tram"
+
+
 class LiftConfig:
     """Lift types and catenary/pylon parameters."""
 
@@ -344,7 +374,7 @@ class LiftConfig:
     TERRAIN_SAMPLE_STEP_M = 30
 
     PYLON_CONFIG = {
-        "surface_lift": {
+        LiftType.SURFACE_LIFT: {
             "pylon_height_m": 15,
             "station_height_m": 5,
             "min_spacing_m": 10,
@@ -352,7 +382,7 @@ class LiftConfig:
             "min_clearance_m": 10,
             "sag_factor": 0.05,
         },
-        "chairlift": {
+        LiftType.CHAIRLIFT: {
             "pylon_height_m": 25,
             "station_height_m": 6,
             "min_spacing_m": 15,
@@ -360,7 +390,7 @@ class LiftConfig:
             "min_clearance_m": 15,
             "sag_factor": 0.06,
         },
-        "gondola": {
+        LiftType.GONDOLA: {
             "pylon_height_m": 35,
             "station_height_m": 6,
             "min_spacing_m": 20,
@@ -368,7 +398,7 @@ class LiftConfig:
             "min_clearance_m": 20,
             "sag_factor": 0.06,
         },
-        "aerial_tram": {
+        LiftType.AERIAL_TRAM: {
             "pylon_height_m": 60,
             "station_height_m": 10,
             "min_spacing_m": 30,
@@ -377,7 +407,18 @@ class LiftConfig:
             "sag_factor": 0.06,
         },
     }
-    TYPES = list(PYLON_CONFIG.keys())
+    # Lift-type strings, in the canonical order. Members are str-Enum so this list of LiftType also
+    # behaves as a list of plain strings for callers that compare/serialize by value.
+    TYPES = [t.value for t in PYLON_CONFIG]
+
+    # Every lift type must define the full set of pylon-placement knobs the builder reads.
+    assert all(
+        set(v.keys())
+        == {"pylon_height_m", "station_height_m", "min_spacing_m", "max_spacing_m", "min_clearance_m", "sag_factor"}
+        for v in PYLON_CONFIG.values()
+    ), "each PYLON_CONFIG entry must define exactly the 6 pylon-placement keys"
+    # PYLON_CONFIG must be keyed by every LiftType member (bijection: no type missing, none stray).
+    assert set(PYLON_CONFIG) == set(LiftType), "PYLON_CONFIG must have one entry per LiftType member"
 
 
 class StyleConfig:
@@ -391,7 +432,6 @@ class StyleConfig:
         "black": "#1F2937",  # gray-800
     }
     assert set(SLOPE_COLORS.keys()) == set(SlopeConfig.DIFFICULTIES)
-    SLOPE_ICON = "⛷️"
 
     # Slope colors - RGBA lists for Pydeck (GPU-compatible format)
     SLOPE_COLORS_RGBA = {
@@ -449,6 +489,20 @@ class StyleConfig:
     # so "proposed" reads as distinct from a committed solid amber-700 road.
     ROAD_PROPOSAL_COLOR_RGBA = [217, 119, 6, 150]
     ROAD_ICON = "🛣️"
+
+    # OSM import mode icon (build-mode selector + placement markers)
+    IMPORT_ICON = "🗺️"
+    # Node-merge mode icon (build-mode selector).
+    MERGE_ICON = "🔗"
+    # Generic sidebar-header icons: one "in-progress" glyph for every building/placing state, one for
+    # viewing a finished entity. Shared so all state headers stay consistent from one source.
+    BUILDING_ICON = "🏗️"
+    VIEWING_ICON = "👁️"
+    # Nodes selected for merging render solid red so the collapse set is unmistakable.
+    MERGE_SELECTED_RGBA = [239, 68, 68, 235]
+    # OSM import overlay (RGBA for Pydeck): one blue for the box, one for the center dot.
+    IMPORT_BOX_RGBA = [33, 150, 243, 60]  # translucent square (fill + outline)
+    IMPORT_CENTER_RGBA = [33, 150, 243, 230]  # solid center dot (click to confirm)
 
     # Parking place (auto-shown where a road meets a slope or lift)
     PARKING_ICON = "🅿️"
@@ -611,3 +665,64 @@ class UndoConfig:
     # Maximum number of actions to keep in undo stack
     # Older actions are discarded when limit is reached
     MAX_UNDO_STACK_SIZE = 50
+
+
+class MergeConfig:
+    """Manual node-merge tool (collapse scattered station nodes into one)."""
+
+    # Refuse to merge if any two selected nodes are farther apart than this
+    MAX_SPAN_M = 500.0
+
+
+class OSMConfig:
+    """OpenStreetMap import (generators/osm_importer.py).
+
+    We take GEOMETRY ONLY from OSM (where lifts/pistes are); elevation, difficulty, and pylons
+    are all recomputed from our own DEM + physics. OSM's difficulty/pylon/elevation tags are
+    deliberately ignored.
+    """
+
+    OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+    OVERPASS_STATUS_URL = "https://overpass-api.de/api/status"
+    OVERPASS_TIMEOUT_S = 30
+    # Overpass returns HTTP 406 without a User-Agent (verified live) — always send one.
+    USER_AGENT = "ski-resort-designer/0.1"
+
+    # Nominatim free-text place search (generators/geocoder.py) — powers the sidebar search box.
+    # Policy: max 1 req/s and a custom User-Agent (we send USER_AGENT); search-on-submit only.
+    NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+    NOMINATIM_TIMEOUT_S = 10
+
+    # A lift/piste-only query is light, so the whole region is fetched in ONE query. Overpass gives
+    # a few slots per IP; on a transient 429/504 we wait for a free slot (from /api/status) and retry
+    # once. SLOT_WAIT_MAX_S caps that wait; SLOT_WAIT_FALLBACK_S is used when status can't be read.
+    SLOT_WAIT_MAX_S = 30.0
+    SLOT_WAIT_FALLBACK_S = 3.0
+
+    # Output spacing when resampling an OSM polyline onto DEM-sampled points.
+    RESAMPLE_STEP_M = 30.0
+
+    # Import region: a square centered on the current map center, half-width chosen on a slider (km).
+    HALF_WIDTH_MIN_KM = 0.5
+    HALF_WIDTH_MAX_KM = 5.0
+    HALF_WIDTH_DEFAULT_KM = 2.0
+
+    # Minimum imported length: shorter entities are ignored (nursery/kiddie lifts, stub runs).
+    MIN_LIFT_LENGTH_M = 300.0
+    MIN_PISTE_LENGTH_M = 200.0
+
+    # OSM aerialway value → our LiftConfig.TYPES. ONLY these values import; every other aerialway
+    # value (station, pylon, zip_line, magic_carpet, rope_tow, yes, …) is silently ignored.
+    AERIALWAY_TO_LIFT_TYPE = {
+        "drag_lift": LiftType.SURFACE_LIFT,
+        "t-bar": LiftType.SURFACE_LIFT,
+        "j-bar": LiftType.SURFACE_LIFT,
+        "platter": LiftType.SURFACE_LIFT,
+        "chair_lift": LiftType.CHAIRLIFT,
+        "gondola": LiftType.GONDOLA,
+        "mixed_lift": LiftType.GONDOLA,
+        "cable_car": LiftType.AERIAL_TRAM,
+    }
+
+    # piste:type value marking an alpine downhill run — the only kind we import.
+    PISTE_TYPE_DOWNHILL = "downhill"

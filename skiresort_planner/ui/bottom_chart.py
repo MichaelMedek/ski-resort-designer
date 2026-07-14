@@ -11,11 +11,10 @@ Reference: DETAILS_UI.md for profile display
 """
 
 import logging
-from typing import Optional
 
 import plotly.graph_objects as go
 
-from skiresort_planner.constants import ChartConfig, LiftConfig, StyleConfig
+from skiresort_planner.constants import ChartConfig, LiftConfig, LiftType, StyleConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.enum_utils import enum_eq
@@ -47,7 +46,7 @@ class ProfileChart:
         self,
         segment: PathSegment,
         difficulty: str,
-        title: Optional[str] = None,
+        title: str | None = None,
     ) -> go.Figure:
         """Render elevation profile for a committed segment.
 
@@ -137,7 +136,7 @@ class ProfileChart:
         self,
         slope: Slope,
         graph: ResortGraph,
-        title: Optional[str] = None,
+        title: str | None = None,
     ) -> go.Figure:
         """Render elevation profile for a complete slope (colored by difficulty)."""
         difficulty = slope.get_difficulty(segments=graph.segments)
@@ -156,7 +155,7 @@ class ProfileChart:
         self,
         road: Road,
         graph: ResortGraph,
-        title: Optional[str] = None,
+        title: str | None = None,
     ) -> go.Figure:
         """Render elevation profile for a road (brown, shows climb/descent)."""
         total_length = road.get_total_length(segments=graph.segments)
@@ -322,7 +321,7 @@ class ProfileChart:
         end_node = graph.nodes[lift.end_node_id]
 
         # Get station height from config
-        config = LiftConfig.PYLON_CONFIG[lift.lift_type]
+        config = LiftConfig.PYLON_CONFIG[LiftType(lift.lift_type)]
         station_height: float = config["station_height_m"]
 
         # Calculate lift metrics
@@ -398,7 +397,7 @@ class ProfileChart:
                     mode="lines",
                     line=dict(color="#333333", width=3),
                     name="Cable",
-                    customdata=list(zip(cable_ground_elevs, cable_heights, cable_percentages)),
+                    customdata=list(zip(cable_ground_elevs, cable_heights, cable_percentages, strict=False)),
                     hovertemplate=(
                         "<b>Distance:</b> %{x:.0f}m (%{customdata[2]:.0f}%)<br>"
                         "<b>Ground:</b> %{customdata[0]:.0f}m<br>"
@@ -542,7 +541,7 @@ def render_building_profile(
     first_seg = graph.segments[building_segments[0]]
     # enum_eq (reload-safe str compare): Streamlit reloads create a fresh SegmentKind class,
     # so `is` fails on segments built under the old class.
-    if enum_eq(first_seg.kind, SegmentKind.ROAD):
+    if enum_eq(a=first_seg.kind, b=SegmentKind.ROAD):
         combined_road = Road(
             id="combined",
             name=building_name or "Current Road",
@@ -551,7 +550,7 @@ def render_building_profile(
             end_node_id="",
         )
         return chart.render_road(road=combined_road, graph=graph, title="Current committed Road Progress")
-    elif enum_eq(first_seg.kind, SegmentKind.SLOPE):
+    elif enum_eq(a=first_seg.kind, b=SegmentKind.SLOPE):
         # Color by the steepest section — the SAME metric as the map marker and the
         # finished slope, so the progress color never disagrees with them.
         max_difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=steepest_section_pct(segments=segs))
@@ -566,17 +565,17 @@ def render_building_profile(
 def render_viewing_profile(kind: EntityKind, entity_id: str, graph: ResortGraph) -> go.Figure:
     """Render the elevation profile of a finished slope / road / lift being viewed."""
     chart = ProfileChart(height=ChartConfig.PROFILE_HEIGHT_PX)
-    if enum_eq(kind, EntityKind.SLOPE):
+    if enum_eq(a=kind, b=EntityKind.SLOPE):
         slope = graph.slopes.get(entity_id)
         if slope is None:
             raise ValueError(f"Slope {entity_id} must exist when panel shows slope")
         return chart.render_slope(slope=slope, graph=graph)
-    if enum_eq(kind, EntityKind.ROAD):
+    if enum_eq(a=kind, b=EntityKind.ROAD):
         road = graph.roads.get(entity_id)
         if road is None:
             raise ValueError(f"Road {entity_id} must exist when panel shows road")
         return chart.render_road(road=road, graph=graph)
-    if enum_eq(kind, EntityKind.LIFT):
+    if enum_eq(a=kind, b=EntityKind.LIFT):
         lift = graph.lifts.get(entity_id)
         if lift is None:
             raise ValueError(f"Lift {entity_id} must exist when panel shows lift")
