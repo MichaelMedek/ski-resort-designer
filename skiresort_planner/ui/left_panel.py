@@ -181,7 +181,10 @@ class SidebarRenderer:
 
         Each state owns its sidebar panel (BuildState.sidebar_panel), so a new state can't be
         forgotten — the registry is bijection-asserted against the SM states at import.
+        In idle, also show the selected mode's one-line first-click hint (abstract on the operation).
         """
+        if self.sm.is_idle_ready:
+            st.caption(OPERATIONS[self.ctx.build_mode.mode].first_instruction)
         BUILD_STATES[self.sm.get_current_state_id()].sidebar_panel(sm=self.sm, ctx=self.ctx, graph=self.graph).render()
 
     def _render_resort_data(self) -> None:

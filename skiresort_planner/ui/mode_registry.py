@@ -704,9 +704,19 @@ class BuilderOperation(ABC):
     def enabled(self, sm: PlannerStateMachine) -> bool:
         """Whether the button is clickable in the current state."""
 
+    @property
     @abstractmethod
+    def first_instruction(self) -> str:
+        """One-line hint shown in idle: what the FIRST map click does in this mode."""
+
     def on_select(self, ctx: PlannerContext, sm: PlannerStateMachine) -> None:
-        """Perform the button's action (set the mode; enter its state if it has one)."""
+        """Highlight this mode and reload — the invariant EVERY builder button shares.
+
+        A button only highlights; the mode start (state entry) always happens later on the first
+        map click. Ops needing extra setup override this, do their work first, then call super().
+        """
+        ctx.build_mode.mode = self.mode
+        reload_map()
 
 
 def _idle_not_building(sm: PlannerStateMachine) -> bool:
@@ -723,31 +733,26 @@ def _idle_not_building(sm: PlannerStateMachine) -> bool:
 class _SlopeOperation(BuilderOperation):
     mode = BuildMode.SLOPE
     group = OperationGroup.BUILDER
+    first_instruction = "🗺️ Click terrain or a node to start the slope."
 
     def enabled(self, sm: PlannerStateMachine) -> bool:
         return _idle_not_building(sm) and not (sm.is_idle_viewing_lift or sm.is_idle_viewing_road)
-
-    def on_select(self, ctx: PlannerContext, sm: PlannerStateMachine) -> None:
-        ctx.build_mode.mode = BuildMode.SLOPE
-        reload_map()
 
 
 class _RoadOperation(BuilderOperation):
     mode = BuildMode.ROAD
     group = OperationGroup.BUILDER
+    first_instruction = "🗺️ Click terrain or a node to start the road."
 
     def enabled(self, sm: PlannerStateMachine) -> bool:
         return _idle_not_building(sm) and not (sm.is_idle_viewing_slope or sm.is_idle_viewing_lift)
-
-    def on_select(self, ctx: PlannerContext, sm: PlannerStateMachine) -> None:
-        ctx.build_mode.mode = BuildMode.ROAD
-        reload_map()
 
 
 class _LiftOperation(BuilderOperation):
     """The four lift-type buttons: enabled off a slope/road view, and re-typing the viewed lift."""
 
     group = OperationGroup.BUILDER
+    first_instruction = "🗺️ Click terrain or a node to place the bottom station."
 
     def __init__(self, mode: str) -> None:
         self.mode = mode
@@ -756,30 +761,28 @@ class _LiftOperation(BuilderOperation):
         return _idle_not_building(sm) and not (sm.is_idle_viewing_slope or sm.is_idle_viewing_road)
 
     def on_select(self, ctx: PlannerContext, sm: PlannerStateMachine) -> None:
+        # Extra work: track the chosen type and, when viewing a lift, re-type it. Then the shared
+        # highlight + reload via super().
         actions.select_lift_type_action(self.mode)
+        super().on_select(ctx=ctx, sm=sm)
 
 
 class _ImportOperation(BuilderOperation):
     mode = BuildMode.IMPORT
     group = OperationGroup.UTILITY
+    first_instruction = "🗺️ Click the map to place the import area."
 
     def enabled(self, sm: PlannerStateMachine) -> bool:
         return _idle_not_building(sm)
-
-    def on_select(self, ctx: PlannerContext, sm: PlannerStateMachine) -> None:
-        ctx.build_mode.mode = BuildMode.IMPORT
-        reload_map()
 
 
 class _MergeOperation(BuilderOperation):
     mode = BuildMode.MERGE
     group = OperationGroup.UTILITY
+    first_instruction = "🔗 Click a node to start merging."
 
     def enabled(self, sm: PlannerStateMachine) -> bool:
         return _idle_not_building(sm)
-
-    def on_select(self, ctx: PlannerContext, sm: PlannerStateMachine) -> None:
-        actions.merge_action()
 
 
 _OPERATION_LIST: list[BuilderOperation] = [

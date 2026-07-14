@@ -10,6 +10,8 @@ Design Principles:
 - STRICT: Unknown/unhandled clicks raise RuntimeError immediately
 """
 
+from __future__ import annotations
+
 import logging
 from typing import TYPE_CHECKING
 
@@ -18,6 +20,7 @@ import streamlit as st
 from skiresort_planner.constants import MapConfig, PathConfig
 from skiresort_planner.model.click_info import ClickInfo, MapClickType, MarkerType
 from skiresort_planner.model.message import InvalidClickMessage, OutsideTerrainMessage, RoadTooSteepMessage
+from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.ui.actions import (
     center_on_lift,
@@ -49,7 +52,7 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 
-def _select_or_commit_proposal(ctx: "PlannerContext", idx: int) -> None:
+def _select_or_commit_proposal(ctx: PlannerContext, idx: int) -> None:
     """Body-click behavior shared by road + slope proposals: select, or commit if
     already selected.
 
@@ -63,6 +66,76 @@ def _select_or_commit_proposal(ctx: "PlannerContext", idx: int) -> None:
     else:
         ctx.proposals.selected_idx = idx
         reload_map()  # first click just selects + redraws
+
+
+def _start_mode_from_terrain(
+    ctx: PlannerContext, sm: PlannerStateMachine, lon: float, lat: float, elevation: float
+) -> None:
+    """Start the selected build mode from a fresh TERRAIN point (idle first click).
+
+    Every mode centers+zooms once here (the single shared first-click centering). Merge is the
+    exception: it only starts from a node, so a terrain click is guided, not acted on.
+    """
+    build_mode = ctx.build_mode.mode
+    if ctx.build_mode.is_slope():
+        logger.info(f"[IDLE] Terrain click: starting new slope at ({lat:.6f}, {lon:.6f})")
+        ctx.set_selection(lon=lon, lat=lat, elevation=elevation)
+        ctx.map.set_building_view(lon=lon, lat=lat)
+        ctx.deferred.path_generation = True
+        sm.start_building(lon=lon, lat=lat, elevation=elevation, node_id=None)
+    elif ctx.build_mode.is_lift():
+        logger.info(f"[IDLE] Terrain click: starting {build_mode} at ({lat:.6f}, {lon:.6f})")
+        ctx.map.set_building_view(lon=lon, lat=lat)
+        sm.select_lift_start(node_id=None, location=PathPoint(lon=lon, lat=lat, elevation=elevation))
+    elif ctx.build_mode.is_road():
+        logger.info(f"[IDLE] Terrain click: starting road at ({lat:.6f}, {lon:.6f})")
+        ctx.map.set_building_view(lon=lon, lat=lat)
+        sm.select_road_start(node_id=None, location=PathPoint(lon=lon, lat=lat, elevation=elevation))
+    elif ctx.build_mode.is_import():
+        # Center+zoom (like slope/lift/road) so the box stays framed after Confirm.
+        logger.info(f"[IDLE] Terrain click: placing import box center at ({lat:.6f}, {lon:.6f})")
+        ctx.map.set_building_view(lon=lon, lat=lat)
+        sm.start_import(lon=lon, lat=lat)
+    elif ctx.build_mode.is_merge():
+        # Merge starts from a NODE, not terrain. Guide the user, stay idle.
+        InvalidClickMessage(action="select for merge", reason="Click a node marker to start merging.").display()
+    else:
+        raise RuntimeError(f"[IDLE] Unknown build_mode '{build_mode}'.")
+
+
+def _start_mode_from_node(ctx: PlannerContext, sm: PlannerStateMachine, node: Node) -> None:
+    """Start the selected build mode from an existing NODE (idle first click).
+
+    Mirrors _start_mode_from_terrain, reusing the node's identity so the flow snaps to the junction.
+    """
+    build_mode = ctx.build_mode.mode
+    if ctx.build_mode.is_slope():
+        logger.info(f"[IDLE] Node click: starting slope from {node.id}")
+        ctx.set_selection(lon=node.lon, lat=node.lat, elevation=node.elevation)
+        ctx.map.set_building_view(lon=node.lon, lat=node.lat)
+        ctx.deferred.path_generation = True
+        sm.start_building(lon=node.lon, lat=node.lat, elevation=node.elevation, node_id=node.id)
+    elif ctx.build_mode.is_lift():
+        logger.info(f"[IDLE] Node click: starting {build_mode} from {node.id}")
+        ctx.map.set_building_view(lon=node.lon, lat=node.lat)
+        sm.select_lift_start(node_id=node.id)
+    elif ctx.build_mode.is_road():
+        logger.info(f"[IDLE] Node click: starting road from {node.id}")
+        ctx.map.set_building_view(lon=node.lon, lat=node.lat)
+        sm.select_road_start(node_id=node.id)
+    elif ctx.build_mode.is_import():
+        logger.info(f"[IDLE] Node click: placing import box center at {node.id}")
+        ctx.map.set_building_view(lon=node.lon, lat=node.lat)
+        sm.start_import(lon=node.lon, lat=node.lat)
+    elif ctx.build_mode.is_merge():
+        # First node click starts merge. Center like every mode, select the node, then transition
+        # (start_merge reruns via listener, so select BEFORE it).
+        logger.info(f"[IDLE] Node click: starting merge from {node.id}")
+        ctx.map.set_building_view(lon=node.lon, lat=node.lat)
+        ctx.merge.toggle(node.id)
+        sm.start_merge()
+    else:
+        raise RuntimeError(f"[IDLE] Unknown build_mode '{build_mode}'.")
 
 
 def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
@@ -88,53 +161,12 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
 
-    build_mode = ctx.build_mode.mode
-
     # TERRAIN click → start building based on mode
     if click_info.click_type == MapClickType.TERRAIN:
         # ClickInfo validates lat/lon are set for terrain clicks
         assert click_info.lat is not None and click_info.lon is not None
-        lat, lon = click_info.lat, click_info.lon
         assert elevation is not None  # We got terrain elevation above
-
-        if ctx.build_mode.is_slope():
-            # Start building slope
-            logger.info(f"[IDLE] Terrain click: starting new slope at ({lat:.6f}, {lon:.6f})")
-            ctx.set_selection(lon=lon, lat=lat, elevation=elevation)
-            ctx.map.set_building_view(lon=lon, lat=lat)
-            ctx.deferred.path_generation = True
-            sm.start_building(
-                lon=lon,
-                lat=lat,
-                elevation=elevation,
-                node_id=None,
-            )
-        elif ctx.build_mode.is_lift():
-            # Start placing lift
-            logger.info(f"[IDLE] Terrain click: starting {build_mode} at ({lat:.6f}, {lon:.6f})")
-            ctx.map.set_building_view(lon=lon, lat=lat)
-            sm.select_lift_start(
-                node_id=None,
-                location=PathPoint(lon=lon, lat=lat, elevation=elevation),
-            )
-        elif ctx.build_mode.is_road():
-            # Start placing road (first of two clicks)
-            logger.info(f"[IDLE] Terrain click: starting road at ({lat:.6f}, {lon:.6f})")
-            ctx.map.set_building_view(lon=lon, lat=lat)
-            sm.select_road_start(
-                node_id=None,
-                location=PathPoint(lon=lon, lat=lat, elevation=elevation),
-            )
-        elif ctx.build_mode.is_import():
-            # Place the OSM import box center. Center+zoom the map (like slope/lift/road) so it's
-            # framed in context and the view doesn't jump back to a far-away location after Confirm.
-            logger.info(f"[IDLE] Terrain click: placing import box center at ({lat:.6f}, {lon:.6f})")
-            ctx.map.set_building_view(lon=lon, lat=lat)
-            sm.start_import(lon=lon, lat=lat)
-        else:
-            raise RuntimeError(
-                f"[IDLE] Unknown build_mode '{build_mode}'. Expected SLOPE, road, import, or a lift type."
-            )
+        _start_mode_from_terrain(ctx=ctx, sm=sm, lon=click_info.lon, lat=click_info.lat, elevation=elevation)
         return
 
     # MARKER clicks
@@ -147,38 +179,7 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
             node = graph.nodes.get(click_info.node_id)
             if not node:
                 raise RuntimeError(f"Node {click_info.node_id} not found in graph")
-
-            if ctx.build_mode.is_slope():
-                # Start building slope from node
-                logger.info(f"[IDLE] Node click: starting slope from {node.id}")
-                ctx.set_selection(lon=node.lon, lat=node.lat, elevation=node.elevation)
-                ctx.map.set_building_view(lon=node.lon, lat=node.lat)
-                ctx.deferred.path_generation = True
-                sm.start_building(
-                    lon=node.lon,
-                    lat=node.lat,
-                    elevation=node.elevation,
-                    node_id=node.id,
-                )
-            elif ctx.build_mode.is_lift():
-                # Start placing lift from node
-                logger.info(f"[IDLE] Node click: starting {build_mode} from {node.id}")
-                ctx.map.set_building_view(lon=node.lon, lat=node.lat)
-                sm.select_lift_start(node_id=node.id)
-            elif ctx.build_mode.is_road():
-                # Start placing road from node (first of two clicks)
-                logger.info(f"[IDLE] Node click: starting road from {node.id}")
-                ctx.map.set_building_view(lon=node.lon, lat=node.lat)
-                sm.select_road_start(node_id=node.id)
-            elif ctx.build_mode.is_import():
-                # Place the import box center on the node; center+zoom (like slope/lift/road) so it stays framed.
-                logger.info(f"[IDLE] Node click: placing import box center at {node.id}")
-                ctx.map.set_building_view(lon=node.lon, lat=node.lat)
-                sm.start_import(lon=node.lon, lat=node.lat)
-            else:
-                raise RuntimeError(
-                    f"[IDLE] Unknown build_mode '{build_mode}'. Expected SLOPE, road, import, or a lift type."
-                )
+            _start_mode_from_node(ctx=ctx, sm=sm, node=node)
             return
 
         # SLOPE → Show slope panel (always works regardless of build_mode)
@@ -647,19 +648,11 @@ def handle_merge_placing_click(click_info: ClickInfo, elevation: float | None) -
     nodes, and this branch handles every marker type so the dispatch never crashes.
     """
     sm: PlannerStateMachine = st.session_state.state_machine
-    ctx: PlannerContext = st.session_state.context
-    graph: ResortGraph = st.session_state.graph
 
     # NODE marker → toggle it in the selection.
     if click_info.click_type == MapClickType.MARKER and click_info.marker_type == MarkerType.NODE:
         assert click_info.node_id is not None  # Validated in ClickInfo
         logger.info(f"[MERGE] Node click: toggling {click_info.node_id} in the merge selection")
-        # Center+zoom on the FIRST selected node only (selection is still empty at this point),
-        # consistent with slope/lift/road/import; later clicks must not move the view.
-        if not ctx.merge.node_ids:
-            node = graph.nodes.get(click_info.node_id)
-            if node is not None:
-                ctx.map.set_building_view(lon=node.lon, lat=node.lat)
         sm.toggle_merge_node(node_id=click_info.node_id)
         reload_map()
         return

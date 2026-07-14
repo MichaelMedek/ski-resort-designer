@@ -35,9 +35,9 @@ from skiresort_planner.model.actions import (
     UndoAction,
 )
 from skiresort_planner.model.lift import Lift
-from skiresort_planner.model.message import MergeTooFarMessage, OSMImportErrorMessage, OSMImportSummaryMessage
+from skiresort_planner.model.message import MergeTooFarMessage, OSMImportErrorMessage
 from skiresort_planner.model.resort_graph import ResortGraph
-from skiresort_planner.ui.context import BuildMode, PlannerContext
+from skiresort_planner.ui.context import PlannerContext
 from skiresort_planner.ui.infra import bump_map_version, reload_map, trigger_rerun
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
@@ -230,21 +230,6 @@ def confirm_merge_action() -> None:
     sm.complete_merge()  # → idle_ready; the before-hook clears the selection
 
 
-def merge_action() -> None:
-    """Sidebar 'Node Merge' select: set the mode and enter node-selection.
-
-    Unlike import (which needs a first click to place a box) merge needs no location, so selecting it
-    enters merge_placing immediately; the user then clicks node markers to build the selection.
-    """
-    ctx: PlannerContext = st.session_state.context
-    sm: PlannerStateMachine = st.session_state.state_machine
-
-    ctx.build_mode.mode = BuildMode.MERGE
-    logger.info("UI: Build mode set to Node Merge")
-    bump_map_version()
-    sm.start_merge()  # → merge_placing; listener triggers the rerun
-
-
 def process_osm_import_deferred() -> bool:
     """Process a pending OSM import: fetch the chosen area, convert, add as one undoable batch.
 
@@ -280,12 +265,11 @@ def process_osm_import_deferred() -> bool:
         OSMImportErrorMessage(error=str(exc)).display()
         return True
 
-    slopes, lifts, duplicates = graph.import_osm(
+    graph.import_osm(
         pistes=[(p.points, p.name) for p in summary.pistes],
         lifts=[(lift.bottom, lift.top, lift.lift_type, lift.name) for lift in summary.lifts],
         dem=dem,
     )
-    OSMImportSummaryMessage(pistes=slopes, lifts=lifts, skipped=summary.skipped, duplicates=duplicates).display()
     bump_map_version()
     return True
 
@@ -1010,6 +994,7 @@ def select_lift_type_action(lift_type: str) -> None:
     When viewing a lift, the four lift buttons change THAT lift's type (Lift.update_type recomputes
     the pylons/catenary); otherwise they just set the build mode for the next lift. Either way the
     global build_mode + ctx.lift.type track the chosen type so a new lift uses it.
+    The caller (BuilderOperation.on_select) owns the reload, so this does not reload.
     """
     ctx: PlannerContext = st.session_state.context
     sm: PlannerStateMachine = st.session_state.state_machine
@@ -1026,7 +1011,6 @@ def select_lift_type_action(lift_type: str) -> None:
             assert start_node and end_node, f"lift {lift.id} references missing nodes (data integrity bug)"
             lift.update_type(new_type=lift_type, start_node=start_node, end_node=end_node)
             logger.info(f"UI: Changed viewed lift {lift.id} type to {lift_type}")
-    reload_map()
 
 
 def _close_panel_and_refresh(*, deleted: bool, is_viewing_deleted: bool) -> bool:

@@ -9,7 +9,6 @@ import re
 from skiresort_planner.model.message import (
     LiftMustGoUphillMessage,
     OSMImportErrorMessage,
-    OSMImportSummaryMessage,
     RoadTooSteepMessage,
     TargetNotDownhillMessage,
     TargetTooFarMessage,
@@ -74,24 +73,6 @@ class TestLiftMustGoUphillMessage:
 
 
 class TestOSMImportMessages:
-    def test_summary_reports_counts(self) -> None:
-        msg = OSMImportSummaryMessage(pistes=7, lifts=3, skipped=0, duplicates=0).message
-        assert "7 pistes" in msg and "3 lifts" in msg
-        assert "skipped" not in msg and "already imported" not in msg, "no extra clause when clean"
-
-    def test_summary_states_skipped_when_present(self) -> None:
-        msg = OSMImportSummaryMessage(pistes=5, lifts=2, skipped=4, duplicates=0).message
-        assert "5 pistes" in msg and "2 lifts" in msg
-        assert "4 skipped" in msg, "skipped ways must be visible (only full imports)"
-
-    def test_summary_states_duplicates_when_present(self) -> None:
-        msg = OSMImportSummaryMessage(pistes=0, lifts=0, skipped=0, duplicates=6).message
-        assert "6 already imported" in msg, "duplicates must be visible and distinct from skipped"
-
-    def test_summary_states_both_skipped_and_duplicates(self) -> None:
-        msg = OSMImportSummaryMessage(pistes=1, lifts=1, skipped=2, duplicates=3).message
-        assert "2 skipped" in msg and "3 already imported" in msg
-
     def test_error_message(self) -> None:
         msg = OSMImportErrorMessage(error="the current view is outside the terrain coverage").message
         assert "OSM import failed" in msg

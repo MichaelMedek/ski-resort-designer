@@ -87,6 +87,26 @@ class TestOperationBijection:
         for mode in (BuildMode.SLOPE, BuildMode.ROAD, BuildMode.CHAIRLIFT, BuildMode.AERIAL_TRAM):
             assert OPERATIONS[mode].group == OperationGroup.BUILDER
 
+    def test_every_operation_has_a_first_instruction(self) -> None:
+        # Abstract on BuilderOperation, so a new mode button can't forget the idle first-click hint.
+        for mode, op in OPERATIONS.items():
+            assert op.first_instruction.strip(), f"{mode} has an empty first_instruction"
+
+    def test_on_select_highlights_the_mode_for_every_operation(self, fake_st, empty_graph) -> None:
+        # The shared invariant lives on the base class: on_select highlights its OWN mode (no state
+        # entry — the first map click does that). Even the lift ops (which override) must satisfy it.
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        fake_st.session_state["state_machine"] = sm
+        fake_st.session_state["context"] = ctx
+        fake_st.session_state["graph"] = empty_graph
+        fake_st.session_state["map_version"] = 0
+
+        for mode, op in OPERATIONS.items():
+            ctx.build_mode.mode = "__unset__"  # sentinel: prove on_select actually writes the mode
+            op.on_select(ctx=ctx, sm=sm)
+            assert ctx.build_mode.mode == mode, f"{mode}: on_select must highlight its own mode"
+            assert sm.is_idle_ready, f"{mode}: on_select must NOT enter a build state (highlight only)"
+
 
 class TestEntityKindSpecBijection:
     def test_keys_match_entity_kind_members_exactly(self) -> None:

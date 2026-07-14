@@ -291,6 +291,10 @@ class BuildModeContext(BaseContext):
         """Check if mode is OSM import."""
         return self.mode == BuildMode.IMPORT
 
+    def is_merge(self) -> bool:
+        """Check if mode is node merge."""
+        return self.mode == BuildMode.MERGE
+
 
 @dataclass
 class ViewingContext(BaseContext):
