@@ -12,8 +12,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from skiresort_planner.constants import MapConfig, PathConfig, SlopeConfig
-from skiresort_planner.model.message import RoadTooSteepMessage, SlopeTooSteepMessage, ToastMessage
+from skiresort_planner.constants import MapConfig, PathConfig, SlopeConfig, StyleConfig
+from skiresort_planner.model.message import PathTooSteepMessage, ToastMessage
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.model.segment_path import SegmentPath
@@ -25,15 +25,19 @@ class KindSpec:
 
     Attributes:
         kind: The SegmentKind this spec describes.
+        icon: Kind glyph for UI messages/labels.
         max_grade_pct: Build-time hard cap on the steepest section (magnitude).
         may_climb: Whether a route of this kind may gain elevation (roads yes, slopes no).
         too_steep_message: Factory building the refusal toast when no in-cap route fits.
         finish: Group the given committed segment ids into the finished entity.
         starting_state / building_state / custom_path_state: the 3 state-machine state
             ids for this kind's build flow.
+
+    ``display_noun`` (property): the capitalized UI noun ("Slope"/"Road") derived from ``kind``.
     """
 
     kind: SegmentKind
+    icon: str  # Kind glyph for UI messages/labels (⛷️ slope, 🛣️ road).
     max_grade_pct: float
     may_climb: bool
     has_direct_fallback: bool
@@ -50,15 +54,24 @@ class KindSpec:
     finish_event: str  # sidebar Finish button
     cancel_event: str  # cancel the whole build
 
+    @property
+    def display_noun(self) -> str:
+        """Capitalized UI noun for this kind ("Slope"/"Road") — used in sidebar/button labels."""
+        return self.kind.capitalize()
+
 
 KIND_SPECS: dict[SegmentKind, KindSpec] = {
     SegmentKind.SLOPE: KindSpec(
         kind=SegmentKind.SLOPE,
+        icon=StyleConfig.SLOPE_ICON,
         max_grade_pct=float(SlopeConfig.MAX_SKIABLE_PCT),
         may_climb=False,
         has_direct_fallback=False,
-        too_steep_message=lambda gentlest: SlopeTooSteepMessage(
-            gentlest_pct=gentlest, max_grade_pct=float(SlopeConfig.MAX_SKIABLE_PCT)
+        too_steep_message=lambda gentlest: PathTooSteepMessage(
+            gentlest_pct=gentlest,
+            max_grade_pct=float(SlopeConfig.MAX_SKIABLE_PCT),
+            subject="to ski",
+            two_sided=False,
         ),
         finish=lambda graph, segment_ids: graph.finish_slope(segment_ids=segment_ids),
         starting_state="slope_starting",
@@ -72,11 +85,15 @@ KIND_SPECS: dict[SegmentKind, KindSpec] = {
     ),
     SegmentKind.ROAD: KindSpec(
         kind=SegmentKind.ROAD,
+        icon=StyleConfig.ROAD_ICON,
         max_grade_pct=float(PathConfig.ROAD_MAX_GRADIENT_PCT),
         may_climb=True,
         has_direct_fallback=True,
-        too_steep_message=lambda gentlest: RoadTooSteepMessage(
-            gentlest_pct=gentlest, max_grade_pct=float(PathConfig.ROAD_MAX_GRADIENT_PCT)
+        too_steep_message=lambda gentlest: PathTooSteepMessage(
+            gentlest_pct=gentlest,
+            max_grade_pct=float(PathConfig.ROAD_MAX_GRADIENT_PCT),
+            subject="for a car road",
+            two_sided=True,
         ),
         finish=lambda graph, segment_ids: graph.finish_road(segment_ids=segment_ids),
         starting_state="road_starting",

@@ -21,14 +21,13 @@ from skiresort_planner.constants import OSMConfig, PathConfig
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.actions import (
-    cancel_current_road,
-    cancel_current_slope,
-    finish_current_road,
-    finish_current_slope,
+    cancel_current_build,
+    finish_current_build,
     recompute_paths,
 )
 from skiresort_planner.ui.context import PlannerContext
 from skiresort_planner.ui.infra import bump_map_version, reload_map
+from skiresort_planner.ui.kind_spec import KIND_SPECS
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
 logger = logging.getLogger(__name__)
@@ -94,14 +93,26 @@ class ViewingSidebarPanel(SidebarPanel):
             self.sm.hide_info_panel()
 
 
-class SlopeSidebarPanel(SidebarPanel):
-    """slope_starting / slope_building / slope_custom_path: Finish/Cancel + Path Settings slider."""
+class PathBuildSidebarPanel(SidebarPanel):
+    """The *_starting / *_building / *_custom_path states for ANY path kind (slope or road):
+    Finish + Cancel + the shared Path Settings block (segment-length slider + Recompute).
+
+    One class for every buildable path kind — the per-kind bits (display noun, finish/cancel
+    actions) are resolved from the kind, so slope and road cannot drift and a future kind gets
+    the full panel for free. Constructed with the active build kind by the dispatch hub.
+    """
+
+    def __init__(self, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph, kind: SegmentKind) -> None:
+        super().__init__(sm=sm, ctx=ctx, graph=graph)
+        self.kind = kind
 
     def controls(self) -> None:
-        has_segments = self.ctx.build(SegmentKind.SLOPE).has_committed_segments()
+        kind = self.kind
+        noun = KIND_SPECS[kind].display_noun  # "Slope" / "Road"
+        has_segments = self.ctx.build(kind).has_committed_segments()
 
         if st.button(
-            "🏁 Finish Committed Slope",
+            f"🏁 Finish Committed {noun}",
             type="primary",
             width="stretch",
             disabled=not has_segments,
@@ -110,18 +121,18 @@ class SlopeSidebarPanel(SidebarPanel):
                 if not has_segments
                 else "Finalize the committed segments (any unconfirmed proposal is discarded)"
             ),
-            key="finish_slope_btn",
+            key=f"finish_{kind.value}_btn",
         ):
-            finish_current_slope()
+            finish_current_build(kind=kind)
 
         if st.button(
-            "✖️ Cancel Full Slope",
+            f"✖️ Cancel Full {noun}",
             width="stretch",
-            help="Discard current slope and return to IDLE",
-            key="cancel_slope_btn",
+            help=f"Discard current {noun.lower()} and return to IDLE",
+            key=f"cancel_{kind.value}_btn",
         ):
-            logger.info(f"UI: Cancel slope requested for {self.ctx.build(SegmentKind.SLOPE).name}")
-            cancel_current_slope()
+            logger.info(f"UI: Cancel {noun.lower()} requested for {self.ctx.build(kind).name}")
+            cancel_current_build(kind=kind)
 
         # Path settings apply only to fan-out proposals; hide the whole block while
         # routing a custom-connect path to a clicked target (force_mode).
@@ -136,7 +147,7 @@ class SlopeSidebarPanel(SidebarPanel):
             value=self.ctx.segment_length_m,
             step=50,
             help="Target length for generated path segments",
-            key="segment_length_slider",
+            key=f"segment_length_slider_{kind.value}",
         )
         if segment_length != self.ctx.segment_length_m:
             logger.info(f"UI: Segment length changed to {segment_length}m")
@@ -147,41 +158,12 @@ class SlopeSidebarPanel(SidebarPanel):
             "🔄 Recompute Paths",
             width="stretch",
             help="Generate new path variations",
-            key="recompute_btn",
+            key=f"recompute_{kind.value}_btn",
         )
         # Set-and-consume in the same frame/state: the slider above sets pending_recompute and the
         # slider change does not itself rerun, so we honor it here alongside an explicit click.
         if recompute or self.ctx.click_dedup.pending_recompute:
             recompute_paths()
-
-
-class RoadSidebarPanel(SidebarPanel):
-    """road_starting / road_building: Finish/Cancel road (mirrors SlopeSidebarPanel)."""
-
-    def controls(self) -> None:
-        has_segments = self.ctx.build(SegmentKind.ROAD).has_committed_segments()
-
-        if st.button(
-            "🏁 Finish Committed Road",
-            type="primary",
-            width="stretch",
-            disabled=not has_segments,
-            help=(
-                "Add at least one segment before finishing"
-                if not has_segments
-                else "Finalize the committed segments (any unconfirmed proposal is discarded)"
-            ),
-            key="finish_road_btn",
-        ):
-            finish_current_road()
-
-        if st.button(
-            "✖️ Cancel Road",
-            width="stretch",
-            help="Discard the current road and return to idle",
-            key="cancel_road_btn",
-        ):
-            cancel_current_road()
 
 
 class LiftSidebarPanel(SidebarPanel):

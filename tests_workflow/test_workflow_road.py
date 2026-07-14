@@ -106,69 +106,61 @@ class TestRoadInvalidTransitions:
 
 
 class TestRoadConnectorAutoFinish:
-    """commit_road_finish auto-ends the road when a segment connects to an existing node.
-
-    Mirrors commit_custom_finish for slopes: a single event fires from either
-    road_starting or road_building straight to idle_viewing_road.
+    """A connector road (target is an existing node) auto-finishes via commit_road_custom_finish
+    from ROAD_CUSTOM_PATH — the production path (connectors only arise in the custom-connect flow),
+    mirroring slope's commit_custom_finish. There is deliberately NO connector finish from the fan
+    states, exactly like slopes.
     """
+
+    M = 111320.0
 
     def _sm(self, graph: ResortGraph):
         return PlannerStateMachine.create(graph=graph, add_ui_listener=False)
 
-    def test_connector_finish_from_starting(self, empty_graph, path_points_blue) -> None:
+    def _to_road_custom_path(self, sm, path_points):
+        """Drive idle → road_starting → road_custom_path via a custom target."""
+        sm.start_road(node_id=None, location=path_points[0])
+        target_lat = -500 / self.M
+        sm.select_custom_target(target_location=(0.0, target_lat, 2400.0))
+        assert sm.current_state_value == "road_custom_path"
+
+    def test_connector_finish_from_custom_path(self, empty_graph, path_points_blue) -> None:
         sm, ctx = self._sm(empty_graph)
-        sm.start_road(node_id=None, location=path_points_blue[0])
-        assert sm.current_state_value == "road_starting"
+        self._to_road_custom_path(sm, path_points_blue)
 
         seg = _commit_road_segment(empty_graph, path_points_blue)
         road = empty_graph.finish_road(segment_ids=[seg])
         assert road is not None
-        sm.commit_road_finish(segment_id=seg, road_id=road.id)
+        sm.commit_road_custom_finish(segment_id=seg, entity_id=road.id)
 
-        # Connector segment ends the road immediately, straight from road_starting.
+        # Connector segment ends the road immediately, straight to the viewing state.
         assert sm.current_state_value == "idle_viewing_road"
         assert ctx.viewing.road_id == road.id
         assert ctx.viewing.panel_visible is True
-        # enter_idle_viewing_road clears the build scratch.
+        # enter_idle_viewing_road clears the build scratch (same Single Point of Truth as slopes).
         assert ctx.build(SegmentKind.ROAD).segments == []
 
-    def test_connector_finish_from_building(self, empty_graph, path_points_blue) -> None:
-        sm, ctx = self._sm(empty_graph)
-        sm.start_road(node_id=None, location=path_points_blue[0])
-        seg1 = _commit_road_segment(empty_graph, path_points_blue)
-        sm.commit_road(segment_id=seg1, endpoint_node_id="N1")
-        assert sm.current_state_value == "road_building"
-
-        seg2 = _commit_road_segment(empty_graph, path_points_blue)
-        road = empty_graph.finish_road(segment_ids=[seg1, seg2])
-        assert road is not None
-        sm.commit_road_finish(segment_id=seg2, road_id=road.id)
-
-        assert sm.current_state_value == "idle_viewing_road"
-        assert ctx.viewing.road_id == road.id
-
     def test_connector_finish_is_idempotent_on_already_tracked_segment(self, empty_graph, path_points_blue) -> None:
-        """before_commit_road_finish only appends the segment if not already tracked."""
+        """before_commit_custom_finish (shared by road) only appends the segment if not tracked."""
         sm, ctx = self._sm(empty_graph)
-        sm.start_road(node_id=None, location=path_points_blue[0])
-        seg1 = _commit_road_segment(empty_graph, path_points_blue)
-        sm.commit_road(segment_id=seg1, endpoint_node_id="N1")
-        assert ctx.build(SegmentKind.ROAD).segments == [seg1]
+        self._to_road_custom_path(sm, path_points_blue)
+        seg = _commit_road_segment(empty_graph, path_points_blue)
+        # Pre-track the segment on the build; the finish hook must not double-append.
+        ctx.build(SegmentKind.ROAD).segments.append(seg)
 
-        # seg1 is already in road_build.segments; the finish hook must not double-append.
-        road = empty_graph.finish_road(segment_ids=[seg1])
+        road = empty_graph.finish_road(segment_ids=[seg])
         assert road is not None
-        sm.commit_road_finish(segment_id=seg1, road_id=road.id)
+        sm.commit_road_custom_finish(segment_id=seg, entity_id=road.id)
 
         assert sm.current_state_value == "idle_viewing_road"
         assert ctx.viewing.road_id == road.id
 
     def test_connector_finish_not_allowed_from_idle(self, empty_graph) -> None:
-        """commit_road_finish has no transition out of idle_ready."""
+        """commit_road_custom_finish has no transition out of idle_ready (custom-path only)."""
         sm, _ctx = self._sm(empty_graph)
         assert sm.current_state_value == "idle_ready"
         with pytest.raises(TransitionNotAllowed):
-            sm.commit_road_finish(segment_id="S1", road_id="R1")
+            sm.commit_road_custom_finish(segment_id="S1", entity_id="R1")
 
 
 class TestRoadForceStateMethods:

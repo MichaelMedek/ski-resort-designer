@@ -434,12 +434,13 @@ class TestControlPanelDispatch:
 
 
 class TestPathSelectionPanelRuns:
-    def _panel(self, ctx, graph):
+    def _panel(self, ctx, graph, kind=SegmentKind.SLOPE):
         from skiresort_planner.ui.right_panel import PathSelectionPanel
 
         return PathSelectionPanel(
             context=ctx,
             graph=graph,
+            kind=kind,
             on_commit=_noop,
             on_cancel_connection=_noop,
         )
@@ -454,6 +455,16 @@ class TestPathSelectionPanelRuns:
         ctx.proposals.selected_idx = 0
         self._panel(ctx, empty_graph).render()
 
+    def test_road_proposal_runs_without_difficulty_emoji(self, fake_st, empty_graph, path_points_blue) -> None:
+        # Roads carry difficulty="" — the panel must NOT KeyError on the difficulty-emoji lookup
+        # (the bug that forced roads onto a separate inline panel). One shared kind-aware panel.
+        _sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        ctx.proposals.paths = [
+            ProposedPathSegment(points=path_points_blue, target_difficulty="", kind=SegmentKind.ROAD)
+        ]
+        ctx.proposals.selected_idx = 0
+        self._panel(ctx, empty_graph, kind=SegmentKind.ROAD).render()  # must not raise
+
     def test_custom_target_shows_cancel_custom_path(self, fake_st, empty_graph, path_points_blue) -> None:
         # A plain custom target (no connector node) → "Cancel Custom Path", never "Cancel Connection".
         _sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
@@ -464,6 +475,19 @@ class TestPathSelectionPanelRuns:
         self._panel(ctx, empty_graph).render()
         assert any("Cancel Custom Path" in b for b in labels)
         assert not any("Cancel Connection" in b for b in labels)
+
+    def test_road_custom_target_shows_cancel_custom_path(self, fake_st, empty_graph, path_points_blue) -> None:
+        # Parity: a ROAD custom target also gets the Cancel-Custom-Path affordance (the bug where the
+        # road build panel had no way back to the fan). Same shared PathSelectionPanel.
+        _sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        ctx.custom_connect.force_mode = True
+        ctx.proposals.paths = [
+            ProposedPathSegment(points=path_points_blue, target_difficulty="", kind=SegmentKind.ROAD)
+        ]
+        ctx.proposals.selected_idx = 0
+        labels = _capture_buttons(fake_st)
+        self._panel(ctx, empty_graph, kind=SegmentKind.ROAD).render()
+        assert any("Cancel Custom Path" in b for b in labels)
 
     def test_connector_target_shows_cancel_connection(self, fake_st, empty_graph, path_points_blue) -> None:
         # A connector (routing to an existing node) → "Cancel Connection" + the shared
@@ -481,7 +505,7 @@ class TestPathSelectionPanelRuns:
         assert any("Cancel Connection" in b for b in labels)
         assert not any("Cancel Custom Path" in b for b in labels)
         assert any("🏁 Finish → N3" in b for b in labels), "slope connector commit shows the Finish label"
-        assert not any("Commit This Path" in b for b in labels)
+        assert not any("Commit This Slope" in b for b in labels)
 
 
 # =============================================================================

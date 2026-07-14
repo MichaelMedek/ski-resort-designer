@@ -9,7 +9,7 @@ import re
 from skiresort_planner.model.message import (
     LiftMustGoUphillMessage,
     OSMImportErrorMessage,
-    RoadTooSteepMessage,
+    PathTooSteepMessage,
     TargetNotDownhillMessage,
     TargetTooFarMessage,
 )
@@ -22,23 +22,43 @@ def _first_number(text: str) -> float:
     return float(m.group())
 
 
-class TestRoadTooSteepMessage:
-    def test_just_over_cap_reads_strictly_above_limit(self) -> None:
+class TestPathTooSteepMessage:
+    """One unified refusal toast for both kinds. Roads use a ±band (two_sided=True) and "for a car
+    road"; slopes use a single-sided ceiling (two_sided=False) and "to ski".
+    """
+
+    def test_road_just_over_cap_reads_strictly_above_limit(self) -> None:
         # Fires only when every route is strictly over the band. A value just over the cap
         # must NOT render "15%, over the ±15% limit" (a self-contradiction). It shows a
         # decimal strictly above 15.
-        msg = RoadTooSteepMessage(gentlest_pct=15.02, max_grade_pct=15.0).message
+        msg = PathTooSteepMessage(
+            gentlest_pct=15.02, max_grade_pct=15.0, subject="for a car road", two_sided=True
+        ).message
         assert "±15% limit" in msg
         shown = _first_number(msg.split("gentlest possible is")[1])
         assert shown > 15.0, f"gentlest must read strictly above the ±15% cap: {msg}"
 
-    def test_clearly_over_cap_message(self) -> None:
-        msg = RoadTooSteepMessage(gentlest_pct=22.0, max_grade_pct=15.0).message
-        assert "22.0%" in msg and "±15% limit" in msg
+    def test_road_clearly_over_cap_message(self) -> None:
+        msg = PathTooSteepMessage(
+            gentlest_pct=22.0, max_grade_pct=15.0, subject="for a car road", two_sided=True
+        ).message
+        assert "22.0%" in msg and "±15% limit" in msg and "car road" in msg
 
-    def test_no_route_branch(self) -> None:
-        msg = RoadTooSteepMessage(gentlest_pct=None, max_grade_pct=15.0).message
+    def test_road_no_route_branch(self) -> None:
+        msg = PathTooSteepMessage(
+            gentlest_pct=None, max_grade_pct=15.0, subject="for a car road", two_sided=True
+        ).message
         assert "no route" in msg and "±15%" in msg
+
+    def test_slope_uses_single_sided_ceiling_wording(self) -> None:
+        # Slopes are one-sided: no ± prefix, wording "to ski".
+        msg = PathTooSteepMessage(gentlest_pct=80.0, max_grade_pct=70.0, subject="to ski", two_sided=False).message
+        assert "to ski" in msg and "70% limit" in msg and "±" not in msg
+        assert "80.0%" in msg
+
+    def test_slope_no_route_branch(self) -> None:
+        msg = PathTooSteepMessage(gentlest_pct=None, max_grade_pct=70.0, subject="to ski", two_sided=False).message
+        assert "no route" in msg and "under 70%" in msg and "±" not in msg
 
 
 class TestTargetTooFarMessage:

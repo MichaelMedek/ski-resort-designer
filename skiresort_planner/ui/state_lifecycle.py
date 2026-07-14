@@ -228,6 +228,9 @@ def enter_slope_starting(ctx: PlannerContext) -> None:
     # SINGLE POINT OF TRUTH: Hide panel for building mode
     ctx.viewing.hide_panel()
     ctx.click_dedup.clear_marker()
+    # Arm the fan here (mirrors enter_road_starting) so EVERY entry to slope_starting — first click,
+    # undo back to starting, cancel-custom-to-starting — regenerates proposals. Single source of truth.
+    ctx.deferred.fan_generation.add(SegmentKind.SLOPE)
 
 
 def exit_slope_starting(ctx: PlannerContext) -> None:
@@ -274,6 +277,10 @@ def enter_slope_building(ctx: PlannerContext) -> None:
     logger.debug("ENTER: slope_building - hiding panel, preserving building context")
     # SINGLE POINT OF TRUTH: Hide panel for building mode
     ctx.viewing.hide_panel()
+    # Arm the fan on every entry (mirrors enter_road_building) so a fresh proposal set is generated
+    # from the new endpoint — after a commit, a custom-continue, or an undo. fan_generation is a set,
+    # so a redundant add (the commit flow also arms) is a no-op; the deferred pass regenerates once.
+    ctx.deferred.fan_generation.add(SegmentKind.SLOPE)
 
 
 def exit_slope_building(ctx: PlannerContext) -> None:

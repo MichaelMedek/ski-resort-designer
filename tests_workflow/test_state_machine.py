@@ -75,7 +75,6 @@ VALID_TRANSITIONS: list[tuple[str, list[str], set[str]]] = [
     ("commit_road", ["road_starting"], {"road_building"}),
     ("cancel_road", ["road_building"], {"idle_ready"}),
     ("commit_road", ["road_building"], {"road_building"}),  # self-loop
-    ("commit_road_finish", ["road_starting", "road_building"], {"idle_viewing_road"}),  # connector auto-finish
 ]
 
 
@@ -147,11 +146,6 @@ INVALID_TRANSITIONS: list[tuple[str, list[str]]] = [
     (
         "commit_road",
         ["idle_ready", "idle_viewing_slope", "slope_starting", "slope_building", "lift_placing"],
-    ),
-    # Cannot fire the road connector-finish outside road-build states
-    (
-        "commit_road_finish",
-        ["idle_ready", "idle_viewing_slope", "slope_starting", "slope_building", "slope_custom_path", "lift_placing"],
     ),
     # Finish_slope is valid from slope_building + slope_custom_path only
     (

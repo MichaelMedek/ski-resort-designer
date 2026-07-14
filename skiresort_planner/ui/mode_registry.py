@@ -41,7 +41,7 @@ from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui import actions, bottom_chart, click_handlers, right_panel, sidebar_panels
 from skiresort_planner.ui.center_map import MapRenderer
 from skiresort_planner.ui.context import BuildMode, EntityKind, PlannerContext
-from skiresort_planner.ui.infra import reload_map
+from skiresort_planner.ui.infra import reload_map, trigger_rerun
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
 if TYPE_CHECKING:
@@ -348,8 +348,13 @@ class _SlopeBuildingState(BuildState):
         on_commit: Callable[[int], None],
         on_cancel_connection: Callable[[], None],
     ) -> right_panel.ControlPanel:
-        return right_panel.SlopeBuildingControlPanel(
-            sm=sm, ctx=ctx, graph=graph, on_commit=on_commit, on_cancel_connection=on_cancel_connection
+        return right_panel.PathBuildingControlPanel(
+            sm=sm,
+            ctx=ctx,
+            graph=graph,
+            on_commit=on_commit,
+            on_cancel_connection=on_cancel_connection,
+            kind=SegmentKind.SLOPE,
         )
 
     def click_handler(self) -> ClickHandler:
@@ -419,7 +424,7 @@ class _SlopeBuildingState(BuildState):
     def sidebar_panel(
         self, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph
     ) -> sidebar_panels.SidebarPanel:
-        return sidebar_panels.SlopeSidebarPanel(sm=sm, ctx=ctx, graph=graph)
+        return sidebar_panels.PathBuildSidebarPanel(sm=sm, ctx=ctx, graph=graph, kind=SegmentKind.SLOPE)
 
     def blocks_build_buttons(self) -> bool:
         return True
@@ -639,8 +644,13 @@ class _RoadBuildingState(BuildState):
         on_commit: Callable[[int], None],
         on_cancel_connection: Callable[[], None],
     ) -> right_panel.ControlPanel:
-        return right_panel.RoadBuildingControlPanel(
-            sm=sm, ctx=ctx, graph=graph, on_commit=on_commit, on_cancel_connection=on_cancel_connection
+        return right_panel.PathBuildingControlPanel(
+            sm=sm,
+            ctx=ctx,
+            graph=graph,
+            on_commit=on_commit,
+            on_cancel_connection=on_cancel_connection,
+            kind=SegmentKind.ROAD,
         )
 
     def click_handler(self) -> ClickHandler:
@@ -701,7 +711,7 @@ class _RoadBuildingState(BuildState):
     def sidebar_panel(
         self, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph
     ) -> sidebar_panels.SidebarPanel:
-        return sidebar_panels.RoadSidebarPanel(sm=sm, ctx=ctx, graph=graph)
+        return sidebar_panels.PathBuildSidebarPanel(sm=sm, ctx=ctx, graph=graph, kind=SegmentKind.ROAD)
 
     def blocks_build_buttons(self) -> bool:
         return True
@@ -770,13 +780,16 @@ class BuilderOperation(ABC):
         """One-line hint shown in idle: what the FIRST map click does in this mode."""
 
     def on_select(self, ctx: PlannerContext, sm: PlannerStateMachine) -> None:
-        """Highlight this mode and reload — the invariant EVERY builder button shares.
+        """Highlight this mode — the invariant EVERY builder button shares.
 
         A button only highlights; the mode start (state entry) always happens later on the first
-        map click. Ops needing extra setup override this, do their work first, then call super().
+        map click. This is a PURE UI pre-selection with no map change (state stays idle_ready), so
+        it uses a plain rerun — NOT reload_map() — to avoid a needless deck.gl remount (the map is
+        keyed on map_version, which reload_map bumps). Ops that actually change the map (e.g. the
+        lift op re-typing a viewed lift) override this and reload_map() only when they do.
         """
         ctx.build_mode.mode = self.mode
-        reload_map()
+        trigger_rerun()
 
 
 def _idle_not_building(sm: PlannerStateMachine) -> bool:
@@ -821,10 +834,16 @@ class _LiftOperation(BuilderOperation):
         return sm.is_idle_viewing_lift
 
     def on_select(self, ctx: PlannerContext, sm: PlannerStateMachine) -> None:
-        # Extra work: track the chosen type and, when viewing a lift, re-type it. Then the shared
-        # highlight + reload via super().
+        # select_lift_type_action sets build_mode/lift.type AND, when viewing a lift, re-types it
+        # (recomputes pylons/catenary → a REAL map change). So capture whether we were viewing a
+        # lift, then reload_map() (remount) if we re-typed one, else a plain rerun (pure highlight,
+        # no remount) — mirroring the base on_select's no-remount rule.
+        retyped_viewed_lift = sm.is_idle_viewing_lift
         actions.select_lift_type_action(self.mode)
-        super().on_select(ctx=ctx, sm=sm)
+        if retyped_viewed_lift:
+            reload_map()
+        else:
+            trigger_rerun()
 
 
 class _ImportOperation(BuilderOperation):

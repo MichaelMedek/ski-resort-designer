@@ -104,16 +104,21 @@ class TestOperationBijection:
 
         for mode, op in OPERATIONS.items():
             ctx.build_mode.mode = "__unset__"  # sentinel: prove on_select actually writes the mode
+            fake_st.session_state["map_version"] = 0
             op.on_select(ctx=ctx, sm=sm)
             assert ctx.build_mode.mode == mode, f"{mode}: on_select must highlight its own mode"
             assert sm.is_idle_ready, f"{mode}: on_select must NOT enter a build state (highlight only)"
+            # Pure pre-selection from idle → no map content change → no deck.gl remount.
+            assert fake_st.session_state["map_version"] == 0, f"{mode}: highlight must not bump map_version"
 
     def test_lift_operation_on_select_retypes_via_select_lift_type_action(
         self, fake_st, empty_graph, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # _LiftOperation overrides on_select to route through actions.select_lift_type_action (which,
-        # when viewing a lift, re-types it via Lift.update_type). Spy that the delegation fires once
-        # with the button's own mode. mode_registry calls it as `actions.select_lift_type_action`.
+        # _LiftOperation.on_select routes through actions.select_lift_type_action (which sets the
+        # build mode AND, when viewing a lift, re-types it via Lift.update_type). Spy that the
+        # delegation fires once with the button's own mode. mode_registry calls it as
+        # `actions.select_lift_type_action`. (The spy replaces the real setter, so build_mode.mode
+        # isn't set here — that is select_lift_type_action's own tested job.)
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         fake_st.session_state["state_machine"] = sm
         fake_st.session_state["context"] = ctx
@@ -127,7 +132,8 @@ class TestOperationBijection:
 
         OPERATIONS[BuildMode.GONDOLA].on_select(ctx=ctx, sm=sm)
         assert calls == [BuildMode.GONDOLA]
-        assert ctx.build_mode.mode == BuildMode.GONDOLA, "base on_select still highlights the mode"
+        # Not viewing a lift → pure highlight → no map remount (map_version unchanged).
+        assert fake_st.session_state["map_version"] == 0, "lift-type pre-selection must not remount the map"
 
 
 class TestEntityKindSpecBijection:

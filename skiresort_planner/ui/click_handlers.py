@@ -22,7 +22,6 @@ from skiresort_planner.model.click_info import ClickInfo, MapClickType, MarkerTy
 from skiresort_planner.model.message import InvalidClickMessage, OutsideTerrainMessage
 from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint
-from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.ui.actions import (
     center_on_lift,
     center_on_road,
@@ -94,7 +93,7 @@ def _start_mode_from_terrain(
         logger.info(f"[IDLE] Terrain click: starting new slope at ({lat:.6f}, {lon:.6f})")
         ctx.set_selection(lon=lon, lat=lat, elevation=elevation)
         ctx.map.set_building_view(lon=lon, lat=lat)
-        ctx.deferred.fan_generation.add(SegmentKind.SLOPE)
+        # Fan arming happens in enter_slope_starting (Single Point of Truth), like roads — not here.
         sm.start_building(lon=lon, lat=lat, elevation=elevation, node_id=None)
     elif ctx.build_mode.is_lift():
         logger.info(f"[IDLE] Terrain click: starting {build_mode} at ({lat:.6f}, {lon:.6f})")
@@ -126,7 +125,7 @@ def _start_mode_from_node(ctx: PlannerContext, sm: PlannerStateMachine, node: No
         logger.info(f"[IDLE] Node click: starting slope from {node.id}")
         ctx.set_selection(lon=node.lon, lat=node.lat, elevation=node.elevation)
         ctx.map.set_building_view(lon=node.lon, lat=node.lat)
-        ctx.deferred.fan_generation.add(SegmentKind.SLOPE)
+        # Fan arming happens in enter_slope_starting (Single Point of Truth), like roads — not here.
         sm.start_building(lon=node.lon, lat=node.lat, elevation=node.elevation, node_id=node.id)
     elif ctx.build_mode.is_lift():
         logger.info(f"[IDLE] Node click: starting {build_mode} from {node.id}")

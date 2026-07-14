@@ -155,7 +155,7 @@ def handle_fast_deferred_actions() -> None:
         graph: ResortGraph = st.session_state.graph
         node = graph.nodes.get(node_id)
         if node and sm.is_idle:
-            ctx.deferred.fan_generation.add(SegmentKind.SLOPE)
+            # enter_slope_starting arms the fan (Single Point of Truth), so no arming here.
             sm.start_building(
                 lon=node.lon,
                 lat=node.lat,
@@ -604,9 +604,18 @@ def recompute_paths() -> None:
 # =============================================================================
 
 
+def finish_current_build(kind: SegmentKind) -> None:
+    """Finish the active build and create the finalized entity (sidebar Finish button), any kind.
+
+    Kind-generic entry the unified path-build sidebar panel calls; the slope/road wrappers below
+    delegate here so there is one implementation.
+    """
+    _finish_current_entity(kind=kind)
+
+
 def finish_current_slope() -> None:
     """Finish building and create the finalized slope (sidebar Finish button)."""
-    _finish_current_entity(kind=SegmentKind.SLOPE)
+    finish_current_build(kind=SegmentKind.SLOPE)
 
 
 def _discard_build(build_ctx: "SegmentBuildContext") -> None:
@@ -643,25 +652,31 @@ def _discard_build(build_ctx: "SegmentBuildContext") -> None:
     bump_map_version()  # Clear stale click state
 
 
-def cancel_current_slope() -> None:
-    """Cancel slope building and discard segments."""
+def cancel_current_build(kind: SegmentKind) -> None:
+    """Cancel the active build and discard its segments (sidebar Cancel button), any kind.
+
+    Kind-generic entry the unified path-build sidebar panel calls; discards the build then fires
+    the kind's cancel event from KIND_SPECS. The slope/road wrappers below delegate here.
+    """
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
-    _discard_build(build_ctx=ctx.build(SegmentKind.SLOPE))
-    sm.cancel_slope()
+    _discard_build(build_ctx=ctx.build(kind))
+    sm.send(KIND_SPECS[kind].cancel_event)
+
+
+def cancel_current_slope() -> None:
+    """Cancel slope building and discard segments."""
+    cancel_current_build(kind=SegmentKind.SLOPE)
 
 
 def finish_current_road() -> None:
     """Finish building and create the finalized road (sidebar Finish button)."""
-    _finish_current_entity(kind=SegmentKind.ROAD)
+    finish_current_build(kind=SegmentKind.ROAD)
 
 
 def cancel_current_road() -> None:
     """Cancel road building and discard its segments (mirrors cancel_current_slope)."""
-    sm: PlannerStateMachine = st.session_state.state_machine
-    ctx: PlannerContext = st.session_state.context
-    _discard_build(build_ctx=ctx.build(SegmentKind.ROAD))
-    sm.send("cancel_road")
+    cancel_current_build(kind=SegmentKind.ROAD)
 
 
 def _undo_add_segments(undone: AddSegmentsAction) -> None:

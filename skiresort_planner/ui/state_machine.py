@@ -612,18 +612,14 @@ class PlannerStateMachine(StateMachine):
     # 9.4. commit_road_first [event: commit_road]: first traced segment
     # 9.5. commit_road_continue [event: commit_road, self-loop]: extend the road
     # 9.2. finish_road [direct]: Finish button
-    # 9.6. commit_road_finish [event: commit_road_finish]: a connector segment (target is an
-    #      existing node) ends the road immediately, from either state. Mirrors commit_custom_finish.
+    # A connector road (target is an existing node) auto-finishes via commit_road_custom_finish
+    # from ROAD_CUSTOM_PATH (§9b) — mirroring slope's commit_custom_finish. There is deliberately
+    # NO connector-finish from the fan states: fan proposals are never connectors (is_connector is
+    # only set in the custom-connect generator), exactly like slopes.
 
     commit_road_first = road_starting.to(road_building, event="commit_road")  # 9.4 [event: commit_road]
     commit_road_continue = road_building.to(road_building, event="commit_road")  # 9.5 [event: commit_road] self-loop
     finish_road = road_building.to(idle_viewing_road)  # 9.2 [direct]
-    commit_road_finish_from_starting = road_starting.to(
-        idle_viewing_road, event="commit_road_finish"
-    )  # 9.6 [event: commit_road_finish]
-    commit_road_finish_from_building = road_building.to(
-        idle_viewing_road, event="commit_road_finish"
-    )  # 9.6 [event: commit_road_finish]
     cancel_road_from_starting = road_starting.to(idle_ready, event="cancel_road")  # 9.1 [event: cancel_road]
     cancel_road_from_building = road_building.to(idle_ready, event="cancel_road")  # 9.1 [event: cancel_road]
 
@@ -696,9 +692,6 @@ class PlannerStateMachine(StateMachine):
             # commit_road event
             "commit_road_first",
             "commit_road_continue",
-            # commit_road_finish event
-            "commit_road_finish_from_starting",
-            "commit_road_finish_from_building",
             # cancel_slope event
             "cancel_from_starting",
             "cancel_from_building",
@@ -1059,17 +1052,6 @@ class PlannerStateMachine(StateMachine):
         self.context.viewing.set_viewed(kind=self.active_build_kind, entity_id=entity_id)
         self.context.custom_connect.clear()
 
-    def before_commit_road_finish(self, segment_id: str, road_id: str) -> None:
-        """Road connector auto-finish (mirrors before_commit_custom_finish).
-
-        Idempotent on segment_id (caller appends before graph.finish_road()).
-        enter_idle_viewing_road clears the road build, so no clear here.
-        """
-        build = self._active_build()
-        if segment_id not in build.segments:
-            build.segments.append(segment_id)
-        self.context.viewing.set_viewed(kind=self.active_build_kind, entity_id=road_id)
-
     def before_commit_road_custom_continue(self, segment_id: str, endpoint_node_id: str) -> None:
         """Road custom-path commit + keep building — same body as the slope custom continue."""
         self.before_commit_custom_continue(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
@@ -1179,9 +1161,12 @@ class PlannerStateMachine(StateMachine):
         self.context.merge.clear()
 
     def before_finish_road(self, entity_id: str) -> None:
-        """Set the viewed road before finishing. Panel visibility set by enter_idle_viewing_road."""
+        """Set the viewed road before finishing (mirrors before_finish_slope).
+
+        The build is cleared by enter_idle_viewing_road (Single Point of Truth), same as slopes —
+        no explicit clear here, so slope and road finish identically.
+        """
         self.context.viewing.set_viewed(kind=SegmentKind.ROAD, entity_id=entity_id)
-        self.context.build(SegmentKind.ROAD).clear()
 
     # ──────────────────────────────────────────────────────────────────────────────
     # Custom Connect Transitions (Single Source of Truth for ctx.custom_connect.*)
@@ -1364,14 +1349,13 @@ class PlannerStateMachine(StateMachine):
     def _force_fan_state(self, kind: SegmentKind, state_id: str) -> None:
         """Force the machine into one of the kind's fan states (STARTING/BUILDING) after undo.
 
-        force_* bypasses transitions, so no before_* hook fires to arm the fan the way a
-        normal commit/start does. Re-arm it here from the restored endpoint so the next
-        deferred pass regenerates proposals (both undo callers rely on this).
+        force_* bypasses transitions, but it still runs the state's enter hook below, and every
+        kind's enter_*_starting/building arms the fan (Single Point of Truth) — so the next deferred
+        pass regenerates proposals. Both undo callers rely on that enter-hook arming.
         """
         logger.info(f"[STATE] Forcing state from {self.get_state_name()} to {kind.value} {state_id}")
         self.context.clear_custom_connect()
         self.context.viewing.clear()
-        self.context.deferred.fan_generation.add(kind)
         state: State = getattr(self, state_id)
         self._set_current_state(state=state)
         self._run_enter_hook(state)
