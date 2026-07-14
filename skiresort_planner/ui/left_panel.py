@@ -257,7 +257,6 @@ class SidebarRenderer:
             width="stretch",
             help="Discard the current road and return to idle",
         )
-        st.caption(f"Click terrain or a junction to extend the road within ±{PathConfig.ROAD_MAX_GRADIENT_PCT}%.")
 
         return {"finish_road": finish_road, "cancel_road": cancel_road}
 
@@ -345,7 +344,6 @@ class SidebarRenderer:
         if half_width_km != self.ctx.deferred.osm_import_half_width_km:
             self.ctx.deferred.osm_import_half_width_km = half_width_km
             reload_map()  # redraw the box at the new size
-        st.caption("👆 Click the map to place the area, then click its center dot (or Confirm) to import.")
         self._cancel_button(
             label="✖️ Cancel Import",
             on_cancel=self.sm.cancel_import,
@@ -355,11 +353,9 @@ class SidebarRenderer:
     def render_merge_building_controls(self) -> None:
         """Render controls while selecting nodes to merge (MERGE_PLACING).
 
-        Shows how many nodes are selected and a Cancel button. Confirming happens from the right
-        panel (the "Confirm Merge" button), mirroring the import Confirm flow.
+        Only a Cancel button — the selection count and what-to-do instructions live on the right
+        panel (MergePlacingContextMessage / MergeActionMessage). Confirming happens there too.
         """
-        count = len(self.ctx.merge.node_ids)
-        st.caption(f"👆 Click node markers to select ({count} selected), then Confirm Merge on the right.")
         self._cancel_button(
             label="✖️ Cancel Merge",
             on_cancel=self.sm.cancel_merge,
