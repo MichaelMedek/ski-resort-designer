@@ -14,7 +14,7 @@ The key pattern is:
 
 1. User action triggers state transition (e.g., click map → start_slope)
 2. StreamlitUIListener fires after_transition and calls st.rerun()
-3. On the next render cycle, handle_fast_deferred_actions() checks pending flags
+3. On the next render cycle, the deferred dispatch in app.py checks pending flags
 4. Deferred work (e.g., path generation) executes with access to full context
 
 This separates state transitions (instant) from business logic (deferred), ensuring
@@ -218,11 +218,16 @@ Transition Summary Table
       select_target [select_custom_target]
     - From SLOPE_BUILDING (3+1): cancel [cancel_slope], finish [direct], select_target [select_custom_target],
       commit_path (loop)
-    - From SLOPE_CUSTOM_PATH (4+1): commit_continue [direct], commit_finish [direct], cancel_slope [cancel_slope],
-      cancel_path_to_* [cancel_custom], retarget (loop) [select_custom_target]
+    - From SLOPE_CUSTOM_PATH (5+1): commit_continue [direct], commit_finish [direct], finish [finish_slope],
+      cancel_slope [cancel_slope], cancel_path_to_* [cancel_custom], retarget (loop) [select_custom_target]
     - From LIFT_PLACING (2): cancel [direct], complete [direct]
-    - From ROAD_STARTING (2): cancel [cancel_road], commit_road_first [commit_road]
-    - From ROAD_BUILDING (2+1): cancel [cancel_road], finish [direct], commit_road_continue (loop) [commit_road]
+    - From ROAD_STARTING (3): cancel [cancel_road], commit_road_first [commit_road],
+      select_target [select_custom_target]
+    - From ROAD_BUILDING (3+1): cancel [cancel_road], finish [direct], select_target [select_custom_target],
+      commit_road_continue (loop) [commit_road]
+    - From ROAD_CUSTOM_PATH (5+1): commit_road_custom_continue [direct], commit_road_custom_finish [direct],
+      finish [finish_road], cancel_road [cancel_road], cancel_road_path_to_* [cancel_custom],
+      retarget (loop) [select_custom_target]
 
     Event-triggered transitions use [event_name] notation.
     Direct transitions are called by their transition name directly.
@@ -705,6 +710,10 @@ class PlannerStateMachine(StateMachine):
             "cancel_path_to_building",
             "cancel_road_path_to_starting",
             "cancel_road_path_to_building",
+            # finish_slope / finish_road event (the _from_custom variants; the base
+            # finish_slope/finish_road transitions ARE the event entry points and stay callable)
+            "finish_slope_from_custom",
+            "finish_road_from_custom",
             # select_custom_target event
             "select_target_from_starting",
             "select_target_from_building",
@@ -1118,9 +1127,17 @@ class PlannerStateMachine(StateMachine):
     before_start_lift_from_lift_view = before_start_lift
 
     def before_start_road(self, node_id: str | None = None, location: PathPoint | None = None) -> None:
-        """Action before starting road placement: store the first clicked point."""
-        self.context.build(SegmentKind.ROAD).start_node_id = node_id
-        self.context.build(SegmentKind.ROAD).start_location = location
+        """Action before starting road placement: store the first clicked point and name.
+
+        Mirrors before_start_slope: the road build gets an in-progress "Road N" name so the
+        in-build panel reads identically to slopes (not "Unnamed Road"). The finish-time
+        bearing name overrides it.
+        """
+        build = self.context.build(SegmentKind.ROAD)
+        build.start_node_id = node_id
+        build.start_location = location
+        road_number = self._resort_graph._road_counter + 1
+        build.name = f"Road {road_number}"
 
     # Reuse start_road logic for other entry points
     before_start_road_from_slope_view = before_start_road

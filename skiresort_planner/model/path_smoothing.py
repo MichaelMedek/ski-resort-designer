@@ -116,13 +116,12 @@ def smooth_joined_path(
     staircase / switchback-reversal jitter into a smooth radius instead of threading every
     noisy point and collapsing to a zero-speed CUSP (the sharp-edge bug at switchbacks).
     The path is re-sliced at the junction arc-positions so adjacent segments share the
-    junction point by value. Single-segment input is returned unchanged.
+    junction point by value. A single segment is smoothed too (no junction, just rounded).
 
     node_anchors: authoritative node coords, one per boundary — [outer start, junction_1,
         ..., junction_{n-1}, outer end]; length == len(segment_point_lists) + 1.
     """
-    if len(segment_point_lists) < 2:
-        return segment_point_lists
+    assert segment_point_lists, "smooth_joined_path needs at least one segment"
 
     # Join, deduping each segment's first point against the previous segment's last.
     joined: list[PathPoint] = list(segment_point_lists[0])

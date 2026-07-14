@@ -175,10 +175,17 @@ class TestSmoothJoinedPath:
             "are ROAD/SLOPE_SMOOTHING_FACTOR swapped?)"
         )
 
-    def test_single_segment_returned_unchanged(self) -> None:
-        seg = _leg(0.0, 0.0, 10 / M, 0.0, 20, z0=2000.0, dz=-0.5)
-        out = _smooth([seg], [seg[0], seg[-1]])
-        assert out == [seg]
+    def test_single_segment_is_smoothed(self) -> None:
+        # A single segment has no junction but is still smoothed: endpoints pinned exactly,
+        # resampled at step spacing, and a jittery corridor rounded into a broad radius.
+        step = 10 / M
+        pts = [PathPoint(lon=step * i, lat=(step if i % 2 else 0.0), elevation=2000.0 - 0.5 * i) for i in range(20)]
+        out = _smooth([pts], [pts[0], pts[-1]])
+        assert len(out) == 1, "single segment stays a single segment"
+        smoothed = out[0]
+        assert smoothed[0] == pts[0], "start pinned exactly"
+        assert smoothed[-1] == pts[-1], "end pinned exactly"
+        assert _min_curvature_radius_m(smoothed) > _min_curvature_radius_m(pts), "zigzag rounded into a broader radius"
 
     def test_short_path_returns_inputs_unchanged(self) -> None:
         # Fewer than 4 joined points → spline can't fit; inputs come back untouched.

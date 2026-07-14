@@ -616,10 +616,7 @@ class DeferredContext(BaseContext):
     # Kinds whose fan should regenerate on the next render (one entry per building kind) like slopes and roads
     fan_generation: set[SegmentKind] = field(default_factory=set)
     gradient_target: float | None = None  # For smart path recommendation
-    auto_finish: bool = False  # Auto-finish slope after connector commit
     custom_connect: bool = False  # Generate paths to custom target location
-    start_building_from_node_id: str | None = None  # Deferred start_building from node
-    start_lift_from_node_id: str | None = None  # Deferred start_lift from node
     osm_import: bool = False  # Fetch + import OSM lifts/pistes for the chosen area (slow network)
     osm_import_half_width_km: float = OSMConfig.HALF_WIDTH_DEFAULT_KM  # Square half-width from the import slider
     # Center of the placed import box (click-to-place). Set by start_import, consumed on confirm.
@@ -633,10 +630,7 @@ class DeferredContext(BaseContext):
         """Clear all deferred flags."""
         self.fan_generation = set()
         self.gradient_target = None
-        self.auto_finish = False
         self.custom_connect = False
-        self.start_building_from_node_id = None
-        self.start_lift_from_node_id = None
         self.osm_import = False
         self.osm_import_half_width_km = OSMConfig.HALF_WIDTH_DEFAULT_KM
         self.osm_import_center_lon = None

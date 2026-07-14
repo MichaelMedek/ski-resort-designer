@@ -129,7 +129,6 @@ def create_command_executor() -> None:
         delete_slope_action,
         finish_current_road,
         finish_current_slope,
-        handle_fast_deferred_actions,
         process_custom_connect_deferred,
         process_path_generation_deferred,
         recompute_paths,
@@ -149,8 +148,6 @@ def create_command_executor() -> None:
             process_custom_connect_deferred()
         elif ctx.deferred.fan_generation:
             process_path_generation_deferred()
-        else:
-            handle_fast_deferred_actions()
 
     # Initialize state machine if not already done
     sm: PlannerStateMachine

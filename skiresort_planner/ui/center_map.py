@@ -1236,56 +1236,6 @@ class MapRenderer:
 
         return layers
 
-    # =========================================================================
-    # ROAD PLACEMENT MARKER
-    # =========================================================================
-
-    def create_pending_road_marker_layers(
-        self,
-        lat: float,
-        lon: float,
-        elevation: float,
-        *,
-        use_3d: bool = False,
-    ) -> list[pdk.Layer]:
-        """Create the origin marker for a road being started (no direction arrow).
-
-        Unlike a lift (which has an uphill fall-line direction) a road has no
-        orientation yet at the origin — this is just a visible brown dot so the
-        user sees where they clicked, mirroring the lift bottom-station marker.
-
-        Args:
-            lat, lon: Road origin location.
-            elevation: Ground elevation.
-            use_3d: If True, render at terrain elevation. If False, render flat.
-        """
-        marker_z = self._get_z(
-            elevation=elevation,
-            z_offset=MarkerConfig.MARKER_Z_OFFSET_M,
-            use_3d=use_3d,
-            flat_z=MapConfig.Z_OFFSET_2D_MARKERS,
-        )
-        station_data = [
-            {
-                "position": [lon, lat, marker_z],
-                "elevation": elevation,
-                "name": f"{StyleConfig.ROAD_ICON} Road start ({elevation:.0f}m)",
-            }
-        ]
-        return [
-            pdk.Layer(
-                "ScatterplotLayer",
-                station_data,
-                get_position="position",
-                get_radius=MarkerConfig.LIFT_STATION_RADIUS,
-                get_fill_color=list(StyleConfig.ROAD_COLOR_RGBA),
-                get_line_color=[255, 255, 255, 255],
-                stroked=True,
-                line_width_min_pixels=3,
-                id="pending_road_start",
-            )
-        ]
-
     def create_import_bbox_layers(
         self,
         center_lon: float,

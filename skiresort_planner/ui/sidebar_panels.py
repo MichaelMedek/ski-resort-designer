@@ -128,10 +128,10 @@ class PathBuildSidebarPanel(SidebarPanel):
         if st.button(
             f"✖️ Cancel Full {noun}",
             width="stretch",
-            help=f"Discard current {noun.lower()} and return to IDLE",
+            help=f"Discard current {kind.value} and return to IDLE",
             key=f"cancel_{kind.value}_btn",
         ):
-            logger.info(f"UI: Cancel {noun.lower()} requested for {self.ctx.build(kind).name}")
+            logger.info(f"UI: Cancel {kind.value} requested for {self.ctx.build(kind).name}")
             cancel_current_build(kind=kind)
 
         # Path settings apply only to fan-out proposals; hide the whole block while

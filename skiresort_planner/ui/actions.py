@@ -9,7 +9,7 @@ This module handles:
 - Slope operations (finish_current_slope, cancel_current_slope)
 - Undo operations (undo_last_action)
 - Custom direction mode (enter/cancel)
-- Deferred action handling (handle_fast_deferred_actions, process_*_deferred)
+- Deferred action handling (process_*_deferred)
 """
 
 import logging
@@ -129,49 +129,6 @@ def center_on_lift(
 # =============================================================================
 
 
-def handle_fast_deferred_actions() -> None:
-    """Execute fast deferred actions that don't need spinners.
-
-    Called at start of main() for quick state transitions:
-    - Auto-finish for connector paths
-    - Start building from node (triggers path generation)
-    - Start lift from node
-
-    NOTE: Slow operations (custom_connect, path_generation) are handled
-    separately in app.py with spinners around process_*_deferred() calls.
-    """
-    sm: PlannerStateMachine = st.session_state.state_machine
-    ctx: PlannerContext = st.session_state.context
-
-    # Handle auto-finish for connector paths (must be checked first)
-    if ctx.deferred.auto_finish:
-        ctx.deferred.auto_finish = False
-        finish_current_slope()
-        return
-
-    if ctx.deferred.start_building_from_node_id:
-        node_id = ctx.deferred.start_building_from_node_id
-        ctx.deferred.start_building_from_node_id = None
-        graph: ResortGraph = st.session_state.graph
-        node = graph.nodes.get(node_id)
-        if node and sm.is_idle:
-            # enter_slope_starting arms the fan (Single Point of Truth), so no arming here.
-            sm.start_building(
-                lon=node.lon,
-                lat=node.lat,
-                elevation=node.elevation,
-                node_id=node.id,
-            )
-        return
-
-    if ctx.deferred.start_lift_from_node_id:
-        node_id = ctx.deferred.start_lift_from_node_id
-        ctx.deferred.start_lift_from_node_id = None
-        if sm.is_idle:
-            sm.select_lift_start(node_id=node_id)
-        return
-
-
 def process_custom_connect_deferred() -> bool:
     """Process pending custom connect path generation.
 
@@ -187,7 +144,9 @@ def process_custom_connect_deferred() -> bool:
 
     ctx.deferred.custom_connect = False
     _generate_custom_connect_paths()
-    bump_map_version()  # Clear stale click state so proposal 1 can be clicked
+    # Only bump_map_version() here (NOT reload_map/trigger_rerun): this runs inside the current
+    # render cycle from app.py, so the natural render that follows displays the new proposals.
+    bump_map_version()
     return True
 
 
@@ -296,7 +255,9 @@ def process_path_generation_deferred() -> bool:
     # Regenerate the fan for each pending kind that is actually the active build.
     if sm.active_build_kind in ctx.deferred.fan_generation:
         _generate_fan_for_building_state(kind=sm.active_build_kind)
-        bump_map_version()  # Clear stale click state so proposal 1 can be clicked
+        # Only bump_map_version() here (NOT reload_map/trigger_rerun): this runs inside the current
+        # render cycle from app.py, so the following natural render shows the new proposals.
+        bump_map_version()
 
     ctx.deferred.fan_generation.clear()
     return True
@@ -331,7 +292,9 @@ def _generate_fan_for_building_state(kind: SegmentKind) -> None:
 
     ctx.proposals.paths = kept
 
-    # Smart recommendation: match gradient if we have a target (slopes only set this).
+    # Smart recommendation: pre-select the proposal whose gradient is closest to the last
+    # committed segment's gradient. Set by commit_selected_path for EVERY kind (slopes and
+    # roads), so both get continuity of grade across committed segments.
     if kept and ctx.deferred.gradient_target is not None:
         best_idx = _find_closest_gradient_path(paths=kept, target_gradient=ctx.deferred.gradient_target)
         ctx.proposals.selected_idx = best_idx

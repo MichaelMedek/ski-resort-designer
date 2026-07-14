@@ -225,8 +225,8 @@ class TestEnumDispatchCompleteness:
             ("Message.display", src(Message.__dict__["display"]), msglevel, "MessageLevel", set()),
             ("handle_idle_click", src(click_handlers.handle_idle_click), marker, "MarkerType", idle_omit),
             (
-                "handle_slope_building_click",
-                src(click_handlers.handle_slope_building_click),
+                "handle_path_building_click",
+                src(click_handlers.handle_path_building_click),
                 marker,
                 "MarkerType",
                 idle_omit,

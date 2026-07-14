@@ -42,6 +42,7 @@ from skiresort_planner.ui import actions, bottom_chart, click_handlers, right_pa
 from skiresort_planner.ui.center_map import MapRenderer
 from skiresort_planner.ui.context import BuildMode, EntityKind, PlannerContext
 from skiresort_planner.ui.infra import reload_map, trigger_rerun
+from skiresort_planner.ui.kind_spec import KIND_SPECS
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
 if TYPE_CHECKING:
@@ -332,13 +333,19 @@ class _IdleViewingLiftState(_EntityViewingState):
         return MapRenderer.calculate_3d_view_for_lift(graph=graph, lift_id=entity_id)
 
 
-class _SlopeBuildingState(BuildState):
-    """The three slope states (starting/building/custom_path): orientation arrows at the start point,
-    a custom-connect direction arrow while routing, and the in-build slope profile below the map.
+class _PathBuildingState(BuildState):
+    """The build states for ANY path kind (slope or road): the *_starting / *_building /
+    *_custom_path trio. One kind-parameterized class (mirroring PathBuildingControlPanel and
+    PathBuildSidebarPanel) so slope and road cannot drift.
+
+    Every state draws fall-line orientation arrows at the build origin (ctx.selection) and, while
+    routing a custom-connect path, a downhill direction arrow from the start node. The in-build
+    elevation profile renders below the map once ≥1 segment is committed.
     """
 
-    def __init__(self, state_key: str) -> None:
+    def __init__(self, state_key: str, kind: SegmentKind) -> None:
         self.state_key = state_key
+        self.kind = kind
 
     def control_panel(
         self,
@@ -354,11 +361,11 @@ class _SlopeBuildingState(BuildState):
             graph=graph,
             on_commit=on_commit,
             on_cancel_connection=on_cancel_connection,
-            kind=SegmentKind.SLOPE,
+            kind=self.kind,
         )
 
     def click_handler(self) -> ClickHandler:
-        return click_handlers.handle_slope_building_click
+        return click_handlers.handle_path_building_click
 
     def overlay_layers(
         self,
@@ -399,14 +406,16 @@ class _SlopeBuildingState(BuildState):
         return _stored_2d_view(ctx)
 
     def bottom_profile(self, ctx: PlannerContext, graph: ResortGraph) -> ProfileSpec | None:
-        if not ctx.build(SegmentKind.SLOPE).segments:
+        build = ctx.build(self.kind)
+        if not build.segments:
             return None
         fig = bottom_chart.render_building_profile(
-            building_segments=ctx.build(SegmentKind.SLOPE).segments,
-            building_name=ctx.build(SegmentKind.SLOPE).name,
+            building_segments=build.segments,
+            building_name=build.name,
             graph=graph,
         )
-        return ProfileSpec(fig=fig, key="combined_profile")
+        # Key is scoped per kind so slope and road profile charts never collide.
+        return ProfileSpec(fig=fig, key=f"combined_{self.kind.value}_profile")
 
     def merge_highlight_node_ids(self, ctx: PlannerContext) -> list[str] | None:
         return None
@@ -417,14 +426,14 @@ class _SlopeBuildingState(BuildState):
     def info_block(self, ctx: PlannerContext) -> InfoBlock:
         return InfoBlock(
             icon=StyleConfig.BUILDING_ICON,
-            label="Building Slope...",
+            label=f"Building {KIND_SPECS[self.kind].display_noun}...",
             bullets=["⏳ Complete or cancel current build to change type"],
         )
 
     def sidebar_panel(
         self, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph
     ) -> sidebar_panels.SidebarPanel:
-        return sidebar_panels.PathBuildSidebarPanel(sm=sm, ctx=ctx, graph=graph, kind=SegmentKind.SLOPE)
+        return sidebar_panels.PathBuildSidebarPanel(sm=sm, ctx=ctx, graph=graph, kind=self.kind)
 
     def blocks_build_buttons(self) -> bool:
         return True
@@ -628,109 +637,20 @@ class _MergePlacingState(BuildState):
         return True
 
 
-class _RoadBuildingState(BuildState):
-    """The two road states (starting/building): an origin dot while starting, and the in-build road
-    profile below the map. Roads always render as a custom path.
-    """
-
-    def __init__(self, state_key: str) -> None:
-        self.state_key = state_key
-
-    def control_panel(
-        self,
-        sm: PlannerStateMachine,
-        ctx: PlannerContext,
-        graph: ResortGraph,
-        on_commit: Callable[[int], None],
-        on_cancel_connection: Callable[[], None],
-    ) -> right_panel.ControlPanel:
-        return right_panel.PathBuildingControlPanel(
-            sm=sm,
-            ctx=ctx,
-            graph=graph,
-            on_commit=on_commit,
-            on_cancel_connection=on_cancel_connection,
-            kind=SegmentKind.ROAD,
-        )
-
-    def click_handler(self) -> ClickHandler:
-        return click_handlers.handle_road_building_click
-
-    def overlay_layers(
-        self,
-        ctx: PlannerContext,
-        graph: ResortGraph,
-        renderer: MapRenderer,
-        terrain_analyzer: TerrainAnalyzer,
-        dem: DEMService,
-        *,
-        use_3d: bool,
-    ) -> list[pdk.Layer]:
-        # Only the origin (starting) shows a dot; once segments exist the road draws itself.
-        if self.state_key != "road_starting":
-            return []
-        build = ctx.build(SegmentKind.ROAD)
-        if build.start_node_id is not None:
-            node = graph.nodes.get(build.start_node_id)
-            if node is None:
-                raise ValueError(f"Road start node {build.start_node_id} not found in graph")
-            lat, lon, elevation = node.lat, node.lon, node.elevation
-        elif build.start_location is not None:
-            loc = build.start_location
-            lat, lon, elevation = loc.lat, loc.lon, loc.elevation
-        else:
-            return []
-        return renderer.create_pending_road_marker_layers(lat=lat, lon=lon, elevation=elevation, use_3d=use_3d)
-
-    def view_state(self, ctx: PlannerContext, graph: ResortGraph, *, use_3d: bool) -> ViewState:
-        return _stored_2d_view(ctx)
-
-    def bottom_profile(self, ctx: PlannerContext, graph: ResortGraph) -> ProfileSpec | None:
-        if not ctx.build(SegmentKind.ROAD).segments:
-            return None
-        fig = bottom_chart.render_building_profile(
-            building_segments=ctx.build(SegmentKind.ROAD).segments,
-            building_name=ctx.build(SegmentKind.ROAD).name,
-            graph=graph,
-        )
-        return ProfileSpec(fig=fig, key="combined_road_profile")
-
-    def merge_highlight_node_ids(self, ctx: PlannerContext) -> list[str] | None:
-        return None
-
-    def renders_custom_path(self, ctx: PlannerContext) -> bool:
-        return ctx.custom_connect.force_mode
-
-    def info_block(self, ctx: PlannerContext) -> InfoBlock:
-        return InfoBlock(
-            icon=StyleConfig.BUILDING_ICON,
-            label="Building Road...",
-            bullets=["⏳ Complete or cancel current build to change type"],
-        )
-
-    def sidebar_panel(
-        self, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph
-    ) -> sidebar_panels.SidebarPanel:
-        return sidebar_panels.PathBuildSidebarPanel(sm=sm, ctx=ctx, graph=graph, kind=SegmentKind.ROAD)
-
-    def blocks_build_buttons(self) -> bool:
-        return True
-
-
 _BUILD_STATE_LIST: list[BuildState] = [
     _IdleReadyState(),
     _IdleViewingSlopeState(),
     _IdleViewingRoadState(),
     _IdleViewingLiftState(),
-    _SlopeBuildingState("slope_starting"),
-    _SlopeBuildingState("slope_building"),
-    _SlopeBuildingState("slope_custom_path"),
+    _PathBuildingState("slope_starting", SegmentKind.SLOPE),
+    _PathBuildingState("slope_building", SegmentKind.SLOPE),
+    _PathBuildingState("slope_custom_path", SegmentKind.SLOPE),
     _LiftPlacingState(),
     _ImportPlacingState(),
     _MergePlacingState(),
-    _RoadBuildingState("road_starting"),
-    _RoadBuildingState("road_building"),
-    _RoadBuildingState("road_custom_path"),
+    _PathBuildingState("road_starting", SegmentKind.ROAD),
+    _PathBuildingState("road_building", SegmentKind.ROAD),
+    _PathBuildingState("road_custom_path", SegmentKind.ROAD),
 ]
 
 BUILD_STATES: dict[str, BuildState] = {bs.state_key: bs for bs in _BUILD_STATE_LIST}

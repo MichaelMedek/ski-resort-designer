@@ -366,15 +366,13 @@ class ResortGraph:
     def _smooth_finished_path(self, segment_ids: list[str], smoothing_factor: float) -> None:
         """Whole-path smooth a finished entity across its junctions, in place.
 
-        No-op for a single segment. EVERY node on the path (outer endpoints + every junction)
-        stays pinned exactly on the ribbon, so markers sit on the path and any node can be a
-        branch point; only the shape between nodes rounds. Never rejects — a road may drift
-        over the ±15% build cap here (bridge/cut/fill), which is intentional; not re-applied.
+        EVERY node on the path (outer endpoints + every junction) stays pinned exactly on the
+        ribbon, so markers sit on the path and any node can be a branch point; only the shape
+        between nodes rounds. A single segment is smoothed too. Never rejects — a road may
+        drift over the ±15% build cap here (bridge/cut/fill), which is intentional.
 
         smoothing_factor: higher = smoother (roads); lower hugs terrain (slopes).
         """
-        if len(segment_ids) < 2:
-            return  # single-segment path has no junction to smooth
         segments = [self.segments[sid] for sid in segment_ids]
         # Boundary nodes: start of the first segment, then each segment's end node.
         boundary_node_ids = [segments[0].start_node_id, *(seg.end_node_id for seg in segments)]

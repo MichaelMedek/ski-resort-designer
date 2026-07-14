@@ -35,7 +35,6 @@ from skiresort_planner.ui import (
     cancel_custom_path,
     commit_selected_path,
     dispatch_click,
-    handle_fast_deferred_actions,
     process_custom_connect_deferred,
     process_osm_import_deferred,
     process_path_generation_deferred,
@@ -401,8 +400,8 @@ def _run_app_ui() -> None:
     map_version = st.session_state.get("map_version", 0)
     logger.info(f"[MAIN] Render cycle starting: state={sm.get_state_name()}, map_version={map_version}")
 
-    # Handle deferred actions from previous transitions
-    # Slow ops get spinners, fast ops run directly
+    # Handle deferred actions from previous transitions.
+    # Slow ops get spinners; each is dispatched at most once per render (single-dispatch chain).
     if ctx.deferred.osm_import:
         with st.spinner("🗺️ Importing lifts & pistes from OpenStreetMap..."):
             process_osm_import_deferred()
@@ -412,8 +411,6 @@ def _run_app_ui() -> None:
     elif ctx.deferred.fan_generation:
         with st.spinner("🗺️ Generating path options..."):
             process_path_generation_deferred()
-    else:
-        handle_fast_deferred_actions()
 
     # Sidebar (fire-and-forget: its panels call actions directly on button clicks)
     sidebar = SidebarRenderer(state_machine=sm, context=ctx, graph=graph)

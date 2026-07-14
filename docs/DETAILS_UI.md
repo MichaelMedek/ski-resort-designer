@@ -282,7 +282,7 @@ A **fan** of gentle route **proposals** radiates from the current road end — s
 
 ### Step 4: Finish the road
 
-Press **🏁 Finish Committed Road** in the sidebar. The road receives an auto-generated name and its details panel opens. Press **✖️ Cancel Road** to discard the whole in-progress road.
+Press **🏁 Finish Committed Road** in the sidebar. The road receives an auto-generated name and its details panel opens. Press **✖️ Cancel Full Road** to discard the whole in-progress road.
 
 ### Parking places
 
@@ -338,7 +338,7 @@ The currently active mode is highlighted.
 | Control | Action |
 |---------|--------|
 | **🏁 Finish Committed Road** | Finalize the road (enabled after ≥1 segment) |
-| **✖️ Cancel Road** | Discard the whole in-progress road, return to idle |
+| **✖️ Cancel Full Road** | Discard the whole in-progress road, return to idle |
 
 ### Search for a Place
 

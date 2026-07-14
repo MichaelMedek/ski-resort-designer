@@ -682,7 +682,7 @@ class TestFinishSmoothing:
         assert road is not None, "a finished road must never be rejected by smoothing"
         assert max(graph.segments[sid].max_slope_pct for sid in seg_ids) > 15.0
 
-    def test_single_segment_finish_is_noop(self, empty_graph, path_points_blue) -> None:
+    def test_single_segment_finish_is_smoothed(self, empty_graph, path_points_blue) -> None:
         graph = empty_graph
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         seg_id = list(graph.segments.keys())[0]
@@ -691,7 +691,12 @@ class TestFinishSmoothing:
         slope = graph.finish_slope(segment_ids=[seg_id])
 
         assert slope is not None
-        assert graph.segments[seg_id].points == before, "single-segment path is not smoothed"
+        after = graph.segments[seg_id].points
+        # Smoothing resamples the 5 raw points at RESAMPLE_STEP_M (~7m over 800m → many more),
+        # with the entity endpoints pinned exactly.
+        assert len(after) > len(before), "single-segment path is smoothed (resampled denser)"
+        assert after[0] == before[0], "start endpoint pinned exactly"
+        assert after[-1] == before[-1], "end endpoint pinned exactly"
 
 
 class TestImportOSMBatch:

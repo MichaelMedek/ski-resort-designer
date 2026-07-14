@@ -318,4 +318,4 @@ class TestBuildStateMapSurface:
         empty_graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         ctx.build(SegmentKind.SLOPE).segments = list(empty_graph.segments.keys())
         spec = BUILD_STATES["slope_building"].bottom_profile(ctx=ctx, graph=empty_graph)
-        assert spec is not None and spec.key == "combined_profile"
+        assert spec is not None and spec.key == "combined_slope_profile"

@@ -471,7 +471,7 @@ class TestRoadBuildingActionFlow:
         sm, ctx = _session(fake_st, graph, factory=path_factory, dem=dem)
         sm.start_road(node_id=None, location=path_points_blue[0])
 
-        # Seed a road proposal (as handle_road_building_click would) and commit it.
+        # Seed a road proposal (as handle_path_building_click would) and commit it.
         ctx.proposals.paths = [ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)]
         ctx.proposals.selected_idx = 0
         commit_selected_path(path_idx=0)
@@ -543,32 +543,6 @@ class TestDeferredProcessing:
         _sm, ctx = _session(fake_st, ResortGraph(), factory=path_factory, dem=mock_dem_red_slope_diagonal)
         ctx.deferred.custom_connect = False
         assert process_custom_connect_deferred() is False
-
-    def test_fast_deferred_start_building_from_node(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
-        from skiresort_planner.ui.actions import handle_fast_deferred_actions
-
-        dem = mock_dem_red_slope_diagonal
-        graph = ResortGraph()
-        node, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
-        sm, ctx = _session(fake_st, graph, factory=path_factory, dem=dem)
-        ctx.deferred.start_building_from_node_id = node.id
-
-        handle_fast_deferred_actions()
-        assert sm.is_slope_starting, "deferred start-building-from-node begins a slope"
-        assert ctx.deferred.start_building_from_node_id is None, "flag consumed"
-
-    def test_fast_deferred_start_lift_from_node(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
-        from skiresort_planner.ui.actions import handle_fast_deferred_actions
-
-        dem = mock_dem_red_slope_diagonal
-        graph = ResortGraph()
-        node, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
-        sm, ctx = _session(fake_st, graph, factory=path_factory, dem=dem)
-        ctx.deferred.start_lift_from_node_id = node.id
-
-        handle_fast_deferred_actions()
-        assert sm.is_lift_placing, "deferred start-lift-from-node begins lift placement"
-        assert ctx.deferred.start_lift_from_node_id is None, "flag consumed"
 
 
 class TestOSMImport:

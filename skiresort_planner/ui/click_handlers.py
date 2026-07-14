@@ -101,6 +101,7 @@ def _start_mode_from_terrain(
         sm.select_lift_start(node_id=None, location=PathPoint(lon=lon, lat=lat, elevation=elevation))
     elif ctx.build_mode.is_road():
         logger.info(f"[IDLE] Terrain click: starting road at ({lat:.6f}, {lon:.6f})")
+        ctx.set_selection(lon=lon, lat=lat, elevation=elevation)
         ctx.map.set_building_view(lon=lon, lat=lat)
         sm.select_road_start(node_id=None, location=PathPoint(lon=lon, lat=lat, elevation=elevation))
     elif ctx.build_mode.is_import():
@@ -133,6 +134,7 @@ def _start_mode_from_node(ctx: PlannerContext, sm: PlannerStateMachine, node: No
         sm.select_lift_start(node_id=node.id)
     elif ctx.build_mode.is_road():
         logger.info(f"[IDLE] Node click: starting road from {node.id}")
+        ctx.set_selection(lon=node.lon, lat=node.lat, elevation=node.elevation)
         ctx.map.set_building_view(lon=node.lon, lat=node.lat)
         sm.select_road_start(node_id=node.id)
     elif ctx.build_mode.is_import():
@@ -270,25 +272,25 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
     raise RuntimeError(f"[IDLE] Unknown click_type {click_info.click_type}. Expected MARKER or TERRAIN.")
 
 
-def handle_slope_building_click(click_info: ClickInfo, elevation: float | None) -> None:
-    """Handle click in a slope-building state - commit path, select path, or re-target.
+def handle_path_building_click(click_info: ClickInfo, elevation: float | None) -> None:
+    """Handle a click while building ANY path kind (slope or road).
 
-    A TERRAIN or NODE click routes a custom-connect path to that target.
-    An invalid target (uphill/too far) shows a warning and does NOT change state.
+    One handler for slope_starting/building/custom_path AND road_starting/building/custom_path,
+    so slopes and roads behave identically by construction. The active kind is used only to
+    word the invalid-click messages ("current slope" vs "current road").
 
-    Valid Click Types:
-        PROPOSAL_ENDPOINT → Commit the path immediately (one click)
-        PROPOSAL_BODY → Select the path variant; commit only when re-clicking the selected one
-        TERRAIN → Route a custom-connect path to that point
-        NODE → Route a custom-connect path to that node (snap + connect)
+    Valid clicks:
+        PROPOSAL_ENDPOINT → commit the path immediately (one click)
+        PROPOSAL_BODY     → select the variant; commit only on re-clicking the selected one
+        TERRAIN / NODE    → route a custom-connect path to that target. An invalid target
+                            (uphill for slopes / too far) warns and does NOT change state.
 
-    Invalid Click Types (during building):
-        SLOPE → Cannot view while building
-        LIFT → Cannot view while building
-        PYLON → Cannot view while building
-        ROAD → Cannot view while building
+    Invalid clicks (while building):
+        SLOPE / SEGMENT / LIFT / PYLON / ROAD → cannot view while building
     """
+    sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
+    noun = sm.active_build_kind.value  # "slope" / "road"
 
     # TERRAIN click → route a custom-connect path to the clicked point.
     if click_info.click_type == MapClickType.TERRAIN:
@@ -320,15 +322,7 @@ def handle_slope_building_click(click_info: ClickInfo, elevation: float | None) 
         if marker_type == MarkerType.SLOPE:
             InvalidClickMessage(
                 action="view slope",
-                reason="Finish or cancel the current slope first.",
-            ).display()
-            return
-
-        # LIFT/PYLON during building = user error
-        if marker_type in {MarkerType.LIFT, MarkerType.PYLON}:
-            InvalidClickMessage(
-                action="view lift",
-                reason="Finish or cancel the current slope first.",
+                reason=f"Finish or cancel the current {noun} first.",
             ).display()
             return
 
@@ -336,7 +330,15 @@ def handle_slope_building_click(click_info: ClickInfo, elevation: float | None) 
         if marker_type == MarkerType.SEGMENT:
             InvalidClickMessage(
                 action="view segment",
-                reason="Finish or cancel the current slope first.",
+                reason=f"Finish or cancel the current {noun} first.",
+            ).display()
+            return
+
+        # LIFT/PYLON during building = user error
+        if marker_type in {MarkerType.LIFT, MarkerType.PYLON}:
+            InvalidClickMessage(
+                action="view lift",
+                reason=f"Finish or cancel the current {noun} first.",
             ).display()
             return
 
@@ -344,7 +346,7 @@ def handle_slope_building_click(click_info: ClickInfo, elevation: float | None) 
         if marker_type == MarkerType.ROAD:
             InvalidClickMessage(
                 action="view road",
-                reason="Finish or cancel the current slope first.",
+                reason=f"Finish or cancel the current {noun} first.",
             ).display()
             return
 
@@ -671,46 +673,4 @@ def handle_merge_placing_click(click_info: ClickInfo, elevation: float | None) -
     InvalidClickMessage(
         action="select for merge",
         reason="Click node markers to select which nodes to merge, then press Confirm Merge.",
-    ).display()
-
-
-def handle_road_building_click(click_info: ClickInfo, elevation: float | None) -> None:
-    """Handle a click while building a road (ROAD_STARTING / ROAD_BUILDING / ROAD_CUSTOM_PATH).
-
-    Mirror of handle_slope_building_click. A fan of gentle routes radiates from the
-    current endpoint; clicking the orange ENDPOINT commits immediately, an in-between
-    BODY marker selects-then-commits. Clicking a TERRAIN point or NODE routes a
-    custom-connect path to that target (ROAD_CUSTOM_PATH). "Finish Road" ends the road.
-    The ±ROAD_MAX_GRADIENT_PCT cap and the direct-line fallback / refusal live in the
-    shared custom-connect generator (actions.py).
-    """
-    ctx: PlannerContext = st.session_state.context
-
-    if click_info.click_type == MapClickType.MARKER:
-        # Orange ENDPOINT marker → commit that path immediately (single click, identical to slopes).
-        if click_info.marker_type == MarkerType.PROPOSAL_ENDPOINT:
-            assert click_info.proposal_number is not None
-            _commit_proposal_endpoint(ctx=ctx, idx=click_info.proposal_number - 1)
-            return
-
-        # In-between BODY marker → select the variant; commit only on re-clicking the selected one.
-        if click_info.marker_type == MarkerType.PROPOSAL_BODY:
-            assert click_info.proposal_number is not None
-            _select_or_commit_proposal(ctx=ctx, idx=click_info.proposal_number - 1)
-            return
-
-    # TERRAIN → route a custom-connect road to the clicked point (shared handler).
-    if click_info.click_type == MapClickType.TERRAIN:
-        _handle_custom_connect_click(click_info=click_info, elevation=elevation)
-        return
-
-    # NODE → route a custom-connect road to that junction (shared handler).
-    if click_info.marker_type == MarkerType.NODE:
-        _handle_custom_connect_click(click_info=click_info, elevation=elevation)
-        return
-
-    # Any other marker is not a valid road target.
-    InvalidClickMessage(
-        action="extend road",
-        reason="Click terrain or a junction node to extend the road, or press Finish Road.",
     ).display()
