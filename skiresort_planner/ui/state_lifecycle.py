@@ -76,7 +76,7 @@ def enter_idle_ready(ctx: PlannerContext) -> None:
     ctx.clear_builds()
     ctx.clear_custom_connect()
     ctx.clear_lift()
-    ctx.selection.node_id = None
+    ctx.selection.clear()
     ctx.click_dedup.clear_marker()
     ctx.viewing.clear()
     logger.info(
@@ -128,7 +128,7 @@ def enter_idle_viewing_slope(ctx: PlannerContext) -> None:
     ctx.clear_builds()
     ctx.clear_custom_connect()
     ctx.clear_lift()
-    ctx.selection.node_id = None
+    ctx.selection.clear()
     ctx.click_dedup.clear_marker()
 
 
@@ -179,7 +179,7 @@ def enter_idle_viewing_lift(ctx: PlannerContext) -> None:
     ctx.clear_builds()
     ctx.clear_custom_connect()
     ctx.clear_lift()
-    ctx.selection.node_id = None
+    ctx.selection.clear()
     ctx.click_dedup.clear_marker()
 
 
@@ -467,7 +467,7 @@ def enter_idle_viewing_road(ctx: PlannerContext) -> None:
     ctx.clear_builds()
     ctx.clear_custom_connect()
     ctx.clear_lift()
-    ctx.selection.node_id = None
+    ctx.selection.clear()
     ctx.click_dedup.clear_marker()
 
 

@@ -367,7 +367,9 @@ class PathBuildingControlPanel(ControlPanel):
 
         if segs > 0:
             stats = self.graph.get_segment_stats(segment_ids=build.segments)
-            emoji = StyleConfig.DIFFICULTY_EMOJIS[stats["difficulty"]] if self.kind == SegmentKind.SLOPE else ""
+            emoji = (
+                StyleConfig.DIFFICULTY_EMOJIS[stats["difficulty"]] if enum_eq(a=self.kind, b=SegmentKind.SLOPE) else ""
+            )
             return PathBuildingContextMessage(
                 icon=spec.icon,
                 kind=self.kind,

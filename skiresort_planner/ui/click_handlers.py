@@ -91,9 +91,9 @@ def _start_mode_from_terrain(
     build_mode = ctx.build_mode.mode
     if ctx.build_mode.is_slope():
         logger.info(f"[IDLE] Terrain click: starting new slope at ({lat:.6f}, {lon:.6f})")
-        ctx.set_selection(lon=lon, lat=lat, elevation=elevation)
         ctx.map.set_building_view(lon=lon, lat=lat)
-        # Fan arming happens in enter_slope_starting (Single Point of Truth), like roads — not here.
+        # Selection + fan arming happen in the before-hook / enter_slope_starting (Single Point
+        # of Truth), like roads — not here.
         sm.start_building(lon=lon, lat=lat, elevation=elevation, node_id=None)
     elif ctx.build_mode.is_lift():
         logger.info(f"[IDLE] Terrain click: starting {build_mode} at ({lat:.6f}, {lon:.6f})")
@@ -101,8 +101,8 @@ def _start_mode_from_terrain(
         sm.select_lift_start(node_id=None, location=PathPoint(lon=lon, lat=lat, elevation=elevation))
     elif ctx.build_mode.is_road():
         logger.info(f"[IDLE] Terrain click: starting road at ({lat:.6f}, {lon:.6f})")
-        ctx.set_selection(lon=lon, lat=lat, elevation=elevation)
         ctx.map.set_building_view(lon=lon, lat=lat)
+        # Selection is set in before_start_road (Single Point of Truth), mirroring slopes.
         sm.select_road_start(node_id=None, location=PathPoint(lon=lon, lat=lat, elevation=elevation))
     elif ctx.build_mode.is_import():
         # Center+zoom (like slope/lift/road) so the box stays framed after Confirm.
@@ -124,9 +124,9 @@ def _start_mode_from_node(ctx: PlannerContext, sm: PlannerStateMachine, node: No
     build_mode = ctx.build_mode.mode
     if ctx.build_mode.is_slope():
         logger.info(f"[IDLE] Node click: starting slope from {node.id}")
-        ctx.set_selection(lon=node.lon, lat=node.lat, elevation=node.elevation)
         ctx.map.set_building_view(lon=node.lon, lat=node.lat)
-        # Fan arming happens in enter_slope_starting (Single Point of Truth), like roads — not here.
+        # Selection + fan arming happen in the before-hook / enter_slope_starting (Single Point of
+        # Truth), like roads — not here.
         sm.start_building(lon=node.lon, lat=node.lat, elevation=node.elevation, node_id=node.id)
     elif ctx.build_mode.is_lift():
         logger.info(f"[IDLE] Node click: starting {build_mode} from {node.id}")
@@ -134,8 +134,8 @@ def _start_mode_from_node(ctx: PlannerContext, sm: PlannerStateMachine, node: No
         sm.select_lift_start(node_id=node.id)
     elif ctx.build_mode.is_road():
         logger.info(f"[IDLE] Node click: starting road from {node.id}")
-        ctx.set_selection(lon=node.lon, lat=node.lat, elevation=node.elevation)
         ctx.map.set_building_view(lon=node.lon, lat=node.lat)
+        # Selection is set in before_start_road (Single Point of Truth), mirroring slopes.
         sm.select_road_start(node_id=node.id)
     elif ctx.build_mode.is_import():
         logger.info(f"[IDLE] Node click: placing import box center at {node.id}")

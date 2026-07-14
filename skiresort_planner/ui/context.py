@@ -72,18 +72,19 @@ class BaseContext(ABC):
 
 @dataclass
 class SelectionContext(BaseContext):
-    """Current click/selection state."""
+    """Current click/selection state.
+
+    Holds the coordinates of the build origin (or the last clicked point).
+    """
 
     lon: float | None = None
     lat: float | None = None
     elevation: float | None = None
-    node_id: str | None = None
 
     def clear(self) -> None:
         self.lon = None
         self.lat = None
         self.elevation = None
-        self.node_id = None
 
     def set(self, lon: float, lat: float, elevation: float) -> None:
         """Set selection coordinates. Use this setter, don't set fields directly."""

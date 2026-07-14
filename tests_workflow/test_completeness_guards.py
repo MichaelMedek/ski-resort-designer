@@ -6,6 +6,7 @@ other test, yet ship a silent bug or a rarely-hit crash:
 
 - Serialization: a new dataclass field that `from_dict` forgets → silently lost on save/load.
 - Enum dispatch: a new enum member a total (`else: raise`) dispatcher forgets → runtime crash.
+- Enum comparison: a raw `==`/`!=` on a reload-fragile enum → silent misbehaviour after a reload.
 - Layering: a model/core/generator module importing `ui` → an architecture violation.
 
 The ActionType undo-dispatcher guard lives in test_resort_graph.py (it's undo-specific).
@@ -282,7 +283,45 @@ class TestEnumDispatchCompleteness:
 
 
 # =============================================================================
-# 3. Layering: model / core / generators must never import ui
+# 3. Reload-safe enum comparisons: enum members compared with enum_eq, never ==/!=
+# =============================================================================
+
+
+class TestReloadSafeEnumComparisons:
+    """Enum members must be compared with enum_eq, never raw ``==`` / ``!=``.
+
+    Streamlit re-imports modules on rerun, creating a FRESH enum class per reload; a value built
+    against the OLD class fails ``==`` against the NEW class's member (identity/hash differ). The
+    repo convention is enum_eq (see enum_utils + test_enum_utils). A stray ``kind == SegmentKind.X``
+    silently misbehaves after a reload (e.g. the difficulty emoji vanishing on a slope), so this
+    scans the ui layer's AST for any comparison whose operand names one of the reload-fragile enums.
+    """
+
+    def test_no_raw_equality_against_fragile_enums(self) -> None:
+        fragile = {"SegmentKind", "EntityKind"}
+
+        def names_fragile_enum(node: ast.expr) -> bool:
+            # Matches `SegmentKind.SLOPE` / `EntityKind.ROAD` (Attribute on a fragile enum name).
+            return isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in fragile
+
+        offenders: list[str] = []
+        for py in (PACKAGE_DIR / "ui").rglob("*.py"):
+            tree = ast.parse(py.read_text(), filename=str(py))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Compare):
+                    continue
+                if not all(isinstance(op, ast.Eq | ast.NotEq) for op in node.ops):
+                    continue
+                operands = [node.left, *node.comparators]
+                if any(names_fragile_enum(o) for o in operands):
+                    offenders.append(f"{py.relative_to(PACKAGE_DIR)}:{node.lineno}")
+        assert not offenders, (
+            f"Enum members must be compared with enum_eq (reload-safe), not raw ==/!=. Offenders: {offenders}"
+        )
+
+
+# =============================================================================
+# 4. Layering: model / core / generators must never import ui
 # =============================================================================
 
 
@@ -310,7 +349,7 @@ class TestLayering:
 
 
 # =============================================================================
-# 4. NodeConnected contract: every subclass exposes the endpoint interface
+# 5. NodeConnected contract: every subclass exposes the endpoint interface
 # =============================================================================
 
 

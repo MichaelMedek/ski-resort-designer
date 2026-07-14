@@ -23,7 +23,7 @@ def _dirty_ctx() -> PlannerContext:
     ctx.lift.start_location = PathPoint(lon=0.0, lat=0.0, elevation=2000.0)
     ctx.custom_connect.force_mode = True
     ctx.custom_connect.start_node = "N1"
-    ctx.selection.node_id = "N2"
+    ctx.selection.set(lon=5.0, lat=6.0, elevation=2100.0)
     ctx.merge.node_ids = ["N3", "N4"]
     ctx.viewing.panel_visible = True
     ctx.deferred.osm_import_center_lon = 10.0
@@ -39,7 +39,7 @@ class TestEnterIdleReady:
         assert ctx.build(SegmentKind.ROAD).segments == [], "road segments cleared"
         assert ctx.lift.start_node_id is None and ctx.lift.start_location is None, "lift placement cleared"
         assert ctx.custom_connect.force_mode is False, "custom-connect cleared"
-        assert ctx.selection.node_id is None, "selection cleared"
+        assert not ctx.selection.has_selection(), "selection coordinates cleared"
         assert ctx.viewing.panel_visible is False, "viewing panel hidden"
 
     def test_preserves_user_preferences(self) -> None:

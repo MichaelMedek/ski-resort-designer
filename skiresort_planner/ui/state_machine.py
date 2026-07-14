@@ -733,6 +733,14 @@ class PlannerStateMachine(StateMachine):
             "start_road_from_slope_view",
             "start_road_from_lift_view",
             "start_road_from_road_view",
+            # start_import event (NOT start_import - that IS the event entry point)
+            "start_import_from_slope_view",
+            "start_import_from_lift_view",
+            "start_import_from_road_view",
+            # start_merge event (NOT start_merge - that IS the event entry point)
+            "start_merge_from_slope_view",
+            "start_merge_from_lift_view",
+            "start_merge_from_road_view",
             # view_slope event (NOT view_slope - that IS the event entry point)
             "switch_to_slope_view",
             "switch_slope",
@@ -1012,6 +1020,19 @@ class PlannerStateMachine(StateMachine):
     #                      Use when transitions sharing an event need DIFFERENT actions
     #                      (e.g. select_custom_target: starting vs building vs retarget).
 
+    def _init_build(self, kind: SegmentKind, *, node_id: str | None, location: PathPoint | None, name: str) -> None:
+        """Initialise a build's origin, name, and selection — the SHARED body for every kind."""
+        build = self.context.build(kind)
+        build.start_node_id = node_id
+        build.start_location = None if node_id else location
+        build.name = name
+
+        origin = self._resort_graph.nodes.get(node_id) if node_id else None
+        if origin is not None:
+            self.context.set_selection(lon=origin.lon, lat=origin.lat, elevation=origin.elevation)
+        elif location is not None:
+            self.context.set_selection(lon=location.lon, lat=location.lat, elevation=location.elevation)
+
     def before_start_slope(
         self,
         lon: float,
@@ -1019,19 +1040,13 @@ class PlannerStateMachine(StateMachine):
         elevation: float,
         node_id: str | None = None,
     ) -> None:
-        """Action before starting to build a slope.
-
-        Stores the origin in the slope build uniformly (start_node_id for an existing
-        junction, else start_location for a fresh terrain point) — same shape as roads,
-        so the custom-connect origin resolution needs no per-kind fallback.
-        """
-        build = self.context.build(SegmentKind.SLOPE)
-        build.start_node_id = node_id
-        build.start_location = None if node_id else PathPoint(lon=lon, lat=lat, elevation=elevation)
-        self.context.set_selection(lon=lon, lat=lat, elevation=elevation)
-        self.context.selection.node_id = node_id
-        slope_number = self._resort_graph._slope_counter + 1
-        build.name = f"Slope {slope_number}"
+        """Action before starting to build a slope (thin adapter over _init_build)."""
+        self._init_build(
+            kind=SegmentKind.SLOPE,
+            node_id=node_id,
+            location=PathPoint(lon=lon, lat=lat, elevation=elevation),
+            name=f"Slope {self._resort_graph._slope_counter + 1}",
+        )
 
     def _add_segment_to_active_build(self, segment_id: str, endpoint_node_id: str) -> None:
         """Append a committed segment to the active build (any kind) and clear proposals."""
@@ -1127,17 +1142,17 @@ class PlannerStateMachine(StateMachine):
     before_start_lift_from_lift_view = before_start_lift
 
     def before_start_road(self, node_id: str | None = None, location: PathPoint | None = None) -> None:
-        """Action before starting road placement: store the first clicked point and name.
+        """Action before starting road placement (thin adapter over _init_build).
 
-        Mirrors before_start_slope: the road build gets an in-progress "Road N" name so the
-        in-build panel reads identically to slopes (not "Unnamed Road"). The finish-time
-        bearing name overrides it.
+        Same shared body as before_start_slope — origin + in-build "Road N" name + selection — so
+        the two kinds cannot drift. The finish-time bearing name overrides the temporary name.
         """
-        build = self.context.build(SegmentKind.ROAD)
-        build.start_node_id = node_id
-        build.start_location = location
-        road_number = self._resort_graph._road_counter + 1
-        build.name = f"Road {road_number}"
+        self._init_build(
+            kind=SegmentKind.ROAD,
+            node_id=node_id,
+            location=location,
+            name=f"Road {self._resort_graph._road_counter + 1}",
+        )
 
     # Reuse start_road logic for other entry points
     before_start_road_from_slope_view = before_start_road

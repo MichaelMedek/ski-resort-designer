@@ -16,6 +16,7 @@ Matrix Reference (from state_machine.py docstring):
 import pytest
 from statemachine.exceptions import TransitionNotAllowed
 
+from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 from tests_workflow.conftest import SMAndCtx
@@ -244,6 +245,60 @@ class TestTransitionMatrix:
         assert ctx.build(SegmentKind.SLOPE).segments == ["S1"]
 
 
+class TestEventOnlyTransitionsCompleteness:
+    """Structural guard: _EVENT_ONLY_TRANSITIONS must list EXACTLY the variant transitions.
+
+    A "variant" is a transition whose attribute name differs from the event string it fires
+    (e.g. start_slope_from_slope_view fires the "start_slope" event; select_target_from_building
+    fires "select_custom_target"). Every variant MUST be blocked from direct calls so callers go
+    through the shared event — otherwise a direct call bypasses the event dispatch and its guards.
+
+    Transitions whose attribute name IS the event string (start_slope, commit_path, close_panel,
+    finish_road, commit_custom_continue, …) are the event entry points / direct transitions and
+    must stay callable — they must NOT appear in the set.
+
+    This computes the variant set by introspecting the state machine itself, so adding a new
+    kind/utility with `_from_*` entry variants (like the import/merge ones) can never again ship
+    unblocked: the frozenset must equal the computed set exactly, or this test fails.
+    """
+
+    @staticmethod
+    def _variant_transition_names() -> set[str]:
+        """Attribute names of transitions whose name != the event string they trigger.
+
+        Introspects the class Event descriptors: each attribute-defined transition carries its
+        triggering event string(s) on ``_transitions``. Shared event-id entries (start_slope,
+        commit_path, …) have no ``_transitions`` and are skipped — those are the entry points.
+        """
+        from statemachine.event import Event
+
+        variants: set[str] = set()
+        for attr, value in vars(PlannerStateMachine).items():
+            if not isinstance(value, Event):
+                continue
+            transitions = getattr(value, "_transitions", None)
+            if transitions is None:
+                continue  # shared event entry point (e.g. start_slope), not a variant attr
+            event_strings = {t.event for t in transitions}
+            if attr not in event_strings:
+                variants.add(attr)
+        return variants
+
+    def test_frozenset_lists_exactly_the_variant_transitions(self) -> None:
+        computed = self._variant_transition_names()
+        listed = set(PlannerStateMachine._EVENT_ONLY_TRANSITIONS)
+        missing = computed - listed
+        stray = listed - computed
+        assert not missing, (
+            f"_EVENT_ONLY_TRANSITIONS is missing variant transitions that could be called "
+            f"directly, bypassing event dispatch: {sorted(missing)}"
+        )
+        assert not stray, (
+            f"_EVENT_ONLY_TRANSITIONS lists names that are NOT variant transitions (they are "
+            f"event entry points / direct transitions and must stay callable): {sorted(stray)}"
+        )
+
+
 def _force_state(sm: PlannerStateMachine, state_name: str) -> None:
     """Force state machine to a specific state for testing.
 
@@ -254,9 +309,40 @@ def _force_state(sm: PlannerStateMachine, state_name: str) -> None:
     sm.current_state = target_state
 
 
-# NOTE: Undo transitions removed from state machine.
-# Undo is now handled via force_idle()/force_building(SegmentKind.SLOPE) methods in the action layer.
-# See state_machine.py "Undo Architecture" section for details.
+class TestStartHookParity:
+    """Slope and road are built identically (one SegmentBuildContext, one KIND_SPECS entry, one
+    unified state class + click handler). Their `before_start_*` hooks must therefore leave the
+    context in the SAME shape, or the shared overlay/panel code silently diverges between kinds.
+
+    These guards pin the two invariants the shared code depends on:
+      1. An in-build name is set at start (the panel reads build.name; a None → "Unnamed X").
+      2. ctx.selection is populated at start (the unified overlay draws orientation arrows from it).
+    """
+
+    def test_slope_and_road_start_both_set_an_in_build_name(self, sm_and_ctx: SMAndCtx) -> None:
+        sm, ctx = sm_and_ctx
+        sm.start_slope(lon=0.0, lat=0.0, elevation=2000.0, node_id=None)
+        assert ctx.build(SegmentKind.SLOPE).name, "slope start must set an in-build name"
+
+        sm.cancel_slope()  # back to idle
+        sm.start_road(location=PathPoint(lon=0.0, lat=0.0, elevation=2000.0))
+        assert ctx.build(SegmentKind.ROAD).name, "road start must set an in-build name (parity with slope)"
+
+    def test_slope_and_road_start_both_populate_selection(self, sm_and_ctx: SMAndCtx) -> None:
+        """before_start_* must set ctx.selection so the unified overlay can draw orientation arrows.
+
+        Regression: only the slope path set the selection (in the hook AND in the click handler),
+        so a road started via the SM event left selection empty and drew no arrows.
+        """
+        sm, ctx = sm_and_ctx
+        sm.start_slope(lon=1.0, lat=2.0, elevation=2000.0, node_id=None)
+        assert ctx.selection.has_selection(), "slope start must populate selection"
+        assert (ctx.selection.lon, ctx.selection.lat) == (1.0, 2.0)
+
+        sm.cancel_slope()
+        sm.start_road(location=PathPoint(lon=3.0, lat=4.0, elevation=2000.0))
+        assert ctx.selection.has_selection(), "road start must populate selection (parity with slope)"
+        assert (ctx.selection.lon, ctx.selection.lat) == (3.0, 4.0)
 
 
 class TestCancelCustomGuards:

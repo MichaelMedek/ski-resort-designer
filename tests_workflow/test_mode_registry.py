@@ -283,7 +283,14 @@ class TestBuildStateMapSurface:
             )
             assert bs.bottom_profile(ctx=ctx, graph=empty_graph) is None
 
-    def test_slope_overlay_draws_orientation_and_custom_direction_arrows(self, empty_graph, path_factory) -> None:
+    @pytest.mark.parametrize("state_key", ["slope_building", "road_building"])
+    def test_overlay_draws_orientation_and_custom_direction_arrows(self, empty_graph, path_factory, state_key) -> None:
+        """Slope AND road build states draw the same overlays (they share _PathBuildingState).
+
+        Parity guard: since the merge into one kind-parameterized build state, roads must draw the
+        fall-line orientation arrows at the origin and the custom-connect direction arrow while
+        routing — exactly like slopes. Running the identical assertions for both keys locks that in.
+        """
         from skiresort_planner.model.node import Node
         from skiresort_planner.model.path_point import PathPoint
         from skiresort_planner.ui.center_map import MapRenderer
@@ -292,7 +299,7 @@ class TestBuildStateMapSurface:
         renderer = MapRenderer(center_lon=0.0, center_lat=0.0, zoom=13, pitch=0, bearing=0)
         analyzer = path_factory.terrain_analyzer
         dem = path_factory.dem_service
-        bs = BUILD_STATES["slope_building"]
+        bs = BUILD_STATES[state_key]
 
         # A selection on real (sloped) terrain → orientation arrows are drawn.
         elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
@@ -300,7 +307,7 @@ class TestBuildStateMapSurface:
         layers_with_selection = bs.overlay_layers(
             ctx=ctx, graph=empty_graph, renderer=renderer, terrain_analyzer=analyzer, dem=dem, use_3d=False
         )
-        assert layers_with_selection, "a selection on sloped terrain must draw orientation arrows"
+        assert layers_with_selection, f"{state_key}: a selection on sloped terrain must draw orientation arrows"
 
         # Custom-connect routing (force_mode + start_node) adds the downhill direction arrow.
         empty_graph.nodes["N1"] = Node(id="N1", location=PathPoint(lon=0.0, lat=0.0, elevation=elev))
@@ -309,13 +316,24 @@ class TestBuildStateMapSurface:
         layers_with_arrow = bs.overlay_layers(
             ctx=ctx, graph=empty_graph, renderer=renderer, terrain_analyzer=analyzer, dem=dem, use_3d=False
         )
-        assert len(layers_with_arrow) > len(layers_with_selection), "custom-connect adds a direction arrow"
+        assert len(layers_with_arrow) > len(layers_with_selection), (
+            f"{state_key}: custom-connect adds a direction arrow"
+        )
 
-    def test_build_profile_renders_once_segments_exist(self, empty_graph, path_points_blue) -> None:
+    @pytest.mark.parametrize(
+        "state_key,kind,expected_key",
+        [
+            ("slope_building", SegmentKind.SLOPE, "combined_slope_profile"),
+            ("road_building", SegmentKind.ROAD, "combined_road_profile"),
+        ],
+    )
+    def test_build_profile_renders_once_segments_exist(
+        self, empty_graph, path_points_blue, state_key, kind, expected_key
+    ) -> None:
         from skiresort_planner.model.proposed_path import ProposedPathSegment
 
         _sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         empty_graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
-        ctx.build(SegmentKind.SLOPE).segments = list(empty_graph.segments.keys())
-        spec = BUILD_STATES["slope_building"].bottom_profile(ctx=ctx, graph=empty_graph)
-        assert spec is not None and spec.key == "combined_slope_profile"
+        ctx.build(kind).segments = list(empty_graph.segments.keys())
+        spec = BUILD_STATES[state_key].bottom_profile(ctx=ctx, graph=empty_graph)
+        assert spec is not None and spec.key == expected_key
