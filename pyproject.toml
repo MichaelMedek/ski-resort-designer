@@ -90,7 +90,7 @@ suppress-dummy-args = true  # underscore-prefixed args need no annotation
 
 [tool.pytest.ini_options]
 testpaths = ["tests_workflow"]
-addopts = "--mypy --cov=skiresort_planner --cov-report=term-missing --cov-fail-under=85"
+addopts = "--mypy --cov=skiresort_planner --cov-report=term-missing --cov-fail-under=90"
 
 [tool.coverage.run]
 source = ["skiresort_planner"]
