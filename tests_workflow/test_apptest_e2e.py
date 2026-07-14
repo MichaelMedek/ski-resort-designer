@@ -29,8 +29,6 @@ WHY THIS PATTERN MATTERS FOR COVERAGE:
 
 from __future__ import annotations
 
-from typing import cast
-
 import pytest
 from streamlit.testing.v1 import AppTest
 
@@ -38,7 +36,6 @@ from skiresort_planner.constants import MapConfig
 from skiresort_planner.core.path_tracer import PathTracer
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.generators.path_factory import PathFactory
-from skiresort_planner.model.click_info import ClickInfo, MapClickType, MarkerType
 from skiresort_planner.model.resort_graph import ResortGraph
 from tests_workflow.conftest import MockDEMService
 
@@ -116,8 +113,11 @@ def create_command_executor() -> None:
 
     HYBRID: Renders buttons that can be clicked via at.button().click()
     """
+    from typing import cast
+
     import streamlit as st
 
+    from skiresort_planner.model.click_info import ClickInfo, MapClickType, MarkerType
     from skiresort_planner.ui.actions import (
         cancel_current_road,
         cancel_current_slope,

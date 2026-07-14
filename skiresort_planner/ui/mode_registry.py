@@ -36,7 +36,7 @@ from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.model.click_info import ClickInfo, MapClickType
 from skiresort_planner.model.message import OutsideTerrainMessage
 from skiresort_planner.model.resort_graph import ResortGraph
-from skiresort_planner.ui import actions, bottom_chart, click_handlers, right_panel
+from skiresort_planner.ui import actions, bottom_chart, click_handlers, right_panel, sidebar_panels
 from skiresort_planner.ui.center_map import MapRenderer
 from skiresort_planner.ui.context import BuildMode, EntityKind, PlannerContext
 from skiresort_planner.ui.infra import reload_map
@@ -47,7 +47,6 @@ if TYPE_CHECKING:
     from skiresort_planner.model.lift import Lift
     from skiresort_planner.model.road import Road
     from skiresort_planner.model.slope import Slope
-    from skiresort_planner.ui.left_panel import SidebarRenderer
 
 logger = logging.getLogger(__name__)
 
@@ -138,12 +137,13 @@ class BuildState(ABC):
         """The sidebar header (icon + label) shown while in this state."""
 
     @abstractmethod
-    def sidebar_controls(self, renderer: SidebarRenderer) -> dict[str, bool | str]:
-        """Render this state's mode-specific sidebar controls, returning any action flags.
+    def sidebar_panel(
+        self, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph
+    ) -> sidebar_panels.SidebarPanel:
+        """The left-side sidebar control panel for this state (mirror of control_panel).
 
-        Called by SidebarRenderer with itself, so a state routes into the renderer's control helpers
-        (close button / build controls / cancel). Returns the flags app.py consumes (empty when the
-        state produces none).
+        Constructed by the hub and rendered fire-and-forget; its buttons call action functions
+        directly, so no flags are returned.
         """
 
     @abstractmethod
@@ -205,8 +205,10 @@ class _IdleReadyState(BuildState):
             label="Ready to Build",
         )
 
-    def sidebar_controls(self, renderer: SidebarRenderer) -> dict[str, bool | str]:
-        return {}
+    def sidebar_panel(
+        self, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph
+    ) -> sidebar_panels.SidebarPanel:
+        return sidebar_panels.IdleSidebarPanel(sm=sm, ctx=ctx, graph=graph)
 
     def blocks_build_buttons(self) -> bool:
         return False
@@ -277,9 +279,10 @@ class _EntityViewingState(BuildState):
     def header(self, ctx: PlannerContext) -> StateHeader:
         return StateHeader(icon=StyleConfig.VIEWING_ICON, label=f"Viewing {self.kind.value.capitalize()}")
 
-    def sidebar_controls(self, renderer: SidebarRenderer) -> dict[str, bool | str]:
-        renderer.render_close_panel_button()
-        return {}
+    def sidebar_panel(
+        self, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph
+    ) -> sidebar_panels.SidebarPanel:
+        return sidebar_panels.ViewingSidebarPanel(sm=sm, ctx=ctx, graph=graph)
 
     def blocks_build_buttons(self) -> bool:
         return False
@@ -387,8 +390,10 @@ class _SlopeBuildingState(BuildState):
     def header(self, ctx: PlannerContext) -> StateHeader:
         return StateHeader(icon=StyleConfig.BUILDING_ICON, label="Building Slope...")
 
-    def sidebar_controls(self, renderer: SidebarRenderer) -> dict[str, bool | str]:
-        return renderer.render_slope_building_controls()
+    def sidebar_panel(
+        self, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph
+    ) -> sidebar_panels.SidebarPanel:
+        return sidebar_panels.SlopeSidebarPanel(sm=sm, ctx=ctx, graph=graph)
 
     def blocks_build_buttons(self) -> bool:
         return True
@@ -452,9 +457,10 @@ class _LiftPlacingState(BuildState):
     def header(self, ctx: PlannerContext) -> StateHeader:
         return StateHeader(icon=StyleConfig.BUILDING_ICON, label="Placing Lift...")
 
-    def sidebar_controls(self, renderer: SidebarRenderer) -> dict[str, bool | str]:
-        renderer.render_lift_cancel_button()
-        return {}
+    def sidebar_panel(
+        self, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph
+    ) -> sidebar_panels.SidebarPanel:
+        return sidebar_panels.LiftSidebarPanel(sm=sm, ctx=ctx, graph=graph)
 
     def blocks_build_buttons(self) -> bool:
         return True
@@ -516,9 +522,10 @@ class _ImportPlacingState(BuildState):
     def header(self, ctx: PlannerContext) -> StateHeader:
         return StateHeader(icon=StyleConfig.BUILDING_ICON, label="Importing Area...")
 
-    def sidebar_controls(self, renderer: SidebarRenderer) -> dict[str, bool | str]:
-        renderer.render_import_building_controls()
-        return {}
+    def sidebar_panel(
+        self, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph
+    ) -> sidebar_panels.SidebarPanel:
+        return sidebar_panels.ImportSidebarPanel(sm=sm, ctx=ctx, graph=graph)
 
     def blocks_build_buttons(self) -> bool:
         return True
@@ -569,9 +576,10 @@ class _MergePlacingState(BuildState):
     def header(self, ctx: PlannerContext) -> StateHeader:
         return StateHeader(icon=StyleConfig.BUILDING_ICON, label="Merging Nodes...")
 
-    def sidebar_controls(self, renderer: SidebarRenderer) -> dict[str, bool | str]:
-        renderer.render_merge_building_controls()
-        return {}
+    def sidebar_panel(
+        self, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph
+    ) -> sidebar_panels.SidebarPanel:
+        return sidebar_panels.MergeSidebarPanel(sm=sm, ctx=ctx, graph=graph)
 
     def blocks_build_buttons(self) -> bool:
         return True
@@ -645,8 +653,10 @@ class _RoadBuildingState(BuildState):
     def header(self, ctx: PlannerContext) -> StateHeader:
         return StateHeader(icon=StyleConfig.BUILDING_ICON, label="Building Road...")
 
-    def sidebar_controls(self, renderer: SidebarRenderer) -> dict[str, bool | str]:
-        return renderer.render_road_building_controls()
+    def sidebar_panel(
+        self, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph
+    ) -> sidebar_panels.SidebarPanel:
+        return sidebar_panels.RoadSidebarPanel(sm=sm, ctx=ctx, graph=graph)
 
     def blocks_build_buttons(self) -> bool:
         return True

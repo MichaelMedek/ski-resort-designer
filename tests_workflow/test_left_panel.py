@@ -51,9 +51,8 @@ class TestSidebarRuns:
     def test_sidebar_runs_in_each_mode(self, fake_st, empty_graph, mode: str) -> None:
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         ctx.build_mode.mode = mode
-        actions = SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
-        # render() returns the action-flag dict the app loop consumes.
-        assert set(actions) >= {"undo", "cancel_slope", "finish_slope", "recompute", "lift_type"}
+        # render() is fire-and-forget (returns None); it just needs to run without raising.
+        SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
 
     def test_sidebar_runs_with_content(self, fake_st, empty_graph, path_points_blue, mock_dem_blue_slope) -> None:
         # A resort with a slope + lift + road exercises every summary section.
@@ -71,12 +70,19 @@ class TestSidebarRuns:
         SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
 
     def test_sidebar_during_road_building(self, fake_st, empty_graph) -> None:
-        # Road building state renders the Finish Road / Cancel Road controls.
+        # Road building state renders the Finish Road / Cancel Road controls; clicking Cancel Road
+        # fires cancel_current_road directly (fire-and-forget) and returns to idle.
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         sm.start_road(node_id=None, location=PathPoint(lon=0.0, lat=0.0, elevation=2000.0))
         assert sm.is_road_starting
-        actions = SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
-        assert "finish_road" in actions and "cancel_road" in actions
+        fake_st.session_state["state_machine"] = sm
+        fake_st.session_state["context"] = ctx
+        fake_st.session_state["graph"] = empty_graph
+        fake_st.session_state["map_version"] = 0
+
+        fake_st.clicked_keys = {"cancel_road_btn"}
+        SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
+        assert sm.is_idle_ready, "clicking Cancel Road must discard the road and return to idle"
 
     @pytest.mark.parametrize("kind", ["slope", "road", "lift"])
     def test_sidebar_viewing_header_and_body_match_kind(
@@ -159,9 +165,8 @@ class TestPathSettingsVisibility:
         sm.start_building(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
         ctx.custom_connect.force_mode = True  # showing custom-connect proposals
         seen = self._capture_markdown(fake_st)
-        actions = SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
+        SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
         assert not any("Path Settings" in m for m in seen), "custom mode hides the Path Settings block"
-        assert actions["recompute"] is False, "no Recompute button in custom mode"
 
 
 # =============================================================================

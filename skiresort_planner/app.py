@@ -32,18 +32,13 @@ from skiresort_planner.ui import (
     PlannerStateMachine,
     SidebarRenderer,
     bump_map_version,
-    cancel_current_road,
-    cancel_current_slope,
     cancel_custom_path,
     commit_selected_path,
     dispatch_click,
-    finish_current_road,
-    finish_current_slope,
     handle_fast_deferred_actions,
     process_custom_connect_deferred,
     process_osm_import_deferred,
     process_path_generation_deferred,
-    recompute_paths,
     render_control_panel,
     trigger_rerun,
     viewport_map_height,
@@ -415,21 +410,9 @@ def _run_app_ui() -> None:
     else:
         handle_fast_deferred_actions()
 
-    # Sidebar
+    # Sidebar (fire-and-forget: its panels call actions directly on button clicks)
     sidebar = SidebarRenderer(state_machine=sm, context=ctx, graph=graph)
-    actions = sidebar.render()
-
-    # Handle actions
-    if actions.get("finish_slope"):
-        finish_current_slope()
-    if actions.get("cancel_slope"):
-        cancel_current_slope()
-    if actions.get("finish_road"):
-        finish_current_road()
-    if actions.get("cancel_road"):
-        cancel_current_road()
-    if actions.get("recompute") or ctx.click_dedup.pending_recompute:
-        recompute_paths()
+    sidebar.render()
 
     # Main content
     col_map, col_ctrl = st.columns([3, 1])

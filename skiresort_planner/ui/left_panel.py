@@ -2,17 +2,15 @@
 
 Renders the left sidebar with:
 - Mode selector (Slopes/Lifts toggle)
-- Building controls during slope construction
-- Lift type selector in lift mode
-- Resort statistics summary
-- Save/Load functionality
+- Mode-specific controls, dispatched to the state's SidebarPanel (see ui/sidebar_panels.py)
+- Always-available controls (place search, undo, reset view)
+- Resort statistics summary and Save/Load
 
 All rendering logic is encapsulated to keep the main app.py concise.
 """
 
 import json
 import logging
-from collections.abc import Callable
 from datetime import datetime
 from typing import Literal
 
@@ -21,8 +19,6 @@ import streamlit as st
 from skiresort_planner.constants import (
     LiftConfig,
     MapConfig,
-    OSMConfig,
-    PathConfig,
     SlopeConfig,
     StyleConfig,
 )
@@ -38,7 +34,7 @@ from skiresort_planner.model.undo_handlers import UNDO_HANDLERS
 from skiresort_planner.persistence import backup_store
 from skiresort_planner.ui.actions import undo_last_action
 from skiresort_planner.ui.context import BuildMode, EntityKind, PlannerContext
-from skiresort_planner.ui.infra import bump_map_version, reload_map, trigger_rerun
+from skiresort_planner.ui.infra import reload_map, trigger_rerun
 from skiresort_planner.ui.mode_registry import BUILD_STATES, OPERATIONS, BuilderOperation, OperationGroup
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
@@ -109,10 +105,11 @@ def _confirm_reset_resort_dialog() -> None:
 
 
 class SidebarRenderer:
-    """Renders the sidebar UI and returns action flags.
+    """Renders the sidebar UI.
 
-    Encapsulates all sidebar rendering logic including mode selection,
-    building controls, lift placement, and resort management.
+    Owns the always-available chrome (mode selector, place search, undo, reset, resort data) and
+    dispatches the current state's mode-specific controls to its SidebarPanel. Fire-and-forget:
+    panel buttons call their action functions directly, so render() returns nothing.
     """
 
     def __init__(
@@ -158,11 +155,11 @@ class SidebarRenderer:
             return "Select, then click node markers to merge them into one (median position)."
         raise ValueError(f"Button {mode} has no help text (is_disabled={is_disabled})")
 
-    def render(self) -> dict[str, bool | str]:
-        """Render complete sidebar and return action flags.
+    def render(self) -> None:
+        """Render the complete sidebar.
 
-        Returns:
-            Dict with keys: undo, cancel_slope, finish_slope, recompute, lift_type
+        Fire-and-forget: mode-specific buttons (Finish/Cancel/Recompute/Confirm) call their action
+        functions directly from their SidebarPanel, so nothing is returned to app.py.
         """
         # Handle pending undo from confirmation dialog (must be before UI rendering)
         if st.session_state.get("_pending_undo"):
@@ -171,94 +168,26 @@ class SidebarRenderer:
             # undo_last_action() calls st.rerun() internally
 
         with st.sidebar:
-            actions: dict[str, bool | str] = {
-                "undo": False,
-                "cancel_slope": False,
-                "finish_slope": False,
-                "recompute": False,
-                "finish_road": False,
-                "cancel_road": False,
-                "lift_type": self.ctx.lift.type,
-            }
-
             self._render_mode_selector()
             st.divider()
-            actions.update(self._render_mode_specific_controls())
+            self._render_mode_specific_controls()
             st.divider()
             self._render_always_available()
             st.divider()
             self._render_resort_data()
 
-            return actions
+    def _render_mode_specific_controls(self) -> None:
+        """Render the current state's mode-specific controls via the BUILD_STATES registry.
 
-    def _render_mode_specific_controls(self) -> dict[str, bool | str]:
-        """Render the controls for the current state, dispatched via the BUILD_STATES registry.
-
-        Each state owns its sidebar controls (BuildState.sidebar_controls), so a new state can't be
+        Each state owns its sidebar panel (BuildState.sidebar_panel), so a new state can't be
         forgotten — the registry is bijection-asserted against the SM states at import.
         """
-        return BUILD_STATES[self.sm.get_current_state_id()].sidebar_controls(self)
+        BUILD_STATES[self.sm.get_current_state_id()].sidebar_panel(sm=self.sm, ctx=self.ctx, graph=self.graph).render()
 
     def _render_resort_data(self) -> None:
         """Render the resort-data group: cumulative stats and save/load controls."""
         self._render_resort_stats()
         self._render_save_load()
-
-    def render_close_panel_button(self) -> None:
-        """Render close panel button for viewing states."""
-        if st.button(
-            "✖️ Close Right Panel",
-            width="stretch",
-            help="Close the right panel to start building new slopes and lifts",
-        ):
-            bump_map_version()
-            # Uses close_panel event - SM resolves to appropriate transition
-            # NOTE: State transition triggers st.rerun() via listener
-            self.sm.hide_info_panel()
-
-    def _cancel_button(self, label: str, on_cancel: Callable[[], None], help: str) -> None:
-        """Render a full-width cancel button that clears stale click state then transitions.
-
-        Shared by lift placement and import placement (both are single-step "placing" modes whose
-        cancel just discards the in-progress placement and returns to idle).
-        """
-        if st.button(label, width="stretch", help=help):
-            bump_map_version()  # clear stale click state before the transition
-            on_cancel()  # the state transition triggers st.rerun() via the listener
-
-    def render_lift_cancel_button(self) -> None:
-        """Render cancel button during lift placement."""
-        self._cancel_button(
-            label="✖️ Cancel Lift Placement",
-            on_cancel=self.sm.cancel_lift,
-            help="Discard start point and return to idle",
-        )
-
-    def render_road_building_controls(self) -> dict[str, bool | str]:
-        """Render controls during road building (mirrors render_slope_building_controls).
-
-        Returns a dict with finish_road / cancel_road flags for the render loop.
-        """
-        has_segments = self.ctx.road_build.has_committed_segments()
-
-        finish_road = st.button(
-            "🏁 Finish Committed Road",
-            type="primary",
-            width="stretch",
-            disabled=not has_segments,
-            help=(
-                "Add at least one segment before finishing"
-                if not has_segments
-                else "Finalize the committed segments (any unconfirmed proposal is discarded)"
-            ),
-        )
-        cancel_road = st.button(
-            "✖️ Cancel Road",
-            width="stretch",
-            help="Discard the current road and return to idle",
-        )
-
-        return {"finish_road": finish_road, "cancel_road": cancel_road}
 
     def _render_search_box(self) -> None:
         """Render a place-search box that recenters the map on the top OSM match.
@@ -323,44 +252,6 @@ class SidebarRenderer:
             if removed > 0:
                 logger.warning(f"Reset View cleaned {removed} orphaned node(s)")
             reload_map()  # Bumps version and triggers rerun
-
-    def render_import_building_controls(self) -> None:
-        """Render controls while placing an OSM import box (IMPORT_PLACING).
-
-        Shows the area half-width slider (mirrors slope's Segment Length slider — only visible while
-        placing) and a Cancel button. Changing the slider writes the new half-width into the deferred
-        state and redraws the box at the new size. Confirming happens from the right panel or by
-        re-clicking the box center on the map.
-        """
-        half_width_km = st.slider(
-            "Import area half-width (km)",
-            min_value=OSMConfig.HALF_WIDTH_MIN_KM,
-            max_value=OSMConfig.HALF_WIDTH_MAX_KM,
-            value=self.ctx.deferred.osm_import_half_width_km,
-            step=0.5,
-            key="import_osm_half_width",
-            help="Lifts & pistes fully inside the box (this far from the center in each direction) are imported.",
-        )
-        if half_width_km != self.ctx.deferred.osm_import_half_width_km:
-            self.ctx.deferred.osm_import_half_width_km = half_width_km
-            reload_map()  # redraw the box at the new size
-        self._cancel_button(
-            label="✖️ Cancel Import",
-            on_cancel=self.sm.cancel_import,
-            help="Discard the placed area and return to idle",
-        )
-
-    def render_merge_building_controls(self) -> None:
-        """Render controls while selecting nodes to merge (MERGE_PLACING).
-
-        Only a Cancel button — the selection count and what-to-do instructions live on the right
-        panel (MergePlacingContextMessage / MergeActionMessage). Confirming happens there too.
-        """
-        self._cancel_button(
-            label="✖️ Cancel Merge",
-            on_cancel=self.sm.cancel_merge,
-            help="Clear the selection and return to idle",
-        )
 
     def _render_mode_selector(self) -> None:
         """Render unified build type selector with 7 buttons.
@@ -459,68 +350,6 @@ class SidebarRenderer:
             viewed_lift = self.graph.lifts.get(self.ctx.viewing.lift_id)
             return viewed_lift is not None and viewed_lift.lift_type == mode
         return current_mode == mode
-
-    def render_slope_building_controls(self) -> dict[str, bool | str]:
-        """Render controls for slope building state (mirrors render_road_building_controls).
-
-        Returns dict with finish_slope, cancel_slope, recompute flags.
-        Note: Undo button is rendered separately in render() for consistency.
-        """
-        has_segments = self.ctx.has_committed_segments()
-
-        # Action buttons
-        finish_slope = st.button(
-            "🏁 Finish Committed Slope",
-            type="primary",
-            width="stretch",
-            disabled=not has_segments,
-            help=(
-                "Commit at least one segment before finishing"
-                if not has_segments
-                else "Finalize the committed segments (any unconfirmed proposal is discarded)"
-            ),
-        )
-
-        # Cancel slope - immediate action (no confirmation)
-        cancel_slope = st.button(
-            "✖️ Cancel Full Slope",
-            width="stretch",
-            help="Discard current slope and return to IDLE",
-        )
-        if cancel_slope:
-            logger.info(f"UI: Cancel slope requested for {self.ctx.slope_build.name}")
-
-        # Path settings apply only to fan-out proposals; hide the whole block while
-        # routing a custom-connect path to a clicked target (force_mode).
-        recompute = False
-        if not self.ctx.custom_connect.force_mode:
-            st.markdown("**⚙️ Path Settings**")
-            segment_length = st.slider(
-                "Segment Length (m)",
-                min_value=PathConfig.SEGMENT_LENGTH_MIN_M,
-                max_value=PathConfig.SEGMENT_LENGTH_MAX_M,
-                value=self.ctx.segment_length_m,
-                step=50,
-                help="Target length for generated path segments",
-                key="segment_length_slider",
-            )
-
-            if segment_length != self.ctx.segment_length_m:
-                logger.info(f"UI: Segment length changed to {segment_length}m")
-                self.ctx.segment_length_m = segment_length
-                self.ctx.click_dedup.pending_recompute = True
-
-            recompute = st.button(
-                "🔄 Recompute Paths",
-                width="stretch",
-                help="Generate new path variations",
-            )
-
-        return {
-            "finish_slope": finish_slope,
-            "cancel_slope": cancel_slope,
-            "recompute": recompute,
-        }
 
     def _render_resort_stats(self) -> None:
         """Render resort summary statistics panel with detailed breakdowns."""
