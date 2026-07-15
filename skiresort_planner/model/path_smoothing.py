@@ -14,7 +14,7 @@ from math import cos, radians
 
 import numpy as np
 import numpy.typing as npt
-from scipy.interpolate import splev, splprep
+from scipy.interpolate import PchipInterpolator, splev, splprep
 
 from skiresort_planner.constants import MapConfig
 from skiresort_planner.model.path_point import PathPoint
@@ -24,9 +24,17 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class _SplineFit:
-    """A fitted cubic spline plus the local meter frame needed to evaluate it back to lon/lat."""
+    """A fitted HORIZONTAL cubic spline (x/y) plus a shape-preserving elevation profile.
 
-    tck: tuple[object, ...]
+    Horizontal shape and elevation are fitted SEPARATELY, both parameterised by horizontal arc
+    length. Horizontal x/y use a cubic *smoothing* spline (rounds the planner's corridor jitter).
+    Elevation uses a monotone PCHIP interpolator over arc length: it passes through the input
+    elevations and CANNOT overshoot between them, preventing vertical wiggle.
+    Bridges/cuts stay intact: elevation is never DEM-requeried.
+    """
+
+    tck: tuple[object, ...]  # 2D (x, y) smoothing spline in the local meter frame
+    elevation: PchipInterpolator  # arc length (m) → elevation (m), shape-preserving, no overshoot
     lon0: float
     lat0: float
     m_per_deg_lon: float
@@ -45,12 +53,14 @@ def _cumulative_distances(points: list[PathPoint]) -> list[float]:
 def _fit_spline(
     points: list[PathPoint], smoothing_factor: float, step_m: float, weights: npt.NDArray[np.float64] | None
 ) -> _SplineFit | None:
-    """Fit a cubic smoothing spline in a LOCAL METER FRAME (lon/lat projected to meters
-    about the first point) so all three dimensions share one scale — otherwise degree-scale
-    position is swamped by meter-scale elevation in splprep's residual budget and the curve
-    drifts. Returns None when there are too few points or the path is shorter than two steps.
+    """Fit the horizontal shape and the elevation profile SEPARATELY, both over arc length.
 
-    weights: per-point splprep weights (None = uniform); high weights pin those vertices.
+    Horizontal x/y (projected to a LOCAL METER FRAME about the first point) get a cubic *smoothing* spline
+    that rounds the planner's corridor jitter. Elevation gets a monotone PCHIP interpolator over arc length.
+    Returns None when there are too few points or the path is shorter than two steps.
+
+    weights: per-point splprep weights for the horizontal fit (None = uniform); high weights pin
+    those vertices. Elevation is interpolated (not weighted): every input elevation is honoured.
     """
     if len(points) < 4:
         return None
@@ -66,13 +76,32 @@ def _fit_spline(
     if float(cumdist[-1]) < step_m * 2:
         return None
 
-    tck, _ = splprep([xs, ys, elevs], u=cumdist, w=weights, s=smoothing_factor * len(points), k=3)
-    return _SplineFit(tck=tck, lon0=lon0, lat0=lat0, m_per_deg_lon=m_per_deg_lon, m_per_deg=m_per_deg, cumdist=cumdist)
+    tck, _ = splprep([xs, ys], u=cumdist, w=weights, s=smoothing_factor * len(points), k=3)
+
+    # PCHIP needs strictly increasing arc length; drop any point coincident with its predecessor
+    # (zero horizontal advance) so the elevation profile is well-defined.
+    keep = np.concatenate(([True], np.diff(cumdist) > 0))
+    elevation = PchipInterpolator(cumdist[keep], elevs[keep])
+    return _SplineFit(
+        tck=tck,
+        elevation=elevation,
+        lon0=lon0,
+        lat0=lat0,
+        m_per_deg_lon=m_per_deg_lon,
+        m_per_deg=m_per_deg,
+        cumdist=cumdist,
+    )
 
 
 def _eval_spline(fit: _SplineFit, dists: npt.NDArray[np.float64]) -> list[PathPoint]:
-    """Evaluate a fitted spline at the given arc-length parameters, back in lon/lat/elev."""
-    new_x, new_y, new_elev = splev(dists, fit.tck)
+    """Evaluate the fit at the given arc-length parameters, back in lon/lat/elev.
+
+    Horizontal x/y come from the 2D smoothing spline; elevation from the shape-preserving PCHIP
+    profile (clamped to the fitted arc-length range so end samples never extrapolate).
+    """
+    new_x, new_y = splev(dists, fit.tck)
+    clamped = np.clip(dists, 0.0, float(fit.cumdist[-1]))
+    new_elev = fit.elevation(clamped)
     return [
         PathPoint(
             lon=fit.lon0 + float(new_x[i]) / fit.m_per_deg_lon,

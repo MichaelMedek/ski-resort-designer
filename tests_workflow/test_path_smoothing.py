@@ -213,6 +213,17 @@ class TestSmoothJoinedPath:
         # The heavily-weighted junction node keeps its elevation (anchors[1] == seg1 end = 2085.5).
         assert abs(out[0][-1].elevation - anchors[1].elevation) < 2.0, "junction elevation stays near its node"
 
+    def test_elevation_does_not_overshoot_on_steep_descent(self) -> None:
+        # Elevation is now a shape-preserving PCHIP over arc length:
+        # on a MONOTONE-descending corridor the smoothed elevation must also be monotone (never rise)
+        # and never leave the input band.
+        seg = _leg(8.0, 46.0, 8 / M, 2 / M, 30, z0=3000.0, dz=-8.0)  # steep, strictly descending
+        out = _smooth([seg], anchors=[seg[0], seg[-1]])[0]
+        elevs = [p.elevation for p in out]
+        assert max(elevs) <= 3000.0 + 0.5 and min(elevs) >= elevs[-1] - 0.5, "elevation left the input band"
+        rises = [(i, elevs[i - 1], elevs[i]) for i in range(1, len(elevs)) if elevs[i] > elevs[i - 1] + 0.1]
+        assert not rises, f"monotone descent must not develop rises (overshoot): {rises[:3]}"
+
 
 class TestResampleCubicSpline:
     def test_too_few_points_unchanged(self) -> None:
