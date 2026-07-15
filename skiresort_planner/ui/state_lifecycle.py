@@ -1,20 +1,17 @@
-"""State Lifecycle Functions - Entry and exit handlers for each state.
+"""State Lifecycle Functions - Entry and exit handlers for state machine states.
 
-This module provides all lifecycle functions (all states × 2 = enter + exit) that
-define exactly what happens when transitioning into or out of each state.
+This module provides the enter_* handlers (one per state) plus the three exit_* handlers for the
+states with real teardown (lift/import/merge). States with no teardown have NO exit handler — they
+exit as no-ops (no on_exit_* hook is wired), so cleanup can't accidentally break undo/self-loops.
 
 Architecture:
-- Each function is called by the state machine's on_enter_* / on_exit_* hooks
-- Functions receive the PlannerContext to modify UI state
-- Functions are idempotent and safe to call multiple times
-- All functions are implemented even if they do nothing (pass)
+- enter_* is called by the state machine's on_enter_* hook; the 3 exit_* by on_exit_lift_placing
+  and by the force/undo path via _EXIT_HOOKS.
+- Functions receive the PlannerContext to modify UI state; they are idempotent.
 
 Usage in state machine:
     def on_enter_idle_ready(self) -> None:
         enter_idle_ready(self.context)
-
-    def on_exit_idle_ready(self) -> None:
-        exit_idle_ready(self.context)
 
 State Definitions:
     1. IDLE_READY: No panel visible, ready to start building
@@ -43,9 +40,48 @@ from typing import TYPE_CHECKING
 from skiresort_planner.model.path_segment import SegmentKind
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from skiresort_planner.ui.context import PlannerContext
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Shared enter bodies — the *_starting / *_building / *_custom_path / idle_viewing
+# groups each collapse to one of these, so slope and road (and future kinds) cannot drift.
+# =============================================================================
+
+
+def _enter_fan_state(ctx: PlannerContext, kind: SegmentKind) -> None:
+    """Enter a fan state (*_starting or *_building): hide the panel, free the last-clicked node
+    marker so it can be re-clicked, and arm the fan for this kind. Same for starting and building —
+    building just keeps its already-committed segments in the build context.
+    """
+    ctx.viewing.hide_panel()
+    ctx.click_dedup.clear_marker()
+    ctx.deferred.fan_generation.add(kind)
+
+
+def _enter_custom_path(ctx: PlannerContext) -> None:
+    """Enter a *_custom_path state: free the last-clicked node so re-clicking retargets, and flag
+    deferred custom-connect generation to the stored target. Kind-agnostic.
+    """
+    ctx.click_dedup.clear_marker()
+    ctx.deferred.custom_connect = True
+
+
+def _enter_viewing_panel(ctx: PlannerContext) -> None:
+    """Enter an idle_viewing_* state: show the info panel and clear all stale build/placement state.
+    Identical for slope/lift/road — the before-hook already recorded which entity to view.
+    """
+    ctx.viewing.show_panel()
+    ctx.clear_proposals()
+    ctx.clear_builds()
+    ctx.clear_custom_connect()
+    ctx.clear_lift()
+    ctx.selection.clear()
+    ctx.click_dedup.clear_marker()
 
 
 # =============================================================================
@@ -84,20 +120,6 @@ def enter_idle_ready(ctx: PlannerContext) -> None:
     )
 
 
-def exit_idle_ready(ctx: PlannerContext) -> None:
-    """Exit IDLE_READY: Nothing needed.
-
-    We're leaving idle ready state to either:
-    - View a slope/lift (viewing state will set up panel)
-    - Start building (building state will initialize)
-
-    The destination state's enter function handles all setup.
-    No cleanup needed since idle_ready is a clean state.
-    """
-    logger.debug("EXIT: idle_ready - no cleanup needed")
-    pass
-
-
 # =============================================================================
 # 2. IDLE_VIEWING_SLOPE - Panel showing slope details
 # =============================================================================
@@ -121,32 +143,7 @@ def enter_idle_viewing_slope(ctx: PlannerContext) -> None:
     End state: Panel visible showing slope details
     """
     logger.debug("ENTER: idle_viewing_slope - showing panel, clearing building state")
-    # SINGLE POINT OF TRUTH: Make panel visible
-    ctx.viewing.show_panel()
-    # Defensive cleanup - clear any stale building state
-    ctx.clear_proposals()
-    ctx.clear_builds()
-    ctx.clear_custom_connect()
-    ctx.clear_lift()
-    ctx.selection.clear()
-    ctx.click_dedup.clear_marker()
-
-
-def exit_idle_viewing_slope(ctx: PlannerContext) -> None:
-    """Exit IDLE_VIEWING_SLOPE: No cleanup needed.
-
-    SINGLE POINT OF TRUTH PRINCIPLE:
-    We do NOT touch any viewing state here. The destination state's enter
-    function handles all necessary changes:
-    - enter_idle_ready: calls ctx.viewing.clear() to reset everything
-    - enter_idle_viewing_lift: before_* calls set_lift_id() which clears slope_id
-    - enter_slope_starting: hides panel for building mode
-
-    For self-loop transitions (switch_slope), clearing here would erase the
-    slope_id set by before_switch_slope, causing errors.
-    """
-    logger.debug("EXIT: idle_viewing_slope - no cleanup needed")
-    pass
+    _enter_viewing_panel(ctx)
 
 
 # =============================================================================
@@ -172,32 +169,7 @@ def enter_idle_viewing_lift(ctx: PlannerContext) -> None:
     End state: Panel visible showing lift details
     """
     logger.debug("ENTER: idle_viewing_lift - showing panel, clearing building state")
-    # SINGLE POINT OF TRUTH: Make panel visible
-    ctx.viewing.show_panel()
-    # Defensive cleanup - clear any stale building state
-    ctx.clear_proposals()
-    ctx.clear_builds()
-    ctx.clear_custom_connect()
-    ctx.clear_lift()
-    ctx.selection.clear()
-    ctx.click_dedup.clear_marker()
-
-
-def exit_idle_viewing_lift(ctx: PlannerContext) -> None:
-    """Exit IDLE_VIEWING_LIFT: No cleanup needed.
-
-    SINGLE POINT OF TRUTH PRINCIPLE:
-    We do NOT touch any viewing state here. The destination state's enter
-    function handles all necessary changes:
-    - enter_idle_ready: calls ctx.viewing.clear() to reset everything
-    - enter_idle_viewing_slope: before_* calls set_slope_id() which clears lift_id
-    - enter_lift_placing: hides panel for placement mode
-
-    For self-loop transitions (switch_lift), clearing here would erase the
-    lift_id set by before_switch_lift, causing errors.
-    """
-    logger.debug("EXIT: idle_viewing_lift - no cleanup needed")
-    pass
+    _enter_viewing_panel(ctx)
 
 
 # =============================================================================
@@ -224,27 +196,8 @@ def enter_slope_starting(ctx: PlannerContext) -> None:
 
     End state: Panel hidden, ready for path proposals
     """
-    logger.debug("ENTER: slope_starting - hiding panel, clearing marker dedup")
-    # SINGLE POINT OF TRUTH: Hide panel for building mode
-    ctx.viewing.hide_panel()
-    ctx.click_dedup.clear_marker()
-    # Arm the fan here (mirrors enter_road_starting) so EVERY entry to slope_starting — first click,
-    # undo back to starting, cancel-custom-to-starting — regenerates proposals. Single source of truth.
-    ctx.deferred.fan_generation.add(SegmentKind.SLOPE)
-
-
-def exit_slope_starting(ctx: PlannerContext) -> None:
-    """Exit SLOPE_STARTING: Minimal cleanup.
-
-    Possible destinations:
-    - SLOPE_BUILDING: before_commit_path event hook clears proposals
-    - SLOPE_CUSTOM_PATH: enter_slope_custom_path regenerates proposals to the target
-    - IDLE_READY: before_cancel_slope event hook clears building state
-
-    All destinations handle their own cleanup, so no action needed here.
-    """
-    logger.debug("EXIT: slope_starting - no cleanup needed")
-    pass
+    logger.debug("ENTER: slope_starting - hiding panel, clearing marker dedup, arming slope fan")
+    _enter_fan_state(ctx, SegmentKind.SLOPE)
 
 
 # =============================================================================
@@ -274,34 +227,8 @@ def enter_slope_building(ctx: PlannerContext) -> None:
 
     End state: Panel hidden, continuing to build
     """
-    logger.debug("ENTER: slope_building - hiding panel, preserving building context")
-    # SINGLE POINT OF TRUTH: Hide panel for building mode
-    ctx.viewing.hide_panel()
-    # Arm the fan on every entry (mirrors enter_road_building) so a fresh proposal set is generated
-    # from the new endpoint — after a commit, a custom-continue, or an undo. fan_generation is a set,
-    # so a redundant add (the commit flow also arms) is a no-op; the deferred pass regenerates once.
-    ctx.deferred.fan_generation.add(SegmentKind.SLOPE)
-
-
-def exit_slope_building(ctx: PlannerContext) -> None:
-    """Exit SLOPE_BUILDING: Minimal cleanup for non-self-loop destinations.
-
-    Possible destinations:
-    - SLOPE_BUILDING (self-loop): commit_path/undo_continue
-      - before_commit_path: clears proposals (new segment)
-      - before_undo_continue: PRESERVES proposals (set by undo_last_action)
-    - SLOPE_CUSTOM_PATH: enter_slope_custom_path regenerates proposals to the target
-    - IDLE_VIEWING_SLOPE: enter_idle_viewing_slope clears proposals
-    - IDLE_READY: enter_idle_ready clears proposals
-
-    IMPORTANT: Do NOT clear proposals here!
-    For undo_continue self-loops, proposals are set by undo_last_action() BEFORE
-    the state transition. Clearing here would destroy them.
-    All other destinations clear proposals in their own hooks.
-    """
-    logger.debug("EXIT: slope_building - no cleanup (destinations handle it)")
-    # Do NOT clear proposals - undo_continue needs them preserved!
-    pass
+    logger.debug("ENTER: slope_building - hiding panel, preserving building context, arming slope fan")
+    _enter_fan_state(ctx, SegmentKind.SLOPE)
 
 
 # =============================================================================
@@ -326,22 +253,8 @@ def enter_slope_custom_path(ctx: PlannerContext) -> None:
 
     End state: Path proposals shown from start to custom target
     """
-    logger.debug("ENTER: slope_custom_path - triggering deferred path generation")
-    ctx.deferred.custom_connect = True
-
-
-def exit_slope_custom_path(ctx: PlannerContext) -> None:
-    """Exit SLOPE_CUSTOM_PATH: No-op.
-
-    Cleanup is intentionally NOT done here because:
-    - Different transitions need different cleanup
-    - before_commit_* and before_cancel_* hooks handle specific cases
-    - force_idle()/force_building() handle cleanup explicitly
-
-    This follows the "destination controls cleanup" pattern.
-    """
-    logger.debug("EXIT: slope_custom_path - no cleanup (destination handles it)")
-    pass
+    logger.debug("ENTER: slope_custom_path - clearing marker, triggering deferred path generation")
+    _enter_custom_path(ctx)
 
 
 # =============================================================================
@@ -462,23 +375,7 @@ def enter_idle_viewing_road(ctx: PlannerContext) -> None:
     this guarantees the panel is visible and clears any stale building state.
     """
     logger.debug("ENTER: idle_viewing_road - showing panel, clearing building state")
-    ctx.viewing.show_panel()
-    ctx.clear_proposals()
-    ctx.clear_builds()
-    ctx.clear_custom_connect()
-    ctx.clear_lift()
-    ctx.selection.clear()
-    ctx.click_dedup.clear_marker()
-
-
-def exit_idle_viewing_road(ctx: PlannerContext) -> None:
-    """Exit IDLE_VIEWING_ROAD: No cleanup needed.
-
-    The destination state's enter function handles all necessary changes
-    (same Single Point of Truth pattern as exit_idle_viewing_lift).
-    """
-    logger.debug("EXIT: idle_viewing_road - no cleanup needed")
-    pass
+    _enter_viewing_panel(ctx)
 
 
 # =============================================================================
@@ -494,20 +391,8 @@ def enter_road_starting(ctx: PlannerContext) -> None:
     marker is fresh, and triggers the road fan from the origin, regardless of
     which transition brought us here.
     """
-    logger.debug("ENTER: road_starting - hiding panel, clearing marker dedup, triggering road fan")
-    ctx.viewing.hide_panel()
-    ctx.click_dedup.clear_marker()
-    ctx.deferred.fan_generation.add(SegmentKind.ROAD)
-
-
-def exit_road_starting(ctx: PlannerContext) -> None:
-    """Exit ROAD_STARTING: minimal cleanup.
-
-    Destinations handle their own cleanup:
-    - ROAD_BUILDING: before_commit_road_first clears proposals
-    - IDLE_READY: before_cancel_road / enter_idle_ready clears road state
-    """
-    logger.debug("EXIT: road_starting - no cleanup needed")
+    logger.debug("ENTER: road_starting - hiding panel, clearing marker dedup, arming road fan")
+    _enter_fan_state(ctx, SegmentKind.ROAD)
 
 
 def enter_road_building(ctx: PlannerContext) -> None:
@@ -518,19 +403,8 @@ def enter_road_building(ctx: PlannerContext) -> None:
     context (it holds the committed segments!), hides the panel, and triggers the
     road fan from the new endpoint.
     """
-    logger.debug("ENTER: road_building - hiding panel, preserving road context, triggering road fan")
-    ctx.viewing.hide_panel()
-    ctx.deferred.fan_generation.add(SegmentKind.ROAD)
-
-
-def exit_road_building(ctx: PlannerContext) -> None:
-    """Exit ROAD_BUILDING: no cleanup here.
-
-    Destinations own their cleanup (self-loop clears proposals via
-    before_commit_road_continue; finish_road/cancel clear road context). Clearing
-    road state here would erase the committed segments on the self-loop.
-    """
-    logger.debug("EXIT: road_building - no cleanup needed")
+    logger.debug("ENTER: road_building - hiding panel, preserving road context, arming road fan")
+    _enter_fan_state(ctx, SegmentKind.ROAD)
 
 
 def enter_road_custom_path(ctx: PlannerContext) -> None:
@@ -541,10 +415,13 @@ def enter_road_custom_path(ctx: PlannerContext) -> None:
     generation, which resolves the active build (road) and routes to the target.
     Fires on the retarget self-loop too, so a new target click regenerates proposals.
     """
-    logger.debug("ENTER: road_custom_path - triggering deferred custom-connect generation")
-    ctx.deferred.custom_connect = True
+    logger.debug("ENTER: road_custom_path - clearing marker, triggering deferred custom-connect generation")
+    _enter_custom_path(ctx)
 
 
-def exit_road_custom_path(ctx: PlannerContext) -> None:
-    """Exit ROAD_CUSTOM_PATH: no-op (destinations handle their own cleanup)."""
-    logger.debug("EXIT: road_custom_path - no cleanup (destination handles it)")
+# The ONLY states with real exit teardown → their exit function.
+EXIT_HOOKS: dict[str, Callable[[PlannerContext], None]] = {
+    "lift_placing": exit_lift_placing,
+    "import_placing": exit_import_placing,
+    "merge_placing": exit_merge_placing,
+}

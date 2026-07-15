@@ -187,7 +187,7 @@ class TestPathSettingsVisibility:
     def test_path_settings_hidden_in_custom_mode(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         sm.start_building(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
-        ctx.custom_connect.force_mode = True  # showing custom-connect proposals
+        ctx.custom_connect.target_location = (0.0, 0.0, 2000.0)  # showing custom-connect proposals (force_mode)
         seen = self._capture_markdown(fake_st)
         SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
         assert not any("Path Settings" in m for m in seen), "custom mode hides the Path Settings block"

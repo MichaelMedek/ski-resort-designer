@@ -524,6 +524,14 @@ class PathActionMessage(Message):
             )
 
         # No flags set - show fallback message for empty paths (terrain too steep, etc.)
+        if self.is_custom_path:
+            # Routing to a custom target that yielded nothing (too steep): guide to a better
+            # target or the escape, NOT "Undo" (Cancel Custom Path returns to the fan).
+            return (
+                "⚠️ **No Paths Available**\n\n"
+                "- 👆 Click a **gentler** point or **node** to route there\n"
+                "- Or ✖️ **Cancel Custom Path** to go back to the fan-out"
+            )
         return (
             "⚠️ **No Paths Available**\n\n"
             "- 👆 Click a **downhill** point or **node** to route a path to it\n"

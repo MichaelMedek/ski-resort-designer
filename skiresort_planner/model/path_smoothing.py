@@ -133,7 +133,7 @@ def smooth_joined_path(
     # Set the exact node coords at every boundary, then weight nodes heavily and corridor
     # points lightly so the fit is pulled onto the nodes but only softly toward the corridor.
     node_indices = [0, *junction_after, len(joined) - 1]
-    for idx, anchor in zip(node_indices, node_anchors, strict=False):
+    for idx, anchor in zip(node_indices, node_anchors, strict=True):
         joined[idx] = anchor
     weights = np.full(len(joined), corridor_weight)
     weights[node_indices] = node_weight

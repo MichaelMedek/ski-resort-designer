@@ -149,3 +149,25 @@ class TestMergePlacingMessages:
         assert "Too Far" in msg and "max: 500m" in msg
         shown = _first_number(msg)
         assert shown > 500.0, f"span must read strictly above the max: {msg}"
+
+
+class TestPathActionNoPathsFallback:
+    """The empty-proposals fallback must guide the RIGHT escape per mode: Undo for a fan-out dead
+    end, but Cancel-Custom-Path when routing a too-steep custom target (Undo would be wrong).
+    """
+
+    def _msg(self, *, is_custom_path: bool) -> str:
+        from skiresort_planner.model.message import PathActionMessage
+        from skiresort_planner.model.path_segment import SegmentKind
+
+        return PathActionMessage(kind=SegmentKind.ROAD, is_custom_path=is_custom_path).message
+
+    def test_fanout_deadend_points_to_undo(self) -> None:
+        msg = self._msg(is_custom_path=False)
+        assert "No Paths Available" in msg and "Undo" in msg
+
+    def test_custom_target_deadend_points_to_cancel_not_undo(self) -> None:
+        msg = self._msg(is_custom_path=True)
+        assert "No Paths Available" in msg
+        assert "Cancel Custom Path" in msg, "a too-steep custom target must point at the escape, not Undo"
+        assert "Undo" not in msg

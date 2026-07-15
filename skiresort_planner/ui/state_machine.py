@@ -261,7 +261,9 @@ Both start and end nodes are only created AFTER validation passes.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import NoReturn, Protocol, cast
 
 import streamlit as st
@@ -280,6 +282,7 @@ from skiresort_planner.ui.context import (
 from skiresort_planner.ui.infra import trigger_rerun
 from skiresort_planner.ui.kind_spec import KIND_SPECS
 from skiresort_planner.ui.state_lifecycle import (
+    EXIT_HOOKS,
     enter_idle_ready,
     enter_idle_viewing_lift,
     enter_idle_viewing_road,
@@ -293,19 +296,7 @@ from skiresort_planner.ui.state_lifecycle import (
     enter_slope_building,
     enter_slope_custom_path,
     enter_slope_starting,
-    exit_idle_ready,
-    exit_idle_viewing_lift,
-    exit_idle_viewing_road,
-    exit_idle_viewing_slope,
-    exit_import_placing,
     exit_lift_placing,
-    exit_merge_placing,
-    exit_road_building,
-    exit_road_custom_path,
-    exit_road_starting,
-    exit_slope_building,
-    exit_slope_custom_path,
-    exit_slope_starting,
 )
 
 logger = logging.getLogger(__name__)
@@ -328,7 +319,7 @@ class StreamlitUIListener:
         sm.add_listener(StreamlitUIListener())
     """
 
-    def after_transition(self, event: str, source: State, target: State) -> None:
+    def after_transition(self, event: str, source: State, target: State, machine: StateMachine) -> None:
         """Run cleanup and trigger Streamlit rerun after state transitions.
 
         NOTE: We do NOT modify click deduplication here. The dedup is simple:
@@ -340,6 +331,10 @@ class StreamlitUIListener:
         multiple state transitions before a single UI refresh.
         """
         logger.info(f"[STATE] {source.name} --({event})--> {target.name}")
+        # Opt-in live debugging: SKIRESORT_LOG_GRAPH=1 dumps the whole state network (Mermaid, current
+        # state highlighted) after each transition — for diagnosing a stuck/again-only-once flow.
+        if os.environ.get("SKIRESORT_LOG_GRAPH") == "1":
+            logger.info("[STATE][GRAPH]\n%s", cast("PlannerStateMachine", machine).as_mermaid())
 
         # NOTE: Orphaned node cleanup is NOT called here. It's called explicitly
         # in operations that remove entities (undo, delete, cancel). This prevents
@@ -859,7 +854,7 @@ class PlannerStateMachine(StateMachine):
         lists its 3 build-state ids), so a new kind needs no edit here. Raises if not in
         a build state.
         """
-        current = self.current_state_id
+        current = self.get_current_state_id()
         for spec in KIND_SPECS.values():
             if current in {spec.starting_state, spec.building_state, spec.custom_path_state}:
                 return spec.kind
@@ -873,7 +868,7 @@ class PlannerStateMachine(StateMachine):
         the state machine so the action layer just says "commit the active segment".
         """
         spec = KIND_SPECS[self.active_build_kind]
-        in_custom_path = self.current_state_id == spec.custom_path_state
+        in_custom_path = self.get_current_state_id() == spec.custom_path_state
         event = spec.custom_continue_event if in_custom_path else spec.fan_commit_event
         self.send(event, segment_id=segment_id, endpoint_node_id=endpoint_node_id)
 
@@ -963,52 +958,14 @@ class PlannerStateMachine(StateMachine):
         enter_road_custom_path(self.context)
 
     # ==========================================================================
-    # Exit Hooks - Using lifecycle functions
+    # Exit Hooks - only states with real teardown need one; the rest exit as no-ops.
+    # (force/undo runs the same teardown via EXIT_HOOKS. import/merge clear their scratch
+    # in their before_cancel_*/before_complete_* hooks, so they need no on_exit here.)
     # ==========================================================================
 
-    def on_exit_idle_ready(self) -> None:
-        """Hook: Exiting idle ready state."""
-        exit_idle_ready(self.context)
-
-    def on_exit_idle_viewing_slope(self) -> None:
-        """Hook: Exiting slope viewing state."""
-        exit_idle_viewing_slope(self.context)
-
-    def on_exit_idle_viewing_lift(self) -> None:
-        """Hook: Exiting lift viewing state."""
-        exit_idle_viewing_lift(self.context)
-
-    def on_exit_idle_viewing_road(self) -> None:
-        """Hook: Exiting road viewing state."""
-        exit_idle_viewing_road(self.context)
-
-    def on_exit_slope_starting(self) -> None:
-        """Hook: Exiting slope starting state."""
-        exit_slope_starting(self.context)
-
-    def on_exit_slope_building(self) -> None:
-        """Hook: Exiting slope building state."""
-        exit_slope_building(self.context)
-
-    def on_exit_slope_custom_path(self) -> None:
-        """Hook: Exiting custom path state."""
-        exit_slope_custom_path(self.context)
-
     def on_exit_lift_placing(self) -> None:
-        """Hook: Exiting lift placing state."""
+        """Hook: Exiting lift placing state — clears the lift scratch context."""
         exit_lift_placing(self.context)
-
-    def on_exit_road_starting(self) -> None:
-        """Hook: Exiting road starting state."""
-        exit_road_starting(self.context)
-
-    def on_exit_road_building(self) -> None:
-        """Hook: Exiting road building state."""
-        exit_road_building(self.context)
-
-    def on_exit_road_custom_path(self) -> None:
-        """Hook: Exiting road custom-path state."""
-        exit_road_custom_path(self.context)
 
     # ==========================================================================
     # Transition Actions (before_* hooks)
@@ -1230,14 +1187,12 @@ class PlannerStateMachine(StateMachine):
         self.context.custom_connect.start_node = start_node_id
         self.context.custom_connect.target_location = target_location
         self.context.custom_connect.target_node = target_node
-        self.context.custom_connect.force_mode = True
 
     def _before_target_from_building(self, target_location: LonLatElev, target_node: str | None = None) -> None:
         """From *_BUILDING: route from the active build's current endpoint to the clicked target."""
         self.context.custom_connect.start_node = self._active_build().endpoints[0]
         self.context.custom_connect.target_location = target_location
         self.context.custom_connect.target_node = target_node
-        self.context.custom_connect.force_mode = True
 
     def _before_retarget_custom(self, target_location: LonLatElev, target_node: str | None = None) -> None:
         """From *_CUSTOM_PATH: re-route to a newly clicked target (self-loop).
@@ -1247,7 +1202,6 @@ class PlannerStateMachine(StateMachine):
         """
         self.context.custom_connect.target_location = target_location
         self.context.custom_connect.target_node = target_node
-        self.context.custom_connect.force_mode = True
 
     def _before_finish_from_custom(self, entity_id: str) -> None:
         """Sidebar Finish during targeting (any kind): drop the in-progress proposal.
@@ -1300,6 +1254,10 @@ class PlannerStateMachine(StateMachine):
         model = context or PlannerContext()
         super().__init__(model=model, start_value=start_value)
 
+        # force_* (transition bypass) is legal ONLY inside an undo. undo_running() sets this for the
+        # duration of the undo side-effect; force_* asserts it.
+        self._undo_in_progress = False
+
         # Block direct calls to variant transitions (setattr is more performant
         # than __getattribute__ and doesn't interfere with library internals)
         for trans_name in PlannerStateMachine._EVENT_ONLY_TRANSITIONS:
@@ -1329,22 +1287,19 @@ class PlannerStateMachine(StateMachine):
     # recommendation to treat undo as a "meta-feature" (history management)
     # rather than core workflow state transitions.
 
-    # Map state names to their exit hooks (for dynamic dispatch)
-    _EXIT_HOOKS: dict[str, Callable[[PlannerContext], None]] = {
-        "idle_ready": exit_idle_ready,
-        "idle_viewing_slope": exit_idle_viewing_slope,
-        "idle_viewing_lift": exit_idle_viewing_lift,
-        "idle_viewing_road": exit_idle_viewing_road,
-        "slope_starting": exit_slope_starting,
-        "slope_building": exit_slope_building,
-        "slope_custom_path": exit_slope_custom_path,
-        "lift_placing": exit_lift_placing,
-        "import_placing": exit_import_placing,
-        "merge_placing": exit_merge_placing,
-        "road_starting": exit_road_starting,
-        "road_building": exit_road_building,
-        "road_custom_path": exit_road_custom_path,
-    }
+    @contextmanager
+    def undo_running(self) -> Iterator[None]:
+        """Mark that an undo is in progress so force_* (the transition bypass) is permitted.
+
+        The undo dispatcher wraps its side-effect in `with sm.undo_running():`. Outside this scope
+        force_idle/force_building/force_starting raise — the bypass is undo-only by construction, so
+        no one can use it as a shortcut in normal flow (which would skip guards/validation).
+        """
+        self._undo_in_progress = True
+        try:
+            yield
+        finally:
+            self._undo_in_progress = False
 
     def force_idle(self) -> None:
         """Force state machine to IdleReady state without transition.
@@ -1397,52 +1352,42 @@ class PlannerStateMachine(StateMachine):
         getattr(self, f"on_enter_{state.id}")()
 
     def _set_current_state(self, state: State) -> None:
-        """Force state change with proper exit hook lifecycle.
+        """Force the state value directly, running the current state's real exit teardown first.
 
-        Implements the 'Safe Dynamic Exit' pattern per expert recommendation:
-        1. Call exit hook for CURRENT state (dynamic dispatch)
-        2. Set the new state value (in finally block - MUST happen)
-
-        The try-finally ensures the state change ALWAYS happens even if the
-        exit hook raises an exception. This prevents the app from getting
-        stuck in an inconsistent state.
-
-        Important: This method bypasses the normal transition mechanism and should only be used for undo
-                   operations! Also the method does only handle exit hooks, but entry hooks must be called
-                   separately by the caller after setting the state.
-
-        Raises:
-            KeyError: If current state has no exit hook registered in _EXIT_HOOKS. Adding a new state requires
-                adding its hook.
+        Bypasses the normal transition mechanism — undo helpers only. Enter hooks are the
+        caller's job (run separately after this). The registered exit hooks only clear in-memory
+        context fields, so they cannot fail.
         """
+        if not self._undo_in_progress:
+            raise RuntimeError(
+                "_set_current_state (transition bypass) is undo-only — call it inside `with "
+                "sm.undo_running():`. Normal flow must use events/transitions, not force_*."
+            )
         # Use .value (snake_case identifier) not .name (CamelCase display name)
         current_state_value = str(self._active_state.value)
-        # Direct access - raises KeyError if state not in _EXIT_HOOKS (fail fast)
-        exit_hook = PlannerStateMachine._EXIT_HOOKS[current_state_value]
-
-        try:
-            # 1. Dynamic exit hook dispatch for current state
+        # Only states with real exit cleanup are in EXIT_HOOKS; the rest have no teardown.
+        exit_hook = EXIT_HOOKS.get(current_state_value)
+        if exit_hook is not None:
             logger.info(f"[STATE] Calling exit_{current_state_value} before force")
             exit_hook(self.context)
-        except Exception as e:
-            # Log but don't block - availability over perfect cleanup
-            logger.error(f"[STATE] Exit hook exit_{current_state_value} failed during force: {e}")
-        finally:
-            # 2. State change MUST happen regardless of exit hook success
-            setattr(self.model, self.state_field, state.value)
+        setattr(self.model, self.state_field, state.value)
 
     def get_state_name(self) -> str:
         """Get current state name for display."""
         return str(self._active_state.name)
 
-    @property
-    def current_state_id(self) -> str:
-        """The active state's snake_case id (matches KIND_SPECS state ids)."""
+    def get_current_state_id(self) -> str:
+        """The active state's snake_case id (matches BUILD_STATES keys / KIND_SPECS state ids)."""
         return str(self._active_state.id)
 
-    def get_current_state_id(self) -> str:
-        """Get the current state's id (matches BUILD_STATES keys / PlannerStateMachine state ids)."""
-        return str(self._active_state.id)
+    def as_mermaid(self) -> str:
+        """The full state graph as a Mermaid stateDiagram (dependency-free — no Graphviz needed).
+
+        The library renders the whole state/transition network via its `format()` protocol and marks
+        the CURRENT state, so this doubles as a live debug snapshot. Wire it behind a debug flag to
+        log "where am I + the whole map" when diagnosing a stuck/again-only-once click (see docs).
+        """
+        return format(self, "mermaid")
 
     def __repr__(self) -> str:
         """Return string representation of state machine."""
@@ -1507,15 +1452,6 @@ class PlannerStateMachine(StateMachine):
         """
         self.send("close_panel")
 
-    # NOTE: No restore_building() wrapper - call sm.restore_building() event directly.
-    # The event is defined by transitions with event="restore_building" parameter.
-
-    def cancel_slope(self) -> None:
-        """Cancel slope building from any slope state. SM resolves transition atomically."""
-        self.send("cancel_slope")
-
-    # NOTE: undo_segment() removed - undo handled via force_idle()/force_building()
-
     def cancel_custom_connect(self) -> None:
         """Leave custom targeting, back to fan-out. SM resolves based on guards."""
         self.send("cancel_custom")
@@ -1546,11 +1482,35 @@ class PlannerStateMachine(StateMachine):
         return sm, context
 
 
-# Import-time bijection guard: every state-machine state must have an exit hook.
-# Mirrors the BUILD_STATES/OPERATIONS bijection asserts in mode_registry.
-_sm_state_ids = {s.id for s in PlannerStateMachine.states}
-assert set(PlannerStateMachine._EXIT_HOOKS) == _sm_state_ids, (
-    f"_EXIT_HOOKS keys must match state-machine state ids exactly. "
-    f"Missing: {_sm_state_ids - set(PlannerStateMachine._EXIT_HOOKS)}; "
-    f"stray: {set(PlannerStateMachine._EXIT_HOOKS) - _sm_state_ids}"
-)
+def _validate_registries_against_machine() -> None:
+    """Fail LOUD at import if EXIT_HOOKS or KIND_SPECS name a state/event this machine lacks.
+
+    Both hold plain strings the action/undo layers dispatch on by name (getattr/send); a typo'd or
+    forgotten state/event would otherwise only crash at runtime, deep in a build flow.
+    """
+    state_ids = {s.id for s in PlannerStateMachine.states}
+    event_names = {name for s in PlannerStateMachine.states for t in s.transitions for name in t.event.split()}
+
+    spec_states = {
+        sid
+        for spec in KIND_SPECS.values()
+        for sid in (spec.starting_state, spec.building_state, spec.custom_path_state)
+    }
+    spec_events = {
+        ev
+        for spec in KIND_SPECS.values()
+        for ev in (
+            spec.fan_commit_event,
+            spec.custom_continue_event,
+            spec.connector_finish_event,
+            spec.finish_event,
+            spec.cancel_event,
+        )
+    }
+    assert set(EXIT_HOOKS) <= state_ids, f"EXIT_HOOKS names unknown states: {set(EXIT_HOOKS) - state_ids}"
+    assert spec_states <= state_ids, f"KIND_SPECS names unknown states: {spec_states - state_ids}"
+    assert spec_events <= event_names, f"KIND_SPECS names unknown events: {spec_events - event_names}"
+
+
+# Import validation
+_validate_registries_against_machine()

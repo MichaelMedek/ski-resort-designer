@@ -29,7 +29,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from skiresort_planner.constants import ClickConfig, LiftConfig, MapConfig, OSMConfig, PathConfig
 from skiresort_planner.model.path_segment import SegmentKind
@@ -165,11 +165,13 @@ class LiftContext(BaseContext):
 
     start_node_id: str | None = None
     start_location: PathPoint | None = None  # For new node creation
-    type: str = "chairlift"
+    type: str = LiftConfig.DEFAULT_TYPE
 
     def clear(self) -> None:
         self.start_node_id = None
         self.start_location = None
+        # Reset the selected type to the default too — clear() means "back to initial state"
+        self.type = LiftConfig.DEFAULT_TYPE
 
 
 class BuildMode:
@@ -367,12 +369,16 @@ class ViewingContext(BaseContext):
         self.slope_id = None
         self.lift_id = None
 
+    # Maps each buildable SegmentKind to the name of the setter that records it as viewed. Keyed by
+    # kind so a new SegmentKind must add an entry; the import-time assert below fails loud otherwise.
+    _SET_VIEWED_SETTERS: ClassVar[dict[SegmentKind, str]] = {
+        SegmentKind.SLOPE: "set_slope_id",
+        SegmentKind.ROAD: "set_road_id",
+    }
+
     def set_viewed(self, kind: SegmentKind, entity_id: str) -> None:
         """Set the viewed entity by its SegmentKind (slope or road) — one kind-generic setter."""
-        {
-            SegmentKind.SLOPE: self.set_slope_id,
-            SegmentKind.ROAD: self.set_road_id,
-        }[kind](entity_id)
+        getattr(self, ViewingContext._SET_VIEWED_SETTERS[kind])(entity_id)
 
     # =========================================================================
     # STATE CONTROL METHODS (called by enter_*/exit_* lifecycle functions)
@@ -432,18 +438,35 @@ class ViewingContext(BaseContext):
         self.view_3d = False
 
 
+# Import-time guard: set_viewed must map every buildable SegmentKind to a real setter, and each named
+# setter must exist. A new SegmentKind that forgets its viewer entry fails HERE at import.
+assert set(ViewingContext._SET_VIEWED_SETTERS) == set(SegmentKind), (
+    f"ViewingContext._SET_VIEWED_SETTERS must cover every SegmentKind. "
+    f"Missing: {set(SegmentKind) - set(ViewingContext._SET_VIEWED_SETTERS)}; "
+    f"stray: {set(ViewingContext._SET_VIEWED_SETTERS) - set(SegmentKind)}"
+)
+assert all(callable(getattr(ViewingContext, name, None)) for name in ViewingContext._SET_VIEWED_SETTERS.values()), (
+    "every ViewingContext._SET_VIEWED_SETTERS value must name a real ViewingContext method"
+)
+
+
 @dataclass
 class CustomConnectContext(BaseContext):
-    """Custom connect mode state."""
+    """Custom connect mode state: a routing target the build aims at, instead of the auto-fan."""
 
     start_node: str | None = None
-    force_mode: bool = False
     target_location: LonLatElev | None = None  # (lon, lat, elev)
     target_node: str | None = None  # Set when the target is an EXISTING node → reuse it by id (no proximity guess)
 
+    @property
+    def force_mode(self) -> bool:
+        """True while routing to a chosen target — i.e. a target_location is set. Derived, not
+        stored: every setter set target_location and force_mode together, so this is the one fact.
+        """
+        return self.target_location is not None
+
     def clear(self) -> None:
         self.start_node = None
-        self.force_mode = False
         self.target_location = None
         self.target_node = None
 

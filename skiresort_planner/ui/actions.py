@@ -552,12 +552,11 @@ def recompute_paths() -> None:
 
     ctx.click_dedup.pending_recompute = False
 
-    # Custom target mode - regenerate to stored target
-    if ctx.custom_connect.force_mode and ctx.custom_connect.target_location and ctx.custom_connect.start_node:
+    # Custom target mode - regenerate to stored target (force_mode ⟺ target_location is set).
+    if ctx.custom_connect.force_mode and ctx.custom_connect.start_node:
         _generate_custom_connect_paths()
     else:
-        if ctx.custom_connect.force_mode:
-            ctx.clear_custom_connect()
+        ctx.clear_custom_connect()
         _generate_fan_for_building_state(kind=sm.active_build_kind)
     reload_map()  # Clear stale click state so proposal 1 can be clicked
 
@@ -753,15 +752,9 @@ def _undo_add_lift(undone: AddLiftAction) -> None:
         reload_map()
 
 
-def _undo_delete_slope(undone: DeleteSlopeAction) -> None:
-    """Handle undo of DELETE_SLOPE action."""
-    logger.info(f"Restored deleted slope {undone.slope_id}")
-    reload_map()
-
-
-def _undo_delete_lift(undone: DeleteLiftAction) -> None:
-    """Handle undo of DELETE_LIFT action."""
-    logger.info(f"Restored deleted lift {undone.lift_id}")
+def _undo_delete_entity(undone: DeleteSlopeAction | DeleteLiftAction | DeleteRoadAction) -> None:
+    """Handle undo of any DELETE_* action: the graph already restored the entity; just redraw."""
+    logger.info(f"Restored deleted entity ({type(undone).__name__})")
     reload_map()
 
 
@@ -773,12 +766,6 @@ def _undo_finish_road(undone: FinishRoadAction) -> None:
         name=undone.road_name,
         start_node_id=undone.start_node_id,
     )
-
-
-def _undo_delete_road(undone: DeleteRoadAction) -> None:
-    """Handle undo of DELETE_ROAD action."""
-    logger.info(f"Restored deleted road {undone.road_id}")
-    reload_map()
 
 
 def _undo_import_osm(undone: ImportOSMAction) -> None:
@@ -813,9 +800,9 @@ _UNDO_SIDE_EFFECTS: dict[str, "Callable[[UndoAction], None]"] = {
     ActionType.FINISH_SLOPE.name: lambda a: _undo_finish_slope(undone=cast(FinishSlopeAction, a)),
     ActionType.ADD_LIFT.name: lambda a: _undo_add_lift(undone=cast(AddLiftAction, a)),
     ActionType.FINISH_ROAD.name: lambda a: _undo_finish_road(undone=cast(FinishRoadAction, a)),
-    ActionType.DELETE_SLOPE.name: lambda a: _undo_delete_slope(undone=cast(DeleteSlopeAction, a)),
-    ActionType.DELETE_LIFT.name: lambda a: _undo_delete_lift(undone=cast(DeleteLiftAction, a)),
-    ActionType.DELETE_ROAD.name: lambda a: _undo_delete_road(undone=cast(DeleteRoadAction, a)),
+    ActionType.DELETE_SLOPE.name: lambda a: _undo_delete_entity(undone=cast(DeleteSlopeAction, a)),
+    ActionType.DELETE_LIFT.name: lambda a: _undo_delete_entity(undone=cast(DeleteLiftAction, a)),
+    ActionType.DELETE_ROAD.name: lambda a: _undo_delete_entity(undone=cast(DeleteRoadAction, a)),
     ActionType.IMPORT_OSM.name: lambda a: _undo_import_osm(undone=cast(ImportOSMAction, a)),
     ActionType.MERGE_NODES.name: lambda a: _undo_merge_nodes(undone=cast(MergeNodesAction, a)),
 }
@@ -858,8 +845,10 @@ def undo_last_action() -> None:
     undone = graph.undo_last()
     logger.info(f"[ACTION] Undone: {undone.action_type.name}")
 
-    # Dispatch UI side-effects via the registry keyed by ActionType.name.
-    _UNDO_SIDE_EFFECTS[undone.action_type.name](undone)
+    # Dispatch UI side-effects via the registry keyed by ActionType.name. The bypass (force_*) is
+    # legal only inside this scope — undo_running() is what permits it; outside it, force_* raises.
+    with sm.undo_running():
+        _UNDO_SIDE_EFFECTS[undone.action_type.name](undone)
 
 
 # =============================================================================

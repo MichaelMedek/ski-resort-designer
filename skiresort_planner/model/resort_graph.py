@@ -386,7 +386,7 @@ class ResortGraph:
             node_weight=GeometricTuningConfig.NODE_WEIGHT,
             corridor_weight=GeometricTuningConfig.CORRIDOR_WEIGHT,
         )
-        for seg, pts in zip(segments, smoothed, strict=False):
+        for seg, pts in zip(segments, smoothed, strict=True):
             seg.points = pts
         after = max(seg.max_slope_pct for seg in segments)
         logger.info(f"Smoothed finished path {segment_ids}: max_slope_pct {before:.1f}% -> {after:.1f}%")
@@ -729,9 +729,7 @@ class ResortGraph:
         # Slopes/roads store their own boundary node ids (mirroring their first/last segment), so a
         # merge that repoints those nodes must repoint the entity boundary too.
         affected_paths: list[SegmentPath] = [
-            p
-            for p in (*self.slopes.values(), *self.roads.values())
-            if p.start_node_id in touched or p.end_node_id in touched
+            p for p in self.segment_path_entities if p.start_node_id in touched or p.end_node_id in touched
         ]
         segments_before = tuple(copy.deepcopy(s) for s in affected_segments)
         lifts_before = tuple(copy.deepcopy(ln) for ln in affected_lifts)
@@ -749,7 +747,7 @@ class ResortGraph:
                 lift.start_node_id = survivor_id
             if lift.end_node_id in merged:
                 lift.end_node_id = survivor_id
-        for path in (*self.slopes.values(), *self.roads.values()):
+        for path in self.segment_path_entities:
             if path.start_node_id in merged:
                 path.start_node_id = survivor_id
             if path.end_node_id in merged:
@@ -891,19 +889,27 @@ class ResortGraph:
     # Query Operations
     # =========================================================================
 
-    def get_slope_by_segment_id(self, segment_id: str) -> Slope | None:
-        """Find the slope containing a given segment.
-        Not applicabale for roads, as they have no segements.
+    @property
+    def segment_path_entities(self) -> list[SegmentPath]:
+        """Every finished SegmentPath-owning entity (slopes + roads), in one place.
 
-        Args:
-            segment_id: ID of segment to find
-
-        Returns:
-            Slope containing the segment, or None if segment is not in any slope.
+        The single source for "iterate all segment-group entities" so a new SegmentPath kind is
+        added HERE once, not at each call site (merge repoint, boundary snapshot, segment lookup).
+        Guarded by test_completeness_guards: every buildable SegmentKind must show up here.
         """
-        for slope in self.slopes.values():
-            if segment_id in slope.segment_ids:
-                return slope
+        return [*self.slopes.values(), *self.roads.values()]
+
+    def get_entity_by_segment_id(self, segment_id: str) -> SegmentPath | None:
+        """Find the finished entity (slope OR road) that owns a segment, or None.
+
+        For a one-frame race: a SEGMENT marker can carry a finished entity's
+        segment id before the map re-tags it as its Slope/Road (SEGMENT clicks normally resolve to
+        the parent entity at render time). An orphan (parent already deleted) legitimately returns
+        None — the caller ignores it — so this must NOT raise. Kind-generic via segment_path_entities.
+        """
+        for entity in self.segment_path_entities:
+            if segment_id in entity.segment_ids:
+                return entity
         return None
 
     def get_segment_stats(self, segment_ids: list[str]) -> SegmentStats:

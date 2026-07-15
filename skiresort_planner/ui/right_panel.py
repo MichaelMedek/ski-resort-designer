@@ -569,7 +569,12 @@ class PathSelectionPanel:
         """Render the path selection panel."""
         noun = KIND_SPECS[self.kind].display_noun  # "Slope" / "Road"
         if not self.ctx.proposals.paths:
-            PathActionMessage(kind=self.kind).display()
+            # No proposals (e.g. a too-steep custom target). Show the message, but if we are
+            # routing a custom target (force_mode) still offer the escape back to the fan.
+            # A connector needs a real path, so an empty result is never a connector → always "Cancel Custom Path".
+            PathActionMessage(kind=self.kind, is_custom_path=self.ctx.custom_connect.force_mode).display()
+            if self.ctx.custom_connect.force_mode:
+                self._render_cancel_connection(is_connector=False)
             return
 
         num_paths = len(self.ctx.proposals.paths)
@@ -614,20 +619,21 @@ class PathSelectionPanel:
             self.on_commit(selected_idx)
 
         # While showing custom-connect proposals, offer a way back to fan-out.
-        # The label adapts: a connector routes to a node ("Cancel Connection"), a custom target ("Cancel Custom Path").
         if self.ctx.custom_connect.force_mode:
-            cancel_label = "✖️ Cancel Connection" if is_connector else "✖️ Cancel Custom Path"
-            if st.button(
-                cancel_label,
-                width="stretch",
-                help="Return to regular fan-out path proposals",
-            ):
-                logger.info(f"UI: {cancel_label} clicked")
-                self.on_cancel_connection()
+            self._render_cancel_connection(is_connector=is_connector)
         else:
             # Fan-out mode: the panel showed auto-generated proposals, but the user can
             # also aim anywhere. Make that discoverable now that there is no button.
             st.caption("🎯 Or click any point or node on the map to route a path there.")
+
+    def _render_cancel_connection(self, *, is_connector: bool) -> None:
+        """The escape back to fan-out during custom-connect. Label adapts: a connector routes to a
+        node ("Cancel Connection"), a plain custom target ("Cancel Custom Path").
+        """
+        cancel_label = "✖️ Cancel Connection" if is_connector else "✖️ Cancel Custom Path"
+        if st.button(cancel_label, width="stretch", help="Return to regular fan-out path proposals"):
+            logger.info(f"UI: {cancel_label} clicked")
+            self.on_cancel_connection()
 
 
 # =============================================================================

@@ -420,6 +420,9 @@ class LiftConfig:
     # behaves as a list of plain strings for callers that compare/serialize by value.
     TYPES = [t.value for t in PYLON_CONFIG]
 
+    # Inital selcted lift type
+    DEFAULT_TYPE = LiftType.GONDOLA
+
     # Every lift type must define the full set of pylon-placement knobs the builder reads.
     assert all(
         set(v.keys())
@@ -428,6 +431,8 @@ class LiftConfig:
     ), "each PYLON_CONFIG entry must define exactly the 6 pylon-placement keys"
     # PYLON_CONFIG must be keyed by every LiftType member (bijection: no type missing, none stray).
     assert set(PYLON_CONFIG) == set(LiftType), "PYLON_CONFIG must have one entry per LiftType member"
+    # DEFAULT_TYPE must exist
+    assert DEFAULT_TYPE in TYPES
 
 
 class StyleConfig:

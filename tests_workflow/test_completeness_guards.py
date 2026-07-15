@@ -2,12 +2,7 @@
 
 These tests don't check behavior; they check that parallel code sites stay in sync. Each guards a
 hazard where adding an enum member / dataclass field / new module would compile and pass every
-other test, yet ship a silent bug or a rarely-hit crash:
-
-- Serialization: a new dataclass field that `from_dict` forgets → silently lost on save/load.
-- Enum dispatch: a new enum member a total (`else: raise`) dispatcher forgets → runtime crash.
-- Enum comparison: a raw `==`/`!=` on a reload-fragile enum → silent misbehaviour after a reload.
-- Layering: a model/core/generator module importing `ui` → an architecture violation.
+other test, yet ship a silent bug or a rarely-hit crash.
 
 The ActionType undo-dispatcher guard lives in test_resort_graph.py (it's undo-specific).
 """
@@ -385,3 +380,38 @@ class TestNodeConnectedContract:
             if missing:
                 offenders[cls.__name__] = missing
         assert not offenders, f"NodeConnected subclasses missing endpoint members: {offenders}"
+
+
+# =============================================================================
+# 6. segment_path_entities covers every buildable SegmentKind (extensibility guard)
+# =============================================================================
+
+
+class TestSegmentPathEntitiesCoversEveryKind:
+    """ResortGraph.segment_path_entities is the single source for "all segment-group entities"
+    (merge repoint, boundary snapshot, segment→entity lookup). It is hand-written
+    (`[*self.slopes.values(), *self.roads.values()]`), so a new SegmentKind whose finished entity
+    lands in a NEW collection the property doesn't include would silently vanish from every
+    consumer. This ties the property to the SegmentKind ground truth: finish one entity of each
+    kind and assert it shows up in segment_path_entities.
+    """
+
+    def test_every_buildable_kind_appears_in_segment_path_entities(self) -> None:
+        from skiresort_planner.model.path_point import PathPoint
+        from skiresort_planner.model.path_segment import SegmentKind
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
+        from skiresort_planner.model.resort_graph import ResortGraph
+        from skiresort_planner.ui.kind_spec import KIND_SPECS
+
+        m = 111320.0
+        for kind in SegmentKind:
+            graph = ResortGraph()
+            pts = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=0.0, lat=-300 / m, elevation=1970.0)]
+            graph.commit_paths(paths=[ProposedPathSegment(points=pts, kind=kind)], record_undo=False)
+            seg_id = list(graph.segments.keys())[-1]
+            entity = KIND_SPECS[kind].finish(graph, [seg_id])
+            assert entity is not None, f"finishing a {kind.value} must produce an entity"
+            assert entity in graph.segment_path_entities, (
+                f"finished {kind.value} entity is missing from segment_path_entities — "
+                "a new SegmentKind must be added to that property or it drops out of merge/lookup/snapshot"
+            )

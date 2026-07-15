@@ -266,6 +266,24 @@ class TestIdleClickRouting:
         assert sm.is_idle_viewing_slope
         assert ctx.viewing.slope_id == slope.id
 
+    def test_click_segment_opens_parent_road_panel(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
+        # Parity with the slope case: a SEGMENT marker whose parent is a ROAD (one-frame race before
+        # the map re-tags it) must open the ROAD panel, not fall through to a slope panel. This is
+        # the asymmetry fix — get_entity_by_segment_id + isinstance dispatch resolves either kind.
+        from skiresort_planner.ui.click_handlers import handle_idle_click
+
+        graph = ResortGraph()
+        road = _commit_road(graph)
+        assert road is not None
+        seg_id = road.segment_ids[0]
+        sm, ctx = _session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
+
+        handle_idle_click(
+            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SEGMENT, segment_id=seg_id), elevation=None
+        )
+        assert sm.is_idle_viewing_road, "a road segment resolves to the ROAD panel (not slope)"
+        assert ctx.viewing.road_id == road.id
+
     def test_click_lift_opens_panel_and_syncs_mode(self, fake_st, path_factory, mock_dem_blue_slope) -> None:
         from skiresort_planner.ui.click_handlers import handle_idle_click
 

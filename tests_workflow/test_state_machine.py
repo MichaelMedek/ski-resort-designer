@@ -299,6 +299,50 @@ class TestEventOnlyTransitionsCompleteness:
         )
 
 
+class TestKindSpecResolvesAgainstStateMachine:
+    """Every KIND_SPECS state id / event name must resolve to a REAL state/event on the machine.
+
+    KIND_SPECS (ui/kind_spec.py) stores state ids ("road_starting") and event names ("commit_road")
+    as plain strings; the action + undo layers dispatch on them by name. A typo or a forgotten
+    transition when adding a new SegmentKind would otherwise pass import and only crash at runtime
+    deep in a build flow. The import-time asserts at the bottom of state_machine.py catch it; these
+    tests exercise the same invariant explicitly (and prove the check itself is wired to reality).
+    """
+
+    @staticmethod
+    def _sm_state_ids() -> set[str]:
+        return {s.id for s in PlannerStateMachine.states}
+
+    @staticmethod
+    def _sm_event_names() -> set[str]:
+        # A transition's `event` bundles space-separated aliases (e.g. "commit_path commit_first_path").
+        return {name for s in PlannerStateMachine.states for t in s.transitions for name in t.event.split()}
+
+    def test_every_kindspec_state_id_is_a_real_state(self) -> None:
+        from skiresort_planner.ui.kind_spec import KIND_SPECS
+
+        state_ids = self._sm_state_ids()
+        for kind, spec in KIND_SPECS.items():
+            for attr in ("starting_state", "building_state", "custom_path_state"):
+                sid = getattr(spec, attr)
+                assert sid in state_ids, f"KIND_SPECS[{kind}].{attr}={sid!r} is not a state-machine state"
+
+    def test_every_kindspec_event_name_is_a_real_event(self) -> None:
+        from skiresort_planner.ui.kind_spec import KIND_SPECS
+
+        events = self._sm_event_names()
+        for kind, spec in KIND_SPECS.items():
+            for attr in (
+                "fan_commit_event",
+                "custom_continue_event",
+                "connector_finish_event",
+                "finish_event",
+                "cancel_event",
+            ):
+                ev = getattr(spec, attr)
+                assert ev in events, f"KIND_SPECS[{kind}].{attr}={ev!r} is not a state-machine event"
+
+
 def _force_state(sm: PlannerStateMachine, state_name: str) -> None:
     """Force state machine to a specific state for testing.
 
@@ -324,7 +368,7 @@ class TestStartHookParity:
         sm.start_slope(lon=0.0, lat=0.0, elevation=2000.0, node_id=None)
         assert ctx.build(SegmentKind.SLOPE).name, "slope start must set an in-build name"
 
-        sm.cancel_slope()  # back to idle
+        sm.send("cancel_slope")  # back to idle
         sm.start_road(location=PathPoint(lon=0.0, lat=0.0, elevation=2000.0))
         assert ctx.build(SegmentKind.ROAD).name, "road start must set an in-build name (parity with slope)"
 
@@ -339,7 +383,7 @@ class TestStartHookParity:
         assert ctx.selection.has_selection(), "slope start must populate selection"
         assert (ctx.selection.lon, ctx.selection.lat) == (1.0, 2.0)
 
-        sm.cancel_slope()
+        sm.send("cancel_slope")
         sm.start_road(location=PathPoint(lon=3.0, lat=4.0, elevation=2000.0))
         assert ctx.selection.has_selection(), "road start must populate selection (parity with slope)"
         assert (ctx.selection.lon, ctx.selection.lat) == (3.0, 4.0)
@@ -456,6 +500,21 @@ class TestImportPlacing:
         sm.start_import(lon=1.0, lat=2.0)
         assert not sm.is_idle and not sm.is_any_slope_state and not sm.is_any_road_state
 
+    def test_force_idle_from_import_runs_exit_teardown(self) -> None:
+        # force_idle (the undo path) bypasses transitions but MUST still run the real exit teardown
+        # via _set_current_state → _EXIT_HOOKS. Undoing an OSM import from import_placing has to clear
+        # the placed box center, or a stale box resurfaces. Guards the force/undo exit dispatch.
+        sm, ctx = self._sm()
+        sm.start_import(lon=1.0, lat=2.0)
+        assert ctx.deferred.osm_import_center_lon == 1.0
+
+        with sm.undo_running():  # force_* is undo-only
+            sm.force_idle()
+
+        assert sm.is_idle_ready
+        assert ctx.deferred.osm_import_center_lon is None, "force_idle must run exit_import_placing (clears center)"
+        assert ctx.deferred.osm_import_center_lat is None
+
 
 class TestViewSwitching:
     """Switching between viewed entities (slope↔road↔lift) fires the before_switch_* hooks that
@@ -498,3 +557,73 @@ class TestViewSwitching:
         assert sm.viewing_entity == (EntityKind.SLOPE, "SL9")
         sm.hide_info_panel()  # close_panel → idle_ready
         assert sm.viewing_entity is None
+
+
+class TestStateGraphIsComplete:
+    """The workflow graph must be sound: every state reachable from the initial state, and every
+    state able to reach idle_ready (no dead-ends the user can get stuck in). Uses the library's own
+    graph (state.transitions with .source/.target) so this tracks the real machine, not a copy.
+
+    NOTE: this checks the FORWARD workflow graph only. Undo deliberately jumps to prior states the
+    forward graph doesn't connect (e.g. idle_viewing_slope → slope_building after undoing a finish),
+    which is why undo uses force_* instead of transitions — see the module docstring / docs/workflows.
+    """
+
+    def _edges(self, sm) -> dict[str, set[str]]:
+        return {s.id: {t.target.id for t in s.transitions} for s in sm.states}
+
+    def _reachable(self, edges: dict[str, set[str]], start: str) -> set[str]:
+        seen: set[str] = set()
+        stack = [start]
+        while stack:
+            n = stack.pop()
+            if n in seen:
+                continue
+            seen.add(n)
+            stack.extend(edges.get(n, ()))
+        return seen
+
+    def test_every_state_reachable_from_initial(self) -> None:
+        from skiresort_planner.model.resort_graph import ResortGraph
+
+        sm, _ = PlannerStateMachine.create(graph=ResortGraph(), add_ui_listener=False)
+        edges = self._edges(sm)
+        initial = next(s.id for s in sm.states if s.initial)
+        reachable = self._reachable(edges, initial)
+        assert set(edges) == reachable, f"states unreachable from {initial}: {set(edges) - reachable}"
+
+    def test_every_state_can_return_to_idle_ready(self) -> None:
+        # No workflow dead-end: from any state the user can always get back to idle_ready via
+        # transitions (cancel/close/finish). Check on the reversed graph: idle_ready must reach all.
+        from skiresort_planner.model.resort_graph import ResortGraph
+
+        sm, _ = PlannerStateMachine.create(graph=ResortGraph(), add_ui_listener=False)
+        edges = self._edges(sm)
+        reverse: dict[str, set[str]] = {s: set() for s in edges}
+        for src, tgts in edges.items():
+            for t in tgts:
+                reverse[t].add(src)
+        can_reach_idle = self._reachable(reverse, "idle_ready")
+        assert set(edges) == can_reach_idle, f"states with no path back to idle_ready: {set(edges) - can_reach_idle}"
+
+    def test_graph_is_strongly_connected(self) -> None:
+        # The strongest "complete network" property: every state can reach every other state. For a
+        # workflow with idle_ready as the hub this follows from (reachable-from-initial) +
+        # (all-can-return-to-idle), but asserting it directly catches any future island of states
+        # that link among themselves yet detach from the rest. (Kosaraju: one SCC == the whole graph.)
+        from skiresort_planner.model.resort_graph import ResortGraph
+
+        sm, _ = PlannerStateMachine.create(graph=ResortGraph(), add_ui_listener=False)
+        edges = self._edges(sm)
+        reverse: dict[str, set[str]] = {s: set() for s in edges}
+        for src, tgts in edges.items():
+            for t in tgts:
+                reverse[t].add(src)
+        any_state = next(iter(edges))
+        forward = self._reachable(edges, any_state)
+        backward = self._reachable(reverse, any_state)
+        # A graph is strongly connected iff every node is both reachable from and can reach one node.
+        assert forward == set(edges) and backward == set(edges), (
+            f"state graph is NOT strongly connected — from {any_state}: "
+            f"cannot reach {set(edges) - forward}; cannot be reached by {set(edges) - backward}"
+        )

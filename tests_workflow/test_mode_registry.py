@@ -51,19 +51,24 @@ class TestBuildStateBijection:
 
 
 class TestExitHookBijection:
-    """Every SM state must have an exit hook; _set_current_state does a direct [] lookup, so a
-    missing hook KeyError-crashes the render during any force_* (e.g. undoing an OSM import from
-    import_placing — the bug this guards). Mirrors the import-time assert in state_machine.py.
+    """EXIT_HOOKS (owned by state_lifecycle, used by the state machine's force/undo dispatch) lists
+    only states whose exit does real cleanup; no-op states are simply absent (dispatch uses .get).
+    The states with real cleanup MUST be present or a force_* would skip their teardown — e.g.
+    undoing an OSM import from import_placing would leak the placed box (the class of bug this guards).
     """
 
-    def test_exit_hooks_cover_every_state(self) -> None:
-        sm_ids = {s.id for s in PlannerStateMachine.states}
-        assert set(PlannerStateMachine._EXIT_HOOKS) == sm_ids
+    def test_exit_hook_keys_are_all_real_states(self) -> None:
+        from skiresort_planner.ui.state_lifecycle import EXIT_HOOKS
 
-    def test_import_and_merge_placing_have_exit_hooks(self) -> None:
-        # These two were the states missing from _EXIT_HOOKS (the live bug).
-        assert "import_placing" in PlannerStateMachine._EXIT_HOOKS
-        assert "merge_placing" in PlannerStateMachine._EXIT_HOOKS
+        sm_ids = {s.id for s in PlannerStateMachine.states}
+        assert set(EXIT_HOOKS) <= sm_ids, "no stray/non-existent state ids"
+
+    def test_states_with_real_cleanup_are_registered(self) -> None:
+        # These three have non-trivial exit teardown and MUST be dispatched on force/undo.
+        from skiresort_planner.ui.state_lifecycle import EXIT_HOOKS
+
+        for state_id in ("lift_placing", "import_placing", "merge_placing"):
+            assert state_id in EXIT_HOOKS, f"{state_id} exit cleanup must run on force_*"
 
 
 class TestOperationBijection:
@@ -244,18 +249,18 @@ class TestRendersCustomPath:
 
     def test_fan_states_show_endpoints_custom_path_hides_them(self) -> None:
         ctx = PlannerContext()
-        # force_mode is only ever True inside a custom-path state (set by the target before-hook).
-        ctx.custom_connect.force_mode = False
+        # force_mode is only ever True inside a custom-path state (derived from a set target_location).
+        assert ctx.custom_connect.force_mode is False
         for key in ("slope_starting", "slope_building", "road_starting", "road_building"):
             assert BUILD_STATES[key].renders_custom_path(ctx) is False, f"{key} must show orange endpoints"
 
-        ctx.custom_connect.force_mode = True
+        ctx.custom_connect.target_location = (0.0, 0.0, 2000.0)
         for key in ("slope_custom_path", "road_custom_path"):
             assert BUILD_STATES[key].renders_custom_path(ctx) is True, f"{key} must hide endpoints (freehand)"
 
     def test_non_build_states_never_render_custom_path(self) -> None:
         ctx = PlannerContext()
-        ctx.custom_connect.force_mode = True  # even with the flag set, non-build states ignore it
+        ctx.custom_connect.target_location = (0.0, 0.0, 2000.0)  # even with force_mode set, non-build states ignore it
         for key in ("idle_ready", "idle_viewing_slope", "idle_viewing_road", "lift_placing", "merge_placing"):
             assert BUILD_STATES[key].renders_custom_path(ctx) is False, key
 
@@ -311,7 +316,7 @@ class TestBuildStateMapSurface:
 
         # Custom-connect routing (force_mode + start_node) adds the downhill direction arrow.
         empty_graph.nodes["N1"] = Node(id="N1", location=PathPoint(lon=0.0, lat=0.0, elevation=elev))
-        ctx.custom_connect.force_mode = True
+        ctx.custom_connect.target_location = (0.01, 0.0, elev)  # force_mode derives from this
         ctx.custom_connect.start_node = "N1"
         layers_with_arrow = bs.overlay_layers(
             ctx=ctx, graph=empty_graph, renderer=renderer, terrain_analyzer=analyzer, dem=dem, use_3d=False

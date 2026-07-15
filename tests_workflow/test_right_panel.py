@@ -83,6 +83,9 @@ def _capture_buttons(fake_st) -> list[str]:
 
 
 def _dispatch(sm, ctx, graph) -> None:
+    """Render the control panel for the current state. Guards dispatch-completeness: every build /
+    viewing state must have a panel that renders without raising (a missing state → RuntimeError).
+    """
     render_control_panel(
         sm=sm,
         ctx=ctx,
@@ -468,7 +471,7 @@ class TestPathSelectionPanelRuns:
     def test_custom_target_shows_cancel_custom_path(self, fake_st, empty_graph, path_points_blue) -> None:
         # A plain custom target (no connector node) → "Cancel Custom Path", never "Cancel Connection".
         _sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        ctx.custom_connect.force_mode = True
+        ctx.custom_connect.target_location = (0.0, 0.0, 2000.0)  # force_mode derives from this
         ctx.proposals.paths = [ProposedPathSegment(points=path_points_blue, target_difficulty="blue")]
         ctx.proposals.selected_idx = 0
         labels = _capture_buttons(fake_st)
@@ -480,7 +483,7 @@ class TestPathSelectionPanelRuns:
         # Parity: a ROAD custom target also gets the Cancel-Custom-Path affordance (the bug where the
         # road build panel had no way back to the fan). Same shared PathSelectionPanel.
         _sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        ctx.custom_connect.force_mode = True
+        ctx.custom_connect.target_location = (0.0, 0.0, 2000.0)  # force_mode derives from this
         ctx.proposals.paths = [
             ProposedPathSegment(points=path_points_blue, target_difficulty="", kind=SegmentKind.ROAD)
         ]
@@ -493,7 +496,7 @@ class TestPathSelectionPanelRuns:
         # A connector (routing to an existing node) → "Cancel Connection" + the shared
         # "🏁 Finish → {node}" commit label (from _commit_button_label), never plain Commit.
         _sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        ctx.custom_connect.force_mode = True
+        ctx.custom_connect.target_location = (0.0, 0.0, 2000.0)  # force_mode derives from this
         ctx.proposals.paths = [
             ProposedPathSegment(
                 points=path_points_blue, target_difficulty="blue", is_connector=True, target_node_id="N3"
@@ -506,6 +509,20 @@ class TestPathSelectionPanelRuns:
         assert not any("Cancel Custom Path" in b for b in labels)
         assert any("🏁 Finish → N3" in b for b in labels), "slope connector commit shows the Finish label"
         assert not any("Commit This Slope" in b for b in labels)
+
+    def test_custom_target_too_steep_still_offers_escape(self, fake_st, empty_graph) -> None:
+        # Bug: clicking a too-steep custom target wipes proposals to empty. The panel used to
+        # early-return the "No Paths Available" message with NO way back, trapping the user in
+        # *_CUSTOM_PATH (force_mode) — only Undo escaped. Even with 0 proposals, force_mode must
+        # still render the Cancel-Custom-Path escape so the user can return to the fan.
+        _sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        ctx.custom_connect.target_location = (0.0, 0.0, 2000.0)  # force_mode derives from this
+        ctx.proposals.paths = []  # too-steep target → generator produced nothing
+        labels = _capture_buttons(fake_st)
+        self._panel(ctx, empty_graph, kind=SegmentKind.ROAD).render()
+        assert any("Cancel Custom Path" in b for b in labels), (
+            "an empty custom-connect result must still show the escape button, not trap the user"
+        )
 
 
 # =============================================================================

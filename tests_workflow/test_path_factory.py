@@ -446,3 +446,55 @@ class TestStraightLine:
         assert road.is_connector
         assert enum_eq(a=road.kind, b=SegmentKind.ROAD)
         assert road.target_difficulty == "", "a road carries no ski difficulty"
+
+
+class TestFilterByMaxGrade:
+    """The single cap-filter behind every too-steep decision (slopes + roads). `max_slope_pct` is a
+    MAGNITUDE, so one `<= cap` must catch climbs and descents alike, and `gentlest` must report the
+    smallest magnitude over ALL inputs (the number the too-steep message shows). Short paths (< the
+    300 m rolling window) make max_slope_pct == abs(avg), so drop/length gives an exact known grade.
+    """
+
+    M = 111320.0  # metres per degree latitude
+
+    def _path_with_grade(self, grade_pct: float) -> ProposedPathSegment:
+        # 100 m south, drop chosen so avg grade == grade_pct (sign = descent/climb).
+        length_m = 100.0
+        drop_m = grade_pct / 100.0 * length_m
+        return make_path(
+            [(0.0, 0.0, 2000.0), (0.0, -length_m / self.M, 2000.0 - drop_m)],
+            slope_pct=grade_pct,
+        )
+
+    def test_keeps_only_in_cap_and_reports_gentlest(self) -> None:
+        gentle, steep = self._path_with_grade(10.0), self._path_with_grade(25.0)
+        kept, gentlest = PathFactory.filter_by_max_grade(paths=[steep, gentle], cap_pct=15.0)
+        assert kept == [gentle], "only the in-cap (10%) path survives a 15% cap"
+        assert gentlest == pytest.approx(10.0, abs=0.5), "gentlest is the smallest magnitude over ALL inputs"
+
+    def test_grade_exactly_at_cap_is_kept(self) -> None:
+        # Boundary: the filter is `<= cap` (inclusive). A path whose steepest section equals the cap
+        # EXACTLY must be KEPT — a `< cap` off-by-one would wrongly reject an at-limit route. Use the
+        # path's own measured grade as the cap so the equality is exact (no float wobble).
+        at = self._path_with_grade(15.0)
+        cap = at.max_slope_pct  # cap == the path's exact steepest grade
+        kept, _ = PathFactory.filter_by_max_grade(paths=[at], cap_pct=cap)
+        assert kept == [at], "a grade EXACTLY at the cap is within the cap (<=, not <)"
+
+    def test_climb_is_capped_by_magnitude(self) -> None:
+        # A 25% CLIMB (negative drop) is as invalid as a 25% descent — magnitude, not sign.
+        climb = self._path_with_grade(-25.0)
+        kept, gentlest = PathFactory.filter_by_max_grade(paths=[climb], cap_pct=15.0)
+        assert kept == [], "a 25% climb exceeds the ±15% cap"
+        assert gentlest == pytest.approx(25.0, abs=0.5), "gentlest reports the magnitude (positive) of the climb"
+
+    def test_all_too_steep_yields_empty_kept_but_real_gentlest(self) -> None:
+        kept, gentlest = PathFactory.filter_by_max_grade(
+            paths=[self._path_with_grade(30.0), self._path_with_grade(40.0)], cap_pct=15.0
+        )
+        assert kept == [], "nothing in cap → empty (the too-steep-message trigger)"
+        assert gentlest is not None and gentlest < 40.0, "gentlest is the closest-to-cap over-limit grade"
+
+    def test_no_paths_reports_none(self) -> None:
+        kept, gentlest = PathFactory.filter_by_max_grade(paths=[], cap_pct=15.0)
+        assert kept == [] and gentlest is None, "no route at all → gentlest None (message renders 'no route')"

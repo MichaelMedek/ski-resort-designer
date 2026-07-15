@@ -168,7 +168,7 @@ class TestPathBuildSidebarPanel:
         # While routing a custom-connect path, the Path Settings block (slider + Recompute) is hidden
         # for BOTH kinds.
         sm, ctx, graph = self._building(fake_st, mock_dem_blue_slope, path_factory, kind)
-        ctx.custom_connect.force_mode = True
+        ctx.custom_connect.target_location = (0.0, 0.0, 2000.0)  # force_mode derives from this
         seen: list[str] = []
         fake_st.markdown = lambda text, *a, **k: seen.append(text)
 

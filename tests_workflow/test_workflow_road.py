@@ -181,7 +181,8 @@ class TestRoadForceStateMethods:
         ctx.viewing.set_road_id(road_id="R99")
         ctx.viewing.show_panel()
 
-        sm.force_building(SegmentKind.ROAD)
+        with sm.undo_running():
+            sm.force_building(SegmentKind.ROAD)
         assert sm.current_state_value == "road_building"
         assert ctx.build(SegmentKind.ROAD).segments == [seg1]
         assert ctx.viewing.road_id is None  # force_road_building cleared the stale viewing state
@@ -198,5 +199,6 @@ class TestRoadForceStateMethods:
         # Peel the segment back to the origin, then force RoadStarting.
         ctx.build(SegmentKind.ROAD).segments = []
         ctx.build(SegmentKind.ROAD).endpoints = []
-        sm.force_starting(SegmentKind.ROAD)
+        with sm.undo_running():
+            sm.force_starting(SegmentKind.ROAD)
         assert sm.current_state_value == "road_starting"

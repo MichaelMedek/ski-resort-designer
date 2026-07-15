@@ -674,7 +674,7 @@ class Lift(NodeConnected):
         anchor_y.append(end_elevation + station_height)
 
         # Sort anchor points by distance
-        anchor_sorted = sorted(zip(anchor_x, anchor_y, strict=False), key=lambda p: p[0])
+        anchor_sorted = sorted(zip(anchor_x, anchor_y, strict=True), key=lambda p: p[0])
         anchor_x = [p[0] for p in anchor_sorted]
         anchor_y = [p[1] for p in anchor_sorted]
 

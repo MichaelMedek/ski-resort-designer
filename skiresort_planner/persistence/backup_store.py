@@ -40,7 +40,7 @@ def save(graph: ResortGraph, resort_id: str) -> None:
 
     Skips empty graphs — no point creating a file for an unused session.
     """
-    if not graph.slopes and not graph.lifts and not graph.segments:
+    if (not graph.slopes) and (not graph.lifts) and (not graph.roads) and (not graph.segments):
         return
 
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)

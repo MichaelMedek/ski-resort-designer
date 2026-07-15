@@ -22,6 +22,8 @@ from skiresort_planner.model.click_info import ClickInfo, MapClickType, MarkerTy
 from skiresort_planner.model.message import InvalidClickMessage, OutsideTerrainMessage
 from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint
+from skiresort_planner.model.road import Road
+from skiresort_planner.model.slope import Slope
 from skiresort_planner.ui.actions import (
     center_on_lift,
     center_on_road,
@@ -207,16 +209,24 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
             sm.show_slope_info_panel(slope_id=slope.id)  # Triggers st.rerun() via listener
             return
 
-        # SEGMENT → Show parent slope panel
+        # SEGMENT → show the parent entity's panel. A SEGMENT marker only reaches here for a segment
+        # the map hasn't yet re-tagged as its finished entity (one-frame race); an orphan (parent
+        # deleted) resolves to None and is ignored.
         if marker_type == MarkerType.SEGMENT:
             assert click_info.segment_id is not None  # Validated in ClickInfo
-            parent_slope = graph.get_slope_by_segment_id(segment_id=click_info.segment_id)
-            if not parent_slope:
+            parent = graph.get_entity_by_segment_id(segment_id=click_info.segment_id)
+            if not parent:
                 logger.info(f"[IDLE] Segment {click_info.segment_id} click: orphan segment, ignoring")
                 return
-            logger.info(f"[IDLE] Segment click: showing panel for {parent_slope.name}")
-            center_on_slope(ctx=ctx, graph=graph, slope=parent_slope, zoom=MapConfig.VIEWING_ZOOM)
-            sm.show_slope_info_panel(slope_id=parent_slope.id)  # Triggers st.rerun() via listener
+            logger.info(f"[IDLE] Segment click: showing panel for {parent.name}")
+            if isinstance(parent, Slope):
+                center_on_slope(ctx=ctx, graph=graph, slope=parent, zoom=MapConfig.VIEWING_ZOOM)
+                sm.show_slope_info_panel(slope_id=parent.id)
+            elif isinstance(parent, Road):
+                center_on_road(ctx=ctx, graph=graph, road=parent, zoom=MapConfig.VIEWING_ZOOM)
+                sm.show_road_info_panel(road_id=parent.id)
+            else:
+                raise RuntimeError(f"[IDLE] Segment click: unhandled parent entity {type(parent).__name__}.")
             return
 
         # LIFT → Show lift panel and sync build mode
@@ -427,12 +437,12 @@ def _handle_custom_connect_click(click_info: ClickInfo, elevation: float | None)
             f"start_node={ctx.custom_connect.start_node}, start_node_id={build.start_node_id}"
         )
 
-    # Validate range for every kind; downhill only for kinds that may not climb (slopes).
-    if not KIND_SPECS[kind].may_climb and (
-        error := validate_custom_target_downhill(
-            start_elevation=start_elevation,
-            target_elevation=target_elevation,
-        )
+    # Validate range for every kind; downhill only for kinds that may not climb (the validator
+    # itself skips the check when may_climb, so there is no per-kind branch here).
+    if error := validate_custom_target_downhill(
+        start_elevation=start_elevation,
+        target_elevation=target_elevation,
+        may_climb=KIND_SPECS[kind].may_climb,
     ):
         error.display()
         return

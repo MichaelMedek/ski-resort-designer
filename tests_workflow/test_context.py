@@ -10,6 +10,8 @@ import pytest
 from skiresort_planner.ui.context import (
     BuildMode,
     ClickDeduplicationContext,
+    CustomConnectContext,
+    LiftContext,
     MapContext,
     ViewingContext,
 )
@@ -141,3 +143,38 @@ class TestClickDeduplicationContext:
         ctx = ClickDeduplicationContext(debounce_seconds=1000.0)
         ctx.last_click_timestamp = time.time()
         assert ctx.is_new_click(coord=(1.0, 2.0), obj_id="X") is False
+
+
+class TestLiftContextClear:
+    """LiftContext.clear() must reset EVERY field to its default, not just the placement scratch.
+
+    The clear() contract (BaseContext) is "reset to initial state". Leaving `type` at its last value
+    after clear() is an incomplete reset that could leak the previously-selected lift type into a
+    fresh placement flow.
+    """
+
+    def test_clear_resets_type_to_default(self) -> None:
+        # clear() means "back to initial state" — so a cleared context must equal a fresh one on
+        # EVERY field (dataclass __eq__), which pins the type reset without relying on a literal.
+        ctx = LiftContext()
+        ctx.type = "gondola"
+        ctx.start_node_id = "N1"
+        ctx.clear()
+        assert ctx == LiftContext(), "clear() must restore every field to a fresh context's state (incl. type)"
+
+
+class TestCustomConnectForceModeIsDerived:
+    """force_mode is a DERIVED property, not a stored flag: it must equal (target_location is not
+    None) at all times. This pins the single-source-of-truth invariant so the two can never drift
+    (the drift that caused the custom-path escape-button trap bug).
+    """
+
+    def test_force_mode_equals_target_location_presence(self) -> None:
+        no_target = CustomConnectContext()
+        assert no_target.force_mode is False, "no target → not in force mode"
+
+        with_target = CustomConnectContext(target_location=(10.0, 47.0, 2000.0))
+        assert with_target.force_mode is True, "a set target_location IS force mode (derived, not a flag)"
+
+        with_target.clear()
+        assert with_target.force_mode is False, "clear() drops the target → force_mode false again"

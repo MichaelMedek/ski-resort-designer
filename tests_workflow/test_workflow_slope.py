@@ -114,10 +114,17 @@ class TestSelfLoopBehavior:
 class TestForceStateMethods:
     """Tests for force_idle() and force_building(SegmentKind.SLOPE) methods used by action-layer undo.
 
-    These methods bypass the normal state machine transitions to reset state
-    after graph undo operations. They follow the 'Safe Dynamic Exit' pattern
-    which calls the exit hook for the current state before forcing the new state.
+    These methods bypass the normal state machine transitions to reset state after graph undo
+    operations. They are undo-only: force_* raises unless called inside `with sm.undo_running():`.
     """
+
+    def test_force_idle_outside_undo_raises(self, workflow_setup: WorkflowSetup) -> None:
+        # The bypass is undo-only. Calling force_* in normal flow (no undo_running scope) must raise,
+        # so nobody uses it as a shortcut that skips guards/validation.
+        sm, _ctx, _graph, _factory, _dem = workflow_setup
+        sm.start_lift(node_id=None, location=None)
+        with pytest.raises(RuntimeError, match="undo-only"):
+            sm.force_idle()
 
     def test_force_idle_from_building_clears_context(self, workflow_setup: WorkflowSetup) -> None:
         """force_idle() from SlopeBuilding clears building and goes to IdleReady."""
@@ -136,7 +143,8 @@ class TestForceStateMethods:
         assert len(ctx.build(SegmentKind.SLOPE).segments) == 1
 
         # Force to idle (simulates undo removing all segments)
-        sm.force_idle()
+        with sm.undo_running():
+            sm.force_idle()
 
         assert sm.current_state_value == "idle_ready"
         assert len(ctx.build(SegmentKind.SLOPE).segments) == 0, "Building context should be cleared"
@@ -161,7 +169,8 @@ class TestForceStateMethods:
         assert sm.current_state_value == "slope_custom_path"
 
         # Force back to building (simulates undo while in custom path)
-        sm.force_building(SegmentKind.SLOPE)
+        with sm.undo_running():
+            sm.force_building(SegmentKind.SLOPE)
 
         assert sm.current_state_value == "slope_building"
         assert ctx.custom_connect.force_mode is False, "Custom connect should be cleared"
@@ -180,37 +189,11 @@ class TestForceStateMethods:
         assert ctx.lift.start_node_id == "test_node"
 
         # Force to idle - exit_lift_placing should clear lift context
-        sm.force_idle()
+        with sm.undo_running():
+            sm.force_idle()
 
         assert sm.current_state_value == "idle_ready"
         assert ctx.lift.start_node_id is None, "Lift context should be cleared by exit hook"
-
-    def test_force_idle_succeeds_even_if_exit_hook_fails(
-        self, workflow_setup: WorkflowSetup, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """force_idle() completes even when exit hook raises exception (try-finally guarantee)."""
-        from skiresort_planner.ui import state_machine
-
-        sm, ctx, _graph, _factory, _dem = workflow_setup
-
-        # Enter lift placing mode
-        sm.start_lift(node_id=None, location=None)
-        assert sm.current_state_value == "lift_placing"
-
-        # Patch exit_lift_placing to raise an exception
-        def failing_exit_hook(ctx: object) -> None:
-            raise RuntimeError("Simulated exit hook failure")
-
-        original_hooks = state_machine.PlannerStateMachine._EXIT_HOOKS
-        patched_hooks = dict(original_hooks)
-        patched_hooks["lift_placing"] = failing_exit_hook
-        monkeypatch.setattr(state_machine.PlannerStateMachine, "_EXIT_HOOKS", patched_hooks)
-
-        # Force to idle - should succeed despite exit hook failure
-        sm.force_idle()  # Should NOT raise
-
-        # State change MUST have happened (finally block guarantee)
-        assert sm.current_state_value == "idle_ready", "State change must happen even if exit hook fails"
 
 
 class TestCancelSlope:
@@ -226,7 +209,7 @@ class TestCancelSlope:
         assert sm.current_state_value == "slope_starting"
 
         # Use cancel_slope EVENT
-        sm.cancel_slope()
+        sm.send("cancel_slope")
 
         assert sm.current_state_value == "idle_ready", "Should return to IdleReady"
 
@@ -245,7 +228,7 @@ class TestCancelSlope:
         assert sm.current_state_value == "slope_building"
 
         # Use cancel_slope EVENT
-        sm.cancel_slope()
+        sm.send("cancel_slope")
 
         assert sm.current_state_value == "idle_ready", "Should return to IdleReady"
 

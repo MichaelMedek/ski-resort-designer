@@ -8,6 +8,7 @@ state — targeting is map-only, mirroring roads.
 
 from skiresort_planner.constants import MapConfig
 from skiresort_planner.generators.path_factory import PathFactory
+from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
@@ -23,6 +24,15 @@ def _commit_first_segment(sm: PlannerStateMachine, graph: ResortGraph, factory: 
     endpoint_ids = graph.commit_paths(paths=[proposals[0]])
     seg_id = list(graph.segments.keys())[0]
     sm.commit_path(segment_id=seg_id, endpoint_node_id=endpoint_ids[0])  # type: ignore[attr-defined]  # dynamic python-statemachine event
+    return endpoint_ids[0]
+
+
+def _commit_first_road_segment(sm: PlannerStateMachine, graph: ResortGraph, start: "PathPoint") -> str:
+    """Commit one road segment so the SM reaches road_building (mirror of _commit_first_segment)."""
+    pts = [start, PathPoint(lon=start.lon, lat=start.lat - 300 / M, elevation=start.elevation - 10.0)]
+    endpoint_ids = graph.commit_paths(paths=[ProposedPathSegment(points=pts, kind=SegmentKind.ROAD)], record_undo=False)
+    seg_id = list(graph.segments.keys())[-1]
+    sm.commit_road(segment_id=seg_id, endpoint_node_id=endpoint_ids[0])  # type: ignore[attr-defined]  # dynamic python-statemachine event
     return endpoint_ids[0]
 
 
@@ -167,7 +177,7 @@ class TestCancelSlopeFromCustom:
 
         assert sm.current_state_value == "slope_custom_path"
 
-        sm.cancel_slope()
+        sm.send("cancel_slope")
 
         assert sm.current_state_value == "idle_ready", "Should return to IdleReady"
 
@@ -282,3 +292,50 @@ class TestCommitCustomFinish:
         assert sm.current_state_value == "idle_viewing_slope", "Should transition to viewing slope"
         assert ctx.viewing.slope_id == slope.id, "Viewing context should have slope ID"
         assert ctx.custom_connect.target_location is None, "Custom connect should be cleared"
+
+
+class TestCancelRoadFromCustom:
+    """Parity with TestCancelSlopeFromCustom: cancel_road discards the whole road from
+    road_custom_path (roads share the state machine, but this exit path had no explicit test).
+    """
+
+    def test_cancel_road_from_custom_path(self, workflow_setup: WorkflowSetup) -> None:
+        sm, ctx, graph, factory, dem = workflow_setup
+
+        start = PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
+        sm.start_road(node_id=None, location=start)
+        _commit_first_road_segment(sm, graph, start)
+        sm.select_custom_target(target_location=(0.0, -500 / M, dem.get_elevation_or_raise(lon=0.0, lat=-500 / M)))  # type: ignore[attr-defined]
+        assert sm.current_state_value == "road_custom_path"
+
+        sm.send("cancel_road")
+
+        assert sm.current_state_value == "idle_ready", "cancel_road from road_custom_path returns to IdleReady"
+
+
+class TestFinishRoadFromCustom:
+    """Parity with TestFinishSlopeFromCustom: sidebar Finish during road targeting must be valid
+    from road_custom_path (no TransitionNotAllowed), finalizing committed segments and dropping the
+    in-progress proposal.
+    """
+
+    def test_finish_road_from_custom_path_no_crash(self, workflow_setup: WorkflowSetup) -> None:
+        sm, ctx, graph, factory, dem = workflow_setup
+
+        start = PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
+        sm.start_road(node_id=None, location=start)
+        _commit_first_road_segment(sm, graph, start)
+        sm.select_custom_target(target_location=(0.0, -500 / M, dem.get_elevation_or_raise(lon=0.0, lat=-500 / M)))  # type: ignore[attr-defined]
+        assert sm.current_state_value == "road_custom_path"
+
+        # Seed an in-progress target proposal so the clear-on-finish is observable (not vacuous).
+        ctx.proposals.paths.append(ProposedPathSegment(points=[start, start], kind=SegmentKind.ROAD))
+        assert len(ctx.proposals.paths) == 1
+
+        road = graph.finish_road(segment_ids=ctx.build(SegmentKind.ROAD).segments)
+        assert road is not None
+        sm.finish_road(entity_id=road.id)
+
+        assert sm.current_state_value == "idle_viewing_road", "Finish during targeting lands in road viewing"
+        assert not ctx.custom_connect.force_mode, "in-progress target cleared"
+        assert len(ctx.proposals.paths) == 0, "seeded in-progress proposal cleared on finish"

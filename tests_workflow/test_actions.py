@@ -505,6 +505,46 @@ class TestRoadBuildingActionFlow:
         assert ctx.build(SegmentKind.ROAD).segments == [seg_id], "segments are restored"
         assert ctx.proposals.paths == [], "roads have no fan to regenerate"
 
+    def test_connector_proposal_auto_finishes_to_viewing(
+        self, fake_st, path_factory, mock_dem_red_slope_diagonal, path_points_blue
+    ) -> None:
+        # A proposal that IS a connector (is_connector AND target_node_id set), committed from the
+        # custom-path state, must NOT stay in building — commit_selected_path routes it through
+        # _finish_connector → the Road entity is created and the machine lands in idle_viewing_road.
+        # This is the branch the other road tests miss (they leave target_node_id empty → continue).
+        from skiresort_planner.model.path_segment import SegmentKind
+        from skiresort_planner.ui.actions import commit_selected_path
+
+        dem = mock_dem_red_slope_diagonal
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st, graph, factory=path_factory, dem=dem)
+        sm.start_road(node_id=None, location=path_points_blue[0])
+
+        # Commit one real fan segment so we're in road_building with a target node to connect to.
+        first = ProposedPathSegment(points=path_points_blue, kind=SegmentKind.ROAD)
+        end_ids = graph.commit_paths(paths=[first])
+        seg0 = list(graph.segments.keys())[-1]
+        sm.commit_road(segment_id=seg0, endpoint_node_id=end_ids[0])
+        assert sm.is_road_building_only
+
+        # Route to a custom target → road_custom_path, then commit a CONNECTOR proposal onto an
+        # existing node (target_node_id set) → auto-finish.
+        target_node_id = end_ids[0]
+        target = graph.nodes[target_node_id]
+        sm.select_custom_target(target_location=(target.lon, target.lat, target.elevation))
+        assert sm.is_road_custom_path
+
+        connector = ProposedPathSegment(
+            points=path_points_blue, is_connector=True, target_node_id=target_node_id, kind=SegmentKind.ROAD
+        )
+        ctx.proposals.paths = [connector]
+        ctx.proposals.selected_idx = 0
+        commit_selected_path(path_idx=0)
+
+        assert sm.is_idle_viewing_road, "a real connector auto-finishes to the viewing state"
+        assert len(graph.roads) == 1, "the Road entity was created by the connector auto-finish"
+        assert ctx.viewing.road_id is not None, "the finished road is being viewed"
+
 
 class TestDeferredProcessing:
     """Deferred-action processors read/clear ctx.deferred flags and act on them."""

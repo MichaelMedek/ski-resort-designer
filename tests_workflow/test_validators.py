@@ -50,25 +50,30 @@ class TestLiftDifferentNodes:
 
 class TestCustomTargetDownhill:
     def test_sufficient_drop_valid(self) -> None:
-        assert validate_custom_target_downhill(start_elevation=2500.0, target_elevation=2400.0) is None
+        assert validate_custom_target_downhill(start_elevation=2500.0, target_elevation=2400.0, may_climb=False) is None
 
     def test_at_min_drop_boundary_is_valid(self) -> None:
         # Exactly MIN_DROP_M of drop is allowed (the reject is drop < MIN_DROP_M).
         start, target = 2500.0, 2500.0 - ConnectionConfig.MIN_DROP_M
-        assert validate_custom_target_downhill(start_elevation=start, target_elevation=target) is None
+        assert validate_custom_target_downhill(start_elevation=start, target_elevation=target, may_climb=False) is None
 
     def test_just_below_min_drop_is_rejected_with_fields(self) -> None:
         start = 2500.0
         target = 2500.0 - (ConnectionConfig.MIN_DROP_M - 0.5)  # one notch short of the boundary
-        result = validate_custom_target_downhill(start_elevation=start, target_elevation=target)
+        result = validate_custom_target_downhill(start_elevation=start, target_elevation=target, may_climb=False)
         assert isinstance(result, TargetNotDownhillMessage)
         assert result.start_elevation_m == start
         assert result.target_elevation_m == target
 
     def test_uphill_is_rejected(self) -> None:
         assert isinstance(
-            validate_custom_target_downhill(start_elevation=2400.0, target_elevation=2500.0), TargetNotDownhillMessage
+            validate_custom_target_downhill(start_elevation=2400.0, target_elevation=2500.0, may_climb=False),
+            TargetNotDownhillMessage,
         )
+
+    def test_may_climb_skips_the_check(self) -> None:
+        # Roads (may_climb=True) route uphill freely — an uphill target must NOT be rejected.
+        assert validate_custom_target_downhill(start_elevation=2400.0, target_elevation=2500.0, may_climb=True) is None
 
     def test_uphill_message_explains_target_is_above(self) -> None:
         # Target 100m ABOVE start: the message must explain it's above the current
