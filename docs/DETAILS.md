@@ -271,10 +271,10 @@ $S_{\text{step}}$ carries the **sign** of the target. It is clamped to a band th
 
 ### 5.6 Step-by-Step Tracing
 
-**Step 1: Sample Local Terrain (Midpoint Sampling)**
+**Step 1: Sample Local Terrain**
 
-Sample at the midpoint of each step to prevent "lag":
-$$S_{\text{terrain}}, \theta_{\text{fall}} = \textrm{getTerrainGradient}(\text{midpoint})$$
+Sample the gradient at the **current point** (the step's start); the cumulative-drop feedback (§5.5) corrects any per-step lag, so no midpoint sampling is needed:
+$$S_{\text{terrain}}, \theta_{\text{fall}} = \textrm{getTerrainGradient}(\text{current point})$$
 
 **Step 2: Calculate Traverse Angle** (from the **signed** grade ratio)
 
@@ -331,7 +331,7 @@ This creates **natural curving**:
 Each segment is spline-smoothed independently at trace time, so two segments meet at a shared junction node with different tangents — a visible **kink**. When a slope or road is **finished**, the whole path is smoothed in one pass by a single cubic smoothing spline fitted over the full polyline (parametrised by cumulative distance, resampled every `RESAMPLE_STEP_M` ≈ 7 m), then re-sliced back to the original segments so the ribbon is continuous across junctions.
 
 - The fit is a **weighted least-squares spline**: the boundary **nodes** get a moderately higher weight (`NODE_WEIGHT`) than the raw planner **corridor points** (`CORRIDOR_WEIGHT`), with a smoothing budget scaled by the point count. The planner's grid path is a staircase; at a switchback it reverses across sub-metre jitter. A *smoothing* spline averages that jitter into a real turn **radius**. The node weight is deliberately **moderate** (≈10, not huge): an extreme node weight makes the fit near-singular at the pinned point and manufactures a cusp there.
-- **Roads and slopes smooth differently.** Roads use `ROAD_SMOOTHING_FACTOR` (≈50) — cars need broad, smooth curves and roads accept the earthwork. Slopes use the lower `SLOPE_SMOOTHING_FACTOR` (≈15) so the ribbon **hugs the terrain** more: skiers are flexible, and a slope should follow the ground rather than build up large cut/fill.
+- **Roads and slopes smooth differently.** Roads use `ROAD_SMOOTHING_FACTOR` (≈50) — cars need broad, smooth curves and roads accept the earthwork. Slopes use the lower `SLOPE_SMOOTHING_FACTOR` (≈30) so the ribbon **hugs the terrain** more: skiers are flexible, and a slope should follow the ground rather than build up large cut/fill.
 - **Outer endpoints are pinned exactly** (the entity termini, shared with other slopes/lifts/roads). **Internal junctions** are left where the weighted spline places them — about half a metre from the node, shared by value between the two adjacent segments — so the node marker still sits on the ribbon and any node can be a branch point, without snapping a switchback back into a kink.
 - Elevation is **smoothed along the spline, not re-sampled from the DEM**. A finished deck may therefore float slightly off the ground between nodes — treat it as a bridge / cut / fill.
 - Finish smoothing **never rejects** a path and does **not** re-apply the ±15% road cap (§7.3). Rounding a corner can nudge a road's steepest 300 m section; a finished road is allowed to exceed the build cap (bridge/cut/fill).
