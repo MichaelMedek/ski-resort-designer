@@ -131,11 +131,12 @@ class TestStatsPanelsRun:
         assert metrics["Overall Gradient"] == "20%"
         assert metrics["Drop"] == "160m"
 
-    def test_road_elevation_change_is_signed_negative(self, fake_st, empty_graph, path_points_blue) -> None:
-        # The path drops 2500m -> 2340m, so end-start = -160m and the metric carries the sign.
+    def test_road_elevation_change_is_absolute(self, fake_st, empty_graph, path_points_blue) -> None:
+        # The path drops 2500m -> 2340m; roads are bidirectional, so the metric shows the
+        # magnitude with no sign (regression: was "-160m").
         metrics = self._capture_metrics(fake_st)
         RoadStatsPanel(graph=empty_graph).render(road_id=_build_road(empty_graph, path_points_blue))
-        assert metrics["Elevation Change"] == "-160m"
+        assert metrics["Elevation Change"] == "160m"
 
     def test_lift_rise_and_inclined_length_values(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         # Rise = 2500-2300 = 200m; inclined = sqrt(200^2 + horizontal^2) with horizontal ~= 999m -> 1019m.

@@ -1298,7 +1298,7 @@ class ResortGraph:
             ET.SubElement(trk, "name").text = road.name
             ET.SubElement(
                 trk, "desc"
-            ).text = f"Road - Elevation change {-total_drop:+.0f}m - Length {total_length:.0f}m"
+            ).text = f"Road - Elevation change {abs(total_drop):.0f}m - Length {total_length:.0f}m"
             ET.SubElement(trk, "type").text = "road"
 
             trkseg = ET.SubElement(trk, "trkseg")

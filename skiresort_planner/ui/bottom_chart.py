@@ -158,7 +158,7 @@ class ProfileChart:
         total_drop = road.get_total_drop(segments=graph.segments)
         max_gradient = road.get_max_gradient(segments=graph.segments)
         stats_text = (
-            f"Length: {total_length:.0f}m | Elevation change: {-total_drop:+.0f}m | Steepest: {max_gradient:.0f}%"
+            f"Length: {total_length:.0f}m | Elevation change: {abs(total_drop):.0f}m | Steepest: {max_gradient:.0f}%"
         )
         return self._render_path_profile(
             path=road,

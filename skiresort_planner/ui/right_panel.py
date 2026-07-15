@@ -818,7 +818,7 @@ class RoadStatsPanel:
             st.metric("Average Gradient", f"{avg_gradient:.0f}%")
         with col2:
             st.metric("End Elevation", f"{end_elev:.0f}m")
-            st.metric("Elevation Change", f"{end_elev - start_elev:+.0f}m")
+            st.metric("Elevation Change", f"{abs(end_elev - start_elev):.0f}m")
             st.metric(
                 "Steepest Section",
                 f"{max_gradient:.0f}%",
