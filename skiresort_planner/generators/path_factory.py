@@ -1,34 +1,26 @@
-"""PathFactory - Path generation algorithms for ski slope planning.
+"""PathFactory — route generation for ski slopes and roads.
 
-Generates proposed paths using a nested loop structure to cover all difficulty variants:
+Two ways to generate proposals, shared by slopes and roads:
 
-**Fan Pattern Generation (generate_fan):**
-    Generates up to 16 paths by iterating:
-    1. Difficulty: green → blue → red → black
-    2. Grade: gentle → steep (2 variants per difficulty)
-    3. Side: left/right on steep terrain, center on flat terrain
+**Fan generation (generate_fan):**
+    Radiates candidate routes from a point via the terrain-following tracer.
+    A fan is a list of signed grade targets, traced as left/right traverses or a
+    center path depending on terrain steepness. Slopes fan positive difficulty
+    targets (green→black, descend only); roads fan the signed green targets
+    (descend/climb/flat). Both run through the one shared engine `_generate_fan`.
 
-    Green paths (traverses) ALWAYS work on ALL terrain steepness because they
-    use shallow traverse angles that work even on very steep terrain.
+**Manual path generation (generate_manual_paths):**
+    When the user clicks a target point, a grid-based Dijkstra (SciPy) routes to it
+    holding a target grade, smoothed with a cubic spline. Slopes fall back to a
+    straight line when nothing is viable; the road-side straight-line fallback lives
+    in the click handler, gated on the ±15% cap.
 
-**Manual Path Generation (generate_manual_paths):**
-    When user clicks a target point, uses grid-based Dijkstra algorithm:
-
-    GRID-BASED DIJKSTRA:
-       - Creates a grid (15m spacing) covering the search area
-       - Uses SciPy's C-optimized Dijkstra with slope-preference cost function
-       - Smooths output with cubic spline interpolation
-       - Terrain-adaptive path planning
-
-    The algorithm generates paths for all difficulty combinations, then
-    deduplicates overlapping paths (keeping gentlest measured slope).
-
-Reference: DETAILS.md Section 7 for algorithm details
+Reference: DETAILS.md Sections 5 and 7 for algorithm details
 """
 
 import logging
 import math
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from enum import Enum
 
@@ -36,13 +28,14 @@ from skiresort_planner.constants import (
     GeometricTuningConfig,
     PathConfig,
     SlopeConfig,
-    StyleConfig,
 )
 from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.path_tracer import PathTracer
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
+from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.generators.connection_planners import GradientMode, LeastCostPathPlanner
+from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 
@@ -57,15 +50,35 @@ class Side(Enum):
     CENTER = "center"
 
 
-@dataclass
-class GradeConfig:
-    """Configuration for a single difficulty-grade variant.
+@dataclass(frozen=True)
+class FanTarget:
+    """One signed grade the fan should attempt, with its labelling.
+
+    A fan is a list of these: slopes build positive difficulty targets
+    (green→black), roads build signed green targets (descend/climb/flat).
 
     Attributes:
-        difficulty: Slope difficulty (green/blue/red/black)
-        grade: Steepness variant (gentle/steep)
-        target_slope_pct: Target slope percentage
-        side: Traverse direction — only meaningful for the fan (trace_downhill). The
+        grade_pct: Signed target grade (+ descends, − climbs, 0 contours).
+        difficulty: Slope difficulty (green/blue/red/black), or "" for roads.
+        grade_name: Steepness label (gentle/steep, or "flat" for a contour road).
+        kind: SLOPE or ROAD — stamped onto each proposal.
+    """
+
+    grade_pct: float
+    difficulty: str
+    grade_name: str
+    kind: SegmentKind
+
+
+@dataclass
+class GradeConfig:
+    """Configuration for a single traced fan variant.
+
+    Attributes:
+        difficulty: Slope difficulty (green/blue/red/black), or "" for roads.
+        grade: Steepness variant (gentle/steep/flat).
+        target_slope_pct: Signed target grade (+ descends, − climbs, 0 contours).
+        side: Traverse direction — only meaningful for the fan (trace_hill). The
             grid planner ignores side, so planner-path configs leave it at CENTER.
     """
 
@@ -74,16 +87,55 @@ class GradeConfig:
     target_slope_pct: float
     side: Side = Side.CENTER
 
-    @property
-    def name(self) -> str:
-        """Display name like 'Green Left (Gentle)' or 'Blue Center (Steep)'."""
-        side_str = self.side.value.capitalize()
-        return f"{self.difficulty.capitalize()} {side_str} ({self.grade.capitalize()})"
+    def sector_name(self, kind: SegmentKind) -> str:
+        """Fan display name for this variant, dispatched by kind.
 
-    @property
-    def color(self) -> str:
-        """Get color for this difficulty."""
-        return StyleConfig.SLOPE_COLORS[self.difficulty]
+        Each SegmentKind supplies its own label builder via _SECTOR_NAME_BUILDERS, so a
+        new kind (e.g. a nordic trail) is added by registering a builder.
+        """
+        return _SECTOR_NAME_BUILDERS[kind](self)
+
+
+# Per-kind fan label builders. Each is symmetric — it reads the raw config fields and formats its own label.
+_SECTOR_NAME_BUILDERS: dict[SegmentKind, Callable[[GradeConfig], str]] = {
+    SegmentKind.SLOPE: lambda cfg: f"{cfg.difficulty.capitalize()} {cfg.side.value.capitalize()} ({cfg.grade.capitalize()})",
+    SegmentKind.ROAD: lambda cfg: f"Road {cfg.side.value.capitalize()} ({cfg.grade.capitalize()})",
+}
+assert set(_SECTOR_NAME_BUILDERS) == set(SegmentKind), "every SegmentKind must have a fan sector-name builder"
+
+
+def _slope_fan_targets() -> tuple[list["FanTarget"], bool]:
+    """Slope fan: every difficulty-grade target, descending (positive). Center-stop applies."""
+    targets = [
+        FanTarget(grade_pct=target_slope, difficulty=difficulty, grade_name=grade_name, kind=SegmentKind.SLOPE)
+        for difficulty in SlopeConfig.DIFFICULTIES
+        for grade_name, target_slope in SlopeConfig.DIFFICULTY_TARGETS[difficulty].items()
+    ]
+    return targets, True
+
+
+def _road_fan_targets() -> tuple[list["FanTarget"], bool]:
+    """Road fan: signed GREEN grades — descend/climb/contour {+7,+12,−7,−12,0}. No center-stop.
+
+    Grades are single-sourced from DIFFICULTY_TARGETS["green"]; every proposal is
+    hard-capped at ±ROAD_MAX_GRADIENT_PCT by the caller (which may keep none).
+    """
+    green = SlopeConfig.DIFFICULTY_TARGETS["green"]
+    targets = [
+        FanTarget(grade_pct=sign * grade, difficulty="", grade_name=grade_name, kind=SegmentKind.ROAD)
+        for sign in (+1.0, -1.0)
+        for grade_name, grade in green.items()
+    ]
+    targets.append(FanTarget(grade_pct=0.0, difficulty="", grade_name="flat", kind=SegmentKind.ROAD))
+    return targets, False
+
+
+# Per-kind fan target builders → (targets, apply_center_stop). Adding a kind = one entry.
+_FAN_TARGETS: dict[SegmentKind, Callable[[], tuple[list["FanTarget"], bool]]] = {
+    SegmentKind.SLOPE: _slope_fan_targets,
+    SegmentKind.ROAD: _road_fan_targets,
+}
+assert set(_FAN_TARGETS) == set(SegmentKind), "every SegmentKind must have a fan target builder"
 
 
 class PathFactory:
@@ -100,7 +152,7 @@ class PathFactory:
     Example:
         factory = PathFactory(dem_service=dem_service)
         # Generate up to 16 fan paths
-        for path in factory.generate_fan(lon=12.5, lat=47.0, elevation=2400.0):
+        for path in factory.generate_fan(kind=SegmentKind.SLOPE, lon=12.5, lat=47.0, elevation=2400.0):
             print(path.sector_name)  # "Green Left (Gentle)", etc.
 
         # Generate connection paths to target
@@ -128,35 +180,55 @@ class PathFactory:
 
     def generate_fan(
         self,
+        kind: SegmentKind,
         lon: float,
         lat: float,
         elevation: float | None = None,
         target_length_m: float = PathConfig.SEGMENT_LENGTH_DEFAULT_M,
     ) -> Iterator[ProposedPathSegment]:
-        """Generate fan of paths iterating through all difficulty-grade-side combinations.
+        """Generate the fan of proposals for a build kind — one dispatch for every kind.
 
-        Nested loop structure:
-        1. Difficulty: green → blue → red → black
-        2. Grade: gentle → steep (per DIFFICULTY_TARGETS)
-        3. Side: left/right if terrain >= target slope, center otherwise
+        Each kind supplies its target set + center-stop policy via _FAN_TARGETS[kind];
+        the shared engine (_generate_fan) traces them. Slopes descend the difficulty
+        targets (green→black); roads fan the signed green targets (descend/climb/flat).
+        A new kind is a new _FAN_TARGETS entry — no new method.
+        """
+        targets, apply_center_stop = _FAN_TARGETS[kind]()
+        yield from self._generate_fan(
+            lon=lon,
+            lat=lat,
+            elevation=elevation,
+            targets=targets,
+            target_length_m=target_length_m,
+            apply_center_stop=apply_center_stop,
+        )
 
-        On steep terrain (e.g., 30% slope):
-        - Green paths use traverse angles to achieve 7-12% effective slope
-        - Blue/Red/Black paths descend more directly
+    def _generate_fan(
+        self,
+        lon: float,
+        lat: float,
+        elevation: float | None,
+        targets: list[FanTarget],
+        target_length_m: float,
+        *,
+        apply_center_stop: bool,
+    ) -> Iterator[ProposedPathSegment]:
+        """Shared fan engine: trace each target as left/right traverses or a center path.
 
-        On flat terrain (e.g., 10% slope):
-        - Paths that need steeper terrain than available use center (fall line)
-        - Generation stops after MAX_CENTER_PATHS to avoid redundant paths
+        For each target, choose CENTER (straight along the reference bearing) when the
+        target grade magnitude meets or exceeds the terrain steepness — no traverse is
+        needed — otherwise LEFT and RIGHT traverses. When apply_center_stop is set
+        (slopes), stop after MAX_CENTER_PATHS redundant fall-line paths (DETAILS.md §5.4).
 
         Args:
             lon, lat: Starting coordinates
             elevation: Starting elevation (queries DEM if None)
-            target_length_m: Target path length in meters (default 500m)
+            targets: The signed grade targets to attempt, in fan order.
+            target_length_m: Target path length in meters.
+            apply_center_stop: Slopes cap redundant center paths; roads do not.
 
         Yields:
-            ProposedPathSegment for each successfully traced path.
-            Order: Green Left (Gentle), Green Right (Gentle), Green Left (Steep),
-                   Green Right (Steep), Blue Left (Gentle), ... etc.
+            ProposedPathSegment for each successfully traced variant.
         """
         if elevation is None:
             elevation = self.dem_service.get_elevation(lon=lon, lat=lat)
@@ -164,71 +236,64 @@ class PathFactory:
             logger.warning(f"No elevation at ({lon}, {lat})")
             return
 
-        # Get terrain slope to determine left/right vs center generation
+        # Terrain steepness (magnitude) decides left/right vs center per target.
         gradient = self.terrain_analyzer.compute_gradient(lon=lon, lat=lat)
         terrain_slope_pct = gradient.slope_pct
         fall_line_bearing = gradient.bearing_deg
 
-        logger.info(
-            f"generate_fan: start=({lon:.5f}, {lat:.5f}, {elevation:.0f}m), "
-            f"terrain_slope={terrain_slope_pct:.1f}%, fall_line={fall_line_bearing:.0f}°"
+        logger.debug(
+            f"_generate_fan: start=({lon:.5f}, {lat:.5f}, {elevation:.0f}m), "
+            f"terrain_slope={terrain_slope_pct:.1f}%, fall_line={fall_line_bearing:.0f}°, "
+            f"{len(targets)} targets, center_stop={apply_center_stop}"
         )
 
         # Track statistics
         count_by_diff = {d: 0 for d in SlopeConfig.DIFFICULTIES}
         center_count = 0
         paths_generated = 0
-        stop_generation = False
 
-        # Nested loop: Difficulty → Grade → Side
-        for difficulty in SlopeConfig.DIFFICULTIES:
-            if stop_generation:
-                break
+        for target in targets:
+            # Center (no traverse) when the target grade meets/exceeds terrain steepness;
+            # otherwise a left/right traverse holds the gentler grade on steeper ground.
+            needs_center = abs(target.grade_pct) >= terrain_slope_pct
 
-            targets = SlopeConfig.DIFFICULTY_TARGETS[difficulty]
-
-            for grade_name, target_slope in targets.items():
-                if stop_generation:
-                    break
-
-                # Determine if we need center (target >= terrain) or left/right (target < terrain)
-                # Center = straight down fall line (no traverse angle needed)
-                # Left/Right = traverse at angle to achieve target slope on steep terrain
-                needs_center = target_slope >= terrain_slope_pct
-
-                if needs_center:
-                    center_count += 1
-                    # Stop if we've generated paths at all but the hardest difficulty AND hit limit
+            if needs_center:
+                center_count += 1
+                # Slopes: once every non-hardest difficulty has a path, extra center
+                # paths (same fall line) are redundant — stop after the cap.
+                if apply_center_stop:
                     all_diffs_seen = all(count_by_diff[d] > 0 for d in SlopeConfig.DIFFICULTIES[:-1])
                     if center_count > GeometricTuningConfig.MAX_CENTER_PATHS and all_diffs_seen:
-                        stop_generation = True
-                    side_variants = [Side.CENTER]
-                else:
-                    side_variants = [Side.LEFT, Side.RIGHT]
+                        break
+                side_variants = [Side.CENTER]
+            else:
+                side_variants = [Side.LEFT, Side.RIGHT]
 
-                for side in side_variants:
-                    config = GradeConfig(
-                        difficulty=difficulty,
-                        grade=grade_name,
-                        target_slope_pct=target_slope,
-                        side=side,
+            for side in side_variants:
+                config = GradeConfig(
+                    difficulty=target.difficulty,
+                    grade=target.grade_name,
+                    target_slope_pct=target.grade_pct,
+                    side=side,
+                )
+                path = self._trace_path_for_config(
+                    lon=lon,
+                    lat=lat,
+                    config=config,
+                    target_length_m=target_length_m,
+                    kind=target.kind,
+                )
+                if path is None:
+                    continue
+                if target.difficulty:
+                    assert target.difficulty in count_by_diff, (
+                        f"difficulty {target.difficulty!r} not in count_by_diff (predefined from DIFFICULTIES)"
                     )
+                    count_by_diff[target.difficulty] += 1
+                paths_generated += 1
+                yield path
 
-                    path = self._trace_path_for_config(
-                        lon=lon,
-                        lat=lat,
-                        config=config,
-                        target_length_m=target_length_m,
-                    )
-
-                    if path is None:
-                        continue
-
-                    count_by_diff[difficulty] += 1
-                    paths_generated += 1
-                    yield path
-
-        logger.info(f"generate_fan complete: {paths_generated} paths (by difficulty: {count_by_diff})")
+        logger.debug(f"_generate_fan complete: {paths_generated} paths (by difficulty: {count_by_diff})")
 
     def _trace_path_for_config(
         self,
@@ -236,26 +301,50 @@ class PathFactory:
         lat: float,
         config: GradeConfig,
         target_length_m: float,
+        kind: SegmentKind,
     ) -> ProposedPathSegment | None:
-        """Trace a single path for a given configuration."""
-        traced = self.path_tracer.trace_downhill(
+        """Trace a single fan variant and wrap it as a proposal of the given kind."""
+        traced = self.path_tracer.trace_hill(
             start_lon=lon,
             start_lat=lat,
-            target_slope_pct=config.target_slope_pct,
+            target_grade_pct=config.target_slope_pct,
             side=config.side.value,
             target_length_m=target_length_m,
         )
 
         if not traced or not traced.points:
+            logger.debug(
+                f"_trace_path_for_config: no path from ({lon:.5f}, {lat:.5f}) "
+                f"target_grade={config.target_slope_pct:.1f}%, side={config.side.value}, kind={kind.value}"
+            )
             return None
 
         return ProposedPathSegment(
             points=traced.points,
             target_slope_pct=config.target_slope_pct,
             target_difficulty=config.difficulty,
-            sector_name=config.name,
+            sector_name=config.sector_name(kind),
             is_connector=False,
+            kind=kind,
         )
+
+    @staticmethod
+    def filter_by_max_grade(
+        paths: list[ProposedPathSegment], cap_pct: float
+    ) -> tuple[list[ProposedPathSegment], float | None]:
+        """Keep proposals whose steepest section is within the cap; report the gentlest seen.
+
+        The one cap-filter for both slopes (MAX_SKIABLE_PCT) and roads (ROAD_MAX_GRADIENT_PCT).
+        `max_slope_pct` is a magnitude, so a single `<= cap` catches climbs and descents alike.
+
+        Returns:
+            (kept, gentlest) where kept are the in-cap proposals and gentlest is the
+            smallest max_slope_pct over ALL inputs (for the too-steep message), or None
+            when `paths` is empty.
+        """
+        kept = [p for p in paths if p.max_slope_pct <= cap_pct]
+        gentlest = min((p.max_slope_pct for p in paths), default=None)
+        return kept, gentlest
 
     def _are_paths_similar(self, path1: ProposedPathSegment, path2: ProposedPathSegment) -> bool:
         """Check if two paths are similar by comparing points at percentile positions.
@@ -327,7 +416,7 @@ class PathFactory:
 
         removed_count = len(paths) - len(unique)
         if removed_count > 0:
-            logger.info(f"Deduplicated paths: removed {removed_count} similar paths")
+            logger.debug(f"Deduplicated paths: removed {removed_count} similar paths")
 
         return unique
 
@@ -342,32 +431,30 @@ class PathFactory:
 
     def generate_manual_paths(
         self,
+        kind: SegmentKind,
         start_lon: float,
         start_lat: float,
         start_elevation: float,
         target_lon: float,
         target_lat: float,
         target_elevation: float | None = None,
-        *,
-        road_mode: bool = False,
     ) -> Iterator[ProposedPathSegment]:
-        """Generate paths connecting the start to a user-clicked target.
+        """Generate grid-planner paths connecting the start to a user-clicked target.
 
-        Slope mode (road_mode=False): tries all difficulty-grade combinations to find
-        viable ski routes, deduplicated to keep the gentlest measured slope per
-        trajectory. Falls back to a straight line when nothing viable is found.
+        SLOPE: tries all difficulty-grade combinations for viable ski routes (descend
+        only), deduplicated to keep the gentlest per trajectory.
 
-        Road mode (road_mode=True): a vehicle road holding a GREEN grade (7%/12%),
-        signed for the endpoints' direction so it may climb or descend, serpentining
-        on steep ground. No straight-line fallback: a straight line across steep ground
-        is not a valid road.
+        ROAD: holds a GREEN grade (7%/12%) signed for the endpoints' direction so it may
+        climb or descend, serpentining on steep ground.
+
+        No straight-line fabrication here: when the planner finds nothing this yields
+        nothing (the caller applies the kind's cap and, for roads, the direct fallback).
 
         Args:
+            kind: The SegmentKind being routed (SLOPE difficulty fan, ROAD signed green).
             start_lon, start_lat, start_elevation: Starting point.
             target_lon, target_lat: Target coordinates (user click).
             target_elevation: Target elevation (queries DEM if None).
-            road_mode: True for a vehicle road (may climb, holds a green grade), False
-                for a ski path (descent-only, difficulty-grade fan).
 
         Yields:
             ProposedPathSegment for each unique path, sorted by avg_slope_pct.
@@ -378,9 +465,9 @@ class PathFactory:
             logger.warning(f"No elevation at target ({target_lon}, {target_lat})")
             return
 
-        # The grid planner ignores `side` (grade-only cost), so both modes leave
+        # The grid planner ignores `side` (grade-only cost), so every config leaves
         # GradeConfig.side at its CENTER default — no dead LEFT/RIGHT duplication here.
-        if road_mode:
+        if enum_eq(a=kind, b=SegmentKind.ROAD):
             # A road holds a GREEN grade, signed by the endpoints' direction (climb or
             # descend). Same routing as a green slope; sign is the only difference. On
             # steep ground the planner serpentines to hold it (§7.3).
@@ -390,13 +477,15 @@ class PathFactory:
                 GradeConfig(difficulty="", grade="road", target_slope_pct=grade)
                 for grade in self._road_target_grades(signed_drop=signed_drop)
             ]
-        else:
+        elif enum_eq(a=kind, b=SegmentKind.SLOPE):
             gradient_mode = GradientMode.DOWNHILL  # slopes always descend
             configs = [
                 GradeConfig(difficulty=difficulty, grade=grade_name, target_slope_pct=target_slope)
                 for difficulty in SlopeConfig.DIFFICULTIES
                 for grade_name, target_slope in SlopeConfig.DIFFICULTY_TARGETS[difficulty].items()
             ]
+        else:
+            raise ValueError(f"Unexpected {kind=}")
 
         all_paths: list[ProposedPathSegment] = []
         for config in configs:
@@ -411,39 +500,32 @@ class PathFactory:
                 gradient_mode=gradient_mode,
             )
             if path is None:
+                logger.debug(
+                    f"generate_manual_paths: planner found no path for kind={kind.value}, "
+                    f"difficulty={config.difficulty!r}, grade={config.grade!r}, "
+                    f"target_grade={config.target_slope_pct:.1f}% from ({start_lon:.5f}, {start_lat:.5f}) "
+                    f"to ({target_lon:.5f}, {target_lat:.5f})"
+                )
                 continue
-            if road_mode:
-                path.sector_name = f"{StyleConfig.ROAD_ICON} Road"
-                path.kind = SegmentKind.ROAD
-            else:
-                path.target_difficulty = config.difficulty
-                path.sector_name = f"🎯 {config.name}"
+            path.kind = kind
+            path.target_difficulty = config.difficulty  # "" for roads
+            path.sector_name = f"🎯 {config.sector_name(kind)}"
             all_paths.append(path)
 
         # Deduplicate paths (keep gentlest slope for overlapping paths)
         unique_paths = self._deduplicate_paths(paths=all_paths)
 
-        logger.info(f"generate_manual_paths: {len(all_paths)} raw → {len(unique_paths)} unique paths")
+        logger.debug(f"generate_manual_paths: {len(all_paths)} raw → {len(unique_paths)} unique paths")
 
-        # No optimized path found. In SLOPE mode, fall back to a straight line so
-        # the user can always connect two points. In ROAD mode there is NO
-        # fallback: a straight line across steep ground is not a valid car road.
-        if not unique_paths and not road_mode:
-            logger.info("No optimized path found, creating straight-line result")
-            straight = self._create_straight_line_path(
-                start_lon=start_lon,
-                start_lat=start_lat,
-                start_elevation=start_elevation,
-                target_lon=target_lon,
-                target_lat=target_lat,
-                target_elevation=target_elevation,
-            )
-            unique_paths = [straight]
-
+        # No straight-line fabrication here. When the planner finds nothing viable,
+        # this yields nothing: a slope is refused above MAX_SKIABLE_PCT, a road above
+        # ±ROAD_MAX_GRADIENT_PCT (the road-side direct-line fallback lives in the
+        # shared custom-connect generator, gated on the cap).
         yield from unique_paths
 
-    def _create_straight_line_path(
+    def straight_line(
         self,
+        kind: SegmentKind,
         start_lon: float,
         start_lat: float,
         start_elevation: float,
@@ -451,29 +533,31 @@ class PathFactory:
         target_lat: float,
         target_elevation: float,
     ) -> ProposedPathSegment:
-        """Create a simple straight-line path as fallback when Dijkstra finds nothing.
+        """A direct straight-line connector (bridge/cut) between two points, of the given kind.
 
-        This allows the user to always connect two points, even if the terrain
-        is difficult. The path is marked as a direct connection.
+        Offered as an additional proposal alongside the grid-planner routes (for every kind), so
+        the user can pick the straight line even when curvy routes exist; the caller still hard-caps
+        it at the kind's max grade and only offers it when under cap. Densified to RESAMPLE_STEP_M by
+        linear interpolation (matching the planner/finish density) but stays a straight 3D line, not
+        DEM-sampled.
         """
-        from skiresort_planner.model.path_point import PathPoint
-
-        # Create simple 2-point path
+        distance_m = GeoCalculator.haversine_distance_m(
+            lat1=start_lat, lon1=start_lon, lat2=target_lat, lon2=target_lon
+        )
+        n_steps = max(1, int(distance_m / GeometricTuningConfig.RESAMPLE_STEP_M))
         points = [
-            PathPoint(lon=start_lon, lat=start_lat, elevation=start_elevation),
-            PathPoint(lon=target_lon, lat=target_lat, elevation=target_elevation),
+            PathPoint(
+                lon=start_lon + (target_lon - start_lon) * (i / n_steps),
+                lat=start_lat + (target_lat - start_lat) * (i / n_steps),
+                elevation=start_elevation + (target_elevation - start_elevation) * (i / n_steps),
+            )
+            for i in range(n_steps + 1)
         ]
-
-        # Calculate actual slope
-        drop = start_elevation - target_elevation
-        dist = GeoCalculator.haversine_distance_m(lat1=start_lat, lon1=start_lon, lat2=target_lat, lon2=target_lon)
-
-        actual_slope = (drop / dist) * 100
-
         return ProposedPathSegment(
             points=points,
-            target_slope_pct=0.0,  # No target slope for direct line
-            target_difficulty=TerrainAnalyzer.classify_difficulty(slope_pct=actual_slope),
-            sector_name="📍 Direct Line (fallback)",
+            target_slope_pct=0.0,  # No target grade for a direct line
+            target_difficulty="",  # A direct connector carries no ski difficulty
+            sector_name="📏 Straight line",
             is_connector=True,
+            kind=kind,
         )

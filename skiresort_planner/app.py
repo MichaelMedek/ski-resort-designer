@@ -6,7 +6,6 @@ Features fan-pattern path generation, lift placement, and elevation profiles.
 Run: streamlit run skiresort_planner/app.py
 """
 
-import logging
 import traceback
 import uuid
 from typing import TYPE_CHECKING
@@ -22,6 +21,7 @@ from skiresort_planner.constants import (
 )
 from skiresort_planner.core.dem_service import DEMService, download_dem_from_huggingface
 from skiresort_planner.generators.path_factory import PathFactory
+from skiresort_planner.logging_setup import configure_logging
 from skiresort_planner.model.message import DEMLoadingMessage
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.persistence import backup_store
@@ -35,7 +35,6 @@ from skiresort_planner.ui import (
     cancel_custom_path,
     commit_selected_path,
     dispatch_click,
-    handle_fast_deferred_actions,
     process_custom_connect_deferred,
     process_osm_import_deferred,
     process_path_generation_deferred,
@@ -50,16 +49,22 @@ from skiresort_planner.ui.terrain_layer import create_aws_terrain_layer
 if TYPE_CHECKING:
     from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# app.py runs as the Streamlit entry script (__name__ == "__main__", outside our package tree), so
+# take the configured package logger and derive app's child from it — no hardcoded name.
+logger = configure_logging().getChild("app")
 
 
 # CSS to give the map the full window height. Streamlit exposes no API for any of these,
 # so injection is the only option (the standard community pattern). Each rule is load-bearing:
 _FULLSCREEN_CSS = """
 <style>
-/* Hide the top toolbar (Deploy/menu strip) — reclaims its height for the map. */
-header[data-testid="stHeader"] { display: none; }
+/* Reclaim the top toolbar's height WITHOUT hiding the whole header/toolbar. In Streamlit 1.59
+   the arrow that re-opens a collapsed sidebar (stExpandSidebarButton) is rendered INSIDE the
+   toolbar (stToolbar), next to the Deploy/hamburger menu — so display:none on the header or
+   the toolbar hides that arrow too, leaving no way to reopen the sidebar. Instead: flatten the
+   header, hide only the Deploy menu + status widget, and keep the toolbar/expand arrow visible. */
+header[data-testid="stHeader"] { height: 0; background: transparent; }
+div[data-testid="stDecoration"], div[data-testid="stMainMenu"], div[data-testid="stStatusWidget"] { display: none; }
 /* Collapse the default ~6rem top padding so the map starts near the top. */
 .block-container { padding-top: 1rem; padding-bottom: 0; }
 /* Hide the streamlit-js-eval helper iframe: it only reads the window height and should
@@ -135,6 +140,7 @@ def _init_resort_from_url_or_new() -> None:
 
     st.session_state.resort_id = backup_store.new_resort_id()
     st.query_params["resort"] = st.session_state.resort_id
+    logger.info(f"Created new resort {st.session_state.resort_id} (no backup found)")
 
 
 def reset_ui_state() -> None:
@@ -160,7 +166,7 @@ def reset_ui_state() -> None:
     # Increment map version to force fresh map component
     bump_map_version()
 
-    logger.info("UI state reset complete - graph preserved")
+    logger.debug("UI state reset complete - graph preserved")
 
 
 def load_dem_data() -> bool:
@@ -188,6 +194,7 @@ def load_dem_data() -> bool:
         def update_progress(progress: float) -> None:
             progress_bar.progress(progress, text=f"Downloading... {progress * 100:.0f}%")
 
+        logger.info(f"Downloading DEM from Hugging Face to {dem_path}")
         download_dem_from_huggingface(target_path=dem_path, progress_callback=update_progress)
         progress_bar.progress(1.0, text="Download complete!")
 
@@ -222,7 +229,6 @@ def _render_map_fragment() -> None:
     """
     try:
         _render_map_fragment_inner()
-        logger.debug("[RENDER] _render_map_fragment_inner() completed successfully")
     except Exception as e:
         # Log full traceback for debugging
         error_msg = f"{type(e).__name__}: {e}"
@@ -251,7 +257,7 @@ def _render_map_fragment_inner() -> None:
     build_state = BUILD_STATES[sm.get_current_state_id()]
 
     map_version = st.session_state.get("map_version", 0)
-    logger.info(f"[RENDER] Map fragment: state={sm.get_state_name()}, map_version={map_version}")
+    logger.debug(f"[RENDER] Map fragment: state={sm.get_state_name()}, map_version={map_version}")
 
     # Determine 2D/3D mode early so all layers use consistent z-handling
     use_3d = ctx.viewing.view_3d
@@ -298,7 +304,7 @@ def _render_map_fragment_inner() -> None:
         return renderer.render(
             proposals=ctx.proposals.paths,
             selected_proposal_idx=ctx.proposals.selected_idx,
-            highlight_segment_ids=ctx.slope_build.segments,
+            highlight_segment_ids=[sid for build in ctx.builds.values() for sid in build.segments],
             is_custom_path=build_state.renders_custom_path(ctx),
             extra_layers=extra_layers,
             terrain_layer=basemap_layer,
@@ -394,21 +400,19 @@ def _run_app_ui() -> None:
     renderer.graph = graph
 
     map_version = st.session_state.get("map_version", 0)
-    logger.info(f"[MAIN] Render cycle starting: state={sm.get_state_name()}, map_version={map_version}")
+    logger.debug(f"[MAIN] Render cycle starting: state={sm.get_state_name()}, map_version={map_version}")
 
-    # Handle deferred actions from previous transitions
-    # Slow ops get spinners, fast ops run directly
+    # Handle deferred actions from previous transitions.
+    # Slow ops get spinners; each is dispatched at most once per render (single-dispatch chain).
     if ctx.deferred.osm_import:
         with st.spinner("🗺️ Importing lifts & pistes from OpenStreetMap..."):
             process_osm_import_deferred()
     elif ctx.deferred.custom_connect:
         with st.spinner("🎯 Computing custom path options..."):
             process_custom_connect_deferred()
-    elif ctx.deferred.path_generation:
+    elif ctx.deferred.fan_generation:
         with st.spinner("🗺️ Generating path options..."):
             process_path_generation_deferred()
-    else:
-        handle_fast_deferred_actions()
 
     # Sidebar (fire-and-forget: its panels call actions directly on button clicks)
     sidebar = SidebarRenderer(state_machine=sm, context=ctx, graph=graph)

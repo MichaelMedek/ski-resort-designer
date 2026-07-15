@@ -400,7 +400,7 @@ class Lift(NodeConnected):
             end_node: Top station node
         """
         if new_type == self.lift_type:
-            logger.info(f"Lift {self.id} already has type {new_type}, no update needed")
+            logger.debug(f"Lift {self.id} already has type {new_type}, no update needed")
             return  # No change needed
 
         if new_type not in LiftConfig.TYPES:
@@ -611,6 +611,7 @@ class Lift(NodeConnected):
         # Convert indices to Pylon objects
         pylons = []
         for idx in pylon_indices:
+            assert 0 <= idx < len(terrain_points), f"pylon index {idx} out of range [0, {len(terrain_points)})"
             point = terrain_points[idx]
             pylons.append(
                 Pylon(
@@ -674,7 +675,7 @@ class Lift(NodeConnected):
         anchor_y.append(end_elevation + station_height)
 
         # Sort anchor points by distance
-        anchor_sorted = sorted(zip(anchor_x, anchor_y, strict=False), key=lambda p: p[0])
+        anchor_sorted = sorted(zip(anchor_x, anchor_y, strict=True), key=lambda p: p[0])
         anchor_x = [p[0] for p in anchor_sorted]
         anchor_y = [p[1] for p in anchor_sorted]
 

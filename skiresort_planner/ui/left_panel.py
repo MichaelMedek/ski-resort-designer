@@ -22,7 +22,6 @@ from skiresort_planner.constants import (
     SlopeConfig,
     StyleConfig,
 )
-from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.generators.geocoder import geocode
 from skiresort_planner.model.actions import UndoAction
 from skiresort_planner.model.message import (
@@ -33,7 +32,7 @@ from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.model.undo_handlers import UNDO_HANDLERS
 from skiresort_planner.persistence import backup_store
 from skiresort_planner.ui.actions import undo_last_action
-from skiresort_planner.ui.context import BuildMode, EntityKind, PlannerContext
+from skiresort_planner.ui.context import BuildMode, PlannerContext
 from skiresort_planner.ui.infra import reload_map, trigger_rerun
 from skiresort_planner.ui.mode_registry import BUILD_STATES, OPERATIONS, BuilderOperation, OperationGroup
 from skiresort_planner.ui.state_machine import PlannerStateMachine
@@ -78,6 +77,7 @@ def _perform_reset_resort() -> None:
     """
     current = st.session_state.get("resort_id")
     if current:
+        logger.info(f"Resetting resort: deleting backup for resort_id={current}")
         backup_store.delete(resort_id=current)
     st.query_params["resort"] = backup_store.new_resort_id()
     # Drop all session data so init_session_state rebuilds fresh.
@@ -205,7 +205,7 @@ class SidebarRenderer:
                 query = st.text_input(
                     "Search place",
                     key="place_search",
-                    placeholder="🔍 Search …",
+                    placeholder="🔍 Search place…",
                     label_visibility="collapsed",
                 )
             with col_btn:
@@ -216,6 +216,7 @@ class SidebarRenderer:
 
         result = geocode(query)
         if result is None:
+            logger.warning(f"UI: Geocode found no result for query {query.strip()!r}")
             PlaceNotFoundMessage(query=query.strip()).display()
             return
 
@@ -266,38 +267,17 @@ class SidebarRenderer:
         When viewing a lift, the lift type buttons change that lift's type.
         Slope is pre-selected by default.
         """
-        # Header + body both derive from this one entity so a viewed kind can't drift.
-        viewing = self.sm.viewing_entity  # (EntityKind, id) or None
-        viewing_kind = viewing[0] if viewing is not None else None
-
-        # Header + button-disabled state come from the current state's BuildState (registry-driven,
+        # Info block + button-disabled state come from the current state's BuildState (registry-driven,
         # bijection-asserted against the SM states), so a new state can't be forgotten here.
         build_state = BUILD_STATES[self.sm.get_current_state_id()]
-        head = build_state.header(self.ctx)
         buttons_disabled = build_state.blocks_build_buttons()
         current_mode = self.ctx.build_mode.mode
 
-        if buttons_disabled:
-            st.markdown(f"### {head.icon} {head.label}")
-            st.caption("⏳ Complete or cancel current build to change type")
-        elif viewing_kind is not None:
-            st.markdown(f"### {head.icon} {head.label}")
-            # Same body for every viewed kind; only lifts add a change-type line.
-            # enum_eq is reload-safe: EntityKind survives Streamlit reloads while the class is redefined.
-            lines = ["- 🔄 Use lift buttons to change type"] if enum_eq(a=viewing_kind, b=EntityKind.LIFT) else []
-            lines.append("- ✖️ **Close** the right panel to return")
-            lines.append(f"- {StyleConfig.BUILDING_ICON} Click terrain/node → new {viewing_kind.value}")
-            st.markdown("\n".join(lines))
-        else:
-            # Idle: the "Ready to Build" header IS the how-to toggle — expand it for the bullets.
-            # Collapsed by default so only that one line shows (saves space on small screens).
-            with st.expander(f"{head.icon} {head.label}", expanded=False):
-                st.markdown(
-                    "- 🔘 Select **Slope**, **Road** or **Lift** type below\n"
-                    f"- {StyleConfig.BUILDING_ICON} Click terrain/node → start building\n"
-                    f"- {StyleConfig.VIEWING_ICON} Click existing slope/road/lift → view stats\n"
-                    "- 🛠️ Or use **Import** / **Node Merge** utilities below"
-                )
+        # Every state renders one collapsed expander (header line visible, bullets on expand) — a
+        # single shape so viewing/building no longer drift from the idle "Ready to Build" block.
+        block = build_state.info_block(self.ctx)
+        with st.expander(f"{block.icon} {block.label}", expanded=False):
+            st.markdown("\n".join(f"- {b}" for b in block.bullets))
 
         def render_op_button(op: BuilderOperation) -> None:
             """Render one registry operation as a full-width button (selected = primary + bold)."""

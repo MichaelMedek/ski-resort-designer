@@ -16,6 +16,8 @@ Matrix Reference (from state_machine.py docstring):
 import pytest
 from statemachine.exceptions import TransitionNotAllowed
 
+from skiresort_planner.model.path_point import PathPoint
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 from tests_workflow.conftest import SMAndCtx
 
@@ -74,7 +76,6 @@ VALID_TRANSITIONS: list[tuple[str, list[str], set[str]]] = [
     ("commit_road", ["road_starting"], {"road_building"}),
     ("cancel_road", ["road_building"], {"idle_ready"}),
     ("commit_road", ["road_building"], {"road_building"}),  # self-loop
-    ("commit_road_finish", ["road_starting", "road_building"], {"idle_viewing_road"}),  # connector auto-finish
 ]
 
 
@@ -146,11 +147,6 @@ INVALID_TRANSITIONS: list[tuple[str, list[str]]] = [
     (
         "commit_road",
         ["idle_ready", "idle_viewing_slope", "slope_starting", "slope_building", "lift_placing"],
-    ),
-    # Cannot fire the road connector-finish outside road-build states
-    (
-        "commit_road_finish",
-        ["idle_ready", "idle_viewing_slope", "slope_starting", "slope_building", "slope_custom_path", "lift_placing"],
     ),
     # Finish_slope is valid from slope_building + slope_custom_path only
     (
@@ -246,7 +242,105 @@ class TestTransitionMatrix:
 
         sm.commit_path(segment_id="S1", endpoint_node_id="N1")  # type: ignore[attr-defined]  # dynamic python-statemachine event
         assert sm.current_state_value == "slope_building"
-        assert ctx.slope_build.segments == ["S1"]
+        assert ctx.build(SegmentKind.SLOPE).segments == ["S1"]
+
+
+class TestEventOnlyTransitionsCompleteness:
+    """Structural guard: _EVENT_ONLY_TRANSITIONS must list EXACTLY the variant transitions.
+
+    A "variant" is a transition whose attribute name differs from the event string it fires
+    (e.g. start_slope_from_slope_view fires the "start_slope" event; select_target_from_building
+    fires "select_custom_target"). Every variant MUST be blocked from direct calls so callers go
+    through the shared event — otherwise a direct call bypasses the event dispatch and its guards.
+
+    Transitions whose attribute name IS the event string (start_slope, commit_path, close_panel,
+    finish_road, commit_custom_continue, …) are the event entry points / direct transitions and
+    must stay callable — they must NOT appear in the set.
+
+    This computes the variant set by introspecting the state machine itself, so adding a new
+    kind/utility with `_from_*` entry variants (like the import/merge ones) can never again ship
+    unblocked: the frozenset must equal the computed set exactly, or this test fails.
+    """
+
+    @staticmethod
+    def _variant_transition_names() -> set[str]:
+        """Attribute names of transitions whose name != the event string they trigger.
+
+        Introspects the class Event descriptors: each attribute-defined transition carries its
+        triggering event string(s) on ``_transitions``. Shared event-id entries (start_slope,
+        commit_path, …) have no ``_transitions`` and are skipped — those are the entry points.
+        """
+        from statemachine.event import Event
+
+        variants: set[str] = set()
+        for attr, value in vars(PlannerStateMachine).items():
+            if not isinstance(value, Event):
+                continue
+            transitions = getattr(value, "_transitions", None)
+            if transitions is None:
+                continue  # shared event entry point (e.g. start_slope), not a variant attr
+            event_strings = {t.event for t in transitions}
+            if attr not in event_strings:
+                variants.add(attr)
+        return variants
+
+    def test_frozenset_lists_exactly_the_variant_transitions(self) -> None:
+        computed = self._variant_transition_names()
+        listed = set(PlannerStateMachine._EVENT_ONLY_TRANSITIONS)
+        missing = computed - listed
+        stray = listed - computed
+        assert not missing, (
+            f"_EVENT_ONLY_TRANSITIONS is missing variant transitions that could be called "
+            f"directly, bypassing event dispatch: {sorted(missing)}"
+        )
+        assert not stray, (
+            f"_EVENT_ONLY_TRANSITIONS lists names that are NOT variant transitions (they are "
+            f"event entry points / direct transitions and must stay callable): {sorted(stray)}"
+        )
+
+
+class TestKindSpecResolvesAgainstStateMachine:
+    """Every KIND_SPECS state id / event name must resolve to a REAL state/event on the machine.
+
+    KIND_SPECS (ui/kind_spec.py) stores state ids ("road_starting") and event names ("commit_road")
+    as plain strings; the action + undo layers dispatch on them by name. A typo or a forgotten
+    transition when adding a new SegmentKind would otherwise pass import and only crash at runtime
+    deep in a build flow. The import-time asserts at the bottom of state_machine.py catch it; these
+    tests exercise the same invariant explicitly (and prove the check itself is wired to reality).
+    """
+
+    @staticmethod
+    def _sm_state_ids() -> set[str]:
+        return {s.id for s in PlannerStateMachine.states}
+
+    @staticmethod
+    def _sm_event_names() -> set[str]:
+        # A transition's `event` bundles space-separated aliases (e.g. "commit_path commit_first_path").
+        return {name for s in PlannerStateMachine.states for t in s.transitions for name in t.event.split()}
+
+    def test_every_kindspec_state_id_is_a_real_state(self) -> None:
+        from skiresort_planner.ui.kind_spec import KIND_SPECS
+
+        state_ids = self._sm_state_ids()
+        for kind, spec in KIND_SPECS.items():
+            for attr in ("starting_state", "building_state", "custom_path_state"):
+                sid = getattr(spec, attr)
+                assert sid in state_ids, f"KIND_SPECS[{kind}].{attr}={sid!r} is not a state-machine state"
+
+    def test_every_kindspec_event_name_is_a_real_event(self) -> None:
+        from skiresort_planner.ui.kind_spec import KIND_SPECS
+
+        events = self._sm_event_names()
+        for kind, spec in KIND_SPECS.items():
+            for attr in (
+                "fan_commit_event",
+                "custom_continue_event",
+                "connector_finish_event",
+                "finish_event",
+                "cancel_event",
+            ):
+                ev = getattr(spec, attr)
+                assert ev in events, f"KIND_SPECS[{kind}].{attr}={ev!r} is not a state-machine event"
 
 
 def _force_state(sm: PlannerStateMachine, state_name: str) -> None:
@@ -259,9 +353,40 @@ def _force_state(sm: PlannerStateMachine, state_name: str) -> None:
     sm.current_state = target_state
 
 
-# NOTE: Undo transitions removed from state machine.
-# Undo is now handled via force_idle()/force_building() methods in the action layer.
-# See state_machine.py "Undo Architecture" section for details.
+class TestStartHookParity:
+    """Slope and road are built identically (one SegmentBuildContext, one KIND_SPECS entry, one
+    unified state class + click handler). Their `before_start_*` hooks must therefore leave the
+    context in the SAME shape, or the shared overlay/panel code silently diverges between kinds.
+
+    These guards pin the two invariants the shared code depends on:
+      1. An in-build name is set at start (the panel reads build.name; a None → "Unnamed X").
+      2. ctx.selection is populated at start (the unified overlay draws orientation arrows from it).
+    """
+
+    def test_slope_and_road_start_both_set_an_in_build_name(self, sm_and_ctx: SMAndCtx) -> None:
+        sm, ctx = sm_and_ctx
+        sm.start_slope(lon=0.0, lat=0.0, elevation=2000.0, node_id=None)
+        assert ctx.build(SegmentKind.SLOPE).name, "slope start must set an in-build name"
+
+        sm.send("cancel_slope")  # back to idle
+        sm.start_road(location=PathPoint(lon=0.0, lat=0.0, elevation=2000.0))
+        assert ctx.build(SegmentKind.ROAD).name, "road start must set an in-build name (parity with slope)"
+
+    def test_slope_and_road_start_both_populate_selection(self, sm_and_ctx: SMAndCtx) -> None:
+        """before_start_* must set ctx.selection so the unified overlay can draw orientation arrows.
+
+        Regression: only the slope path set the selection (in the hook AND in the click handler),
+        so a road started via the SM event left selection empty and drew no arrows.
+        """
+        sm, ctx = sm_and_ctx
+        sm.start_slope(lon=1.0, lat=2.0, elevation=2000.0, node_id=None)
+        assert ctx.selection.has_selection(), "slope start must populate selection"
+        assert (ctx.selection.lon, ctx.selection.lat) == (1.0, 2.0)
+
+        sm.send("cancel_slope")
+        sm.start_road(location=PathPoint(lon=3.0, lat=4.0, elevation=2000.0))
+        assert ctx.selection.has_selection(), "road start must populate selection (parity with slope)"
+        assert (ctx.selection.lon, ctx.selection.lat) == (3.0, 4.0)
 
 
 class TestCancelCustomGuards:
@@ -278,7 +403,7 @@ class TestCancelCustomGuards:
 
         # Setup: Force to slope_custom_path with no committed segments
         _force_state(sm=sm, state_name="slope_custom_path")
-        ctx.slope_build.segments = []  # No segments committed
+        ctx.build(SegmentKind.SLOPE).segments = []  # No segments committed
 
         # Act: Call cancel_custom event
         sm.cancel_custom()  # type: ignore[attr-defined]  # dynamic python-statemachine event
@@ -292,7 +417,7 @@ class TestCancelCustomGuards:
 
         # Setup: Force to slope_custom_path with committed segments
         _force_state(sm=sm, state_name="slope_custom_path")
-        ctx.slope_build.segments = ["S1"]  # Has committed segments
+        ctx.build(SegmentKind.SLOPE).segments = ["S1"]  # Has committed segments
 
         # Act: Call cancel_custom event
         sm.cancel_custom()  # type: ignore[attr-defined]  # dynamic python-statemachine event
@@ -374,3 +499,175 @@ class TestImportPlacing:
         sm, _ = self._sm()
         sm.start_import(lon=1.0, lat=2.0)
         assert not sm.is_idle and not sm.is_any_slope_state and not sm.is_any_road_state
+
+    def test_force_idle_from_import_runs_exit_teardown(self) -> None:
+        # force_idle (the undo path) bypasses transitions but MUST still run the real exit teardown
+        # via _set_current_state → _EXIT_HOOKS. Undoing an OSM import from import_placing has to clear
+        # the placed box center, or a stale box resurfaces. Guards the force/undo exit dispatch.
+        sm, ctx = self._sm()
+        sm.start_import(lon=1.0, lat=2.0)
+        assert ctx.deferred.osm_import_center_lon == 1.0
+
+        with sm.undo_running():  # force_* is undo-only
+            sm.force_idle()
+
+        assert sm.is_idle_ready
+        assert ctx.deferred.osm_import_center_lon is None, "force_idle must run exit_import_placing (clears center)"
+        assert ctx.deferred.osm_import_center_lat is None
+
+
+class TestViewSwitching:
+    """Switching between viewed entities (slope↔road↔lift) fires the before_switch_* hooks that
+    set the newly-viewed id. Exercises the full switch chain including the road-view transitions.
+    """
+
+    @staticmethod
+    def _sm() -> SMAndCtx:
+        from skiresort_planner.model.resort_graph import ResortGraph
+
+        return PlannerStateMachine.create(graph=ResortGraph(), add_ui_listener=False)
+
+    def test_switch_chain_updates_viewed_id_and_state(self) -> None:
+        from skiresort_planner.ui.context import EntityKind
+
+        sm, _ctx = self._sm()
+        # idle_ready → view a slope → switch to a road → self-loop to another road → switch to a lift.
+        # viewing_entity encodes both the state's kind and the id set by the before_switch_* hook.
+        sm.show_slope_info_panel(slope_id="SL1")
+        assert sm.viewing_entity == (EntityKind.SLOPE, "SL1")
+
+        sm.show_road_info_panel(road_id="R1")  # switch_slope_to_road_view
+        assert sm.viewing_entity == (EntityKind.ROAD, "R1")
+
+        sm.show_road_info_panel(road_id="R2")  # switch_road self-loop
+        assert sm.viewing_entity == (EntityKind.ROAD, "R2")
+
+        sm.show_lift_info_panel(lift_id="L1")  # switch_road_to_lift_view
+        assert sm.viewing_entity == (EntityKind.LIFT, "L1")
+
+        sm.show_road_info_panel(road_id="R3")  # switch_lift_to_road_view
+        assert sm.viewing_entity == (EntityKind.ROAD, "R3")
+
+    def test_switch_road_to_slope_then_close(self) -> None:
+        from skiresort_planner.ui.context import EntityKind
+
+        sm, _ctx = self._sm()
+        sm.show_road_info_panel(road_id="R1")
+        sm.show_slope_info_panel(slope_id="SL9")  # switch_road_to_slope_view
+        assert sm.viewing_entity == (EntityKind.SLOPE, "SL9")
+        sm.hide_info_panel()  # close_panel → idle_ready
+        assert sm.viewing_entity is None
+
+
+class TestStateGraphIsComplete:
+    """The workflow graph must be sound: every state reachable from the initial state, and every
+    state able to reach idle_ready (no dead-ends the user can get stuck in). Uses the library's own
+    graph (state.transitions with .source/.target) so this tracks the real machine, not a copy.
+
+    NOTE: this checks the FORWARD workflow graph only. Undo deliberately jumps to prior states the
+    forward graph doesn't connect (e.g. idle_viewing_slope → slope_building after undoing a finish),
+    which is why undo uses force_* instead of transitions — see the module docstring / docs/workflows.
+    """
+
+    def _edges(self, sm) -> dict[str, set[str]]:
+        return {s.id: {t.target.id for t in s.transitions} for s in sm.states}
+
+    def _reachable(self, edges: dict[str, set[str]], start: str) -> set[str]:
+        seen: set[str] = set()
+        stack = [start]
+        while stack:
+            n = stack.pop()
+            if n in seen:
+                continue
+            seen.add(n)
+            stack.extend(edges.get(n, ()))
+        return seen
+
+    def test_every_state_reachable_from_initial(self) -> None:
+        from skiresort_planner.model.resort_graph import ResortGraph
+
+        sm, _ = PlannerStateMachine.create(graph=ResortGraph(), add_ui_listener=False)
+        edges = self._edges(sm)
+        initial = next(s.id for s in sm.states if s.initial)
+        reachable = self._reachable(edges, initial)
+        assert set(edges) == reachable, f"states unreachable from {initial}: {set(edges) - reachable}"
+
+    def test_every_state_can_return_to_idle_ready(self) -> None:
+        # No workflow dead-end: from any state the user can always get back to idle_ready via
+        # transitions (cancel/close/finish). Check on the reversed graph: idle_ready must reach all.
+        from skiresort_planner.model.resort_graph import ResortGraph
+
+        sm, _ = PlannerStateMachine.create(graph=ResortGraph(), add_ui_listener=False)
+        edges = self._edges(sm)
+        reverse: dict[str, set[str]] = {s: set() for s in edges}
+        for src, tgts in edges.items():
+            for t in tgts:
+                reverse[t].add(src)
+        can_reach_idle = self._reachable(reverse, "idle_ready")
+        assert set(edges) == can_reach_idle, f"states with no path back to idle_ready: {set(edges) - can_reach_idle}"
+
+    def test_graph_is_strongly_connected(self) -> None:
+        # The strongest "complete network" property: every state can reach every other state. For a
+        # workflow with idle_ready as the hub this follows from (reachable-from-initial) +
+        # (all-can-return-to-idle), but asserting it directly catches any future island of states
+        # that link among themselves yet detach from the rest. (Kosaraju: one SCC == the whole graph.)
+        from skiresort_planner.model.resort_graph import ResortGraph
+
+        sm, _ = PlannerStateMachine.create(graph=ResortGraph(), add_ui_listener=False)
+        edges = self._edges(sm)
+        reverse: dict[str, set[str]] = {s: set() for s in edges}
+        for src, tgts in edges.items():
+            for t in tgts:
+                reverse[t].add(src)
+        any_state = next(iter(edges))
+        forward = self._reachable(edges, any_state)
+        backward = self._reachable(reverse, any_state)
+        # A graph is strongly connected iff every node is both reachable from and can reach one node.
+        assert forward == set(edges) and backward == set(edges), (
+            f"state graph is NOT strongly connected — from {any_state}: "
+            f"cannot reach {set(edges) - forward}; cannot be reached by {set(edges) - backward}"
+        )
+
+
+class TestAsMermaid:
+    """as_mermaid() is dumped ONCE at startup by PlannerStateMachine.create() (the state graph is
+    fixed at class-definition time, so re-dumping per transition would only spam the log). It
+    delegates to python-statemachine's `format(sm, "mermaid")` spec (added in 3.1.0). Two things
+    must hold: the call must never raise (a crash here took down the whole render fragment — the
+    3.0.0 library had no mermaid spec, so format() hit object.__format__ and raised TypeError), and
+    it must stay dependency-free (no Graphviz/pydot). These guard the pinned floor (>=3.1.0).
+    """
+
+    def _sm(self) -> PlannerStateMachine:
+        from skiresort_planner.model.resort_graph import ResortGraph
+
+        sm, _ = PlannerStateMachine.create(graph=ResortGraph(), add_ui_listener=False)
+        return sm
+
+    def test_produces_a_mermaid_state_diagram(self) -> None:
+        out = self._sm().as_mermaid()
+        assert out.startswith("stateDiagram-v2"), "must emit a Mermaid stateDiagram header"
+        assert "[*] --> idle_ready" in out, "initial state must be marked"
+
+    def test_lists_every_state(self) -> None:
+        sm = self._sm()
+        out = sm.as_mermaid()
+        for state in sm.states:
+            assert state.id in out, f"state {state.id} missing from mermaid dump"
+
+    def test_highlights_the_current_state(self) -> None:
+        sm = self._sm()
+        sm.start_slope(lon=0.0, lat=0.0, elevation=2000.0, node_id=None)
+        out = sm.as_mermaid()
+        # The library marks the active state with a `:::active` class and defines that classDef.
+        assert f"{sm.current_state_value}:::active" in out, "active state must be highlighted"
+        assert "classDef active" in out, "active classDef must be defined"
+
+    def test_never_raises_across_transitions(self) -> None:
+        # create() calls as_mermaid() at startup; it must never raise. This is the direct
+        # regression guard for the 3.0.0 TypeError. Re-check after transitions for good measure.
+        sm = self._sm()
+        sm.start_slope(lon=0.0, lat=0.0, elevation=2000.0, node_id=None)
+        sm.send("cancel_slope")
+        sm.start_road(location=PathPoint(lon=0.0, lat=0.0, elevation=2000.0))
+        assert sm.as_mermaid().startswith("stateDiagram-v2")

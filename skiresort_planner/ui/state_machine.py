@@ -14,7 +14,7 @@ The key pattern is:
 
 1. User action triggers state transition (e.g., click map → start_slope)
 2. StreamlitUIListener fires after_transition and calls st.rerun()
-3. On the next render cycle, handle_fast_deferred_actions() checks pending flags
+3. On the next render cycle, the deferred dispatch in app.py checks pending flags
 4. Deferred work (e.g., path generation) executes with access to full context
 
 This separates state transitions (instant) from business logic (deferred), ensuring
@@ -218,11 +218,16 @@ Transition Summary Table
       select_target [select_custom_target]
     - From SLOPE_BUILDING (3+1): cancel [cancel_slope], finish [direct], select_target [select_custom_target],
       commit_path (loop)
-    - From SLOPE_CUSTOM_PATH (4+1): commit_continue [direct], commit_finish [direct], cancel_slope [cancel_slope],
-      cancel_path_to_* [cancel_custom], retarget (loop) [select_custom_target]
+    - From SLOPE_CUSTOM_PATH (5+1): commit_continue [direct], commit_finish [direct], finish [finish_slope],
+      cancel_slope [cancel_slope], cancel_path_to_* [cancel_custom], retarget (loop) [select_custom_target]
     - From LIFT_PLACING (2): cancel [direct], complete [direct]
-    - From ROAD_STARTING (2): cancel [cancel_road], commit_road_first [commit_road]
-    - From ROAD_BUILDING (2+1): cancel [cancel_road], finish [direct], commit_road_continue (loop) [commit_road]
+    - From ROAD_STARTING (3): cancel [cancel_road], commit_road_first [commit_road],
+      select_target [select_custom_target]
+    - From ROAD_BUILDING (3+1): cancel [cancel_road], finish [direct], select_target [select_custom_target],
+      commit_road_continue (loop) [commit_road]
+    - From ROAD_CUSTOM_PATH (5+1): commit_road_custom_continue [direct], commit_road_custom_finish [direct],
+      finish [finish_road], cancel_road [cancel_road], cancel_road_path_to_* [cancel_custom],
+      retarget (loop) [select_custom_target]
 
     Event-triggered transitions use [event_name] notation.
     Direct transitions are called by their transition name directly.
@@ -256,22 +261,27 @@ Both start and end nodes are only created AFTER validation passes.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import NoReturn, Protocol, cast
 
 import streamlit as st
 from statemachine import State, StateMachine
 
 from skiresort_planner.model.path_point import PathPoint
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.context import (
     BuildMode,
     EntityKind,
     LonLatElev,
     PlannerContext,
+    SegmentBuildContext,
 )
 from skiresort_planner.ui.infra import trigger_rerun
+from skiresort_planner.ui.kind_spec import KIND_SPECS
 from skiresort_planner.ui.state_lifecycle import (
+    EXIT_HOOKS,
     enter_idle_ready,
     enter_idle_viewing_lift,
     enter_idle_viewing_road,
@@ -280,22 +290,12 @@ from skiresort_planner.ui.state_lifecycle import (
     enter_lift_placing,
     enter_merge_placing,
     enter_road_building,
+    enter_road_custom_path,
     enter_road_starting,
     enter_slope_building,
     enter_slope_custom_path,
     enter_slope_starting,
-    exit_idle_ready,
-    exit_idle_viewing_lift,
-    exit_idle_viewing_road,
-    exit_idle_viewing_slope,
-    exit_import_placing,
     exit_lift_placing,
-    exit_merge_placing,
-    exit_road_building,
-    exit_road_starting,
-    exit_slope_building,
-    exit_slope_custom_path,
-    exit_slope_starting,
 )
 
 logger = logging.getLogger(__name__)
@@ -318,7 +318,7 @@ class StreamlitUIListener:
         sm.add_listener(StreamlitUIListener())
     """
 
-    def after_transition(self, event: str, source: State, target: State) -> None:
+    def after_transition(self, event: str, source: State, target: State, machine: StateMachine) -> None:
         """Run cleanup and trigger Streamlit rerun after state transitions.
 
         NOTE: We do NOT modify click deduplication here. The dedup is simple:
@@ -329,7 +329,7 @@ class StreamlitUIListener:
         When _defer_rerun flag is set in session_state, the rerun is skipped to allow
         multiple state transitions before a single UI refresh.
         """
-        logger.info(f"[STATE] {source.name} --({event})--> {target.name}")
+        logger.debug(f"[STATE] {source.name} --({event})--> {target.name}")
 
         # NOTE: Orphaned node cleanup is NOT called here. It's called explicitly
         # in operations that remove entities (undo, delete, cancel). This prevents
@@ -338,10 +338,10 @@ class StreamlitUIListener:
 
         # Check if rerun should be deferred (used during compound operations)
         if st.session_state.get("_defer_rerun"):
-            logger.info(f'[STATE] Deferring st.rerun() after {event} transition (compound operation)"')
+            logger.debug(f'[STATE] Deferring st.rerun() after {event} transition (compound operation)"')
             return
 
-        logger.info(f'[STATE] Calling st.rerun() after {event} transition"')
+        logger.debug(f'[STATE] Calling st.rerun() after {event} transition"')
         trigger_rerun()
 
 
@@ -417,6 +417,7 @@ class PlannerStateMachine(StateMachine):
     # ROAD states (segment-by-segment, like a slope: build then finish)
     road_starting = State("RoadStarting")
     road_building = State("RoadBuilding")
+    road_custom_path = State("RoadCustomPath")
 
     # ==========================================================================
     # 1. Transitions: From IDLE_READY
@@ -552,7 +553,7 @@ class PlannerStateMachine(StateMachine):
         slope_custom_path, event="select_custom_target", before="_before_retarget_custom"
     )  # 6.6 [event: select_custom_target] self-loop
     finish_slope_from_custom = slope_custom_path.to(
-        idle_viewing_slope, event="finish_slope", before="_before_finish_slope_from_custom"
+        idle_viewing_slope, event="finish_slope", before="_before_finish_from_custom"
     )  # 6.7 [event: finish_slope]
     cancel_path_to_starting = slope_custom_path.to(
         slope_starting, cond="has_no_segments", event="cancel_custom"
@@ -606,28 +607,67 @@ class PlannerStateMachine(StateMachine):
     # 9.4. commit_road_first [event: commit_road]: first traced segment
     # 9.5. commit_road_continue [event: commit_road, self-loop]: extend the road
     # 9.2. finish_road [direct]: Finish button
-    # 9.6. commit_road_finish [event: commit_road_finish]: a connector segment (target is an
-    #      existing node) ends the road immediately, from either state. Mirrors commit_custom_finish.
+    # A connector road (target is an existing node) auto-finishes via commit_road_custom_finish
+    # from ROAD_CUSTOM_PATH (§9b) — mirroring slope's commit_custom_finish. There is deliberately
+    # NO connector-finish from the fan states: fan proposals are never connectors (is_connector is
+    # only set in the custom-connect generator), exactly like slopes.
 
     commit_road_first = road_starting.to(road_building, event="commit_road")  # 9.4 [event: commit_road]
     commit_road_continue = road_building.to(road_building, event="commit_road")  # 9.5 [event: commit_road] self-loop
     finish_road = road_building.to(idle_viewing_road)  # 9.2 [direct]
-    commit_road_finish_from_starting = road_starting.to(
-        idle_viewing_road, event="commit_road_finish"
-    )  # 9.6 [event: commit_road_finish]
-    commit_road_finish_from_building = road_building.to(
-        idle_viewing_road, event="commit_road_finish"
-    )  # 9.6 [event: commit_road_finish]
     cancel_road_from_starting = road_starting.to(idle_ready, event="cancel_road")  # 9.1 [event: cancel_road]
     cancel_road_from_building = road_building.to(idle_ready, event="cancel_road")  # 9.1 [event: cancel_road]
+
+    # ==========================================================================
+    # 9b. Transitions: From ROAD_CUSTOM_PATH (mirror of SLOPE_CUSTOM_PATH §6)
+    # ==========================================================================
+    # A road target click routes a custom-connect path to that point, exactly like a
+    # slope. Same event vocabulary (select_custom_target / cancel_custom / finish_road),
+    # wired to the SAME kind-agnostic before-hooks the slope transitions use, so one
+    # shared handler/generator serves both entities.
+    # 9b.1. select_target_from_road_starting [event: select_custom_target]: click a target from ROAD_STARTING
+    # 9b.2. select_target_from_road_building [event: select_custom_target]: click a target from ROAD_BUILDING
+    # 9b.3. commit_road_custom_continue [direct]: commit the custom segment and keep building
+    # 9b.4. commit_road_custom_finish [direct]: auto-finish when the target is an existing node
+    # 9b.5. retarget_road_custom [event: select_custom_target, self-loop]: click a new target → re-route
+    # 9b.6. finish_road_from_custom [event: finish_road]: sidebar Finish during targeting
+    # 9b.7. cancel_road_path_to_starting [event: cancel_custom, guard]: back to fan when has_no_segments
+    # 9b.8. cancel_road_path_to_building [event: cancel_custom, guard]: back to fan when segments exist
+    # 9b.9. cancel_road_from_custom_path [event: cancel_road]: cancel the whole road
+    select_target_from_road_starting = road_starting.to(
+        road_custom_path, event="select_custom_target", before="_before_target_from_starting"
+    )  # 9b.1 [event: select_custom_target]
+    select_target_from_road_building = road_building.to(
+        road_custom_path, event="select_custom_target", before="_before_target_from_building"
+    )  # 9b.2 [event: select_custom_target]
+    commit_road_custom_continue = road_custom_path.to(road_building)  # 9b.3 [direct]
+    commit_road_custom_finish = road_custom_path.to(idle_viewing_road)  # 9b.4 [direct] auto-finish connector
+    retarget_road_custom = road_custom_path.to(
+        road_custom_path, event="select_custom_target", before="_before_retarget_custom"
+    )  # 9b.5 [event: select_custom_target] self-loop
+    finish_road_from_custom = road_custom_path.to(
+        idle_viewing_road, event="finish_road", before="_before_finish_from_custom"
+    )  # 9b.6 [event: finish_road]
+    cancel_road_path_to_starting = road_custom_path.to(
+        road_starting, cond="has_no_segments", event="cancel_custom"
+    )  # 9b.7 [event: cancel_custom, guard]
+    cancel_road_path_to_building = road_custom_path.to(
+        road_building, unless="has_no_segments", event="cancel_custom"
+    )  # 9b.8 [event: cancel_custom, guard]
+    cancel_road_from_custom_path = road_custom_path.to(idle_ready, event="cancel_road")  # 9b.9 [event: cancel_road]
 
     # ==========================================================================
     # Guards (Conditions)
     # ==========================================================================
 
     def has_no_segments(self) -> bool:
-        """Guard: Check if there are no committed segments."""
-        return len(self.context.slope_build.segments) == 0
+        """Guard: the active build has no committed segments yet (any kind).
+
+        Used by cancel_custom to decide whether to return to *_STARTING (no segments)
+        or *_BUILDING. Keyed to the active kind, so one guard serves slope + road + any
+        future kind — no per-kind duplicate.
+        """
+        return len(self._active_build().segments) == 0
 
     # ==========================================================================
     # Event-Only Access Control
@@ -647,9 +687,6 @@ class PlannerStateMachine(StateMachine):
             # commit_road event
             "commit_road_first",
             "commit_road_continue",
-            # commit_road_finish event
-            "commit_road_finish_from_starting",
-            "commit_road_finish_from_building",
             # cancel_slope event
             "cancel_from_starting",
             "cancel_from_building",
@@ -657,13 +694,23 @@ class PlannerStateMachine(StateMachine):
             # cancel_road event
             "cancel_road_from_starting",
             "cancel_road_from_building",
+            "cancel_road_from_custom_path",
             # cancel_custom event
             "cancel_path_to_starting",
             "cancel_path_to_building",
+            "cancel_road_path_to_starting",
+            "cancel_road_path_to_building",
+            # finish_slope / finish_road event (the _from_custom variants; the base
+            # finish_slope/finish_road transitions ARE the event entry points and stay callable)
+            "finish_slope_from_custom",
+            "finish_road_from_custom",
             # select_custom_target event
             "select_target_from_starting",
             "select_target_from_building",
             "retarget_custom",
+            "select_target_from_road_starting",
+            "select_target_from_road_building",
+            "retarget_road_custom",
             # start_slope event (NOT start_slope - that IS the event entry point)
             "start_slope_from_slope_view",
             "start_slope_from_lift_view",
@@ -676,6 +723,14 @@ class PlannerStateMachine(StateMachine):
             "start_road_from_slope_view",
             "start_road_from_lift_view",
             "start_road_from_road_view",
+            # start_import event (NOT start_import - that IS the event entry point)
+            "start_import_from_slope_view",
+            "start_import_from_lift_view",
+            "start_import_from_road_view",
+            # start_merge event (NOT start_merge - that IS the event entry point)
+            "start_merge_from_slope_view",
+            "start_merge_from_lift_view",
+            "start_merge_from_road_view",
             # view_slope event (NOT view_slope - that IS the event entry point)
             "switch_to_slope_view",
             "switch_slope",
@@ -767,9 +822,14 @@ class PlannerStateMachine(StateMachine):
         return bool(self.road_building.is_active)
 
     @property
+    def is_road_custom_path(self) -> bool:
+        """Check if showing road custom path options (mirror of is_slope_custom_path)."""
+        return bool(self.road_custom_path.is_active)
+
+    @property
     def is_any_road_state(self) -> bool:
-        """Check if in any road-building state (starting or building)."""
-        return self.is_road_starting or self.is_road_building_only
+        """Check if in any road-building state (starting, building, or custom path)."""
+        return self.is_road_starting or self.is_road_building_only or self.is_road_custom_path
 
     # Composite state checks
     @property
@@ -779,6 +839,33 @@ class PlannerStateMachine(StateMachine):
         Returns True for: slope_starting, slope_building, slope_custom_path
         """
         return self.is_slope_starting or self.is_slope_building_only or self.is_slope_custom_path
+
+    @property
+    def active_build_kind(self) -> SegmentKind:
+        """The SegmentKind currently being built, resolved from the active state id.
+
+        The single source that maps build state → kind, so callers dispatch on the
+        SegmentKind enum instead of an is_road boolean. Driven by KIND_SPECS (each kind
+        lists its 3 build-state ids), so a new kind needs no edit here. Raises if not in
+        a build state.
+        """
+        current = self.get_current_state_id()
+        for spec in KIND_SPECS.values():
+            if current in {spec.starting_state, spec.building_state, spec.custom_path_state}:
+                return spec.kind
+        raise RuntimeError(f"active_build_kind called outside a build state: {current}")
+
+    def commit_active_segment(self, segment_id: str, endpoint_node_id: str) -> None:
+        """Fire the active kind's non-connector commit event, resolved from the current state.
+
+        From a fan state (*_starting / *_building) this is the fan commit self-loop; from the
+        custom-path state it is the custom-continue event. Keeps the state→event mapping inside
+        the state machine so the action layer just says "commit the active segment".
+        """
+        spec = KIND_SPECS[self.active_build_kind]
+        in_custom_path = self.get_current_state_id() == spec.custom_path_state
+        event = spec.custom_continue_event if in_custom_path else spec.fan_commit_event
+        self.send(event, segment_id=segment_id, endpoint_node_id=endpoint_node_id)
 
     @property
     def is_info_panel_visible(self) -> bool:
@@ -861,49 +948,19 @@ class PlannerStateMachine(StateMachine):
         """Hook: Entering road building state."""
         enter_road_building(self.context)
 
+    def on_enter_road_custom_path(self) -> None:
+        """Hook: Entering road custom-path state."""
+        enter_road_custom_path(self.context)
+
     # ==========================================================================
-    # Exit Hooks - Using lifecycle functions
+    # Exit Hooks - only states with real teardown need one; the rest exit as no-ops.
+    # (force/undo runs the same teardown via EXIT_HOOKS. import/merge clear their scratch
+    # in their before_cancel_*/before_complete_* hooks, so they need no on_exit here.)
     # ==========================================================================
-
-    def on_exit_idle_ready(self) -> None:
-        """Hook: Exiting idle ready state."""
-        exit_idle_ready(self.context)
-
-    def on_exit_idle_viewing_slope(self) -> None:
-        """Hook: Exiting slope viewing state."""
-        exit_idle_viewing_slope(self.context)
-
-    def on_exit_idle_viewing_lift(self) -> None:
-        """Hook: Exiting lift viewing state."""
-        exit_idle_viewing_lift(self.context)
-
-    def on_exit_idle_viewing_road(self) -> None:
-        """Hook: Exiting road viewing state."""
-        exit_idle_viewing_road(self.context)
-
-    def on_exit_slope_starting(self) -> None:
-        """Hook: Exiting slope starting state."""
-        exit_slope_starting(self.context)
-
-    def on_exit_slope_building(self) -> None:
-        """Hook: Exiting slope building state."""
-        exit_slope_building(self.context)
-
-    def on_exit_slope_custom_path(self) -> None:
-        """Hook: Exiting custom path state."""
-        exit_slope_custom_path(self.context)
 
     def on_exit_lift_placing(self) -> None:
-        """Hook: Exiting lift placing state."""
+        """Hook: Exiting lift placing state — clears the lift scratch context."""
         exit_lift_placing(self.context)
-
-    def on_exit_road_starting(self) -> None:
-        """Hook: Exiting road starting state."""
-        exit_road_starting(self.context)
-
-    def on_exit_road_building(self) -> None:
-        """Hook: Exiting road building state."""
-        exit_road_building(self.context)
 
     # ==========================================================================
     # Transition Actions (before_* hooks)
@@ -915,6 +972,21 @@ class PlannerStateMachine(StateMachine):
     #                      Use when transitions sharing an event need DIFFERENT actions
     #                      (e.g. select_custom_target: starting vs building vs retarget).
 
+    def _init_build(self, kind: SegmentKind, *, node_id: str | None, location: PathPoint | None, name: str) -> None:
+        """Initialise a build's origin, name, and selection — the SHARED body for every kind."""
+        build = self.context.build(kind)
+        build.start_node_id = node_id
+        build.start_location = None if node_id else location
+        build.name = name
+        if node_id is None:
+            logger.debug(f"[STATE] _init_build({kind.value}): no node_id, using start_location={location}")
+
+        origin = self._resort_graph.nodes[node_id] if node_id else None
+        if origin is not None:
+            self.context.set_selection(lon=origin.lon, lat=origin.lat, elevation=origin.elevation)
+        elif location is not None:
+            self.context.set_selection(lon=location.lon, lat=location.lat, elevation=location.elevation)
+
     def before_start_slope(
         self,
         lon: float,
@@ -922,71 +994,54 @@ class PlannerStateMachine(StateMachine):
         elevation: float,
         node_id: str | None = None,
     ) -> None:
-        """Action before starting to build a slope."""
-        self.context.set_selection(lon=lon, lat=lat, elevation=elevation)
-        self.context.slope_build.start_node_id = node_id
-        self.context.selection.node_id = node_id
-        slope_number = self._resort_graph._slope_counter + 1
-        self.context.slope_build.name = f"Slope {slope_number}"
+        """Action before starting to build a slope (thin adapter over _init_build)."""
+        self._init_build(
+            kind=SegmentKind.SLOPE,
+            node_id=node_id,
+            location=PathPoint(lon=lon, lat=lat, elevation=elevation),
+            name=f"Slope {self._resort_graph._slope_counter + 1}",
+        )
 
-    def _add_segment_to_building(self, segment_id: str, endpoint_node_id: str) -> None:
-        """Common logic for adding segment to building context."""
-        self.context.slope_build.segments.append(segment_id)
-        self.context.slope_build.endpoints = [endpoint_node_id]
+    def _add_segment_to_active_build(self, segment_id: str, endpoint_node_id: str) -> None:
+        """Append a committed segment to the active build (any kind) and clear proposals."""
+        assert endpoint_node_id, "endpoint_node_id must be non-empty after segment commit"
+        build = self._active_build()
+        build.segments.append(segment_id)
+        build.endpoints = [endpoint_node_id]
         self.context.clear_proposals()
 
     def before_commit_path(self, segment_id: str, endpoint_node_id: str) -> None:
-        """Action before committing a path segment (event hook only)."""
-        self._add_segment_to_building(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
-
-    def _add_segment_to_road(self, segment_id: str, endpoint_node_id: str) -> None:
-        """Common logic for adding a traced segment to the road context."""
-        self.context.road_build.segments.append(segment_id)
-        self.context.road_build.endpoints = [endpoint_node_id]
-        self.context.clear_proposals()
+        """Action before committing a slope path segment (event hook only)."""
+        self._add_segment_to_active_build(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
 
     def before_commit_road(self, segment_id: str, endpoint_node_id: str) -> None:
         """Action before committing a road segment (event hook; both first + continue)."""
-        self._add_segment_to_road(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
+        self._add_segment_to_active_build(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
 
     def before_commit_custom_continue(self, segment_id: str, endpoint_node_id: str) -> None:
-        """Action before committing custom path and continuing."""
-        self.context.slope_build.segments.append(segment_id)
-        self.context.slope_build.endpoints = [endpoint_node_id]
-        self.context.clear_proposals()
+        """Commit a custom-path segment and keep building (any kind)."""
+        self._add_segment_to_active_build(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
         self.context.custom_connect.clear()
 
-    def before_commit_custom_finish(self, segment_id: str, slope_id: str) -> None:
-        """Action before committing custom connector and finishing.
-
-        Note: segment_id may already be in building.segments if added before
-        calling graph.finish_slope(). This hook is idempotent.
-        """
-        if segment_id not in self.context.slope_build.segments:
-            self.context.slope_build.segments.append(segment_id)
-        self.context.viewing.set_slope_id(slope_id=slope_id)
+    def before_commit_custom_finish(self, segment_id: str, entity_id: str) -> None:
+        """Commit a custom connector and finish the entity (any kind). Idempotent on segment_id."""
+        build = self._active_build()
+        if segment_id not in build.segments:
+            build.segments.append(segment_id)
+        self.context.viewing.set_viewed(kind=self.active_build_kind, entity_id=entity_id)
         self.context.custom_connect.clear()
 
-    def before_commit_road_finish(self, segment_id: str, road_id: str) -> None:
-        """Road connector auto-finish (mirrors before_commit_custom_finish).
+    def before_commit_road_custom_continue(self, segment_id: str, endpoint_node_id: str) -> None:
+        """Road custom-path commit + keep building — same body as the slope custom continue."""
+        self.before_commit_custom_continue(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
 
-        Idempotent on segment_id (caller appends before graph.finish_road()).
-        enter_idle_viewing_road clears road_build, so no clear here.
-        """
-        if segment_id not in self.context.road_build.segments:
-            self.context.road_build.segments.append(segment_id)
-        self.context.viewing.set_road_id(road_id=road_id)
+    def before_commit_road_custom_finish(self, segment_id: str, entity_id: str) -> None:
+        """Road custom-path connector auto-finish — same body as the slope custom finish."""
+        self.before_commit_custom_finish(segment_id=segment_id, entity_id=entity_id)
 
-    def _before_finish_slope_from_custom(self, slope_id: str) -> None:
-        """Sidebar Finish during targeting: drop the in-progress proposal (never in
-        segments) and clear custom-connect + proposals. set_slope_id via before_finish_slope.
-        """
-        self.context.clear_custom_connect()
-        self.context.clear_proposals()
-
-    def before_finish_slope(self, slope_id: str) -> None:
+    def before_finish_slope(self, entity_id: str) -> None:
         """Action before finishing a slope."""
-        self.context.viewing.set_slope_id(slope_id=slope_id)
+        self.context.viewing.set_viewed(kind=SegmentKind.SLOPE, entity_id=entity_id)
 
     def before_view_slope(self, slope_id: str) -> None:
         """Set slope_id before entering viewing state. Panel visibility set by enter function."""
@@ -1042,9 +1097,17 @@ class PlannerStateMachine(StateMachine):
     before_start_lift_from_lift_view = before_start_lift
 
     def before_start_road(self, node_id: str | None = None, location: PathPoint | None = None) -> None:
-        """Action before starting road placement: store the first clicked point."""
-        self.context.road_build.start_node_id = node_id
-        self.context.road_build.start_location = location
+        """Action before starting road placement (thin adapter over _init_build).
+
+        Same shared body as before_start_slope — origin + in-build "Road N" name + selection — so
+        the two kinds cannot drift. The finish-time bearing name overrides the temporary name.
+        """
+        self._init_build(
+            kind=SegmentKind.ROAD,
+            node_id=node_id,
+            location=location,
+            name=f"Road {self._resort_graph._road_counter + 1}",
+        )
 
     # Reuse start_road logic for other entry points
     before_start_road_from_slope_view = before_start_road
@@ -1084,10 +1147,13 @@ class PlannerStateMachine(StateMachine):
         """Merge confirmed: clear the selection (the graph mutation runs in the action)."""
         self.context.merge.clear()
 
-    def before_finish_road(self, road_id: str) -> None:
-        """Set road_id before finishing. Panel visibility set by enter_idle_viewing_road."""
-        self.context.viewing.set_road_id(road_id=road_id)
-        self.context.road_build.clear()
+    def before_finish_road(self, entity_id: str) -> None:
+        """Set the viewed road before finishing (mirrors before_finish_slope).
+
+        The build is cleared by enter_idle_viewing_road (Single Point of Truth), same as slopes —
+        no explicit clear here, so slope and road finish identically.
+        """
+        self.context.viewing.set_viewed(kind=SegmentKind.ROAD, entity_id=entity_id)
 
     # ──────────────────────────────────────────────────────────────────────────────
     # Custom Connect Transitions (Single Source of Truth for ctx.custom_connect.*)
@@ -1098,58 +1164,70 @@ class PlannerStateMachine(StateMachine):
     # - cancel_custom/cancel_slope: Clears state via clear_custom_connect().
     # ──────────────────────────────────────────────────────────────────────────────
 
-    def _before_target_from_starting(self, target_location: LonLatElev, target_node: str | None = None) -> None:
-        """From SLOPE_STARTING: get-or-create the origin node, then route to the target.
+    def _active_build(self) -> SegmentBuildContext:
+        """The build context for the active kind — one accessor, keyed by kind (no is_road)."""
+        return self.context.build(self.active_build_kind)
 
-        Attached via before= to select_target_from_starting. The origin has no
-        committed segment yet, so materialise it from the current selection.
+    def _before_target_from_starting(self, target_location: LonLatElev, target_node: str | None = None) -> None:
+        """From *_STARTING: route to the target from the build's origin WITHOUT minting a node.
+
+        The origin node is created only at commit (commit_paths), mirroring lift placement: an
+        uncommitted origin is carried as build.start_location and never materialised early.
+
+        start_node is the origin id ONLY when the build began from an existing (connected) node
+        (build.start_node_id set by _init_build); a fresh terrain origin stays None and is routed
+        from build.start_location by the custom-connect generator.
         """
-        start_node_id = self.context.slope_build.start_node_id
-        if start_node_id is None:
-            sel = self.context.selection
-            assert sel.lon is not None and sel.lat is not None and sel.elevation is not None, (
-                "starting a custom-connect slope requires a terrain selection with lon/lat/elevation"
-            )
-            node, _ = self._resort_graph.get_or_create_node(lon=sel.lon, lat=sel.lat, elevation=sel.elevation)
-            start_node_id = node.id
-            self.context.slope_build.start_node_id = start_node_id
-        self.context.custom_connect.start_node = start_node_id
+        self.context.custom_connect.start_node = self._active_build().start_node_id
         self.context.custom_connect.target_location = target_location
         self.context.custom_connect.target_node = target_node
-        self.context.custom_connect.force_mode = True
 
     def _before_target_from_building(self, target_location: LonLatElev, target_node: str | None = None) -> None:
-        """From SLOPE_BUILDING: route from the current endpoint to the clicked target.
-
-        Attached via before= to select_target_from_building.
-        """
-        self.context.custom_connect.start_node = self.context.slope_build.endpoints[0]
+        """From *_BUILDING: route from the active build's current endpoint to the clicked target."""
+        endpoints = self._active_build().endpoints
+        assert endpoints, "endpoints must be non-empty in *_BUILDING state (segment committed before routing)"
+        self.context.custom_connect.start_node = endpoints[0]
         self.context.custom_connect.target_location = target_location
         self.context.custom_connect.target_node = target_node
-        self.context.custom_connect.force_mode = True
 
     def _before_retarget_custom(self, target_location: LonLatElev, target_node: str | None = None) -> None:
-        """From SLOPE_CUSTOM_PATH: re-route to a newly clicked target (self-loop).
+        """From *_CUSTOM_PATH: re-route to a newly clicked target (self-loop).
 
-        Attached via before= to retarget_custom. The start node is unchanged; only
-        the target moves. enter_slope_custom_path (fired on the self-loop) regenerates
-        proposals, so no deferred flag is set here.
+        The start node is unchanged; only the target moves. enter_*_custom_path (fired on
+        the self-loop) regenerates proposals, so no deferred flag is set here.
         """
         self.context.custom_connect.target_location = target_location
         self.context.custom_connect.target_node = target_node
-        self.context.custom_connect.force_mode = True
+
+    def _before_finish_from_custom(self, entity_id: str) -> None:
+        """Sidebar Finish during targeting (any kind): drop the in-progress proposal.
+
+        The finish event carries the entity id; it is unused here — the destination
+        viewing state's own before-hook records it.
+        """
+        self.context.clear_custom_connect()
+        self.context.clear_proposals()
 
     def before_cancel_custom(self) -> None:
-        """Event hook for cancel_custom. Clears custom state and triggers path regeneration."""
+        """Event hook for cancel_custom (any kind). Clears custom state and regenerates the fan."""
+        self.context.deferred.fan_generation.add(self.active_build_kind)
         self.context.clear_custom_connect()
         self.context.clear_proposals()
-        self.context.deferred.path_generation = True
 
-    def before_cancel_slope(self) -> None:
-        """Event hook for cancel_slope. Clears all building and custom state."""
+    def before_cancel_build(self) -> None:
+        """Clear the active build + custom state (shared body for cancel_slope / cancel_road)."""
         self.context.clear_custom_connect()
         self.context.clear_proposals()
-        self.context.slope_build.clear()
+        self._active_build().clear()
+
+    # Event-named hooks python-statemachine auto-wires to the cancel_* events
+    def before_cancel_slope(self) -> None:
+        """Event hook for cancel_slope."""
+        self.before_cancel_build()
+
+    def before_cancel_road(self) -> None:
+        """Event hook for cancel_road."""
+        self.before_cancel_build()
 
     # ==========================================================================
     # Initialization
@@ -1171,6 +1249,10 @@ class PlannerStateMachine(StateMachine):
         self._resort_graph = graph
         model = context or PlannerContext()
         super().__init__(model=model, start_value=start_value)
+
+        # force_* (transition bypass) is legal ONLY inside an undo. undo_running() sets this for the
+        # duration of the undo side-effect; force_* asserts it.
+        self._undo_in_progress = False
 
         # Block direct calls to variant transitions (setattr is more performant
         # than __getattribute__ and doesn't interfere with library internals)
@@ -1201,32 +1283,28 @@ class PlannerStateMachine(StateMachine):
     # recommendation to treat undo as a "meta-feature" (history management)
     # rather than core workflow state transitions.
 
-    # Map state names to their exit hooks (for dynamic dispatch)
-    _EXIT_HOOKS: dict[str, Callable[[PlannerContext], None]] = {
-        "idle_ready": exit_idle_ready,
-        "idle_viewing_slope": exit_idle_viewing_slope,
-        "idle_viewing_lift": exit_idle_viewing_lift,
-        "idle_viewing_road": exit_idle_viewing_road,
-        "slope_starting": exit_slope_starting,
-        "slope_building": exit_slope_building,
-        "slope_custom_path": exit_slope_custom_path,
-        "lift_placing": exit_lift_placing,
-        "import_placing": exit_import_placing,
-        "merge_placing": exit_merge_placing,
-        "road_starting": exit_road_starting,
-        "road_building": exit_road_building,
-    }
+    @contextmanager
+    def undo_running(self) -> Iterator[None]:
+        """Mark that an undo is in progress so force_* (the transition bypass) is permitted.
+
+        The undo dispatcher wraps its side-effect in `with sm.undo_running():`. Outside this scope
+        force_idle/force_building/force_starting raise — the bypass is undo-only by construction, so
+        no one can use it as a shortcut in normal flow (which would skip guards/validation).
+        """
+        self._undo_in_progress = True
+        try:
+            yield
+        finally:
+            self._undo_in_progress = False
 
     def force_idle(self) -> None:
         """Force state machine to IdleReady state without transition.
 
-        Used after undo operations when no building context remains.
-        Clears all building, custom, and viewing state.
-        Does NOT trigger st.rerun() - caller is responsible for UI refresh.
+        Used after undo operations when no building context remains. Clears ALL build
+        kinds, custom, and viewing state. Does NOT trigger st.rerun().
         """
         logger.info(f"[STATE] Forcing state from {self.get_state_name()} to IdleReady")
-        # Clear all context state (state-specific cleanup via exit hook in _set_current_state)
-        self.context.slope_build.clear()
+        self.context.clear_builds()
         self.context.clear_custom_connect()
         self.context.clear_proposals()
         self.context.viewing.clear()
@@ -1235,86 +1313,78 @@ class PlannerStateMachine(StateMachine):
         # Run entry hook to ensure consistent state
         enter_idle_ready(self.context)
 
-    def force_building(self) -> None:
-        """Force state machine to SlopeBuilding state without transition.
+    def force_building(self, kind: SegmentKind) -> None:
+        """Force state machine to the kind's BUILDING state without transition (undo helper).
 
-        Used after undo operations when building context should be restored.
-        Assumes caller has already set up ctx.slope_build with the restored segments.
-        Does NOT trigger st.rerun() - caller is responsible for UI refresh.
+        Used after undoing a segment/finish when segments remain. Assumes the caller has
+        restored ctx.build(kind). Kind-generic: resolves the State + enter hook from the
+        kind's building_state id.
         """
-        logger.info(f"[STATE] Forcing state from {self.get_state_name()} to SlopeBuilding")
-        # Clear non-building state (state-specific cleanup via exit hook in _set_current_state)
+        self._force_fan_state(kind=kind, state_id=KIND_SPECS[kind].building_state)
+
+    def force_starting(self, kind: SegmentKind) -> None:
+        """Force state machine to the kind's STARTING state without transition (undo helper).
+
+        Used after undoing the last segment when the origin remains but no segments do.
+        """
+        self._force_fan_state(kind=kind, state_id=KIND_SPECS[kind].starting_state)
+
+    def _force_fan_state(self, kind: SegmentKind, state_id: str) -> None:
+        """Force the machine into one of the kind's fan states (STARTING/BUILDING) after undo.
+
+        force_* bypasses transitions, but it still runs the state's enter hook below, and every
+        kind's enter_*_starting/building arms the fan (Single Point of Truth) — so the next deferred
+        pass regenerates proposals. Both undo callers rely on that enter-hook arming.
+        """
+        logger.info(f"[STATE] Forcing state from {self.get_state_name()} to {kind.value} {state_id}")
         self.context.clear_custom_connect()
         self.context.viewing.clear()
-        # Force state machine internal state (calls exit hook for current state)
-        self._set_current_state(state=self.slope_building)
-        # Run entry hook to ensure consistent state
-        enter_slope_building(self.context)
+        state: State = getattr(self, state_id)
+        assert state is not None, f"state_id {state_id} must resolve to a State object for kind {kind.value}"
+        self._set_current_state(state=state)
+        self._run_enter_hook(state)
 
-    def force_road_building(self) -> None:
-        """Force state machine to RoadBuilding without transition (undo helper).
-
-        Used after undoing a road segment/finish when road segments remain.
-        Assumes caller has already set up ctx.road_build with the restored segments.
-        """
-        logger.info(f"[STATE] Forcing state from {self.get_state_name()} to RoadBuilding")
-        self.context.viewing.clear()
-        self._set_current_state(state=self.road_building)
-        enter_road_building(self.context)
-
-    def force_road_starting(self) -> None:
-        """Force state machine to RoadStarting without transition (undo helper).
-
-        Used after undoing the last road segment when the origin is still set
-        but no segments remain.
-        """
-        logger.info(f"[STATE] Forcing state from {self.get_state_name()} to RoadStarting")
-        self.context.viewing.clear()
-        self._set_current_state(state=self.road_starting)
-        enter_road_starting(self.context)
+    def _run_enter_hook(self, state: State) -> None:
+        """Invoke the on_enter_<state> hook for a force-set state (undo helpers)."""
+        getattr(self, f"on_enter_{state.id}")()
 
     def _set_current_state(self, state: State) -> None:
-        """Force state change with proper exit hook lifecycle.
+        """Force the state value directly, running the current state's real exit teardown first.
 
-        Implements the 'Safe Dynamic Exit' pattern per expert recommendation:
-        1. Call exit hook for CURRENT state (dynamic dispatch)
-        2. Set the new state value (in finally block - MUST happen)
-
-        The try-finally ensures the state change ALWAYS happens even if the
-        exit hook raises an exception. This prevents the app from getting
-        stuck in an inconsistent state.
-
-        Important: This method bypasses the normal transition mechanism and should only be used for undo
-                   operations! Also the method does only handle exit hooks, but entry hooks must be called
-                   separately by the caller after setting the state.
-
-        Raises:
-            KeyError: If current state has no exit hook registered in _EXIT_HOOKS. Adding a new state requires
-                adding its hook.
+        Bypasses the normal transition mechanism — undo helpers only. Enter hooks are the
+        caller's job (run separately after this). The registered exit hooks only clear in-memory
+        context fields, so they cannot fail.
         """
+        if not self._undo_in_progress:
+            raise RuntimeError(
+                "_set_current_state (transition bypass) is undo-only — call it inside `with "
+                "sm.undo_running():`. Normal flow must use events/transitions, not force_*."
+            )
         # Use .value (snake_case identifier) not .name (CamelCase display name)
         current_state_value = str(self._active_state.value)
-        # Direct access - raises KeyError if state not in _EXIT_HOOKS (fail fast)
-        exit_hook = PlannerStateMachine._EXIT_HOOKS[current_state_value]
-
-        try:
-            # 1. Dynamic exit hook dispatch for current state
+        # Only states with real exit cleanup are in EXIT_HOOKS; the rest have no teardown.
+        exit_hook = EXIT_HOOKS.get(current_state_value)
+        if exit_hook is not None:
             logger.info(f"[STATE] Calling exit_{current_state_value} before force")
             exit_hook(self.context)
-        except Exception as e:
-            # Log but don't block - availability over perfect cleanup
-            logger.error(f"[STATE] Exit hook exit_{current_state_value} failed during force: {e}")
-        finally:
-            # 2. State change MUST happen regardless of exit hook success
-            setattr(self.model, self.state_field, state.value)
+        setattr(self.model, self.state_field, state.value)
 
     def get_state_name(self) -> str:
         """Get current state name for display."""
         return str(self._active_state.name)
 
     def get_current_state_id(self) -> str:
-        """Get the current state's id (matches BUILD_STATES keys / PlannerStateMachine state ids)."""
+        """The active state's snake_case id (matches BUILD_STATES keys / KIND_SPECS state ids)."""
         return str(self._active_state.id)
+
+    def as_mermaid(self) -> str:
+        """The full state graph as a Mermaid stateDiagram (dependency-free — no Graphviz needed).
+
+        The library renders the whole state/transition network via its `format()` protocol and marks
+        the CURRENT state, so this doubles as a live debug snapshot. Wire it behind a debug flag to
+        log "where am I + the whole map" when diagnosing a stuck/again-only-once click (see docs).
+        """
+        return format(self, "mermaid")
 
     def __repr__(self) -> str:
         """Return string representation of state machine."""
@@ -1379,15 +1449,6 @@ class PlannerStateMachine(StateMachine):
         """
         self.send("close_panel")
 
-    # NOTE: No restore_building() wrapper - call sm.restore_building() event directly.
-    # The event is defined by transitions with event="restore_building" parameter.
-
-    def cancel_slope(self) -> None:
-        """Cancel slope building from any slope state. SM resolves transition atomically."""
-        self.send("cancel_slope")
-
-    # NOTE: undo_segment() removed - undo handled via force_idle()/force_building()
-
     def cancel_custom_connect(self) -> None:
         """Leave custom targeting, back to fan-out. SM resolves based on guards."""
         self.send("cancel_custom")
@@ -1412,17 +1473,44 @@ class PlannerStateMachine(StateMachine):
         sm = PlannerStateMachine(graph=graph, context=context)
         if add_ui_listener:
             sm.add_listener(StreamlitUIListener())  # type: ignore[no-untyped-call]
-            logger.info("Created PlannerStateMachine with StreamlitUIListener")
+            logger.debug("Created PlannerStateMachine with StreamlitUIListener")
         else:
-            logger.info("Created PlannerStateMachine without UI listener")
+            logger.debug("Created PlannerStateMachine without UI listener")
+        # The state graph is fixed at class-definition time, so dump it ONCE here.
+        # Paste this block into https://mermaid.live to see the diagram.
+        logger.info("[STATE][GRAPH] Full state machine (paste into mermaid.live):\n%s", sm.as_mermaid())
         return sm, context
 
 
-# Import-time bijection guard: every state-machine state must have an exit hook.
-# Mirrors the BUILD_STATES/OPERATIONS bijection asserts in mode_registry.
-_sm_state_ids = {s.id for s in PlannerStateMachine.states}
-assert set(PlannerStateMachine._EXIT_HOOKS) == _sm_state_ids, (
-    f"_EXIT_HOOKS keys must match state-machine state ids exactly. "
-    f"Missing: {_sm_state_ids - set(PlannerStateMachine._EXIT_HOOKS)}; "
-    f"stray: {set(PlannerStateMachine._EXIT_HOOKS) - _sm_state_ids}"
-)
+def _validate_registries_against_machine() -> None:
+    """Fail LOUD at import if EXIT_HOOKS or KIND_SPECS name a state/event this machine lacks.
+
+    Both hold plain strings the action/undo layers dispatch on by name (getattr/send); a typo'd or
+    forgotten state/event would otherwise only crash at runtime, deep in a build flow.
+    """
+    state_ids = {s.id for s in PlannerStateMachine.states}
+    event_names = {name for s in PlannerStateMachine.states for t in s.transitions for name in t.event.split()}
+
+    spec_states = {
+        sid
+        for spec in KIND_SPECS.values()
+        for sid in (spec.starting_state, spec.building_state, spec.custom_path_state)
+    }
+    spec_events = {
+        ev
+        for spec in KIND_SPECS.values()
+        for ev in (
+            spec.fan_commit_event,
+            spec.custom_continue_event,
+            spec.connector_finish_event,
+            spec.finish_event,
+            spec.cancel_event,
+        )
+    }
+    assert set(EXIT_HOOKS) <= state_ids, f"EXIT_HOOKS names unknown states: {set(EXIT_HOOKS) - state_ids}"
+    assert spec_states <= state_ids, f"KIND_SPECS names unknown states: {spec_states - state_ids}"
+    assert spec_events <= event_names, f"KIND_SPECS names unknown events: {spec_events - event_names}"
+
+
+# Import validation
+_validate_registries_against_machine()

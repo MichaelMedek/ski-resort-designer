@@ -2,11 +2,7 @@
 
 These tests don't check behavior; they check that parallel code sites stay in sync. Each guards a
 hazard where adding an enum member / dataclass field / new module would compile and pass every
-other test, yet ship a silent bug or a rarely-hit crash:
-
-- Serialization: a new dataclass field that `from_dict` forgets → silently lost on save/load.
-- Enum dispatch: a new enum member a total (`else: raise`) dispatcher forgets → runtime crash.
-- Layering: a model/core/generator module importing `ui` → an architecture violation.
+other test, yet ship a silent bug or a rarely-hit crash.
 
 The ActionType undo-dispatcher guard lives in test_resort_graph.py (it's undo-specific).
 """
@@ -225,8 +221,8 @@ class TestEnumDispatchCompleteness:
             ("Message.display", src(Message.__dict__["display"]), msglevel, "MessageLevel", set()),
             ("handle_idle_click", src(click_handlers.handle_idle_click), marker, "MarkerType", idle_omit),
             (
-                "handle_slope_building_click",
-                src(click_handlers.handle_slope_building_click),
+                "handle_path_building_click",
+                src(click_handlers.handle_path_building_click),
                 marker,
                 "MarkerType",
                 idle_omit,
@@ -282,7 +278,45 @@ class TestEnumDispatchCompleteness:
 
 
 # =============================================================================
-# 3. Layering: model / core / generators must never import ui
+# 3. Reload-safe enum comparisons: enum members compared with enum_eq, never ==/!=
+# =============================================================================
+
+
+class TestReloadSafeEnumComparisons:
+    """Enum members must be compared with enum_eq, never raw ``==`` / ``!=``.
+
+    Streamlit re-imports modules on rerun, creating a FRESH enum class per reload; a value built
+    against the OLD class fails ``==`` against the NEW class's member (identity/hash differ). The
+    repo convention is enum_eq (see enum_utils + test_enum_utils). A stray ``kind == SegmentKind.X``
+    silently misbehaves after a reload (e.g. the difficulty emoji vanishing on a slope), so this
+    scans the ui layer's AST for any comparison whose operand names one of the reload-fragile enums.
+    """
+
+    def test_no_raw_equality_against_fragile_enums(self) -> None:
+        fragile = {"SegmentKind", "EntityKind"}
+
+        def names_fragile_enum(node: ast.expr) -> bool:
+            # Matches `SegmentKind.SLOPE` / `EntityKind.ROAD` (Attribute on a fragile enum name).
+            return isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in fragile
+
+        offenders: list[str] = []
+        for py in (PACKAGE_DIR / "ui").rglob("*.py"):
+            tree = ast.parse(py.read_text(), filename=str(py))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Compare):
+                    continue
+                if not all(isinstance(op, ast.Eq | ast.NotEq) for op in node.ops):
+                    continue
+                operands = [node.left, *node.comparators]
+                if any(names_fragile_enum(o) for o in operands):
+                    offenders.append(f"{py.relative_to(PACKAGE_DIR)}:{node.lineno}")
+        assert not offenders, (
+            f"Enum members must be compared with enum_eq (reload-safe), not raw ==/!=. Offenders: {offenders}"
+        )
+
+
+# =============================================================================
+# 4. Layering: model / core / generators must never import ui
 # =============================================================================
 
 
@@ -310,7 +344,7 @@ class TestLayering:
 
 
 # =============================================================================
-# 4. NodeConnected contract: every subclass exposes the endpoint interface
+# 5. NodeConnected contract: every subclass exposes the endpoint interface
 # =============================================================================
 
 
@@ -346,3 +380,69 @@ class TestNodeConnectedContract:
             if missing:
                 offenders[cls.__name__] = missing
         assert not offenders, f"NodeConnected subclasses missing endpoint members: {offenders}"
+
+
+# =============================================================================
+# 6. segment_path_entities covers every buildable SegmentKind (extensibility guard)
+# =============================================================================
+
+
+class TestSegmentPathEntitiesCoversEveryKind:
+    """ResortGraph.segment_path_entities is the single source for "all segment-group entities"
+    (merge repoint, boundary snapshot, segment→entity lookup). It is hand-written
+    (`[*self.slopes.values(), *self.roads.values()]`), so a new SegmentKind whose finished entity
+    lands in a NEW collection the property doesn't include would silently vanish from every
+    consumer. This ties the property to the SegmentKind ground truth: finish one entity of each
+    kind and assert it shows up in segment_path_entities.
+    """
+
+    def test_every_buildable_kind_appears_in_segment_path_entities(self) -> None:
+        from skiresort_planner.model.path_point import PathPoint
+        from skiresort_planner.model.path_segment import SegmentKind
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
+        from skiresort_planner.model.resort_graph import ResortGraph
+        from skiresort_planner.ui.kind_spec import KIND_SPECS
+
+        m = 111320.0
+        for kind in SegmentKind:
+            graph = ResortGraph()
+            pts = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=0.0, lat=-300 / m, elevation=1970.0)]
+            graph.commit_paths(paths=[ProposedPathSegment(points=pts, kind=kind)], record_undo=False)
+            seg_id = list(graph.segments.keys())[-1]
+            entity = KIND_SPECS[kind].finish(graph, [seg_id])
+            assert entity is not None, f"finishing a {kind.value} must produce an entity"
+            assert entity in graph.segment_path_entities, (
+                f"finished {kind.value} entity is missing from segment_path_entities — "
+                "a new SegmentKind must be added to that property or it drops out of merge/lookup/snapshot"
+            )
+
+    def test_every_buildable_kind_survives_serialization_roundtrip(self) -> None:
+        """GAP-C guard: ResortGraph's per-kind dicts/counters/serialization are hand-written
+        (slopes/roads, _slope_counter/_road_counter, the to_dict/from_dict blocks). A new SegmentKind
+        whose entity dict is forgotten in to_dict/from_dict would silently fail to persist. This ties
+        persistence to the SegmentKind ground truth: finish one entity of each kind, round-trip the
+        whole graph, and assert the entity (by id) survives.
+        """
+        import json
+
+        from skiresort_planner.model.path_point import PathPoint
+        from skiresort_planner.model.path_segment import SegmentKind
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
+        from skiresort_planner.model.resort_graph import ResortGraph
+        from skiresort_planner.ui.kind_spec import KIND_SPECS
+
+        m = 111320.0
+        for kind in SegmentKind:
+            graph = ResortGraph()
+            pts = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=0.0, lat=-300 / m, elevation=1970.0)]
+            graph.commit_paths(paths=[ProposedPathSegment(points=pts, kind=kind)], record_undo=False)
+            entity = KIND_SPECS[kind].finish(graph, [list(graph.segments.keys())[-1]])
+            assert entity is not None
+            before_ids = {e.id for e in graph.segment_path_entities}
+
+            restored = ResortGraph.from_dict(data=json.loads(json.dumps(graph.to_dict())))
+            after_ids = {e.id for e in restored.segment_path_entities}
+            assert before_ids <= after_ids, (
+                f"a finished {kind.value} entity did not survive to_dict→from_dict — "
+                f"its per-kind dict is likely missing from the serialization block (GAP-C)"
+            )

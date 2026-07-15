@@ -40,7 +40,7 @@ def save(graph: ResortGraph, resort_id: str) -> None:
 
     Skips empty graphs — no point creating a file for an unused session.
     """
-    if not graph.slopes and not graph.lifts and not graph.segments:
+    if (not graph.slopes) and (not graph.lifts) and (not graph.roads) and (not graph.segments):
         return
 
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
@@ -55,6 +55,7 @@ def load(resort_id: str) -> ResortGraph | None:
     """Read backups/<resort_id>.json and return the graph, or None if missing."""
     path = _path_for(resort_id)
     if not path.exists():
+        logger.debug(f"No backup found for resort {resort_id} at {path}")
         return None
     return ResortGraph.from_dict(data=json.loads(path.read_text()))
 

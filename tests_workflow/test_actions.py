@@ -410,7 +410,7 @@ class TestSlopeBuildingActionFlow:
         assert ctx.proposals.paths, "recompute must generate fan proposals"
 
         commit_selected_path(path_idx=0)
-        assert ctx.slope_build.segments, "commit must add a segment to the building context"
+        assert ctx.build(SegmentKind.SLOPE).segments, "commit must add a segment to the building context"
 
         finish_current_slope()
         assert sm.is_idle_viewing_slope
@@ -433,6 +433,7 @@ class TestSlopeBuildingActionFlow:
         from skiresort_planner.ui.actions import (
             commit_selected_path,
             finish_current_slope,
+            process_path_generation_deferred,
             recompute_paths,
             undo_last_action,
         )
@@ -441,13 +442,15 @@ class TestSlopeBuildingActionFlow:
         sm, ctx, graph = self._start_building(fake_st, path_factory, dem)
         recompute_paths()
         commit_selected_path(path_idx=0)
-        seg_id = ctx.slope_build.segments[-1]
+        seg_id = ctx.build(SegmentKind.SLOPE).segments[-1]
         finish_current_slope()
         assert sm.is_idle_viewing_slope
 
         undo_last_action()  # undo FINISH_SLOPE
         assert sm.is_slope_building_only, "undo of finish returns to slope building"
-        assert ctx.slope_build.segments == [seg_id], "segments are restored"
+        assert ctx.build(SegmentKind.SLOPE).segments == [seg_id], "segments are restored"
+        # force_building arms the fan on the deferred pass (unified with the live flow).
+        process_path_generation_deferred()
         assert ctx.proposals.paths, "the fan is regenerated from the restored endpoint"
 
 
@@ -468,15 +471,15 @@ class TestRoadBuildingActionFlow:
         sm, ctx = _session(fake_st, graph, factory=path_factory, dem=dem)
         sm.start_road(node_id=None, location=path_points_blue[0])
 
-        # Seed a road proposal (as handle_road_building_click would) and commit it.
+        # Seed a road proposal (as handle_path_building_click would) and commit it.
         ctx.proposals.paths = [ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)]
         ctx.proposals.selected_idx = 0
         commit_selected_path(path_idx=0)
 
         assert sm.is_road_building_only, "road commit stays in road_building"
-        assert len(ctx.road_build.segments) == 1
+        assert len(ctx.build(SegmentKind.ROAD).segments) == 1
         assert len(graph.roads) == 0, "no Road entity until Finish Road"
-        assert enum_eq(a=graph.segments[ctx.road_build.segments[-1]].kind, b=SegmentKind.ROAD)
+        assert enum_eq(a=graph.segments[ctx.build(SegmentKind.ROAD).segments[-1]].kind, b=SegmentKind.ROAD)
         assert graph.undo_stack[-1].action_type.name == "ADD_SEGMENTS", "per-segment undo recorded"
 
     def test_finish_then_undo_restores_road_building(
@@ -493,14 +496,54 @@ class TestRoadBuildingActionFlow:
         ctx.proposals.paths = [ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)]
         ctx.proposals.selected_idx = 0
         commit_selected_path(path_idx=0)
-        seg_id = ctx.road_build.segments[-1]
+        seg_id = ctx.build(SegmentKind.ROAD).segments[-1]
         finish_current_road()
         assert sm.is_idle_viewing_road
 
         undo_last_action()  # undo FINISH_ROAD
         assert sm.is_road_building_only, "undo of finish returns to road building"
-        assert ctx.road_build.segments == [seg_id], "segments are restored"
+        assert ctx.build(SegmentKind.ROAD).segments == [seg_id], "segments are restored"
         assert ctx.proposals.paths == [], "roads have no fan to regenerate"
+
+    def test_connector_proposal_auto_finishes_to_viewing(
+        self, fake_st, path_factory, mock_dem_red_slope_diagonal, path_points_blue
+    ) -> None:
+        # A proposal that IS a connector (is_connector AND target_node_id set), committed from the
+        # custom-path state, must NOT stay in building — commit_selected_path routes it through
+        # _finish_connector → the Road entity is created and the machine lands in idle_viewing_road.
+        # This is the branch the other road tests miss (they leave target_node_id empty → continue).
+        from skiresort_planner.model.path_segment import SegmentKind
+        from skiresort_planner.ui.actions import commit_selected_path
+
+        dem = mock_dem_red_slope_diagonal
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st, graph, factory=path_factory, dem=dem)
+        sm.start_road(node_id=None, location=path_points_blue[0])
+
+        # Commit one real fan segment so we're in road_building with a target node to connect to.
+        first = ProposedPathSegment(points=path_points_blue, kind=SegmentKind.ROAD)
+        end_ids = graph.commit_paths(paths=[first])
+        seg0 = list(graph.segments.keys())[-1]
+        sm.commit_road(segment_id=seg0, endpoint_node_id=end_ids[0])
+        assert sm.is_road_building_only
+
+        # Route to a custom target → road_custom_path, then commit a CONNECTOR proposal onto an
+        # existing node (target_node_id set) → auto-finish.
+        target_node_id = end_ids[0]
+        target = graph.nodes[target_node_id]
+        sm.select_custom_target(target_location=(target.lon, target.lat, target.elevation))
+        assert sm.is_road_custom_path
+
+        connector = ProposedPathSegment(
+            points=path_points_blue, is_connector=True, target_node_id=target_node_id, kind=SegmentKind.ROAD
+        )
+        ctx.proposals.paths = [connector]
+        ctx.proposals.selected_idx = 0
+        commit_selected_path(path_idx=0)
+
+        assert sm.is_idle_viewing_road, "a real connector auto-finishes to the viewing state"
+        assert len(graph.roads) == 1, "the Road entity was created by the connector auto-finish"
+        assert ctx.viewing.road_id is not None, "the finished road is being viewed"
 
 
 class TestDeferredProcessing:
@@ -512,7 +555,7 @@ class TestDeferredProcessing:
         from skiresort_planner.ui.actions import process_path_generation_deferred
 
         _sm, ctx = _session(fake_st, ResortGraph(), factory=path_factory, dem=mock_dem_red_slope_diagonal)
-        ctx.deferred.path_generation = False
+        ctx.deferred.fan_generation.discard(SegmentKind.SLOPE)
         assert process_path_generation_deferred() is False
 
     def test_process_path_generation_builds_fan_when_pending(
@@ -526,10 +569,10 @@ class TestDeferredProcessing:
         start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
         sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
         ctx.selection.set(lon=0.0, lat=0.0, elevation=start_elev)
-        ctx.deferred.path_generation = True
+        ctx.deferred.fan_generation.add(SegmentKind.SLOPE)
 
         assert process_path_generation_deferred() is True
-        assert ctx.deferred.path_generation is False, "flag cleared after processing"
+        assert SegmentKind.SLOPE not in ctx.deferred.fan_generation, "flag cleared after processing"
         assert ctx.proposals.paths, "fan proposals generated for the building state"
 
     def test_process_custom_connect_noop_when_not_pending(
@@ -540,32 +583,6 @@ class TestDeferredProcessing:
         _sm, ctx = _session(fake_st, ResortGraph(), factory=path_factory, dem=mock_dem_red_slope_diagonal)
         ctx.deferred.custom_connect = False
         assert process_custom_connect_deferred() is False
-
-    def test_fast_deferred_start_building_from_node(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
-        from skiresort_planner.ui.actions import handle_fast_deferred_actions
-
-        dem = mock_dem_red_slope_diagonal
-        graph = ResortGraph()
-        node, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
-        sm, ctx = _session(fake_st, graph, factory=path_factory, dem=dem)
-        ctx.deferred.start_building_from_node_id = node.id
-
-        handle_fast_deferred_actions()
-        assert sm.is_slope_starting, "deferred start-building-from-node begins a slope"
-        assert ctx.deferred.start_building_from_node_id is None, "flag consumed"
-
-    def test_fast_deferred_start_lift_from_node(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
-        from skiresort_planner.ui.actions import handle_fast_deferred_actions
-
-        dem = mock_dem_red_slope_diagonal
-        graph = ResortGraph()
-        node, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
-        sm, ctx = _session(fake_st, graph, factory=path_factory, dem=dem)
-        ctx.deferred.start_lift_from_node_id = node.id
-
-        handle_fast_deferred_actions()
-        assert sm.is_lift_placing, "deferred start-lift-from-node begins lift placement"
-        assert ctx.deferred.start_lift_from_node_id is None, "flag consumed"
 
 
 class TestOSMImport:
@@ -775,3 +792,117 @@ class TestOSMImport:
         _flag_import()
         actions.process_osm_import_deferred()  # same area again
         assert len(graph.slopes) == 1 and len(graph.lifts) == 1, "no duplicates on re-import"
+
+
+class TestSegmentOrigin:
+    """_segment_origin resolves the point a fan radiates from.
+
+    No origin node is materialised before commit, so start_node_id is either a LIVE node (existing
+    junction / committed endpoint) or None (fresh terrain origin, carried as start_location). A
+    non-None id must therefore resolve strictly — a dangling id is a bug and raises (fail-fast).
+    """
+
+    def test_falls_back_to_start_location_when_no_origin_node(self, empty_graph) -> None:
+        from skiresort_planner.ui.actions import resolve_build_origin
+        from skiresort_planner.ui.context import SegmentBuildContext
+
+        # Fresh terrain origin: no node yet, carried as start_location.
+        build = SegmentBuildContext(start_location=PathPoint(lon=8.019, lat=46.584, elevation=3065.0))
+        lon, lat, elevation, start_node_id = resolve_build_origin(build=build, graph=empty_graph)
+
+        assert (lon, lat, elevation) == (8.019, 46.584, 3065.0), "routes from the pending origin location"
+        assert start_node_id is None, "no node yet — commit_paths mints it"
+
+    def test_stale_origin_node_falls_back_to_start_location(self, empty_graph) -> None:
+        from skiresort_planner.ui.actions import resolve_build_origin
+        from skiresort_planner.ui.context import SegmentBuildContext
+
+        # The origin node was cleaned when the last segment was undone, but start_location survives
+        # (restored by _restore_build_context). The dangling id is ignored; the location is used.
+        build = SegmentBuildContext(
+            start_node_id="N999",  # cleaned as isolated
+            start_location=PathPoint(lon=8.019, lat=46.584, elevation=3065.0),
+        )
+        lon, lat, elevation, start_node_id = resolve_build_origin(build=build, graph=empty_graph)
+        assert (lon, lat, elevation) == (8.019, 46.584, 3065.0), "falls back to the origin location"
+        assert start_node_id is None, "the stale id is not reused"
+
+    def test_raises_when_no_origin_at_all(self, empty_graph) -> None:
+        import pytest
+
+        from skiresort_planner.ui.actions import resolve_build_origin
+        from skiresort_planner.ui.context import SegmentBuildContext
+
+        # No endpoint, a dangling origin id, and NO location fallback → genuine programming error.
+        build = SegmentBuildContext(start_node_id="N999")
+        with pytest.raises(ValueError, match="no start node or location"):
+            resolve_build_origin(build=build, graph=empty_graph)
+
+    def test_endpoint_must_be_live(self, empty_graph) -> None:
+        import pytest
+
+        from skiresort_planner.ui.actions import resolve_build_origin
+        from skiresort_planner.ui.context import SegmentBuildContext
+
+        # A committed endpoint must exist — a missing one is an invariant violation (strict []).
+        build = SegmentBuildContext(endpoints=["N999"])
+        with pytest.raises(KeyError):
+            resolve_build_origin(build=build, graph=empty_graph)
+
+    def test_uses_node_when_present(self, empty_graph, path_points_blue) -> None:
+        from skiresort_planner.ui.actions import resolve_build_origin
+        from skiresort_planner.ui.context import SegmentBuildContext
+
+        node, _ = empty_graph.get_or_create_node(lon=8.02, lat=46.58, elevation=3000.0)
+        build = SegmentBuildContext(start_node_id=node.id)
+        lon, lat, elevation, start_node_id = resolve_build_origin(build=build, graph=empty_graph)
+
+        assert (lon, lat, elevation) == (node.lon, node.lat, node.elevation)
+        assert start_node_id == node.id, "an existing origin node is returned for reuse on commit"
+
+
+class TestUndoToZeroAfterFinish:
+    """Regression: build a road, finish, undo the finish, then undo each segment back to zero.
+
+    The final undo cleans the origin node (now isolated); the build must stay resolvable — the fan
+    regenerates from the origin location, not a dangling start_node_id (was 'KeyError: N###').
+    """
+
+    def test_undo_all_segments_after_finish_regenerates_without_crash(
+        self, fake_st, empty_graph, path_factory, mock_dem_red_slope_diagonal
+    ) -> None:
+        from skiresort_planner.ui.actions import (
+            process_path_generation_deferred,
+            resolve_build_origin,
+            undo_last_action,
+        )
+
+        dem = mock_dem_red_slope_diagonal
+        m = 111320.0
+        sm, ctx = _session(fake_st, empty_graph, path_factory, dem)
+        ctx.build_mode.mode = SegmentKind.ROAD.value
+
+        # Start a road from fresh terrain and commit two segments (undo actions recorded).
+        sm.start_road(node_id=None, location=PathPoint(lon=0.0, lat=0.0, elevation=2000.0))
+        for i in range(1, 3):
+            pts = [
+                PathPoint(lon=(i - 1) * 300 / m, lat=0.0, elevation=2000.0 - (i - 1) * 10),
+                PathPoint(lon=i * 300 / m, lat=0.0, elevation=2000.0 - i * 10),
+            ]
+            endpoint_ids = empty_graph.commit_paths(paths=[ProposedPathSegment(points=pts, kind=SegmentKind.ROAD)])
+            seg = list(empty_graph.segments.keys())[-1]
+            sm.commit_road(segment_id=seg, endpoint_node_id=endpoint_ids[0])
+
+        road = empty_graph.finish_road(segment_ids=ctx.build(SegmentKind.ROAD).segments)
+        sm.finish_road(entity_id=road.id)
+        assert sm.is_idle_viewing_road
+
+        # Undo everything: finish, then each segment. The last undo cleans the origin node.
+        while empty_graph.undo_stack:
+            undo_last_action()
+
+        # The build must still resolve its origin without a dangling id (the crash was here).
+        build = ctx.build(SegmentKind.ROAD)
+        if build.segments or build.start_location or build.start_node_id:
+            resolve_build_origin(build=build, graph=empty_graph)  # must not raise
+        process_path_generation_deferred()  # the deferred fan pass must not raise either

@@ -206,11 +206,11 @@ $$S_{\text{avg}} < 5\% \implies \text{Too Flat Warning}$$
 
 ### 5.1 Core Principle
 
-The algorithm:
-1. **Fixes the target effective slope** (what the skier experiences)
-2. **Dynamically calculates the traverse angle** at each step based on local terrain
+The tracer holds a **signed target grade** and follows the terrain:
+1. **Fixes the target grade** (what the traveller experiences) — its **sign** sets the direction along the path's length: positive **descends** the fall line, negative **climbs** against it (fall line + 180°), zero **contours** across it.
+2. **Dynamically calculates the traverse angle** at each step from grade **magnitudes**, so the trig is identical whether climbing or descending.
 
-This allows paths to **naturally curve around terrain features**.
+This allows routes to **naturally curve around terrain features**. Ski **slopes** always descend, so they use positive targets (§5.2). **Roads** may descend, climb, or run flat, so they use the signed green targets (§7.3). A contour (zero target) drives the traverse angle to ~89°, tracing across the slope at near-constant elevation.
 
 ### 5.2 Target Effective Slopes
 
@@ -258,9 +258,11 @@ Generate paths in order from easiest to hardest target, stopping after **4 cente
 $$\text{targetTotalDrop} = \frac{S_{\text{target}}}{100} \times L_{\text{target}}$$
 
 **At each step:**
-1. $\text{remainingDrop} = \text{targetTotalDrop} - \text{accumulatedDrop}$
+1. $\text{remainingDrop} = \text{targetTotalDrop} - \text{accumulatedDrop}$ (signed)
 2. $\text{remainingDistance} = L_{\text{target}} - d_{\text{total}}$
-3. $S_{\text{step}} = \frac{\text{remainingDrop}}{\text{remainingDistance}} \times 100$ (clamped to $[0.3, 2.5] \times S_{\text{target}}$)
+3. $S_{\text{step}} = \frac{\text{remainingDrop}}{\text{remainingDistance}} \times 100$
+
+$S_{\text{step}}$ carries the **sign** of the target. It is clamped to a band that keeps the step running the target's way — a descent step never climbs, a climb step never descends, a contour stays near level: magnitude in $[\,$`MIN_SKIABLE`$, |S_{\text{target}}|\cdot$`CLAMP_FACTOR`$\,]$ with the target's sign (contour: $[-$`MIN_SKIABLE`$, +$`MIN_SKIABLE`$]$). For a descent this reduces exactly to the historical $[\,$`MIN_SKIABLE`$, S_{\text{target}}\cdot$`CLAMP_FACTOR`$\,]$ rule.
 
 **Why this works:** The path self-corrects toward the target average without retries.
 
@@ -271,20 +273,22 @@ $$\text{targetTotalDrop} = \frac{S_{\text{target}}}{100} \times L_{\text{target}
 Sample at the midpoint of each step to prevent "lag":
 $$S_{\text{terrain}}, \theta_{\text{fall}} = \textrm{getTerrainGradient}(\text{midpoint})$$
 
-**Step 2: Calculate Traverse Angle**
+**Step 2: Calculate Traverse Angle** (from grade magnitudes — sign-independent)
 
-$$\theta_{\text{traverse}} = \arccos\left(\frac{S_{\text{step}}}{S_{\text{terrain}}}\right)$$
+$$\theta_{\text{traverse}} = \arccos\left(\frac{|S_{\text{step}}|}{S_{\text{terrain}}}\right)$$
 
 Cases:
-- If $S_{\text{step}} \geq S_{\text{terrain}}$: $\theta = 0°$ (straight down)
-- If $S_{\text{step}} < S_{\text{terrain}}$: Calculate traverse angle
-- Clamp to $[0°, 89°]$
+- If $|S_{\text{step}}| \geq S_{\text{terrain}}$: $\theta = 0°$ (straight along the reference bearing)
+- If $|S_{\text{step}}| < S_{\text{terrain}}$: Calculate traverse angle
+- If $S_{\text{step}} = 0$ (contour): $\arccos(0) = 90°$, clamped to 89° — a traverse across the slope
+- Clamp to $[2°, 89°]$
 
 **Step 3: Calculate Step Bearing**
 
-$$\theta_{\text{step}} = \theta_{\text{fall}} + \text{sign} \cdot \theta_{\text{traverse}} + \epsilon$$
+$$\theta_{\text{step}} = \theta_{\text{ref}} + \text{sign} \cdot \theta_{\text{traverse}} + \epsilon$$
 
 Where:
+- $\theta_{\text{ref}} = \theta_{\text{fall}}$ for a descent or contour, $\theta_{\text{fall}} + 180°$ for a climb (the direction we progress along the path)
 - $\text{sign} = -1$ for Left, $+1$ for Right
 - $\epsilon \sim \mathcal{N}(0, \sigma^2)$ is adaptive Gaussian noise
 
@@ -301,6 +305,8 @@ Where $\Delta d$ is the step size (default 30m).
 **Step 5: Update State**
 
 $$\text{accumulatedDrop} += z_{\text{current}} - z_{\text{new}}$$
+
+The step drop is **signed**: positive when the step descended, negative when it climbed.
 
 **Step 6: Loop** until $d_{\text{total}} \geq L_{\text{target}}$
 
@@ -355,16 +361,16 @@ When the automatically generated fan paths don't include the direction you want,
 
 ### 7.1 Multi-Grade Path Search
 
-The algorithm tries **16 combinations** (8 difficulty-grade variants × 2 sides) to find viable paths:
+The algorithm tries **8 difficulty-grade targets** (4 difficulties × gentle/steep) to find viable paths:
 
-| Difficulty | Grades | Sides | Total |
-|------------|--------|-------|-------|
-| 🟢 Green | Gentle (7%), Steep (12%) | Left, Right | 4 |
-| 🔵 Blue | Gentle (17%), Steep (22%) | Left, Right | 4 |
-| 🔴 Red | Gentle (28%), Steep (37%) | Left, Right | 4 |
-| ⚫ Black | Gentle (45%), Steep (60%) | Left, Right | 4 |
+| Difficulty | Grades | Total |
+|------------|--------|-------|
+| 🟢 Green | Gentle (7%), Steep (12%) | 2 |
+| 🔵 Blue | Gentle (17%), Steep (22%) | 2 |
+| 🔴 Red | Gentle (28%), Steep (37%) | 2 |
+| ⚫ Black | Gentle (45%), Steep (60%) | 2 |
 
-Similar paths are deduplicated, keeping only the easiest difficulty when paths overlap.
+Unlike the fan tracer (§5.3), the grid-Dijkstra planner has no left/right **side** — it finds the single least-cost route for a target grade, so there are 8 searches, not 16. Similar paths are deduplicated, keeping only the easiest difficulty when paths overlap.
 
 ### 7.2 Grid-Based Dijkstra Algorithm
 
@@ -399,19 +405,27 @@ Where:
 
 ### 7.3 Roads (for cars)
 
-A **Road** is a vehicle road built **segment-by-segment**, exactly like a custom-connect slope minus the fan-out (roads are "always custom-connect").
+A **Road** is a vehicle road built **segment-by-segment**. Like a slope, a road is routed two ways: a **fan** that radiates candidate routes from the current endpoint (§7.3.1), and **custom-connect** to a clicked target via grid-Dijkstra with a direct-line fallback (§7.3.2). The one road-specific rule is the **±15% hard cap** (§7.3.3).
 
-A road is traced by the same grid-Dijkstra algorithm and the same cost function as §7.2. A road holds a **target grade** exactly the way a slope holds its difficulty target; the two behavioral differences are how that target grade is chosen and that a road may climb.
+**Target grade.** A road reuses the **green** slope targets (7% gentle, 12% steep, from `SlopeConfig.DIFFICULTY_TARGETS["green"]`). Because a road may climb, descend, or run flat, the targets are **signed**: descend ($+$), climb ($-$), and a flat contour ($0$).
 
-**Target grade.** A road reuses the **green** slope targets (7% gentle, 12% steep, from `SlopeConfig.DIFFICULTY_TARGETS["green"]`), signed by the endpoints' direction. With $H = z_{\text{start}} - z_{\text{target}}$ the signed drop (positive = descent):
+#### 7.3.1 Road fan
 
-$$g_{\text{target}} \in \{\operatorname{sign}(H)\cdot 7,\; \operatorname{sign}(H)\cdot 12\}$$
+Like the slope fan, the road fan is traced by the gradient-agnostic tracer (§5) from the current endpoint. Its target set is the signed green grades plus a contour:
 
-So a road is planned exactly like a **green slope** — the only difference is the sign (a road may aim uphill). On gentle ground both targets exceed the direct grade and collapse to one straight route; on steep ground each serpentines to hold its grade, giving two proposals (gentle vs steeper green).
+$$g_{\text{target}} \in \{+7, +12, -7, -12, 0\}$$
 
-**Cost function.** Every edge is scored by the identical grade-deviation penalty and the identical against-direction monotonicity penalty as §7.2, against $g_{\text{target}}$. A road picks its `GradientMode` from the endpoints — `DOWNHILL` when it descends, `UPHILL` when it climbs — and the monotonicity penalty then keeps the segment one-way (no looping), exactly as it does for a descent-only slope. There is no road-specific relaxation of the cost.
+giving up to five spokes (each a left/right traverse, or a center path where the target magnitude meets the terrain steepness). There is no center-stop rule (only five targets). Every spoke is hard-capped at ±15% (§7.3.3); on steep ground the steep-green spokes are filtered out while the gentle and contour spokes survive, so the fan degrades gracefully rather than emptying.
 
-**±15% is a HARD cap at build time.** The exponential term is only a *soft* preference; every finished proposal is additionally **hard-capped** at $g_{\max} = 15\%$ (`ROAD_MAX_GRADIENT_PCT`) by the caller and a steeper route is refused ("No car road within ±15% is possible to that point"). A committed road therefore never exceeds the hard cap. The green targets and $g_{\max}$ are single-sourced constants — no hardcoded percentages.
+#### 7.3.2 Custom-connect + straight-line fallback
+
+Clicking a target routes to it by the same grid-Dijkstra algorithm and cost function as §7.2, against the signed green $g_{\text{target}}$. A road picks its `GradientMode` from the endpoints — `DOWNHILL` when it descends, `UPHILL` when it climbs — and the monotonicity penalty keeps the segment one-way (no looping), exactly as for a descent-only slope. On gentle ground both targets collapse to one straight route; on steep ground each serpentines, giving two proposals.
+
+If **no** serpentine fits within ±15%, the caller offers a **direct road** (a straight 2-point line, treated as a bridge/cut) — but **only if that direct line itself is within ±15%**. This is the key slope-vs-road difference: a slope's straight-line fallback is *always* offered (any grade is a valid, if steep, run), whereas a road is genuinely **refused** ("Too steep for a car road") when even the direct line is too steep.
+
+#### 7.3.3 ±15% is a HARD cap at build time
+
+The exponential cost term is only a *soft* preference; every road proposal — fan spoke, serpentine, or direct fallback — is additionally **hard-capped** at $g_{\max} = 15\%$ (`ROAD_MAX_GRADIENT_PCT`) by the caller. Since `max_slope_pct` is a magnitude, the cap catches steep climbs and descents alike. A committed road therefore never exceeds the cap. The green targets and $g_{\max}$ are single-sourced constants — no hardcoded percentages.
 
 ---
 
@@ -448,9 +462,10 @@ Spacing pylons may affect adjacent spans. Re-run Phase 1 to fix new violations.
 
 An **Import from OpenStreetMap** control (sidebar, idle only) fetches the real lifts & pistes within a square area around the map center and adds them to the graph. **Geometry only** — we take just the lon/lat polylines and lift stations; elevation, difficulty, pylons, and **belt width** are all recomputed by our own pipeline. OSM's own attributes (including `piste:width`) are ignored.
 
-### 9.1 Region + tiled fetch
+### 9.1 Region + single-query fetch
 
-A **square bounding box**: the current map center + a half-width from a slider. A single Overpass query over a large box times out (504), and firing every tile at once trips the public endpoint's rate limit (429). So we **tile** the box into a grid of square sub-tiles (each ≤ `2·TILE_HALF_WIDTH_M`, 4 km, squares partition a square exactly — no gaps, no overlap) and fetch them **paced** — a `TILE_THROTTLE_S` wait between requests, each tile retried with exponential backoff on a transient 429/504/network error — then merge the elements deduped by OSM id. A box within the tile size is a single query, sent with Overpass's native bbox filter.
+A **square bounding box**: the current map center + a half-width from a slider (`HALF_WIDTH_MIN/MAX/DEFAULT_KM`). A lift/piste-only query is **light** — even a full-size box returns in a few seconds.
+
 
 ### 9.2 Mapping OSM → graph
 

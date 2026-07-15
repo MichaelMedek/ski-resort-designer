@@ -29,9 +29,10 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from skiresort_planner.constants import ClickConfig, LiftConfig, MapConfig, OSMConfig, PathConfig
+from skiresort_planner.model.path_segment import SegmentKind
 
 if TYPE_CHECKING:
     from skiresort_planner.model.path_point import PathPoint
@@ -71,18 +72,19 @@ class BaseContext(ABC):
 
 @dataclass
 class SelectionContext(BaseContext):
-    """Current click/selection state."""
+    """Current click/selection state.
+
+    Holds the coordinates of the build origin (or the last clicked point).
+    """
 
     lon: float | None = None
     lat: float | None = None
     elevation: float | None = None
-    node_id: str | None = None
 
     def clear(self) -> None:
         self.lon = None
         self.lat = None
         self.elevation = None
-        self.node_id = None
 
     def set(self, lon: float, lat: float, elevation: float) -> None:
         """Set selection coordinates. Use this setter, don't set fields directly."""
@@ -123,10 +125,13 @@ class ProposalContext(BaseContext):
 
     paths: list[ProposedPathSegment] = field(default_factory=list)
     selected_idx: int | None = None
+    # The magnitude of the gentlest route found when a target/fan yielded NO in-cap route.
+    too_steep_gentlest_pct: float | None = None
 
     def clear(self) -> None:
         self.paths = []
         self.selected_idx = None
+        self.too_steep_gentlest_pct = None
 
 
 @dataclass
@@ -163,11 +168,13 @@ class LiftContext(BaseContext):
 
     start_node_id: str | None = None
     start_location: PathPoint | None = None  # For new node creation
-    type: str = "chairlift"
+    type: str = LiftConfig.DEFAULT_TYPE
 
     def clear(self) -> None:
         self.start_node_id = None
         self.start_location = None
+        # Reset the selected type to the default too — clear() means "back to initial state"
+        self.type = LiftConfig.DEFAULT_TYPE
 
 
 class BuildMode:
@@ -365,6 +372,20 @@ class ViewingContext(BaseContext):
         self.slope_id = None
         self.lift_id = None
 
+    # Maps each buildable SegmentKind to the name of the setter that records it as viewed. Keyed by
+    # kind so a new SegmentKind must add an entry; the import-time assert below fails loud otherwise.
+    _SET_VIEWED_SETTERS: ClassVar[dict[SegmentKind, str]] = {
+        SegmentKind.SLOPE: "set_slope_id",
+        SegmentKind.ROAD: "set_road_id",
+    }
+
+    def set_viewed(self, kind: SegmentKind, entity_id: str) -> None:
+        """Set the viewed entity by its SegmentKind (slope or road) — one kind-generic setter."""
+        assert kind in ViewingContext._SET_VIEWED_SETTERS, (
+            f"kind {kind} must be in _SET_VIEWED_SETTERS (module-level assert should have caught this at import)"
+        )
+        getattr(self, ViewingContext._SET_VIEWED_SETTERS[kind])(entity_id)
+
     # =========================================================================
     # STATE CONTROL METHODS (called by enter_*/exit_* lifecycle functions)
     # =========================================================================
@@ -423,18 +444,35 @@ class ViewingContext(BaseContext):
         self.view_3d = False
 
 
+# Import-time guard: set_viewed must map every buildable SegmentKind to a real setter, and each named
+# setter must exist. A new SegmentKind that forgets its viewer entry fails HERE at import.
+assert set(ViewingContext._SET_VIEWED_SETTERS) == set(SegmentKind), (
+    f"ViewingContext._SET_VIEWED_SETTERS must cover every SegmentKind. "
+    f"Missing: {set(SegmentKind) - set(ViewingContext._SET_VIEWED_SETTERS)}; "
+    f"stray: {set(ViewingContext._SET_VIEWED_SETTERS) - set(SegmentKind)}"
+)
+assert all(callable(getattr(ViewingContext, name, None)) for name in ViewingContext._SET_VIEWED_SETTERS.values()), (
+    "every ViewingContext._SET_VIEWED_SETTERS value must name a real ViewingContext method"
+)
+
+
 @dataclass
 class CustomConnectContext(BaseContext):
-    """Custom connect mode state."""
+    """Custom connect mode state: a routing target the build aims at, instead of the auto-fan."""
 
     start_node: str | None = None
-    force_mode: bool = False
     target_location: LonLatElev | None = None  # (lon, lat, elev)
     target_node: str | None = None  # Set when the target is an EXISTING node → reuse it by id (no proximity guess)
 
+    @property
+    def force_mode(self) -> bool:
+        """True while routing to a chosen target — i.e. a target_location is set. Derived, not
+        stored: every setter set target_location and force_mode together, so this is the one fact.
+        """
+        return self.target_location is not None
+
     def clear(self) -> None:
         self.start_node = None
-        self.force_mode = False
         self.target_location = None
         self.target_node = None
 
@@ -605,12 +643,10 @@ class DeferredContext(BaseContext):
     run with full access to session state after the UI refresh.
     """
 
-    path_generation: bool = False
+    # Kinds whose fan should regenerate on the next render (one entry per building kind) like slopes and roads
+    fan_generation: set[SegmentKind] = field(default_factory=set)
     gradient_target: float | None = None  # For smart path recommendation
-    auto_finish: bool = False  # Auto-finish slope after connector commit
     custom_connect: bool = False  # Generate paths to custom target location
-    start_building_from_node_id: str | None = None  # Deferred start_building from node
-    start_lift_from_node_id: str | None = None  # Deferred start_lift from node
     osm_import: bool = False  # Fetch + import OSM lifts/pistes for the chosen area (slow network)
     osm_import_half_width_km: float = OSMConfig.HALF_WIDTH_DEFAULT_KM  # Square half-width from the import slider
     # Center of the placed import box (click-to-place). Set by start_import, consumed on confirm.
@@ -622,12 +658,9 @@ class DeferredContext(BaseContext):
 
     def clear(self) -> None:
         """Clear all deferred flags."""
-        self.path_generation = False
+        self.fan_generation = set()
         self.gradient_target = None
-        self.auto_finish = False
         self.custom_connect = False
-        self.start_building_from_node_id = None
-        self.start_lift_from_node_id = None
         self.osm_import = False
         self.osm_import_half_width_km = OSMConfig.HALF_WIDTH_DEFAULT_KM
         self.osm_import_center_lon = None
@@ -682,9 +715,8 @@ class PlannerContext:
     Sub-contexts:
         selection: Current click/selection data
         proposals: Generated path proposals
-        slope_build: Slope building progress (SegmentBuildContext)
+        builds: Per-kind build progress, dict[SegmentKind, SegmentBuildContext]
         lift: Lift placement state
-        road_build: Road building progress (SegmentBuildContext)
         viewing: Which slope/lift is being viewed
         custom_connect: Custom target connection mode
         map: Map center and zoom
@@ -702,9 +734,11 @@ class PlannerContext:
     # Organized sub-contexts
     selection: SelectionContext = field(default_factory=SelectionContext)
     proposals: ProposalContext = field(default_factory=ProposalContext)
-    slope_build: SegmentBuildContext = field(default_factory=SegmentBuildContext)
+    # One build context per buildable SegmentKind (slope, road, …). Keyed by kind. Access via ctx.build(kind).
+    builds: dict[SegmentKind, SegmentBuildContext] = field(
+        default_factory=lambda: {kind: SegmentBuildContext() for kind in SegmentKind}
+    )
     lift: LiftContext = field(default_factory=LiftContext)
-    road_build: SegmentBuildContext = field(default_factory=SegmentBuildContext)
     viewing: ViewingContext = field(default_factory=ViewingContext)
     custom_connect: CustomConnectContext = field(default_factory=CustomConnectContext)
     map: MapContext = field(default_factory=MapContext)
@@ -725,17 +759,21 @@ class PlannerContext:
         """Clear path proposals."""
         self.proposals.clear()
 
-    def clear_building(self) -> None:
-        """Clear slope building state."""
-        self.slope_build.clear()
+    def build(self, kind: SegmentKind) -> SegmentBuildContext:
+        """The build context for a given SegmentKind (slope, road, …)."""
+        assert kind in self.builds, (
+            f"kind {kind} must be initialized in builds dict; this is set by __init__ for every SegmentKind"
+        )
+        return self.builds[kind]
+
+    def clear_builds(self) -> None:
+        """Clear every kind's build progress (slope, road, …)."""
+        for build in self.builds.values():
+            build.clear()
 
     def clear_lift(self) -> None:
         """Clear lift placement state."""
         self.lift.clear()
-
-    def clear_road(self) -> None:
-        """Clear road building state."""
-        self.road_build.clear()
 
     def clear_custom_connect(self) -> None:
         """Clear custom connect mode."""
@@ -757,18 +795,14 @@ class PlannerContext:
 
     def __repr__(self) -> str:
         """Return string representation of context."""
+        segments = {kind.value: len(b.segments) for kind, b in self.builds.items()}
         return (
             f"PlannerContext(state={self.state}, "
             f"coordinate={self.selection.coordinate}, "
-            f"slope={self.slope_build.name}, "
-            f"segments={len(self.slope_build.segments)}, "
+            f"segments={segments}, "
             f"lift_start={self.lift.start_node_id})"
         )
 
     def has_selection(self) -> bool:
         """Check if a point is selected."""
         return self.selection.has_selection()
-
-    def has_committed_segments(self) -> bool:
-        """Check if there are committed segments in current slope."""
-        return self.slope_build.has_committed_segments()

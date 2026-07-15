@@ -12,7 +12,7 @@ Design ski resorts on real Alpine terrain with an interactive map-based tool.
 
 1. **Click** on the map to place a starting point → path proposals appear
 2. **Click** a dashed line to select it → stats appear in right panel
-3. **Click "✅ Commit"** → segment becomes solid, new proposals appear
+3. **Click "✅ Commit This Path"** → segment becomes solid, new proposals appear
 4. **Click "🏁 Finish Committed Slope"** → slope is complete with a name and difficulty rating
 
 ---
@@ -163,8 +163,8 @@ On **flat terrain**, fewer paths appear because left/right variants merge when g
 
 | Warning | Meaning | Action Needed |
 |---------|---------|---------------|
-| **🚜 Side Cut** | Cross-slope requires excavation | Construction work to flatten piste |
-| **⚠️ Too Flat** | Gradient < 5% | Skiers may need to pole; valid for connectors |
+| **🚜 Excavator Warning** | Cross-slope requires excavation | Construction work to flatten piste |
+| **📐 Too Flat Warning** | Gradient < 5% | Skiers may need to pole; valid for connectors |
 
 > **Technical:** See [DETAILS.md](DETAILS.md) Section 4 for earthwork calculations.
 
@@ -263,7 +263,7 @@ Click **"🏔️ View in 3D"** to see pylons and cable from an angled perspectiv
 
 Roads are **vehicle roads** — access roads and connectors between areas of the resort. Unlike a ski slope, a road may climb, descend, or run flat, but it always stays within a gentle **±15% gradient** so cars can drive it. Roads are drawn as a distinct **brown-orange** ribbon.
 
-Roads are built **segment by segment, just like slopes**: you click the next point, a gentle segment is traced to it, and you keep extending until you press **🏁 Finish Committed Road**.
+Roads are built **segment by segment, just like slopes** — and with the same two ways to route: a **fan** of gentle routes radiates from your current point, **or** you click the exact next point and a route is traced straight to it. You keep extending until you press **🏁 Finish Committed Road**.
 
 ### Step 1: Select Road mode
 
@@ -275,14 +275,14 @@ Click the road's **origin** — empty terrain or an existing **junction node** (
 
 ### Step 3: Extend segment by segment
 
-Click the **next point** the road should reach. Two gentle route **proposals** (green 7%/12% grades, signed for climb or descent) are traced to it and drawn as **dashed translucent-brown** paths (just like slope custom-connect) — with **no endpoint dots**, since the proposals share the same target. Browse them with the **◀ ▶ arrows** in the right panel or by clicking a dashed proposal to highlight it, then press **✅ Commit Road Segment** to commit; the segment turns solid brown and you can extend further. Clicking an existing **node** makes the proposal a **connector**: the button becomes **🏁 Finish → {node}** and committing joins that junction and **finishes the road** (exactly like slope custom-connect to a node).
+A **fan** of gentle route **proposals** radiates from the current road end — some climbing, some descending, one running roughly level — so you can browse outward and pick a good-looking one. Alternatively, click the **next point** the road should reach and route(s) are traced straight to it (7%/12% grades, signed for climb or descent). Either way the proposals are drawn as **translucent-brown** paths; browse them with the **◀ ▶ arrows** in the right panel or by clicking a dashed proposal to highlight it, then press **✅ Commit Road Segment** to commit — the segment turns solid brown and you can extend further. Clicking an existing **node** makes the proposal a **connector**: the button becomes **🏁 Finish → {node}** and committing joins that junction and **finishes the road**.
 
-- If the terrain to your clicked point is too steep to stay within **±15%**, **no proposal** is offered and you get a message. Pick a closer point or route across gentler ground.
+- If even a **direct** road to your clicked point would exceed **±15%**, **no proposal** is offered and you get a message — a car road there is genuinely impossible, so pick a closer point or route across gentler ground. If a gentle direct line fits, it's offered as a single **bridge/cut** route.
 - **Undo** removes the last committed segment (then the one before it), exactly like a slope.
 
 ### Step 4: Finish the road
 
-Press **🏁 Finish Committed Road** in the sidebar. The road receives an auto-generated name and its details panel opens. Press **✖️ Cancel Road** to discard the whole in-progress road.
+Press **🏁 Finish Committed Road** in the sidebar. The road receives an auto-generated name and its details panel opens. Press **✖️ Cancel Full Road** to discard the whole in-progress road.
 
 ### Parking places
 
@@ -314,7 +314,7 @@ As with slopes and lifts, you can view the road's elevation profile, switch to *
 
 Below a divider sit two **utility** buttons:
 
-- **🗺️ Import (OSM)** — load real lifts & pistes for an area.
+- **🗺️ Import** — load real lifts & pistes from OpenStreetMap for an area.
 - **🔗 Node Merge** — collapse selected junction nodes into one
 
 The currently active mode is highlighted.
@@ -338,7 +338,7 @@ The currently active mode is highlighted.
 | Control | Action |
 |---------|--------|
 | **🏁 Finish Committed Road** | Finalize the road (enabled after ≥1 segment) |
-| **✖️ Cancel Road** | Discard the whole in-progress road, return to idle |
+| **✖️ Cancel Full Road** | Discard the whole in-progress road, return to idle |
 
 ### Search for a Place
 
@@ -387,7 +387,7 @@ Click **📂 Load from File** and select a previously saved JSON file.
 
 ### Export GPX
 
-Click **📤 Export GPX** to download GPS tracks of your slopes for use in other applications.
+Click **📥 Export GPX** to download GPS tracks of your slopes for use in other applications.
 
 ---
 
@@ -396,10 +396,10 @@ Click **📤 Export GPX** to download GPS tracks of your slopes for use in other
 Instead of starting from an empty map, load a real resort's existing lifts and pistes as a
 canvas, then keep editing with the normal tools.
 
-1. Select **🗺️ Import (OSM)** in the build-mode selector (like picking Slope/Road/Lift).
+1. Select **🗺️ Import** in the build-mode selector (like picking Slope/Road/Lift).
 2. Adjust the **Import area half-width (km)** slider (left) to size the box.
 3. **Click the map** to drop the import area — a blue square + center dot appear where you clicked. Click elsewhere to re-place it; move the slider to resize it live.
-4. **Confirm** by clicking the **center dot** on the map, or the **✅ Confirm Import** button in the right panel. The lifts and pistes fully inside the square are then fetched and added. **Cancel** (left) discards the box.
+4. **Confirm** by clicking the **center dot** on the map, or the **✅ Confirm Import** button in the right panel. The lifts and pistes fully inside the square are then fetched and added. **✖️ Cancel Import** (left) discards the box.
 
 **What gets imported**
 

@@ -20,6 +20,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
 
+from skiresort_planner.model.path_segment import SegmentKind
+
 
 class MessageLevel(Enum):
     """Display level for UI messages."""
@@ -90,7 +92,7 @@ class ToastMessage(ABC):
         import streamlit as st
 
         logger = logging.getLogger(__name__)
-        logger.info(f"[TOAST] {self.icon} {self.message}")
+        logger.debug(f"[TOAST] {self.icon} {self.message}")
         st.toast(f"{self.icon} {self.message}")
 
 
@@ -113,32 +115,6 @@ class InvalidClickMessage(ToastMessage):
     @property
     def message(self) -> str:
         return f"Cannot {self.action} — {self.reason}"
-
-
-@dataclass(frozen=True)
-class RoadTooSteepMessage(ToastMessage):
-    """No road proposal fits within the ±max-grade band to the clicked point.
-
-    Reports the gentlest gradient that COULD be found.
-    """
-
-    gentlest_pct: float | None  # magnitude of the gentlest route found, or None if no route
-    max_grade_pct: float
-
-    @property
-    def icon(self) -> str:
-        return "⚠️"
-
-    @property
-    def message(self) -> str:
-        if self.gentlest_pct is None:
-            return f"Too steep for a car road — no route to that point within ±{self.max_grade_pct:.0f}%."
-        # Round the gentlest UP to 0.1% so it never renders equal to the cap
-        gentlest_shown = math.ceil(self.gentlest_pct * 10) / 10
-        return (
-            f"Too steep for a car road — gentlest possible is {gentlest_shown:.1f}%, "
-            f"over the ±{self.max_grade_pct:.0f}% limit."
-        )
 
 
 @dataclass(frozen=True)
@@ -319,16 +295,31 @@ class DEMLoadingMessage(Message):
 
 
 @dataclass(frozen=True)
-class SlopeStartingContextMessage(Message):
-    """RIGHT panel: Starting a new slope (no segments yet).
+class PathBuildingContextMessage(Message):
+    """RIGHT panel: build-progress context for ANY path kind (slope OR road).
 
-    Shows the start location when user just started building.
+    One class covers both the STARTING case (no segments yet → shows the origin) and the BUILDING
+    case (≥1 segment → shows committed progress). The per-kind bits are derived from ``kind``: the
+    UI noun is ``kind.capitalize()`` (no separate stored arg), and ``difficulty_emoji`` is empty for
+    roads (no ski difficulty), which drops the difficulty from the stats line. No Slope*/Road* subclasses.
     """
 
-    slope_name: str
+    icon: str
+    kind: SegmentKind
+    name: str
+    num_segments: int = 0
+    # Origin (STARTING case, num_segments == 0): a node id OR a lat/lon.
     start_node_id: str | None = None
     start_lat: float | None = None
     start_lon: float | None = None
+    # Committed stats (BUILDING case, num_segments > 0).
+    difficulty_emoji: str = ""  # "" for roads → difficulty omitted from the line
+    total_drop_m: float = 0.0
+    total_length_m: float = 0.0
+    avg_gradient_pct: float = 0.0
+    max_gradient_pct: float = 0.0
+    start_elevation_m: float = 0.0
+    current_elevation_m: float = 0.0
 
     @property
     def level(self) -> MessageLevel:
@@ -336,42 +327,23 @@ class SlopeStartingContextMessage(Message):
 
     @property
     def message(self) -> str:
-        if self.start_node_id:
-            start_loc = f"Node **{self.start_node_id}**"
-        elif self.start_lat is not None and self.start_lon is not None:
-            start_loc = f"({self.start_lat:.4f}, {self.start_lon:.4f})"
-        else:
-            raise ValueError("SlopeStartingContextMessage requires start_node_id or start_lat/lon")
-        return f"🎿 **{self.slope_name}** — New Slope\n\n- 📍 Start: {start_loc}\n- ↔️ No segments committed yet"
+        if self.num_segments == 0:
+            if self.start_node_id:
+                start_loc = f"Node **{self.start_node_id}**"
+            elif self.start_lat is not None and self.start_lon is not None:
+                start_loc = f"({self.start_lat:.4f}, {self.start_lon:.4f})"
+            else:
+                raise ValueError("PathBuildingContextMessage (starting) requires start_node_id or start_lat/lon")
+            # self.kind is a StrEnum → capitalize() gives the title-case noun ("Slope"/"Road").
+            return f"{self.icon} **{self.name}** — New {self.kind.capitalize()}\n\n- 📍 Start: {start_loc}\n- ↔️ No segments committed yet"
 
-
-@dataclass(frozen=True)
-class SlopeBuildingContextMessage(Message):
-    """RIGHT panel: Slope building progress message.
-
-    Shows committed progress while actively building a slope.
-    """
-
-    slope_name: str
-    num_segments: int
-    difficulty_emoji: str
-    total_drop_m: float
-    total_length_m: float
-    avg_gradient_pct: float
-    max_gradient_pct: float
-    start_elevation_m: float
-    current_elevation_m: float
-
-    @property
-    def level(self) -> MessageLevel:
-        return MessageLevel.INFO
-
-    @property
-    def message(self) -> str:
+        # Building: roads have no ski difficulty, so lead the stats line with the drop instead.
+        # Show drop/gradient as MAGNITUDES (the backend has "downhill is positive").
+        lead = f"{self.difficulty_emoji} • " if self.difficulty_emoji else ""
         return (
-            f"🎿 **{self.slope_name}** — Committed Progress — {self.num_segments} ↔️\n\n"
-            f"- {self.difficulty_emoji} • ↓{self.total_drop_m:.0f}m drop • {self.total_length_m:.0f}m\n"
-            f"- 📐 {self.avg_gradient_pct:.0f}% overall / {self.max_gradient_pct:.0f}% steepest\n"
+            f"{self.icon} **{self.name}** — Committed Progress — {self.num_segments} ↔️\n\n"
+            f"- {lead}↕{abs(self.total_drop_m):.0f}m • {self.total_length_m:.0f}m\n"
+            f"- 📐 {abs(self.avg_gradient_pct):.0f}% overall / {abs(self.max_gradient_pct):.0f}% steepest\n"
             f"- 📍 {self.start_elevation_m:.0f}m → {self.current_elevation_m:.0f}m"
         )
 
@@ -463,12 +435,33 @@ class MergePlacingContextMessage(Message):
 # =============================================================================
 
 
-@dataclass(frozen=True)
-class SlopeActionMessage(Message):
-    """RIGHT panel: Specific action instruction for slope building.
+def too_steep_detail(gentlest_pct: float | None, max_grade_pct: float, subject: str, *, two_sided: bool) -> str:
+    """The "why" line for a too-steep path result (slope OR road), shared by the panels.
 
-    Covers: path selection (fan-out and custom-connect proposals).
+    ``subject`` ("to ski" / "for a car road") and ``two_sided`` (roads cap a ±band, slopes a
+    single-sided ceiling) are the two per-kind differences, passed as data. ``gentlest_pct`` is the
+    magnitude of the gentlest route found, or None when the planner found no route at all.
     """
+    band = f"±{max_grade_pct:.0f}%" if two_sided else f"{max_grade_pct:.0f}%"
+    if gentlest_pct is None:
+        reach = f"within {band}" if two_sided else f"under {band}"
+        return f"Too steep {subject} — no route to that point {reach}."
+    # Round the gentlest UP to 0.1% so it never renders equal to the cap
+    gentlest_shown = math.ceil(gentlest_pct * 10) / 10
+    return f"Too steep {subject} — gentlest possible is {gentlest_shown:.1f}%, over the {band} limit."
+
+
+@dataclass(frozen=True)
+class PathActionMessage(Message):
+    """RIGHT panel: action instruction while selecting a path proposal (slope OR road).
+
+    Covers fan-out and custom-connect proposals for any path kind. The commit/finish wording noun
+    is derived from ``kind`` (``kind`` value, e.g. "slope"/"road" — no separate stored arg), and
+    ``path_difficulty`` (empty for roads) keeps the stats line kind-correct: the difficulty line is
+    omitted when there is no difficulty (roads).
+    """
+
+    kind: SegmentKind
 
     # Action state flags
     is_selecting_path: bool = False
@@ -477,7 +470,7 @@ class SlopeActionMessage(Message):
     # Path selection info (when is_selecting_path=True)
     num_paths: int = 0
     selected_path_idx: int = 0
-    path_difficulty: str = ""
+    path_difficulty: str = ""  # "" for roads → the difficulty line is omitted
     path_difficulty_emoji: str = ""
     actual_gradient_pct: float = 0.0
     target_gradient_pct: float = 0.0
@@ -488,36 +481,75 @@ class SlopeActionMessage(Message):
     is_connector: bool = False
     target_node_id: str | None = None
 
+    # Too-steep detail for the empty-paths branch. `too_steep_gentlest_pct`:
+    # None means NOT too steep (plain guidance); a value means too steep and IS the gentlest grade to report.
+    too_steep_gentlest_pct: float | None = None
+    too_steep_cap_pct: float = 0.0
+    too_steep_subject: str = ""
+    too_steep_two_sided: bool = False
+
     @property
     def level(self) -> MessageLevel:
         return MessageLevel.WARNING
 
     @property
     def message(self) -> str:
+        # Two states: either a proposal is selected (show its stats) or the list is empty (guidance).
         if self.is_selecting_path:
-            is_conn = self.is_connector and self.target_node_id
-            path_label = "Custom Proposal" if self.is_custom_path else "Proposed Segment"
-            if is_conn:
-                header = f"🏁 **{path_label} {self.selected_path_idx + 1}/{self.num_paths}** → {self.target_node_id}"
-                action = "- ✅ **Commit to finish slope** or use ◀▶ to browse"
-            else:
-                header = f"🎯 **{path_label} {self.selected_path_idx + 1}/{self.num_paths}**"
-                action = "- ✅ **Commit** to add segment or use ◀▶ to browse"
-            return (
-                f"{header}\n\n"
-                f"- {self.path_difficulty_emoji} {self.path_difficulty.capitalize()} • "
-                f"↓{self.path_drop_m:.0f}m drop • {self.path_length_m:.0f}m\n"
-                f"- 📐 {self.actual_gradient_pct:.0f}% overall ({self.target_gradient_pct:.0f}% target)\n"
-                f"- 📍 {self.start_elevation_m:.0f}m → {self.end_elevation_m:.0f}m\n"
-                f"{action}"
-            )
+            return self._selecting_message()
+        return self._empty_message()
 
-        # No flags set - show fallback message for empty paths (terrain too steep, etc.)
-        return (
-            "⚠️ **No Paths Available**\n\n"
-            "- 👆 Click a **downhill** point or **node** to route a path to it\n"
-            "- Or ↩️ **Undo** to go back"
+    def _selecting_message(self) -> str:
+        """The stats block for the currently-selected proposal (is_selecting_path)."""
+        is_conn = self.is_connector and self.target_node_id
+        path_label = "Custom Proposal" if self.is_custom_path else "Proposed Segment"
+        if is_conn:
+            header = f"🏁 **{path_label} {self.selected_path_idx + 1}/{self.num_paths}** → {self.target_node_id}"
+            # self.kind is a StrEnum → renders as "slope"/"road" directly.
+            action = f"- ✅ **Commit to finish {self.kind}** or use ◀▶ to browse"
+        else:
+            header = f"🎯 **{path_label} {self.selected_path_idx + 1}/{self.num_paths}**"
+            action = "- ✅ **Commit** to add segment or use ◀▶ to browse"
+        # Roads carry no ski difficulty, so drop that line for them.
+        difficulty_line = (
+            f"- {self.path_difficulty_emoji} {self.path_difficulty.capitalize()} • " if self.path_difficulty else "- "
         )
+        # Show drop and gradient as MAGNITUDES: the backend has "downhill is positive".
+        return (
+            f"{header}\n\n"
+            f"{difficulty_line}↕{abs(self.path_drop_m):.0f}m • {self.path_length_m:.0f}m\n"
+            f"- 📐 {abs(self.actual_gradient_pct):.0f}% overall ({abs(self.target_gradient_pct):.0f}% target)\n"
+            f"- 📍 {self.start_elevation_m:.0f}m → {self.end_elevation_m:.0f}m\n"
+            f"{action}"
+        )
+
+    def _empty_message(self) -> str:
+        """The "No Paths Available" block, led by the too-steep reason when that's the cause."""
+        # too_steep_gentlest_pct is the single signal: set → too steep (lead with the why line).
+        if self.too_steep_gentlest_pct is not None:
+            reason = (
+                too_steep_detail(
+                    gentlest_pct=self.too_steep_gentlest_pct,
+                    max_grade_pct=self.too_steep_cap_pct,
+                    subject=self.too_steep_subject,
+                    two_sided=self.too_steep_two_sided,
+                )
+                + "\n\n"
+            )
+        else:
+            reason = ""
+
+        # The escape differs by origin: a custom target returns to the fan via Cancel Custom Path,
+        # a fan extension steps back via Undo.
+        if self.is_custom_path:
+            guidance = (
+                "- 👆 Click a **gentler** point or **node** to route there\n"
+                "- Or ✖️ **Cancel Custom Path** to go back to the fan-out"
+            )
+        else:
+            guidance = "- 👆 Click a **downhill** point or **node** to route a path to it\n- Or ↩️ **Undo** to go back"
+
+        return f"⚠️ **No Paths Available**\n\n{reason}{guidance}"
 
 
 @dataclass(frozen=True)
@@ -586,64 +618,6 @@ class MergeActionMessage(Message):
             "🔗 **Merge the Selected Nodes**\n\n"
             "- 👆 Click more **node markers** to add/remove\n"
             "- ✅ Click **Confirm Merge** to collapse them to their median position"
-        )
-
-
-@dataclass(frozen=True)
-class RoadPlacingContextMessage(Message):
-    """RIGHT panel: road building progress message.
-
-    Shows where the road currently extends from (origin or last endpoint) and,
-    once building has started, how many segments have been committed.
-    """
-
-    start_node_id: str | None = None
-    start_lat: float | None = None
-    start_lon: float | None = None
-    start_elevation_m: float = 0.0
-    segment_count: int = 0
-
-    @property
-    def level(self) -> MessageLevel:
-        return MessageLevel.INFO
-
-    @property
-    def message(self) -> str:
-        from skiresort_planner.constants import StyleConfig
-
-        if self.start_node_id:
-            location = f"Node **{self.start_node_id}**"
-        elif self.start_lat is not None and self.start_lon is not None:
-            location = f"({self.start_lat:.4f}, {self.start_lon:.4f})"
-        else:
-            raise ValueError("RoadPlacingContextMessage requires start_node_id or start_lat/lon")
-        anchor = "From" if self.segment_count else "Start"
-        progress = f"\n- ↔️ {self.segment_count} segment(s) committed" if self.segment_count else ""
-        return (
-            f"{StyleConfig.ROAD_ICON} **Road** — Building\n\n"
-            f"- 🚏 {anchor}: {location}\n"
-            f"- 📍 Elevation: {self.start_elevation_m:.0f}m{progress}"
-        )
-
-
-@dataclass(frozen=True)
-class RoadActionMessage(Message):
-    """RIGHT panel: action instruction while building a road (extend or finish)."""
-
-    @property
-    def level(self) -> MessageLevel:
-        return MessageLevel.WARNING
-
-    @property
-    def message(self) -> str:
-        from skiresort_planner.constants import PathConfig, StyleConfig
-
-        limit = PathConfig.ROAD_MAX_GRADIENT_PCT
-        return (
-            f"{StyleConfig.ROAD_ICON} **Extend the Road**\n\n"
-            f"- 👆 Click terrain to trace a gentle (±{limit}%) segment\n"
-            "- ⚪ Or click a **node** to join it\n"
-            "- 🏁 Press **Finish Road** in the sidebar when done"
         )
 
 

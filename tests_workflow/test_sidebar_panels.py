@@ -7,17 +7,20 @@ assert the real state change (cancel → idle_ready, slider → ctx mutation). T
 a state maps to) is asserted in test_mode_registry; here we assert each panel's own behavior.
 """
 
+import pytest
+
 from skiresort_planner.model.path_point import PathPoint
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.context import BuildMode
+from skiresort_planner.ui.kind_spec import KIND_SPECS
 from skiresort_planner.ui.sidebar_panels import (
     IdleSidebarPanel,
     ImportSidebarPanel,
     LiftSidebarPanel,
     MergeSidebarPanel,
-    RoadSidebarPanel,
-    SlopeSidebarPanel,
+    PathBuildSidebarPanel,
     ViewingSidebarPanel,
 )
 from skiresort_planner.ui.state_machine import PlannerStateMachine
@@ -101,81 +104,87 @@ class TestViewingSidebarPanel:
         assert sm.is_idle_viewing_slope, "rendering without a click does not close the panel"
 
 
-class TestSlopeSidebarPanel:
-    def _building(self, fake_st, dem, factory):
+@pytest.mark.parametrize("kind", [SegmentKind.SLOPE, SegmentKind.ROAD])
+class TestPathBuildSidebarPanel:
+    """One panel class serves slope AND road — parametrizing by kind pins the symmetry: both get
+    Finish, Cancel, AND the Path Settings block (segment-length slider + Recompute). This is the
+    regression guard for the bug where roads had no length slider.
+    """
+
+    def _building(self, fake_st, dem, factory, kind: SegmentKind):
         graph = ResortGraph()
         sm, ctx = _session(fake_st, graph, factory, dem)
-        sm.start_building(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
+        ctx.build_mode.mode = BuildMode.SLOPE if kind == SegmentKind.SLOPE else BuildMode.ROAD
+        elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
+        if kind == SegmentKind.SLOPE:
+            sm.start_building(lon=0.0, lat=0.0, elevation=elev)
+        else:
+            sm.select_road_start(location=PathPoint(lon=0.0, lat=0.0, elevation=elev))
         return sm, ctx, graph
 
-    def test_finish_disabled_with_no_committed_segments(self, fake_st, path_factory, mock_dem_blue_slope) -> None:
-        # With no segments the Finish button must render DISABLED. (fake_st.button ignores `disabled`
-        # and would fire it, so we assert the computed `disabled=True` kwarg rather than firing it.)
-        sm, ctx, graph = self._building(fake_st, mock_dem_blue_slope, path_factory)
-        assert not ctx.has_committed_segments()
+    def test_finish_disabled_with_no_committed_segments(self, fake_st, path_factory, mock_dem_blue_slope, kind) -> None:
+        # With no segments the Finish button renders DISABLED for either kind. (fake_st.button ignores
+        # `disabled` and would fire it, so we assert the computed `disabled=True` kwarg.)
+        sm, ctx, graph = self._building(fake_st, mock_dem_blue_slope, path_factory, kind)
+        assert not ctx.build(kind).has_committed_segments()
         buttons = _capture_buttons(fake_st)
 
-        SlopeSidebarPanel(sm=sm, ctx=ctx, graph=graph).controls()
-        finish = next(b for b in buttons if b.get("key") == "finish_slope_btn")
+        PathBuildSidebarPanel(sm=sm, ctx=ctx, graph=graph, kind=kind).controls()
+        finish = next(b for b in buttons if b.get("key") == f"finish_{kind.value}_btn")
         assert finish["disabled"] is True, "Finish is disabled until at least one segment is committed"
 
-    def test_cancel_discards_and_returns_to_idle(self, fake_st, path_factory, mock_dem_blue_slope) -> None:
-        sm, ctx, graph = self._building(fake_st, mock_dem_blue_slope, path_factory)
+    def test_cancel_discards_and_returns_to_idle(self, fake_st, path_factory, mock_dem_blue_slope, kind) -> None:
+        sm, ctx, graph = self._building(fake_st, mock_dem_blue_slope, path_factory, kind)
 
-        fake_st.clicked_keys = {"cancel_slope_btn"}
-        SlopeSidebarPanel(sm=sm, ctx=ctx, graph=graph).controls()
-        assert sm.is_idle_ready, "Cancel Full Slope discards the build and returns to idle"
+        fake_st.clicked_keys = {f"cancel_{kind.value}_btn"}
+        PathBuildSidebarPanel(sm=sm, ctx=ctx, graph=graph, kind=kind).controls()
+        assert sm.is_idle_ready, "Cancel discards the build and returns to idle"
 
-    def test_segment_length_slider_change_updates_ctx(self, fake_st, path_factory, mock_dem_blue_slope) -> None:
-        # Moving the slider must write the new length into ctx. Override the fake slider to return a
-        # CHANGED value (the default fake echoes the current value, which never trips the change
-        # branch). Note: pending_recompute is set then CONSUMED by recompute_paths() in the same
-        # controls() call, so we assert the durable outcome — the new segment length on ctx.
-        sm, ctx, graph = self._building(fake_st, mock_dem_blue_slope, path_factory)
+    def test_segment_length_slider_change_updates_ctx(self, fake_st, path_factory, mock_dem_blue_slope, kind) -> None:
+        # BOTH kinds render the segment-length slider (the parity fix); moving it writes to ctx.
+        # The default fake slider echoes the current value (never trips the change branch), so
+        # override it to return a CHANGED value.
+        sm, ctx, graph = self._building(fake_st, mock_dem_blue_slope, path_factory, kind)
         new_length = ctx.segment_length_m + 100
         fake_st.slider = lambda *a, **k: new_length
 
-        SlopeSidebarPanel(sm=sm, ctx=ctx, graph=graph).controls()
-        assert ctx.segment_length_m == new_length, "slider change is written to ctx"
+        PathBuildSidebarPanel(sm=sm, ctx=ctx, graph=graph, kind=kind).controls()
+        assert ctx.segment_length_m == new_length, "slider change is written to ctx (slope AND road)"
+
+    def test_recompute_button_regenerates(self, fake_st, path_factory, mock_dem_blue_slope, kind, monkeypatch) -> None:
+        # The Recompute button fires recompute_paths for either kind (regression guard: roads had no
+        # Recompute button at all).
+        sm, ctx, graph = self._building(fake_st, mock_dem_blue_slope, path_factory, kind)
+        called: list[bool] = []
+        monkeypatch.setattr("skiresort_planner.ui.sidebar_panels.recompute_paths", lambda: called.append(True))
+        fake_st.clicked_keys = {f"recompute_{kind.value}_btn"}
+
+        PathBuildSidebarPanel(sm=sm, ctx=ctx, graph=graph, kind=kind).controls()
+        assert called == [True], "Recompute regenerates proposals for slope AND road"
 
     def test_path_settings_hidden_in_custom_connect_force_mode(
-        self, fake_st, path_factory, mock_dem_blue_slope
+        self, fake_st, path_factory, mock_dem_blue_slope, kind
     ) -> None:
-        # While routing a custom-connect path, the Path Settings block (slider + Recompute) is hidden.
-        sm, ctx, graph = self._building(fake_st, mock_dem_blue_slope, path_factory)
-        ctx.custom_connect.force_mode = True
+        # While routing a custom-connect path, the Path Settings block (slider + Recompute) is hidden
+        # for BOTH kinds.
+        sm, ctx, graph = self._building(fake_st, mock_dem_blue_slope, path_factory, kind)
+        ctx.custom_connect.target_location = (0.0, 0.0, 2000.0)  # force_mode derives from this
         seen: list[str] = []
         fake_st.markdown = lambda text, *a, **k: seen.append(text)
 
-        SlopeSidebarPanel(sm=sm, ctx=ctx, graph=graph).controls()
+        PathBuildSidebarPanel(sm=sm, ctx=ctx, graph=graph, kind=kind).controls()
         assert not any("Path Settings" in m for m in seen), "custom-connect force_mode hides Path Settings"
 
-
-class TestRoadSidebarPanel:
-    def _road_building(self, fake_st, dem, factory):
-        sm, ctx = _session(fake_st, ResortGraph(), factory, dem)
-        ctx.build_mode.mode = BuildMode.ROAD
-        sm.select_road_start(location=PathPoint(lon=0.0, lat=0.0, elevation=2500.0))
-        assert sm.is_road_starting
-        return sm, ctx, fake_st.session_state["graph"]
-
-    def test_cancel_road_returns_to_idle(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
-        sm, ctx, graph = self._road_building(fake_st, mock_dem_red_slope_diagonal, path_factory)
-
-        fake_st.clicked_keys = {"cancel_road_btn"}
-        RoadSidebarPanel(sm=sm, ctx=ctx, graph=graph).controls()
-        assert sm.is_idle_ready, "Cancel Road discards the build and returns to idle"
-
-    def test_finish_disabled_with_no_committed_segments(
-        self, fake_st, path_factory, mock_dem_red_slope_diagonal
-    ) -> None:
-        sm, ctx, graph = self._road_building(fake_st, mock_dem_red_slope_diagonal, path_factory)
-        assert not ctx.road_build.has_committed_segments()
+    def test_finish_and_cancel_labels_use_kind_noun(self, fake_st, path_factory, mock_dem_blue_slope, kind) -> None:
+        # Labels are driven by KIND_SPECS.display_noun, so a new kind gets correct wording for free.
+        sm, ctx, graph = self._building(fake_st, mock_dem_blue_slope, path_factory, kind)
+        noun = KIND_SPECS[kind].display_noun
         buttons = _capture_buttons(fake_st)
 
-        RoadSidebarPanel(sm=sm, ctx=ctx, graph=graph).controls()
-        finish = next(b for b in buttons if b.get("key") == "finish_road_btn")
-        assert finish["disabled"] is True, "Finish Road is disabled until a segment is committed"
+        PathBuildSidebarPanel(sm=sm, ctx=ctx, graph=graph, kind=kind).controls()
+        labels = [str(b.get("label", "")) for b in buttons]
+        assert any(f"Finish Committed {noun}" in label for label in labels)
+        assert any(f"Cancel Full {noun}" in label for label in labels)
 
 
 class TestLiftSidebarPanel:

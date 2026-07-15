@@ -142,6 +142,20 @@ class ResortGraph:
         while len(self.undo_stack) > UndoConfig.MAX_UNDO_STACK_SIZE:
             self.undo_stack.pop(0)
 
+    def drop_undo_actions_for_removed_segments(self) -> None:
+        """Drop undo entries left dangling after their segments were removed.
+
+        Keyed on the ``segment_ids`` attribute, so it needs no per-type list: actions without it
+        (delete/merge, which snapshot their own state) are self-contained and always kept. Called by
+        every segment-removal path — delete_slope/road, merge collapse, and the cancel-build discard.
+        """
+
+        def keep(action: UndoAction) -> bool:
+            segment_ids: tuple[str, ...] = getattr(action, "segment_ids", ())
+            return not segment_ids or any(sid in self.segments for sid in segment_ids)
+
+        self.undo_stack = [action for action in self.undo_stack if keep(action)]
+
     # =========================================================================
     # Node Operations
     # =========================================================================
@@ -337,26 +351,30 @@ class ResortGraph:
 
         return end_node_ids
 
-    def _resolve_finish_endpoints(
-        self, segment_ids: list[str]
-    ) -> tuple[PathSegment, PathSegment, Node, Node, float] | None:
+    def _resolve_finish_endpoints(self, segment_ids: list[str]) -> tuple[PathSegment, PathSegment, Node, Node, float]:
         """Validate a finish request and return (first_seg, last_seg, start_node, end_node, avg_bearing).
 
-        Returns None if the segment list is empty or any segment/endpoint node is missing.
+        Raises ValueError if the segment list is empty or any segment/endpoint node is missing.
         Shared by finish_slope / finish_road (validation + bearing only).
         """
         if not segment_ids:
-            return None
+            raise ValueError("cannot finish: empty segment_ids")
 
         first_seg = self.segments.get(segment_ids[0])
         last_seg = self.segments.get(segment_ids[-1])
         if not first_seg or not last_seg:
-            return None
+            raise ValueError(
+                f"cannot finish: missing segment(s) - first={segment_ids[0]} exists={first_seg is not None}, "
+                f"last={segment_ids[-1]} exists={last_seg is not None}"
+            )
 
         start_node = self.nodes.get(first_seg.start_node_id)
         end_node = self.nodes.get(last_seg.end_node_id)
         if not start_node or not end_node:
-            return None
+            raise ValueError(
+                f"cannot finish: missing endpoint node(s) - start={first_seg.start_node_id} "
+                f"exists={start_node is not None}, end={last_seg.end_node_id} exists={end_node is not None}"
+            )
 
         avg_bearing = GeoCalculator.initial_bearing_deg(
             lon1=start_node.lon, lat1=start_node.lat, lon2=end_node.lon, lat2=end_node.lat
@@ -366,16 +384,15 @@ class ResortGraph:
     def _smooth_finished_path(self, segment_ids: list[str], smoothing_factor: float) -> None:
         """Whole-path smooth a finished entity across its junctions, in place.
 
-        No-op for a single segment. EVERY node on the path (outer endpoints + every junction)
-        stays pinned exactly on the ribbon, so markers sit on the path and any node can be a
-        branch point; only the shape between nodes rounds. Never rejects — a road may drift
-        over the ±15% build cap here (bridge/cut/fill), which is intentional; not re-applied.
+        EVERY node on the path (outer endpoints + every junction) stays pinned exactly on the
+        ribbon, so markers sit on the path and any node can be a branch point; only the shape
+        between nodes rounds. A single segment is smoothed too. Never rejects — a road may
+        drift over the ±15% build cap here (bridge/cut/fill), which is intentional.
 
         smoothing_factor: higher = smoother (roads); lower hugs terrain (slopes).
         """
-        if len(segment_ids) < 2:
-            return  # single-segment path has no junction to smooth
         segments = [self.segments[sid] for sid in segment_ids]
+        assert len(segments) > 0, f"_smooth_finished_path: segment_ids={segment_ids} resolved to empty segments list"
         # Boundary nodes: start of the first segment, then each segment's end node.
         boundary_node_ids = [segments[0].start_node_id, *(seg.end_node_id for seg in segments)]
 
@@ -388,7 +405,7 @@ class ResortGraph:
             node_weight=GeometricTuningConfig.NODE_WEIGHT,
             corridor_weight=GeometricTuningConfig.CORRIDOR_WEIGHT,
         )
-        for seg, pts in zip(segments, smoothed, strict=False):
+        for seg, pts in zip(segments, smoothed, strict=True):
             seg.points = pts
         after = max(seg.max_slope_pct for seg in segments)
         logger.info(f"Smoothed finished path {segment_ids}: max_slope_pct {before:.1f}% -> {after:.1f}%")
@@ -403,7 +420,7 @@ class ResortGraph:
         name: str | None = None,
         *,
         record_undo: bool = True,
-    ) -> Slope | None:
+    ) -> Slope:
         """Finish a slope by grouping segments.
 
         Args:
@@ -412,15 +429,15 @@ class ResortGraph:
             record_undo: Push a FinishSlopeAction. False when a batch (OSM import) owns the undo.
 
         Returns:
-            Created Slope or None if invalid.
+            Created Slope.
         """
+        first_seg, last_seg, start_node, end_node, avg_bearing = self._resolve_finish_endpoints(segment_ids=segment_ids)
+        assert all(sid in self.segments for sid in segment_ids), (
+            f"finish_slope: segment_ids contain missing segments {[s for s in segment_ids if s not in self.segments]}"
+        )
         self._smooth_finished_path(
             segment_ids=segment_ids, smoothing_factor=GeometricTuningConfig.SLOPE_SMOOTHING_FACTOR
         )
-        resolved = self._resolve_finish_endpoints(segment_ids=segment_ids)
-        if resolved is None:
-            return None
-        first_seg, last_seg, start_node, end_node, avg_bearing = resolved
 
         slope_id = self._next_slope_id()
         # Difficulty from the steepest section (max_slope_pct over rolling windows).
@@ -465,7 +482,7 @@ class ResortGraph:
         self,
         segment_ids: list[str],
         name: str | None = None,
-    ) -> Road | None:
+    ) -> Road:
         """Group committed segments into a vehicle Road.
 
         Records a FinishRoadAction (mirrors finish_slope): undo ungroups the road
@@ -476,15 +493,17 @@ class ResortGraph:
             name: Optional custom name (generates a compass name if None).
 
         Returns:
-            Created Road or None if invalid.
+            Created Road.
         """
+        first_seg, last_seg, _start_node, _end_node, avg_bearing = self._resolve_finish_endpoints(
+            segment_ids=segment_ids
+        )
+        assert all(sid in self.segments for sid in segment_ids), (
+            f"finish_road: segment_ids contain missing segments {[s for s in segment_ids if s not in self.segments]}"
+        )
         self._smooth_finished_path(
             segment_ids=segment_ids, smoothing_factor=GeometricTuningConfig.ROAD_SMOOTHING_FACTOR
         )
-        resolved = self._resolve_finish_endpoints(segment_ids=segment_ids)
-        if resolved is None:
-            return None
-        first_seg, last_seg, _start_node, _end_node, avg_bearing = resolved
 
         road_id = self._next_road_id()
         if name is None:
@@ -540,6 +559,7 @@ class ResortGraph:
             )
         )
         self.cleanup_isolated_nodes()
+        self.drop_undo_actions_for_removed_segments()
         logger.info(f"Deleted road {road.name} with {len(road.segment_ids)} segments")
         return True
 
@@ -627,6 +647,7 @@ class ResortGraph:
 
         for points, name in pistes:
             if self.has_endpoint_duplicate(a=points[0], b=points[-1]):
+                logger.debug(f"import_osm: skipping duplicate piste '{name}' at endpoints {points[0]} -> {points[-1]}")
                 duplicates += 1
                 continue
             proposal = ProposedPathSegment(points=points, kind=SegmentKind.SLOPE)
@@ -637,11 +658,13 @@ class ResortGraph:
             (seg_id,) = (sid for sid in self.segments if sid not in segments_before)
             segment_ids.append(seg_id)
             slope = self.finish_slope(segment_ids=[seg_id], name=name, record_undo=False)
-            if slope is not None:
-                slope_ids.append(slope.id)
+            slope_ids.append(slope.id)
 
         for bottom, top, lift_type, lift_name in lifts:
             if self.has_endpoint_duplicate(a=bottom, b=top):
+                logger.debug(
+                    f"import_osm: skipping duplicate lift '{lift_name}' (type={lift_type}) at endpoints {bottom} -> {top}"
+                )
                 duplicates += 1
                 continue
             start, _ = self.get_or_create_node(lon=bottom.lon, lat=bottom.lat, elevation=bottom.elevation)
@@ -731,9 +754,7 @@ class ResortGraph:
         # Slopes/roads store their own boundary node ids (mirroring their first/last segment), so a
         # merge that repoints those nodes must repoint the entity boundary too.
         affected_paths: list[SegmentPath] = [
-            p
-            for p in (*self.slopes.values(), *self.roads.values())
-            if p.start_node_id in touched or p.end_node_id in touched
+            p for p in self.segment_path_entities if p.start_node_id in touched or p.end_node_id in touched
         ]
         segments_before = tuple(copy.deepcopy(s) for s in affected_segments)
         lifts_before = tuple(copy.deepcopy(ln) for ln in affected_lifts)
@@ -751,7 +772,7 @@ class ResortGraph:
                 lift.start_node_id = survivor_id
             if lift.end_node_id in merged:
                 lift.end_node_id = survivor_id
-        for path in (*self.slopes.values(), *self.roads.values()):
+        for path in self.segment_path_entities:
             if path.start_node_id in merged:
                 path.start_node_id = survivor_id
             if path.end_node_id in merged:
@@ -770,11 +791,24 @@ class ResortGraph:
             del self.nodes[nid]
         self.cleanup_isolated_nodes()
 
-        # Re-stitch every affected builder fresh from the moved endpoints (each model owns its
-        # recompute; a road is just segments with kind=ROAD, so no per-kind branch is needed).
+        # A merge can collapse an entity onto one node (both endpoints -> survivor: zero-length), so DELETE it here
+        # inside the same MergeNodesAction. Collapsed paths go first, tracking the segments they drop.
+        removed_segment_ids: set[str] = set()
+        for path in affected_paths:
+            if path.start_node_id == path.end_node_id:
+                removed_segment_ids.update(self._remove_collapsed_path(path))
+
+        # Re-stitch every surviving affected builder fresh from the moved endpoints (each model owns
+        # its recompute; a road is just segments with kind=ROAD, so no per-kind branch is needed).
+        # A segment we just dropped with its collapsed parent is skipped.
         for seg in affected_segments:
+            if seg.id in removed_segment_ids:
+                continue
             seg.restitch(start_node=self.nodes[seg.start_node_id], end_node=self.nodes[seg.end_node_id], dem=dem)
         for lift in affected_lifts:
+            if lift.start_node_id == lift.end_node_id:
+                self._remove_collapsed_lift(lift)
+                continue
             lift.rebuild(start_node=self.nodes[lift.start_node_id], end_node=self.nodes[lift.end_node_id], dem=dem)
 
         self._push_undo(
@@ -787,7 +821,36 @@ class ResortGraph:
                 paths_before=paths_before,
             )
         )
+        # A merge can collapse a zero-length slope/road and delete its segments (_remove_collapsed_path);
+        # drop any now-stale AddSegmentsAction that referenced them.
+        self.drop_undo_actions_for_removed_segments()
         logger.info(f"Merged {len(node_ids)} nodes into {survivor_id} at ({med_lat:.5f}, {med_lon:.5f})")
+
+    def _remove_collapsed_path(self, path: "SegmentPath") -> list[str]:
+        """Remove a collapsed slope/road (+ its segments) during a merge; return the removed segment ids.
+
+        No own undo action / no cleanup: the enclosing merge owns the single MergeNodesAction and
+        its snapshot already carries this entity and its segments for restore.
+        """
+        for seg_id in path.segment_ids:
+            self.segments.pop(seg_id, None)
+        if isinstance(path, Slope):
+            self.slopes.pop(path.id, None)
+        elif isinstance(path, Road):
+            self.roads.pop(path.id, None)
+        else:
+            raise RuntimeError(f"merge collapse: unexpected path type {type(path).__name__}")
+        logger.info(f"Merge collapsed {path.name} to zero length — deleted it and its {len(path.segment_ids)} segments")
+        return path.segment_ids
+
+    def _remove_collapsed_lift(self, lift: Lift) -> None:
+        """Remove a collapsed lift (both stations merged onto one node) during a merge.
+
+        No own undo action / no cleanup: the enclosing merge owns the single MergeNodesAction and
+        its snapshot already carries this lift for restore.
+        """
+        self.lifts.pop(lift.id, None)
+        logger.info(f"Merge collapsed lift {lift.name} to zero length — deleted it")
 
     # =========================================================================
     # Undo Operations
@@ -823,6 +886,7 @@ class ResortGraph:
         if isinstance(entity, SegmentPath):
             for seg_id in entity.segment_ids:
                 self.segments[seg_id].name = new_name
+        logger.info(f"Renamed {entity_id} to '{new_name}'")
 
     def delete_slope(self, slope_id: str) -> bool:
         """Delete a slope and its segments.
@@ -835,6 +899,7 @@ class ResortGraph:
         """
         slope = self.slopes.get(slope_id)
         if not slope:
+            logger.debug(f"delete_slope: slope {slope_id} not found, nothing to delete")
             return False
 
         deleted_segments = [self.segments[seg_id] for seg_id in slope.segment_ids if seg_id in self.segments]
@@ -853,6 +918,7 @@ class ResortGraph:
             )
         )
         self.cleanup_isolated_nodes()
+        self.drop_undo_actions_for_removed_segments()
         logger.info(f"Deleted slope {slope.name} with {len(slope.segment_ids)} segments")
         return True
 
@@ -867,6 +933,7 @@ class ResortGraph:
         """
         lift = self.lifts.get(lift_id)
         if not lift:
+            logger.debug(f"delete_lift: lift {lift_id} not found, nothing to delete")
             return False
 
         # Remove the lift
@@ -893,19 +960,27 @@ class ResortGraph:
     # Query Operations
     # =========================================================================
 
-    def get_slope_by_segment_id(self, segment_id: str) -> Slope | None:
-        """Find the slope containing a given segment.
-        Not applicabale for roads, as they have no segements.
+    @property
+    def segment_path_entities(self) -> list[SegmentPath]:
+        """Every finished SegmentPath-owning entity (slopes + roads), in one place.
 
-        Args:
-            segment_id: ID of segment to find
-
-        Returns:
-            Slope containing the segment, or None if segment is not in any slope.
+        The single source for "iterate all segment-group entities" so a new SegmentPath kind is
+        added HERE once, not at each call site (merge repoint, boundary snapshot, segment lookup).
+        Guarded by test_completeness_guards: every buildable SegmentKind must show up here.
         """
-        for slope in self.slopes.values():
-            if segment_id in slope.segment_ids:
-                return slope
+        return [*self.slopes.values(), *self.roads.values()]
+
+    def get_entity_by_segment_id(self, segment_id: str) -> SegmentPath | None:
+        """Find the finished entity (slope OR road) that owns a segment, or None.
+
+        For a one-frame race: a SEGMENT marker can carry a finished entity's
+        segment id before the map re-tags it as its Slope/Road (SEGMENT clicks normally resolve to
+        the parent entity at render time). An orphan (parent already deleted) legitimately returns
+        None — the caller ignores it — so this must NOT raise. Kind-generic via segment_path_entities.
+        """
+        for entity in self.segment_path_entities:
+            if segment_id in entity.segment_ids:
+                return entity
         return None
 
     def get_segment_stats(self, segment_ids: list[str]) -> SegmentStats:
@@ -1147,6 +1222,10 @@ class ResortGraph:
         graph._lift_counter = counters["lift"]
         graph._road_counter = counters.get("road", 0)
 
+        logger.info(
+            f"Loaded resort: {len(graph.nodes)} nodes, {len(graph.segments)} segments, "
+            f"{len(graph.slopes)} slopes, {len(graph.roads)} roads, {len(graph.lifts)} lifts"
+        )
         return graph
 
     def to_gpx(self) -> str:
@@ -1219,7 +1298,7 @@ class ResortGraph:
             ET.SubElement(trk, "name").text = road.name
             ET.SubElement(
                 trk, "desc"
-            ).text = f"Road - Elevation change {-total_drop:+.0f}m - Length {total_length:.0f}m"
+            ).text = f"Road - Elevation change {abs(total_drop):.0f}m - Length {total_length:.0f}m"
             ET.SubElement(trk, "type").text = "road"
 
             trkseg = ET.SubElement(trk, "trkseg")
@@ -1244,4 +1323,6 @@ class ResortGraph:
         for node_id in isolated_node_ids:
             del self.nodes[node_id]
 
+        if isolated_node_ids:
+            logger.debug(f"Cleaned up {len(isolated_node_ids)} isolated node(s): {isolated_node_ids}")
         return len(isolated_node_ids)

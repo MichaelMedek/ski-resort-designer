@@ -29,13 +29,11 @@ from skiresort_planner.model.message import (
     LiftPlacingContextMessage,
     MergeActionMessage,
     MergePlacingContextMessage,
-    RoadActionMessage,
-    RoadPlacingContextMessage,
+    PathActionMessage,
+    PathBuildingContextMessage,
     SegmentWarningMessage,
-    SlopeActionMessage,
-    SlopeBuildingContextMessage,
-    SlopeStartingContextMessage,
 )
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.actions import (
     confirm_import_action,
@@ -44,6 +42,7 @@ from skiresort_planner.ui.actions import (
 )
 from skiresort_planner.ui.context import EntityKind, PlannerContext
 from skiresort_planner.ui.infra import bump_map_version, reload_map, trigger_rerun
+from skiresort_planner.ui.kind_spec import KIND_SPECS
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
 if TYPE_CHECKING:
@@ -130,7 +129,7 @@ def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, kind: Enti
     noun = kind.value
     if ctx.viewing.view_3d:
         if _action_button("🗺️ Return to 2D View", key=f"{noun}_2d_view", help="Return to the top-down 2D map"):
-            logger.info(f"Switching to 2D view from {noun} {entity_id}")
+            logger.debug(f"Switching to 2D view from {noun} {entity_id}")
             ctx.viewing.disable_3d()
             # Reset pitch, bearing, and zoom to top-down 2D view
             ctx.map.pitch = MapConfig.DEFAULT_PITCH
@@ -161,7 +160,7 @@ def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, kind: Enti
                 raise ValueError(f"Unknown {kind=}")
             reload_map()  # Never returns - raises StopExecution
     elif _action_button("🏔️ View in 3D", key=f"{noun}_3d_view", help=f"View {noun} from the side with terrain"):
-        logger.info(f"Switching to 3D view for {noun} {entity_id}")
+        logger.debug(f"Switching to 3D view for {noun} {entity_id}")
         ctx.viewing.enable_3d()
         reload_map()  # Never returns - raises StopExecution
 
@@ -195,7 +194,7 @@ def _render_entity_actions(
     # Bottom-left: Close.
     with bottom_left:
         if _action_button("✖️ Close", key=f"close_{noun}", help="Close this panel to start building again"):
-            logger.info(f"Closing {noun} panel for {entity_id}")
+            logger.debug(f"Closing {noun} panel for {entity_id}")
             ctx.viewing.disable_3d()
             # Reset pitch and bearing to top-down view (preserve zoom level)
             ctx.map.pitch = MapConfig.DEFAULT_PITCH
@@ -336,18 +335,47 @@ class EntityInfoControlPanel(ControlPanel):
         )
 
 
-class SlopeBuildingControlPanel(ControlPanel):
-    """SLOPE_STARTING / SLOPE_BUILDING / SLOPE_CUSTOM_PATH: progress + path selection."""
+class PathBuildingControlPanel(ControlPanel):
+    """The build states for ANY path kind (slope or road): kind's progress/starting context
+    message + the shared proposal browse/commit/cancel-custom UI.
+
+    One class for every path kind. `buttons()` delegates to the kind-aware `PathSelectionPanel`
+    and `context_message()` builds ONE unified `PathBuildingContextMessage` — both resolve the
+    per-kind bits (icon, noun, build context) from the kind, so slope and road cannot drift.
+    """
+
+    def __init__(
+        self,
+        sm: PlannerStateMachine,
+        ctx: PlannerContext,
+        graph: ResortGraph,
+        on_commit: Callable[[int], None],
+        on_cancel_connection: Callable[[], None],
+        kind: SegmentKind,
+    ) -> None:
+        super().__init__(sm, ctx, graph, on_commit, on_cancel_connection)
+        self.kind = kind
 
     def context_message(self) -> "Message | None":
-        name = self.ctx.slope_build.name or "Unnamed Slope"
-        segs = len(self.ctx.slope_build.segments)
+        # One unified message for every kind — no per-kind branch. The kind's build context stores
+        # origin + segments uniformly; roads pass an empty difficulty_emoji, which drops the
+        # ski-difficulty from the stats line.
+        spec = KIND_SPECS[self.kind]
+        build = self.ctx.build(self.kind)
+        name = build.name or f"Unnamed {spec.display_noun}"
+        segs = len(build.segments)
+
         if segs > 0:
-            stats = self.graph.get_segment_stats(segment_ids=self.ctx.slope_build.segments)
-            return SlopeBuildingContextMessage(
-                slope_name=name,
+            stats = self.graph.get_segment_stats(segment_ids=build.segments)
+            emoji = (
+                StyleConfig.DIFFICULTY_EMOJIS[stats["difficulty"]] if enum_eq(a=self.kind, b=SegmentKind.SLOPE) else ""
+            )
+            return PathBuildingContextMessage(
+                icon=spec.icon,
+                kind=self.kind,
+                name=name,
                 num_segments=segs,
-                difficulty_emoji=StyleConfig.DIFFICULTY_EMOJIS[stats["difficulty"]],
+                difficulty_emoji=emoji,
                 total_drop_m=stats["total_drop"],
                 total_length_m=stats["total_length"],
                 avg_gradient_pct=stats["avg_gradient"],
@@ -355,11 +383,23 @@ class SlopeBuildingControlPanel(ControlPanel):
                 start_elevation_m=stats["start_elev"],
                 current_elevation_m=stats["current_elev"],
             )
-        return SlopeStartingContextMessage(
-            slope_name=name,
-            start_node_id=self.ctx.slope_build.start_node_id,
-            start_lat=self.ctx.selection.lat,
-            start_lon=self.ctx.selection.lon,
+
+        # Starting (no segments yet): show the origin. Prefer a stored start node; else the pending
+        # start_location; else the current selection (fresh terrain click) — same shape for all kinds.
+        start_node_id = build.start_node_id
+        if start_node_id is None and build.endpoints:
+            start_node_id = build.endpoints[-1]
+        start_lat, start_lon = self.ctx.selection.lat, self.ctx.selection.lon
+        if start_node_id is None and build.start_location is not None:
+            start_lat, start_lon = build.start_location.lat, build.start_location.lon
+        return PathBuildingContextMessage(
+            icon=spec.icon,
+            kind=self.kind,
+            name=name,
+            num_segments=0,
+            start_node_id=start_node_id,
+            start_lat=start_lat,
+            start_lon=start_lon,
         )
 
     def action_message(self) -> "Message | None":
@@ -370,6 +410,7 @@ class SlopeBuildingControlPanel(ControlPanel):
         PathSelectionPanel(
             context=self.ctx,
             graph=self.graph,
+            kind=self.kind,
             on_commit=self.on_commit,
             on_cancel_connection=self.on_cancel_connection,
         ).render()
@@ -471,51 +512,6 @@ class MergePlacingControlPanel(ControlPanel):
             confirm_merge_action()
 
 
-class RoadBuildingControlPanel(ControlPanel):
-    """ROAD_STARTING / ROAD_BUILDING: origin context + action + proposal browse/commit."""
-
-    def context_message(self) -> "Message | None":
-        if self.ctx.road_build.endpoints:
-            endpoint = self.graph.nodes.get(self.ctx.road_build.endpoints[-1])
-            return RoadPlacingContextMessage(
-                start_node_id=self.ctx.road_build.endpoints[-1],
-                start_elevation_m=endpoint.elevation if endpoint else 0.0,
-                segment_count=len(self.ctx.road_build.segments),
-            )
-        if self.ctx.road_build.start_node_id:
-            node = self.graph.nodes.get(self.ctx.road_build.start_node_id)
-            return RoadPlacingContextMessage(
-                start_node_id=self.ctx.road_build.start_node_id,
-                start_elevation_m=node.elevation if node else 0.0,
-            )
-        if self.ctx.road_build.start_location:
-            loc = self.ctx.road_build.start_location
-            return RoadPlacingContextMessage(
-                start_lat=loc.lat,
-                start_lon=loc.lon,
-                start_elevation_m=loc.elevation,
-            )
-        raise RuntimeError("Road building state requires an endpoint, start_node_id, or start_location")
-
-    def action_message(self) -> "Message | None":
-        return RoadActionMessage()
-
-    def buttons(self) -> None:
-        num_paths = len(self.ctx.proposals.paths)
-        if num_paths == 0:
-            return
-        selected_idx = self.ctx.proposals.selected_idx if self.ctx.proposals.selected_idx is not None else 0
-        _render_proposal_browser(ctx=self.ctx, key_prefix="road_path", noun="options")
-        label, help_text = _commit_button_label(
-            self.ctx.proposals.paths[selected_idx],
-            continue_label="✅ Commit Road Segment",
-            continue_help="Add this segment and keep extending the road",
-        )
-        if st.button(label, type="primary", width="stretch", help=help_text):
-            logger.info(f"UI: Commit road clicked for proposal {selected_idx}")
-            self.on_commit(selected_idx)
-
-
 def _render_proposal_browser(ctx: PlannerContext, *, key_prefix: str, noun: str) -> None:
     """Render the ◀ ▶ proposal browser shared by the slope and road panels.
 
@@ -548,24 +544,50 @@ def _render_proposal_browser(ctx: PlannerContext, *, key_prefix: str, noun: str)
 
 
 class PathSelectionPanel:
-    """Renders path selection panel with navigation and statistics."""
+    """Proposal browse + commit + cancel-custom, shared by EVERY path kind (slope and road).
+
+    Kind-aware via the segment's own `kind`: the difficulty emoji/wording is used for slopes and
+    omitted for roads (which carry no ski difficulty), and the commit/finish labels adapt. This is
+    the single proposal UI — slope and road build panels both delegate here, so neither can drift.
+    """
 
     def __init__(
         self,
         context: PlannerContext,
         graph: ResortGraph,
+        kind: SegmentKind,
         on_commit: Callable[[int], None],
         on_cancel_connection: Callable[[], None],
     ) -> None:
         self.ctx = context
         self.graph = graph
+        self.kind = kind
         self.on_commit = on_commit
         self.on_cancel_connection = on_cancel_connection
 
     def render(self) -> None:
         """Render the path selection panel."""
+        noun = KIND_SPECS[self.kind].display_noun  # "Slope" / "Road"
         if not self.ctx.proposals.paths:
-            SlopeActionMessage().display()
+            # No proposals (e.g. a too-steep custom target). Show the message, but if we are
+            # routing a custom target (force_mode) still offer the escape back to the fan.
+            # A connector needs a real path, so an empty result is never a connector → always "Cancel Custom Path".
+            # A too-steep result stashes the gentlest grade → surface the exact "why" here
+            spec = KIND_SPECS[self.kind]
+            PathActionMessage(
+                kind=self.kind,
+                is_custom_path=self.ctx.custom_connect.force_mode,
+                too_steep_gentlest_pct=self.ctx.proposals.too_steep_gentlest_pct,
+                too_steep_cap_pct=spec.max_grade_pct,
+                too_steep_subject=spec.too_steep_subject,
+                too_steep_two_sided=spec.too_steep_two_sided,
+            ).display()
+            if self.ctx.custom_connect.force_mode:
+                self._render_cancel_connection(is_connector=False)
+            else:
+                # Fan-out that yielded nothing (e.g. all directions too steep): routing to a custom
+                # target may still work. Make that discoverable now that there is no button.
+                st.caption("🎯 Or click any point or node on the map to route a path there.")
             return
 
         num_paths = len(self.ctx.proposals.paths)
@@ -574,12 +596,14 @@ class PathSelectionPanel:
         selected_idx = self.ctx.proposals.selected_idx if self.ctx.proposals.selected_idx is not None else 0
 
         path = self.ctx.proposals.paths[selected_idx]
-        emoji = StyleConfig.DIFFICULTY_EMOJIS[path.difficulty]
+        # Roads carry no ski difficulty (empty string) → no difficulty emoji; slopes look theirs up.
+        emoji = StyleConfig.DIFFICULTY_EMOJIS[path.difficulty] if path.difficulty else ""
         is_connector = bool(path.is_connector and path.target_node_id)
 
-        SlopeActionMessage(
+        PathActionMessage(
             is_selecting_path=True,
             is_custom_path=self.ctx.custom_connect.force_mode,
+            kind=self.kind,
             num_paths=num_paths,
             selected_path_idx=selected_idx,
             path_difficulty=path.difficulty,
@@ -594,34 +618,35 @@ class PathSelectionPanel:
             target_node_id=path.target_node_id if is_connector else None,
         ).display()
 
-        # Navigation arrows
-        _render_proposal_browser(ctx=self.ctx, key_prefix="path", noun="paths")
+        # Navigation arrows (keys scoped per kind so slope/road browsers never collide).
+        _render_proposal_browser(ctx=self.ctx, key_prefix=f"{self.kind.value}_path", noun="paths")
 
-        # Commit button (shared label logic with the road panel)
+        # Commit button (shared label logic across kinds)
         commit_label, commit_help = _commit_button_label(
             path,
-            continue_label="✅ Commit This Path",
+            continue_label=f"✅ Commit This {noun}",
             continue_help="Add this segment and continue building",
         )
         if st.button(commit_label, type="primary", width="stretch", help=commit_help):
-            logger.info(f"UI: Commit button clicked for path {selected_idx}, is_connector={is_connector}")
+            logger.debug(f"UI: Commit button clicked for path {selected_idx}, is_connector={is_connector}")
             self.on_commit(selected_idx)
 
         # While showing custom-connect proposals, offer a way back to fan-out.
-        # The label adapts: a connector routes to a node ("Cancel Connection"), a custom target ("Cancel Custom Path").
         if self.ctx.custom_connect.force_mode:
-            cancel_label = "✖️ Cancel Connection" if is_connector else "✖️ Cancel Custom Path"
-            if st.button(
-                cancel_label,
-                width="stretch",
-                help="Return to regular fan-out path proposals",
-            ):
-                logger.info(f"UI: {cancel_label} clicked")
-                self.on_cancel_connection()
+            self._render_cancel_connection(is_connector=is_connector)
         else:
             # Fan-out mode: the panel showed auto-generated proposals, but the user can
             # also aim anywhere. Make that discoverable now that there is no button.
-            st.caption("🎯 Or click any downhill point or node on the map to route a path there.")
+            st.caption("🎯 Or click any point or node on the map to route a path there.")
+
+    def _render_cancel_connection(self, *, is_connector: bool) -> None:
+        """The escape back to fan-out during custom-connect. Label adapts: a connector routes to a
+        node ("Cancel Connection"), a plain custom target ("Cancel Custom Path").
+        """
+        cancel_label = "✖️ Cancel Connection" if is_connector else "✖️ Cancel Custom Path"
+        if st.button(cancel_label, width="stretch", help="Return to regular fan-out path proposals"):
+            logger.debug(f"UI: {cancel_label} clicked")
+            self.on_cancel_connection()
 
 
 # =============================================================================
@@ -793,7 +818,7 @@ class RoadStatsPanel:
             st.metric("Average Gradient", f"{avg_gradient:.0f}%")
         with col2:
             st.metric("End Elevation", f"{end_elev:.0f}m")
-            st.metric("Elevation Change", f"{end_elev - start_elev:+.0f}m")
+            st.metric("Elevation Change", f"{abs(end_elev - start_elev):.0f}m")
             st.metric(
                 "Steepest Section",
                 f"{max_gradient:.0f}%",

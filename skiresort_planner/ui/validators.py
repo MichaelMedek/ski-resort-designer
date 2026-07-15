@@ -55,12 +55,16 @@ def validate_lift_different_nodes(
 def validate_custom_target_downhill(
     start_elevation: float,
     target_elevation: float,
+    *,
+    may_climb: bool,
 ) -> ToastMessage | None:
-    """Validate that custom target is sufficiently downhill.
+    """Validate that a custom target is sufficiently downhill — unless the kind may climb.
 
-    Returns:
-        None if valid, TargetNotDownhillMessage if not enough drop.
+    Kinds that may climb (roads) route uphill freely, so the check is skipped for them.
+    Returns None if valid (or climbing allowed), TargetNotDownhillMessage otherwise.
     """
+    if may_climb:
+        return None
     elevation_drop = start_elevation - target_elevation
     if elevation_drop < ConnectionConfig.MIN_DROP_M:
         return TargetNotDownhillMessage(

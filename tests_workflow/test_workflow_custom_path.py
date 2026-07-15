@@ -8,6 +8,8 @@ state — targeting is map-only, mirroring roads.
 
 from skiresort_planner.constants import MapConfig
 from skiresort_planner.generators.path_factory import PathFactory
+from skiresort_planner.model.path_point import PathPoint
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.state_machine import PlannerStateMachine
@@ -18,10 +20,19 @@ M = MapConfig.METERS_PER_DEGREE_EQUATOR
 
 def _commit_first_segment(sm: PlannerStateMachine, graph: ResortGraph, factory: PathFactory, start_elev: float) -> str:
     """Commit one fan segment from the origin so the SM reaches slope_building."""
-    proposals = list(factory.generate_fan(lon=0.0, lat=0.0, elevation=start_elev))
+    proposals = list(factory.generate_fan(kind=SegmentKind.SLOPE, lon=0.0, lat=0.0, elevation=start_elev))
     endpoint_ids = graph.commit_paths(paths=[proposals[0]])
     seg_id = list(graph.segments.keys())[0]
     sm.commit_path(segment_id=seg_id, endpoint_node_id=endpoint_ids[0])  # type: ignore[attr-defined]  # dynamic python-statemachine event
+    return endpoint_ids[0]
+
+
+def _commit_first_road_segment(sm: PlannerStateMachine, graph: ResortGraph, start: "PathPoint") -> str:
+    """Commit one road segment so the SM reaches road_building (mirror of _commit_first_segment)."""
+    pts = [start, PathPoint(lon=start.lon, lat=start.lat - 300 / M, elevation=start.elevation - 10.0)]
+    endpoint_ids = graph.commit_paths(paths=[ProposedPathSegment(points=pts, kind=SegmentKind.ROAD)], record_undo=False)
+    seg_id = list(graph.segments.keys())[-1]
+    sm.commit_road(segment_id=seg_id, endpoint_node_id=endpoint_ids[0])  # type: ignore[attr-defined]  # dynamic python-statemachine event
     return endpoint_ids[0]
 
 
@@ -42,9 +53,42 @@ class TestSelectCustomTargetWorkflow:
 
         assert sm.current_state_value == "slope_custom_path", "Should route to custom path"
         assert ctx.custom_connect.force_mode, "force_mode set while showing custom proposals"
-        # The origin node was materialised from the selection and captured as start_node.
-        assert ctx.custom_connect.start_node is not None
-        assert ctx.slope_build.start_node_id == ctx.custom_connect.start_node
+        # A FRESH TERRAIN origin is NOT materialised as a node here — it stays a pending location and
+        # the node is minted only at commit (so cleanup_isolated_nodes can never sweep a dangling id).
+        assert ctx.custom_connect.start_node is None, "fresh terrain origin carries no node id yet"
+        assert ctx.build(SegmentKind.SLOPE).start_node_id is None, "no node materialised before commit"
+        assert ctx.build(SegmentKind.SLOPE).start_location is not None, "origin carried as a location"
+
+    def test_cleanup_mid_custom_connect_then_regenerate_does_not_crash(self, workflow_setup: WorkflowSetup) -> None:
+        """Regression (KeyError 'N###'): cleanup_isolated_nodes mid custom-connect must not dangle.
+
+        The reported crash: start from fresh terrain → custom-connect (STARTING) → a cleanup fires
+        (Reset View / undo / delete swept the isolated origin) → next action reads a stale origin id.
+        With no node materialised before commit, cleanup finds nothing to sweep and regeneration
+        routes from start_location. This asserts the whole chain completes without KeyError.
+        """
+        from skiresort_planner.ui.actions import resolve_build_origin
+
+        sm, ctx, graph, factory, dem = workflow_setup
+        start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
+        sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
+        target_lat = -500 / M
+        target_elev = dem.get_elevation_or_raise(lon=0.0, lat=target_lat)
+        sm.select_custom_target(target_location=(0.0, target_lat, target_elev))  # type: ignore[attr-defined]  # dynamic python-statemachine event
+        assert sm.current_state_value == "slope_custom_path"
+
+        nodes_before = dict(graph.nodes)
+        graph.cleanup_isolated_nodes()  # Reset View / undo / delete would call this mid-build
+        assert graph.nodes == nodes_before, "no isolated origin node existed to sweep (root fix)"
+
+        # Resolving the origin (what the deferred generator / re-target does) must route from
+        # start_location, not a dangling id — no KeyError.
+        build = ctx.build(SegmentKind.SLOPE)
+        lon, lat, elevation, start_node_id = resolve_build_origin(
+            build=build, graph=graph, custom_start_node=ctx.custom_connect.start_node
+        )
+        assert start_node_id is None, "fresh terrain origin routes from location, no node id"
+        assert (lon, lat, elevation) == (0.0, 0.0, start_elev), "routes from the pending origin"
 
     def test_select_target_from_building_state(self, workflow_setup: WorkflowSetup) -> None:
         """SlopeBuilding → select_custom_target → SlopeCustomPath."""
@@ -129,7 +173,7 @@ class TestCancelCustomConnect:
         sm.select_custom_target(target_location=(0.0, -500 / M, dem.get_elevation_or_raise(lon=0.0, lat=-500 / M)))  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
         assert sm.current_state_value == "slope_custom_path"
-        assert len(ctx.slope_build.segments) == 0, "No segments committed"
+        assert len(ctx.build(SegmentKind.SLOPE).segments) == 0, "No segments committed"
 
         sm.cancel_custom()  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
@@ -146,7 +190,7 @@ class TestCancelCustomConnect:
         sm.select_custom_target(target_location=(0.0, -500 / M, dem.get_elevation_or_raise(lon=0.0, lat=-500 / M)))  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
         assert sm.current_state_value == "slope_custom_path"
-        assert len(ctx.slope_build.segments) == 1, "Has 1 segment"
+        assert len(ctx.build(SegmentKind.SLOPE).segments) == 1, "Has 1 segment"
 
         sm.cancel_custom()  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
@@ -166,7 +210,7 @@ class TestCancelSlopeFromCustom:
 
         assert sm.current_state_value == "slope_custom_path"
 
-        sm.cancel_slope()
+        sm.send("cancel_slope")
 
         assert sm.current_state_value == "idle_ready", "Should return to IdleReady"
 
@@ -195,9 +239,9 @@ class TestFinishSlopeFromCustom:
         assert len(ctx.proposals.paths) == 1, "precondition: a target proposal is showing"
 
         # Sidebar Finish fires the finish_slope event — must resolve, not raise.
-        slope = graph.finish_slope(segment_ids=ctx.slope_build.segments)
+        slope = graph.finish_slope(segment_ids=ctx.build(SegmentKind.SLOPE).segments)
         assert slope is not None
-        sm.finish_slope(slope_id=slope.id)
+        sm.finish_slope(entity_id=slope.id)
 
         assert sm.current_state_value == "idle_viewing_slope", "Finish during targeting lands in viewing"
         assert not ctx.custom_connect.force_mode, "in-progress target cleared"
@@ -226,7 +270,11 @@ class TestCommitCustomContinue:
 
         # 3. Simulate committing a custom path segment (continue building).
         end_node = graph.nodes[endpoint_id]
-        proposals_2 = list(factory.generate_fan(lon=end_node.lon, lat=end_node.lat, elevation=end_node.elevation))
+        proposals_2 = list(
+            factory.generate_fan(
+                kind=SegmentKind.SLOPE, lon=end_node.lon, lat=end_node.lat, elevation=end_node.elevation
+            )
+        )
         endpoint_ids_2 = graph.commit_paths(paths=[proposals_2[0]])
         seg_id_2 = list(graph.segments.keys())[-1]
 
@@ -234,7 +282,7 @@ class TestCommitCustomContinue:
         sm.commit_custom_continue(segment_id=seg_id_2, endpoint_node_id=endpoint_ids_2[0])
 
         assert sm.current_state_value == "slope_building", "Should return to slope_building"
-        assert seg_id_2 in ctx.slope_build.segments, "New segment should be tracked"
+        assert seg_id_2 in ctx.build(SegmentKind.SLOPE).segments, "New segment should be tracked"
         assert ctx.custom_connect.target_location is None, "Custom connect should be cleared"
 
 
@@ -259,17 +307,68 @@ class TestCommitCustomFinish:
 
         # 3. Simulate committing a connector segment and finishing the slope.
         end_node = graph.nodes[endpoint_id]
-        proposals_2 = list(factory.generate_fan(lon=end_node.lon, lat=end_node.lat, elevation=end_node.elevation))
+        proposals_2 = list(
+            factory.generate_fan(
+                kind=SegmentKind.SLOPE, lon=end_node.lon, lat=end_node.lat, elevation=end_node.elevation
+            )
+        )
         graph.commit_paths(paths=[proposals_2[0]])
         seg_id_2 = list(graph.segments.keys())[-1]
-        ctx.slope_build.segments.append(seg_id_2)
+        ctx.build(SegmentKind.SLOPE).segments.append(seg_id_2)
 
-        slope = graph.finish_slope(segment_ids=ctx.slope_build.segments)
+        slope = graph.finish_slope(segment_ids=ctx.build(SegmentKind.SLOPE).segments)
         assert slope is not None, "Slope should be created"
 
         # 4. Call commit_custom_finish.
-        sm.commit_custom_finish(segment_id=seg_id_2, slope_id=slope.id)
+        sm.commit_custom_finish(segment_id=seg_id_2, entity_id=slope.id)
 
         assert sm.current_state_value == "idle_viewing_slope", "Should transition to viewing slope"
         assert ctx.viewing.slope_id == slope.id, "Viewing context should have slope ID"
         assert ctx.custom_connect.target_location is None, "Custom connect should be cleared"
+
+
+class TestCancelRoadFromCustom:
+    """Parity with TestCancelSlopeFromCustom: cancel_road discards the whole road from
+    road_custom_path (roads share the state machine, but this exit path had no explicit test).
+    """
+
+    def test_cancel_road_from_custom_path(self, workflow_setup: WorkflowSetup) -> None:
+        sm, ctx, graph, factory, dem = workflow_setup
+
+        start = PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
+        sm.start_road(node_id=None, location=start)
+        _commit_first_road_segment(sm, graph, start)
+        sm.select_custom_target(target_location=(0.0, -500 / M, dem.get_elevation_or_raise(lon=0.0, lat=-500 / M)))  # type: ignore[attr-defined]
+        assert sm.current_state_value == "road_custom_path"
+
+        sm.send("cancel_road")
+
+        assert sm.current_state_value == "idle_ready", "cancel_road from road_custom_path returns to IdleReady"
+
+
+class TestFinishRoadFromCustom:
+    """Parity with TestFinishSlopeFromCustom: sidebar Finish during road targeting must be valid
+    from road_custom_path (no TransitionNotAllowed), finalizing committed segments and dropping the
+    in-progress proposal.
+    """
+
+    def test_finish_road_from_custom_path_no_crash(self, workflow_setup: WorkflowSetup) -> None:
+        sm, ctx, graph, factory, dem = workflow_setup
+
+        start = PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
+        sm.start_road(node_id=None, location=start)
+        _commit_first_road_segment(sm, graph, start)
+        sm.select_custom_target(target_location=(0.0, -500 / M, dem.get_elevation_or_raise(lon=0.0, lat=-500 / M)))  # type: ignore[attr-defined]
+        assert sm.current_state_value == "road_custom_path"
+
+        # Seed an in-progress target proposal so the clear-on-finish is observable (not vacuous).
+        ctx.proposals.paths.append(ProposedPathSegment(points=[start, start], kind=SegmentKind.ROAD))
+        assert len(ctx.proposals.paths) == 1
+
+        road = graph.finish_road(segment_ids=ctx.build(SegmentKind.ROAD).segments)
+        assert road is not None
+        sm.finish_road(entity_id=road.id)
+
+        assert sm.current_state_value == "idle_viewing_road", "Finish during targeting lands in road viewing"
+        assert not ctx.custom_connect.force_mode, "in-progress target cleared"
+        assert len(ctx.proposals.paths) == 0, "seeded in-progress proposal cleared on finish"

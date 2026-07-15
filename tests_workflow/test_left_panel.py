@@ -5,6 +5,8 @@ button click, and the `_describe_undo_action` label logic for every undo type.
 Uses the shared `fake_st` fixture (no browser).
 """
 
+from contextlib import nullcontext
+
 import pytest
 
 from skiresort_planner.model.path_point import PathPoint
@@ -100,8 +102,16 @@ class TestSidebarRuns:
         else:
             raise ValueError
 
+        # The header (icon + label) is now the expander title; the bullets are its markdown body.
+        # Capture both so the kind-specific header + body are visible to the assertions.
         captured: list[str] = []
+
+        def _capture_expander(label: str, *a: object, **k: object) -> nullcontext[None]:
+            captured.append(label)
+            return nullcontext()
+
         fake_st.markdown = lambda text, *a, **k: captured.append(text)
+        fake_st.expander = _capture_expander
         SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
         joined = "\n".join(captured)
 
@@ -110,6 +120,20 @@ class TestSidebarRuns:
         assert "Select **Slope**" not in joined  # generic idle body must NOT appear
         # Only lifts show the change-type hint.
         assert ("Use lift buttons to change type" in joined) is (kind == "lift")
+
+    def test_sidebar_building_state_renders_consolidated_block(self, fake_st, empty_graph) -> None:
+        # Building/placing states render the SAME collapsed info block as idle/viewing (header label
+        # + the "complete or cancel" bullet), not the old plain markdown/caption pair.
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        sm.start_import(lon=0.0, lat=0.0)
+        assert sm.is_import_placing
+
+        captured: list[str] = []
+        fake_st.markdown = lambda text, *a, **k: captured.append(text)
+        SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
+        joined = "\n".join(captured)
+
+        assert "Complete or cancel current build to change type" in joined
 
 
 class TestModeSelectorButton:
@@ -163,7 +187,7 @@ class TestPathSettingsVisibility:
     def test_path_settings_hidden_in_custom_mode(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         sm.start_building(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
-        ctx.custom_connect.force_mode = True  # showing custom-connect proposals
+        ctx.custom_connect.target_location = (0.0, 0.0, 2000.0)  # showing custom-connect proposals (force_mode)
         seen = self._capture_markdown(fake_st)
         SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
         assert not any("Path Settings" in m for m in seen), "custom mode hides the Path Settings block"

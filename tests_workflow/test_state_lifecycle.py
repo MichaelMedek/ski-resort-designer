@@ -7,7 +7,12 @@ cleared, whether the info panel shows/hides, and which deferred flags fire. The 
 truth" contract (enter guarantees panel visibility/hiding regardless of source) is what these guard.
 """
 
+from collections.abc import Callable
+
+import pytest
+
 from skiresort_planner.model.path_point import PathPoint
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.ui import state_lifecycle as sl
 from skiresort_planner.ui.context import PlannerContext
 
@@ -15,14 +20,14 @@ from skiresort_planner.ui.context import PlannerContext
 def _dirty_ctx() -> PlannerContext:
     """A context polluted with building/placement/viewing state, to prove handlers clean it up."""
     ctx = PlannerContext()
-    ctx.slope_build.segments = ["S1"]
-    ctx.slope_build.name = "Slope 3"
-    ctx.road_build.segments = ["R1"]
+    ctx.build(SegmentKind.SLOPE).segments = ["S1"]
+    ctx.build(SegmentKind.SLOPE).name = "Slope 3"
+    ctx.build(SegmentKind.ROAD).segments = ["R1"]
     ctx.lift.start_node_id = "N9"
     ctx.lift.start_location = PathPoint(lon=0.0, lat=0.0, elevation=2000.0)
-    ctx.custom_connect.force_mode = True
+    ctx.custom_connect.target_location = (0.0, 0.0, 2100.0)  # force_mode derives from this
     ctx.custom_connect.start_node = "N1"
-    ctx.selection.node_id = "N2"
+    ctx.selection.set(lon=5.0, lat=6.0, elevation=2100.0)
     ctx.merge.node_ids = ["N3", "N4"]
     ctx.viewing.panel_visible = True
     ctx.deferred.osm_import_center_lon = 10.0
@@ -34,11 +39,11 @@ class TestEnterIdleReady:
     def test_clears_all_building_state_and_hides_panel(self) -> None:
         ctx = _dirty_ctx()
         sl.enter_idle_ready(ctx)
-        assert ctx.slope_build.segments == [], "building segments cleared"
-        assert ctx.road_build.segments == [], "road segments cleared"
+        assert ctx.build(SegmentKind.SLOPE).segments == [], "building segments cleared"
+        assert ctx.build(SegmentKind.ROAD).segments == [], "road segments cleared"
         assert ctx.lift.start_node_id is None and ctx.lift.start_location is None, "lift placement cleared"
         assert ctx.custom_connect.force_mode is False, "custom-connect cleared"
-        assert ctx.selection.node_id is None, "selection cleared"
+        assert not ctx.selection.has_selection(), "selection coordinates cleared"
         assert ctx.viewing.panel_visible is False, "viewing panel hidden"
 
     def test_preserves_user_preferences(self) -> None:
@@ -57,7 +62,7 @@ class TestEnterViewingStates:
         ctx.viewing.panel_visible = False  # start hidden, enter must force it visible
         sl.enter_idle_viewing_slope(ctx)
         assert ctx.viewing.panel_visible is True, "single point of truth: enter guarantees panel visible"
-        assert ctx.slope_build.segments == [], "stale building state cleared defensively"
+        assert ctx.build(SegmentKind.SLOPE).segments == [], "stale building state cleared defensively"
         assert ctx.lift.start_node_id is None
 
     def test_enter_viewing_lift_shows_panel(self) -> None:
@@ -65,14 +70,14 @@ class TestEnterViewingStates:
         ctx.viewing.panel_visible = False
         sl.enter_idle_viewing_lift(ctx)
         assert ctx.viewing.panel_visible is True
-        assert ctx.road_build.segments == []
+        assert ctx.build(SegmentKind.ROAD).segments == []
 
     def test_enter_viewing_road_shows_panel(self) -> None:
         ctx = _dirty_ctx()
         ctx.viewing.panel_visible = False
         sl.enter_idle_viewing_road(ctx)
         assert ctx.viewing.panel_visible is True
-        assert ctx.slope_build.segments == []
+        assert ctx.build(SegmentKind.SLOPE).segments == []
 
 
 class TestEnterBuildingStates:
@@ -87,18 +92,38 @@ class TestEnterBuildingStates:
         ctx = _dirty_ctx()
         sl.enter_slope_building(ctx)
         assert ctx.viewing.panel_visible is False, "panel hidden while building"
-        assert ctx.slope_build.segments == ["S1"], "committed segments are preserved on enter_slope_building"
+        assert ctx.build(SegmentKind.SLOPE).segments == ["S1"], (
+            "committed segments are preserved on enter_slope_building"
+        )
 
     def test_enter_road_building_preserves_road_segments(self) -> None:
         ctx = _dirty_ctx()
         sl.enter_road_building(ctx)
         assert ctx.viewing.panel_visible is False
-        assert ctx.road_build.segments == ["R1"], "committed road segments preserved on enter_road_building"
+        assert ctx.build(SegmentKind.ROAD).segments == ["R1"], (
+            "committed road segments preserved on enter_road_building"
+        )
 
     def test_enter_road_starting_hides_panel(self) -> None:
         ctx = _dirty_ctx()
         sl.enter_road_starting(ctx)
         assert ctx.viewing.panel_visible is False
+
+    @pytest.mark.parametrize(
+        ("enter_fn", "kind"),
+        [
+            (sl.enter_slope_starting, SegmentKind.SLOPE),
+            (sl.enter_slope_building, SegmentKind.SLOPE),
+            (sl.enter_road_starting, SegmentKind.ROAD),
+            (sl.enter_road_building, SegmentKind.ROAD),
+        ],
+    )
+    def test_enter_fan_state_arms_its_kind(self, enter_fn: Callable[[PlannerContext], None], kind: SegmentKind) -> None:
+        # The shared _enter_fan_state contract: every fan-state entry arms the fan for THAT kind, so
+        # the deferred pass regenerates proposals (first click, undo-back, cancel-custom-to-fan).
+        ctx = PlannerContext()
+        enter_fn(ctx)
+        assert kind in ctx.deferred.fan_generation, f"{enter_fn.__name__} must arm the {kind.value} fan"
 
     def test_enter_lift_placing_hides_panel(self) -> None:
         ctx = _dirty_ctx()
@@ -159,42 +184,49 @@ class TestExitHandlersCleanUpScratch:
         assert ctx.merge.node_ids == [], "merge selection cleared on exit"
 
 
-class TestNoopExitsAreSafe:
-    """The 'destination controls cleanup' exits are intentional no-ops; they must not raise and must
-    not mutate state (a regression that added cleanup here would break undo/self-loop flows).
+class TestNoOpExitsHaveNoHook:
+    """States without real exit teardown must NOT have an on_exit_* hook (else a self-loop or undo
+    would run cleanup that breaks undo_continue / retarget). Only lift/import/merge have exit hooks;
+    everything else exits as a no-op by having no hook at all.
     """
 
-    def test_noop_exits_do_not_mutate_or_raise(self) -> None:
-        for exit_fn in (
-            sl.exit_idle_ready,
-            sl.exit_idle_viewing_slope,
-            sl.exit_idle_viewing_lift,
-            sl.exit_idle_viewing_road,
-            sl.exit_slope_starting,
-            sl.exit_slope_building,
-            sl.exit_slope_custom_path,
-            sl.exit_road_starting,
-            sl.exit_road_building,
-        ):
-            ctx = _dirty_ctx()
-            exit_fn(ctx)
-            # The committed segments / selection must survive these no-op exits (self-loops rely on it).
-            assert ctx.slope_build.segments == ["S1"], f"{exit_fn.__name__} must not clear building state"
-            assert ctx.merge.node_ids == ["N3", "N4"], f"{exit_fn.__name__} must not touch the merge selection"
+    def test_only_real_cleanup_states_have_exit_hooks(self) -> None:
+        from skiresort_planner.ui.state_machine import PlannerStateMachine
 
-    def test_exit_slope_building_preserves_proposals_for_undo_continue(self) -> None:
-        # Explicitly documented invariant: undo_continue sets proposals BEFORE the transition, so
-        # exit_slope_building must never clear them.
-        from skiresort_planner.model.proposed_path import ProposedPathSegment
-
-        ctx = PlannerContext()
-        proposal = ProposedPathSegment(
-            points=[
-                PathPoint(lon=0.0, lat=0.0, elevation=2500.0),
-                PathPoint(lon=0.0, lat=-0.01, elevation=2400.0),
-            ],
-            target_difficulty="blue",
+        on_exit_methods = {n.removeprefix("on_exit_") for n in dir(PlannerStateMachine) if n.startswith("on_exit_")}
+        assert on_exit_methods == {"lift_placing"}, (
+            "only lift_placing needs a library on_exit hook; import/merge clear via before-hooks, "
+            f"the rest exit as no-ops. Got: {sorted(on_exit_methods)}"
         )
-        ctx.proposals.paths = [proposal]
-        sl.exit_slope_building(ctx)
-        assert ctx.proposals.paths == [proposal], "exit_slope_building preserves proposals (undo_continue relies on it)"
+
+
+class TestEnterBuildAndCustomStatesClearMarkerDedup:
+    """Re-clicking the SAME node must stay recognised while building/targeting.
+
+    Node markers dedup by "node_<id>" with no map_version, so only clear_marker() frees a repeat
+    click. Every enter hook that can be RE-reached with the same node still "seen" (a build/custom
+    self-loop, or a commit/cancel that lands back in a build state) must clear the marker, or the
+    second click on that node is silently swallowed. enter_*_starting already does this; the build
+    and custom-path hooks must match.
+    """
+
+    @pytest.mark.parametrize(
+        "enter_fn",
+        [
+            sl.enter_slope_building,
+            sl.enter_road_building,
+            sl.enter_slope_custom_path,
+            sl.enter_road_custom_path,
+        ],
+    )
+    def test_enter_clears_seen_node_marker(self, enter_fn: Callable[[PlannerContext], None]) -> None:
+        ctx = _dirty_ctx()
+        ctx.click_dedup.debounce_seconds = 0.0  # disable timing debounce so repeat clicks aren't time-suppressed
+        # Simulate the node just clicked (targeting) still being the last-seen marker.
+        assert ctx.click_dedup.is_new_click(coord=None, obj_id="node_N7") is True
+
+        enter_fn(ctx)
+
+        assert ctx.click_dedup.is_new_click(coord=None, obj_id="node_N7") is True, (
+            f"{enter_fn.__name__} must clear the marker so the same node can be re-clicked (retarget / repeat)"
+        )

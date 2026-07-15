@@ -99,6 +99,101 @@ class TestCommitAndFinishWorkflow:
         assert len(graph.undo_stack) == 2, "Should have 2 undo actions (commit + finish)"
         assert isinstance(graph.undo_stack[-1], FinishSlopeAction), "Last undo should be FinishSlopeAction"
 
+    def test_finish_slope_raises_on_empty_segments(self, empty_graph) -> None:
+        """Raise-fast: finishing with no segments is a programming error, not a soft None return."""
+        with pytest.raises(ValueError, match="empty segment_ids"):
+            empty_graph.finish_slope(segment_ids=[])
+
+    def test_finish_slope_raises_on_missing_segment(self, empty_graph) -> None:
+        """Raise-fast: a segment id that isn't in the graph must raise, never return None."""
+        with pytest.raises(ValueError, match="missing segment"):
+            empty_graph.finish_slope(segment_ids=["S999"])
+
+    def test_finish_road_raises_on_missing_segment(self, empty_graph) -> None:
+        """Raise-fast parity for roads (mirrors slope)."""
+        with pytest.raises(ValueError, match="missing segment"):
+            empty_graph.finish_road(segment_ids=["S999"])
+
+
+class TestUndoStackIntegrityForMissingSegments:
+    """Guards against the stale-segment undo crash.
+
+    Committing a segment records an AddSegmentsAction; finishing records a FinishSlope/RoadAction —
+    both reference their segment ids and assume they persist. Deleting the finished slope/road (or a
+    merge that collapses one) removes those segments, so BOTH chained entries must be dropped from
+    the stack the moment the segments die; otherwise undoing one restores/describes a phantom
+    segment. With the scrub in place a live entry always has its segments, so describe() raises loud
+    on a violation rather than masking it.
+    """
+
+    def test_describe_raises_on_missing_segment_invariant_violation(self, empty_graph) -> None:
+        import pytest
+
+        from skiresort_planner.model.actions import AddSegmentsAction
+        from skiresort_planner.model.undo_handlers import UNDO_HANDLERS
+
+        # A live AddSegmentsAction always has its segments present (the scrub guarantees it), so a
+        # missing segment is an invariant violation — describe() indexes directly and raises loud
+        # rather than masking a stack/graph desync with a fallback label.
+        action = AddSegmentsAction(segment_ids=("S172",), node_ids=("N1", "N2"))
+        with pytest.raises(KeyError):
+            UNDO_HANDLERS[action.action_type.name].describe(action=action, graph=empty_graph)
+
+    @staticmethod
+    def _chained_entries_are_live(graph) -> None:
+        """Every AddSegments/Finish entry left on the stack still references at least one live segment."""
+        from skiresort_planner.model.actions import ActionType
+
+        chained = {ActionType.ADD_SEGMENTS.name, ActionType.FINISH_SLOPE.name, ActionType.FINISH_ROAD.name}
+        for action in graph.undo_stack:
+            if action.action_type.name in chained:
+                assert any(sid in graph.segments for sid in action.segment_ids), (
+                    f"stale {action.action_type.name} left on stack after segment removal: {action.segment_ids}"
+                )
+
+    def test_delete_slope_drops_stale_chain_entries(self, empty_graph, path_points_blue) -> None:
+        from skiresort_planner.model.actions import ActionType
+
+        graph = empty_graph
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        assert any(a.action_type == ActionType.ADD_SEGMENTS for a in graph.undo_stack), "commit recorded ADD_SEGMENTS"
+        assert any(a.action_type == ActionType.FINISH_SLOPE for a in graph.undo_stack), "finish recorded FINISH_SLOPE"
+
+        graph.delete_slope(slope_id=slope.id)
+
+        # Both the AddSegments AND the FinishSlope entry referenced the now-deleted segments → gone.
+        self._chained_entries_are_live(graph)
+        assert not any(a.action_type == ActionType.FINISH_SLOPE for a in graph.undo_stack), (
+            "the FinishSlopeAction for the deleted slope must be pruned (this was the actual crash path)"
+        )
+
+    def test_delete_road_drops_stale_chain_entries(self, empty_graph, path_points_blue) -> None:
+        graph = empty_graph
+        graph.commit_paths(
+            paths=[ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)]
+        )
+        road = graph.finish_road(segment_ids=list(graph.segments.keys()))
+
+        graph.delete_road(road_id=road.id)
+
+        self._chained_entries_are_live(graph)
+
+    def test_undo_after_delete_never_raises(self, empty_graph, path_points_blue) -> None:
+        """The end-to-end guard: commit → finish → delete → undo the whole way down, no crash."""
+        from skiresort_planner.model.undo_handlers import UNDO_HANDLERS
+
+        graph = empty_graph
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        graph.delete_slope(slope_id=slope.id)
+
+        # describe() every remaining entry (the undo dialog does this) and unwind — must not raise.
+        while graph.undo_stack:
+            top = graph.undo_stack[-1]
+            UNDO_HANDLERS[top.action_type.name].describe(action=top, graph=graph)
+            graph.undo_last()
+
 
 class TestNodeReuse:
     """Tests for node reuse when endpoints are close."""
@@ -682,7 +777,7 @@ class TestFinishSmoothing:
         assert road is not None, "a finished road must never be rejected by smoothing"
         assert max(graph.segments[sid].max_slope_pct for sid in seg_ids) > 15.0
 
-    def test_single_segment_finish_is_noop(self, empty_graph, path_points_blue) -> None:
+    def test_single_segment_finish_is_smoothed(self, empty_graph, path_points_blue) -> None:
         graph = empty_graph
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         seg_id = list(graph.segments.keys())[0]
@@ -691,7 +786,12 @@ class TestFinishSmoothing:
         slope = graph.finish_slope(segment_ids=[seg_id])
 
         assert slope is not None
-        assert graph.segments[seg_id].points == before, "single-segment path is not smoothed"
+        after = graph.segments[seg_id].points
+        # Smoothing resamples the 5 raw points at RESAMPLE_STEP_M (~7m over 800m → many more),
+        # with the entity endpoints pinned exactly.
+        assert len(after) > len(before), "single-segment path is smoothed (resampled denser)"
+        assert after[0] == before[0], "start endpoint pinned exactly"
+        assert after[-1] == before[-1], "end endpoint pinned exactly"
 
 
 class TestImportOSMBatch:
@@ -1162,6 +1262,106 @@ class TestMergeNodes:
             a=PathPoint(lon=0.5, lat=0.5, elevation=0.0), b=PathPoint(lon=0.6, lat=0.6, elevation=0.0)
         )
         assert result is False
+
+    # -- collapse to zero length deletes the entity (both endpoints merged onto the survivor) ----
+
+    def test_merge_collapsing_lift_to_zero_length_deletes_it(self, empty_graph, mock_dem_blue_slope) -> None:
+        """Merging both stations of a lift onto one node would give it 0 length (rebuild crashes on
+        0 distance) — the lift is deleted instead, as part of the single merge undo entry.
+        """
+        dem = mock_dem_blue_slope
+        graph = empty_graph
+        self._node(graph, dem, "A", 0.0, 0.0)
+        self._node(graph, dem, "B", 30 / self.M, 0.0)
+        lift = graph.add_lift(start_node_id="A", end_node_id="B", lift_type="chairlift", dem=dem)
+        before = len(graph.undo_stack)
+
+        graph.merge_nodes(node_ids=["A", "B"], dem=dem)
+
+        assert lift.id not in graph.lifts, "a lift collapsed to zero length is deleted, not rebuilt"
+        assert len(graph.undo_stack) == before + 1, "still a single MERGE_NODES undo entry"
+
+    def test_merge_collapsing_slope_deletes_it_and_its_segments(self, empty_graph, mock_dem_blue_slope) -> None:
+        """Merging both boundary nodes of a single-segment slope collapses it — the slope and its
+        segment are deleted.
+        """
+        dem = mock_dem_blue_slope
+        graph = empty_graph
+        graph.commit_paths(
+            paths=[ProposedPathSegment(points=_leg(0.0, 0.0, 0.0, -20.0, 6, dem), target_difficulty="blue")]
+        )
+        slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        seg_ids = list(slope.segment_ids)
+        start_id, end_id = slope.start_node_id, slope.end_node_id
+
+        graph.merge_nodes(node_ids=[start_id, end_id], dem=dem)
+
+        assert slope.id not in graph.slopes, "a slope collapsed to zero length is deleted"
+        assert all(sid not in graph.segments for sid in seg_ids), "its segments are removed too"
+
+    def test_merge_collapsing_road_deletes_it_and_its_segments(self, empty_graph, mock_dem_blue_slope) -> None:
+        """Same as the slope case, for a single-segment road."""
+        dem = mock_dem_blue_slope
+        graph = empty_graph
+        road = _commit_road(graph, _leg(0.0, 0.0, 0.0, -20.0, 6, dem))
+        seg_ids = list(road.segment_ids)
+        start_id, end_id = road.start_node_id, road.end_node_id
+
+        graph.merge_nodes(node_ids=[start_id, end_id], dem=dem)
+
+        assert road.id not in graph.roads, "a road collapsed to zero length is deleted"
+        assert all(sid not in graph.segments for sid in seg_ids), "its segments are removed too"
+
+    def test_undo_restores_collapsed_lift(self, empty_graph, mock_dem_blue_slope) -> None:
+        """Undo of the collapsing merge brings the deleted lift back with its original endpoints."""
+        dem = mock_dem_blue_slope
+        graph = empty_graph
+        self._node(graph, dem, "A", 0.0, 0.0)
+        self._node(graph, dem, "B", 30 / self.M, 0.0)
+        lift = graph.add_lift(start_node_id="A", end_node_id="B", lift_type="chairlift", dem=dem)
+
+        graph.merge_nodes(node_ids=["A", "B"], dem=dem)
+        graph.undo_last()
+
+        assert lift.id in graph.lifts, "undo restores the collapsed lift"
+        restored = graph.lifts[lift.id]
+        assert (restored.start_node_id, restored.end_node_id) == ("A", "B"), "endpoints restored"
+        assert "B" in graph.nodes, "merged-away node restored"
+
+    def test_undo_restores_collapsed_slope_and_segments(self, empty_graph, mock_dem_blue_slope) -> None:
+        """Undo of the collapsing merge brings the slope and its segments back, endpoints distinct."""
+        dem = mock_dem_blue_slope
+        graph = empty_graph
+        graph.commit_paths(
+            paths=[ProposedPathSegment(points=_leg(0.0, 0.0, 0.0, -20.0, 6, dem), target_difficulty="blue")]
+        )
+        slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        seg_ids = list(slope.segment_ids)
+        boundary_before = (slope.start_node_id, slope.end_node_id)
+
+        graph.merge_nodes(node_ids=[slope.start_node_id, slope.end_node_id], dem=dem)
+        graph.undo_last()
+
+        assert slope.id in graph.slopes, "undo restores the collapsed slope"
+        assert all(sid in graph.segments for sid in seg_ids), "its segments are restored"
+        restored = graph.slopes[slope.id]
+        assert (restored.start_node_id, restored.end_node_id) == boundary_before, "boundary ids restored"
+        assert restored.start_node_id != restored.end_node_id, "endpoints distinct again"
+
+    def test_merge_partial_collapse_keeps_multisegment_path(self, empty_graph, mock_dem_blue_slope) -> None:
+        """Merging both endpoints of ONE interior segment of a two-segment slope leaves that segment
+        zero-length but the PATH boundary distinct — the path survives (restitch is 0-length-safe).
+        """
+        dem = mock_dem_blue_slope
+        graph = empty_graph
+        seg_ids = _commit_L_slope(graph, dem)
+        slope = graph.finish_slope(segment_ids=seg_ids)
+        first_seg = graph.segments[slope.segment_ids[0]]
+        # Merge the first segment's own endpoints (path start + interior junction).
+        graph.merge_nodes(node_ids=[first_seg.start_node_id, first_seg.end_node_id], dem=dem)
+
+        assert slope.id in graph.slopes, "a partially-collapsed multi-segment path is not deleted"
+        assert slope.start_node_id != slope.end_node_id, "path boundary stays distinct"
 
 
 # =============================================================================

@@ -113,8 +113,16 @@ class LeastCostPathPlanner:
         # The segment must actually run in its mode's direction (net drop / net climb).
         net_drop = start_elevation - target_elevation
         if enum_eq(a=gradient_mode, b=GradientMode.DOWNHILL) and net_drop <= 0:
+            logger.debug(
+                f"plan: no path — DOWNHILL mode but net_drop={net_drop:.1f}m <= 0 "
+                f"(start_elev={start_elevation:.0f}m, target_elev={target_elevation:.0f}m)"
+            )
             return None
         if enum_eq(a=gradient_mode, b=GradientMode.UPHILL) and net_drop >= 0:
+            logger.debug(
+                f"plan: no path — UPHILL mode but net_drop={net_drop:.1f}m >= 0 "
+                f"(start_elev={start_elevation:.0f}m, target_elev={target_elevation:.0f}m)"
+            )
             return None
 
         direct_distance_m = GeoCalculator.haversine_distance_m(
@@ -122,6 +130,11 @@ class LeastCostPathPlanner:
         )
 
         if direct_distance_m < GeometricTuningConfig.STEP_SIZE_M:
+            logger.debug(
+                f"plan: no path — direct_distance={direct_distance_m:.1f}m "
+                f"< STEP_SIZE_M={GeometricTuningConfig.STEP_SIZE_M:.1f}m "
+                f"from ({start_lon:.5f}, {start_lat:.5f}) to ({target_lon:.5f}, {target_lat:.5f})"
+            )
             return None
 
         # Build the search grid
@@ -134,6 +147,10 @@ class LeastCostPathPlanner:
         )
 
         if grid_data is None:
+            logger.debug(
+                f"plan: no path — grid build failed (no nearest node) from "
+                f"({start_lon:.5f}, {start_lat:.5f}) to ({target_lon:.5f}, {target_lat:.5f})"
+            )
             return None
 
         elevations, lons, lats, start_node, target_node = grid_data
@@ -150,6 +167,10 @@ class LeastCostPathPlanner:
         )
 
         if path_nodes is None:
+            logger.debug(
+                f"plan: no path — Dijkstra found no route holding target_grade={target_grade_pct:.1f}% "
+                f"({gradient_mode}) from ({start_lon:.5f}, {start_lat:.5f}) to ({target_lon:.5f}, {target_lat:.5f})"
+            )
             return None
 
         # Convert grid path to PathPoints
@@ -305,6 +326,7 @@ class LeastCostPathPlanner:
         """
         n_rows = len(elevations)
         n_cols = len(elevations[0])
+        assert n_cols > 0, f"elevations[0] is empty; grid has {n_rows} rows but 0 columns"
         N = n_rows * n_cols
 
         # Build sparse graph (row, col, data) for CSR matrix
@@ -387,6 +409,9 @@ class LeastCostPathPlanner:
         path_ids.reverse()
 
         path_nodes = [GridNode(row=pid // n_cols, col=pid % n_cols) for pid in path_ids]
+        assert len(path_nodes) >= 2, (
+            f"path_nodes has {len(path_nodes)} nodes; start→target path must have at least 2 endpoints"
+        )
 
         # Return same tuple shape for drop-in compatibility
         return path_nodes, len(path_nodes), N

@@ -66,6 +66,60 @@ class TestComputeGradient:
         assert grad.bearing_deg == pytest.approx(180.0, abs=1.0), "fall line points south (downhill)"
         assert grad.slope_pct > 0.0, "a sloped DEM yields a positive gradient magnitude"
 
+    @pytest.mark.parametrize(
+        "ns_pct, ew_pct, expected_bearing",
+        [
+            (20.0, 0.0, 180.0),  # drops south → downhill points south
+            (-20.0, 0.0, 0.0),  # rises south → downhill points north
+            (0.0, 20.0, 90.0),  # drops east → downhill points east
+            (0.0, -20.0, 270.0),  # rises east → downhill points west
+        ],
+    )
+    def test_cardinal_slopes_have_exact_fall_line_bearing(
+        self, ns_pct: float, ew_pct: float, expected_bearing: float
+    ) -> None:
+        """On a pure N/S or E/W plane the fall line is an EXACT cardinal bearing.
+
+        Pins the bearing to 0.01° (not the ±1° = ~1km band used elsewhere): the weighted
+        multi-point gradient must reproduce the plane's exact downhill direction, and any
+        sign flip in the grad_x/grad_y decomposition would swing this by 90°+.
+        """
+        from tests_workflow.conftest import MockDEMService
+
+        analyzer = TerrainAnalyzer(dem=MockDEMService(base_elevation=2500.0, slope_ns_pct=ns_pct, slope_ew_pct=ew_pct))
+        grad = analyzer.compute_gradient(lon=0.0, lat=0.0)
+        assert grad.bearing_deg == pytest.approx(expected_bearing, abs=0.01)
+        assert grad.slope_pct > 0.0, "a tilted plane has a positive gradient magnitude"
+
+    def test_flat_terrain_has_exactly_zero_gradient(self) -> None:
+        """A perfectly level DEM yields exactly (0% slope, 0° bearing) — no phantom tilt."""
+        from tests_workflow.conftest import MockDEMService
+
+        analyzer = TerrainAnalyzer(dem=MockDEMService(base_elevation=2500.0, slope_ns_pct=0.0, slope_ew_pct=0.0))
+        grad = analyzer.compute_gradient(lon=0.0, lat=0.0)
+        assert grad.slope_pct == 0.0
+        assert grad.bearing_deg == 0.0
+
+    def test_gradient_magnitude_is_deterministic_on_a_known_plane(self) -> None:
+        """The weighted 'Magic 8' gradient is a FIXED fraction of the plane's raw slope.
+
+        On the mock's linear plane the two-ring weighting is fully deterministic, so the
+        reduced magnitude is a known number — pin it. A 20% N-S plane reads 10.011%, and a
+        30% plane reads 1.5× that. This guards the magnitude (not just its sign/monotonicity)
+        against a re-weighting regression that a '> 0 and monotonic' check would miss.
+        """
+        from tests_workflow.conftest import MockDEMService
+
+        g20 = TerrainAnalyzer(
+            dem=MockDEMService(base_elevation=2500.0, slope_ns_pct=20.0, slope_ew_pct=0.0)
+        ).compute_gradient(lon=0.0, lat=0.0)
+        g30 = TerrainAnalyzer(
+            dem=MockDEMService(base_elevation=2500.0, slope_ns_pct=30.0, slope_ew_pct=0.0)
+        ).compute_gradient(lon=0.0, lat=0.0)
+        assert g20.slope_pct == pytest.approx(10.011, abs=0.01), "20% plane → known reduced magnitude"
+        # The plane is linear, so the reduced magnitude scales exactly with raw steepness.
+        assert g30.slope_pct == pytest.approx(g20.slope_pct * 1.5, rel=1e-6)
+
     def test_diagonal_slope_bearing_in_se_quadrant_biased_south(self, mock_dem_red_slope_diagonal) -> None:
         """DEM dropping 30% south + 10% east → fall line in the SE quadrant, biased south."""
         analyzer = TerrainAnalyzer(dem=mock_dem_red_slope_diagonal)

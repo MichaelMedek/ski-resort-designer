@@ -420,9 +420,8 @@ class MapRenderer:
                 # A committed segment always has ≥2 points, so its belt polygon is never empty.
                 raise RuntimeError(f"Segment {seg_id} produced an empty belt polygon")
 
-            # enum_eq: reload-safe (Streamlit rebuilds the SegmentKind class).
-            is_road = enum_eq(a=segment.kind, b=SegmentKind.ROAD)
-            flat_z = MapConfig.Z_OFFSET_2D_LIFTS if is_road else MapConfig.Z_OFFSET_2D_SLOPES
+            # Flat-mode z-offset per kind (keyed by the StrEnum value → reload-safe).
+            flat_z = MapConfig.SEGMENT_FLAT_Z[segment.kind.value]
             center_line = [
                 [
                     p.lon,
@@ -442,7 +441,7 @@ class MapRenderer:
             )
             icon_position = [mid_pt.lon, mid_pt.lat, icon_z]
 
-            if is_road:
+            if enum_eq(a=segment.kind, b=SegmentKind.ROAD):
                 # Road segment: flat brown. A finished road opens its panel on click;
                 # an in-build road segment (no Road entity yet) stays segment-typed.
                 road = road_of.get(seg_id)
@@ -467,7 +466,9 @@ class MapRenderer:
                 )
                 continue
 
-            # Slope or orphan-in-build segment: difficulty-colored.
+            # Slope segment: difficulty-colored. (Any other kind must be handled above.)
+            if not enum_eq(a=segment.kind, b=SegmentKind.SLOPE):
+                raise ValueError(f"segment {seg_id} has unhandled kind for rendering: {segment.kind!r}")
             slope = slope_of.get(seg_id)
             if slope is not None:
                 difficulty = slope.get_difficulty(segments=self.graph.segments)
@@ -962,7 +963,7 @@ class MapRenderer:
 
         # Proposal paths (NOT pickable - use markers for selection/commit)
         if path_data:
-            logger.info(
+            logger.debug(
                 f"[RENDER] proposal layer: {len(path_data)} path(s), is_custom_path={is_custom_path}, "
                 f"first_color={path_data[0]['color']}"
             )
@@ -1234,56 +1235,6 @@ class MapRenderer:
         )
 
         return layers
-
-    # =========================================================================
-    # ROAD PLACEMENT MARKER
-    # =========================================================================
-
-    def create_pending_road_marker_layers(
-        self,
-        lat: float,
-        lon: float,
-        elevation: float,
-        *,
-        use_3d: bool = False,
-    ) -> list[pdk.Layer]:
-        """Create the origin marker for a road being started (no direction arrow).
-
-        Unlike a lift (which has an uphill fall-line direction) a road has no
-        orientation yet at the origin — this is just a visible brown dot so the
-        user sees where they clicked, mirroring the lift bottom-station marker.
-
-        Args:
-            lat, lon: Road origin location.
-            elevation: Ground elevation.
-            use_3d: If True, render at terrain elevation. If False, render flat.
-        """
-        marker_z = self._get_z(
-            elevation=elevation,
-            z_offset=MarkerConfig.MARKER_Z_OFFSET_M,
-            use_3d=use_3d,
-            flat_z=MapConfig.Z_OFFSET_2D_MARKERS,
-        )
-        station_data = [
-            {
-                "position": [lon, lat, marker_z],
-                "elevation": elevation,
-                "name": f"{StyleConfig.ROAD_ICON} Road start ({elevation:.0f}m)",
-            }
-        ]
-        return [
-            pdk.Layer(
-                "ScatterplotLayer",
-                station_data,
-                get_position="position",
-                get_radius=MarkerConfig.LIFT_STATION_RADIUS,
-                get_fill_color=list(StyleConfig.ROAD_COLOR_RGBA),
-                get_line_color=[255, 255, 255, 255],
-                stroked=True,
-                line_width_min_pixels=3,
-                id="pending_road_start",
-            )
-        ]
 
     def create_import_bbox_layers(
         self,
