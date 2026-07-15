@@ -339,6 +339,14 @@ def _render_map_fragment_inner() -> None:
     # height must change the key to force a remount when it changes.
     force_key = st.session_state.get("force_remount_key", "init")
     map_key = f"main_map_{st.session_state.camera_epoch}_{force_key}_{'3d' if use_3d else '2d'}_h{height}"
+    # Diagnostic: a CHANGED map_key remounts the deck.gl iframe (camera snaps to initial_view_state).
+    last_map_key = st.session_state.get("_last_map_key")
+    logger.info(
+        f"[MAP] key={map_key} (changed={last_map_key != map_key}) height={height} reserved={reserved} "
+        f"profile={profile is not None} camera_epoch={st.session_state.camera_epoch} force_key={force_key} "
+        f"view=({view_lat:.5f},{view_lon:.5f},z{view_zoom},p{view_pitch:.1f},b{view_bearing:.1f})"
+    )
+    st.session_state._last_map_key = map_key
     click_result = render_pydeck_map(deck=deck, height=height, key=map_key)
 
     if profile is not None:
@@ -404,7 +412,12 @@ def _run_app_ui() -> None:
     renderer.graph = graph
 
     camera_epoch = st.session_state.get("camera_epoch", 0)
-    logger.debug(f"[MAIN] Render cycle starting: state={sm.get_state_name()}, camera_epoch={camera_epoch}")
+    logger.info(
+        f"[MAIN] ===== Full rerun ===== state={sm.get_state_name()} camera_epoch={camera_epoch} "
+        f"dedup_epoch={st.session_state.get('dedup_epoch', 0)} "
+        f"deferred(osm={ctx.deferred.osm_import},custom={ctx.deferred.custom_connect},"
+        f"fan={bool(ctx.deferred.fan_generation)})"
+    )
 
     # Handle deferred actions from previous transitions.
     # Slow ops get spinners; each is dispatched at most once per render (single-dispatch chain).

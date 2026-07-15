@@ -129,4 +129,10 @@ def viewport_map_height(reserved_below_px: int = 0) -> int | None:
     if window_height is None:
         return None
     available: int = int(window_height) - ChartConfig.MAP_TOP_OFFSET_PX - reserved_below_px
-    return max(available, ChartConfig.MAP_MIN_HEIGHT_PX)
+    result = max(available, ChartConfig.MAP_MIN_HEIGHT_PX)
+    # Diagnostic: js-eval returns the real innerHeight only on the rerun its round-trip resolved,
+    logger.debug(
+        f"[MAP] viewport_map_height: js_eval={value!r} cached_window={window_height} "
+        f"reserved={reserved_below_px} -> height={result}"
+    )
+    return result
