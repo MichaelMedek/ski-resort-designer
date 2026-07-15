@@ -25,8 +25,9 @@ not suggestions.
    one function and call it. Duplicated logic drifts and gets fixed in only some copies.
 
 5. **Prefer the existing pattern.** Before adding a new approach, find how the codebase already solves
-   the same problem and follow it (e.g. reload-safe enum handling via `enum_eq`/`.name`, commit-time
-   node materialisation, import-time bijection asserts). Consistency over novelty.
+   the same problem and follow it (e.g. reload-safe enums — every domain enum is a `StrEnum` compared
+   with plain `==`, NEVER a bare `Enum`; entity dispatch on a `.kind` StrEnum, never `isinstance` on a
+   model class; commit-time node materialisation; import-time bijection asserts). Consistency over novelty.
 
 ## Style
 
