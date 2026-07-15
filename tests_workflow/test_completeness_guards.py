@@ -415,3 +415,34 @@ class TestSegmentPathEntitiesCoversEveryKind:
                 f"finished {kind.value} entity is missing from segment_path_entities — "
                 "a new SegmentKind must be added to that property or it drops out of merge/lookup/snapshot"
             )
+
+    def test_every_buildable_kind_survives_serialization_roundtrip(self) -> None:
+        """GAP-C guard: ResortGraph's per-kind dicts/counters/serialization are hand-written
+        (slopes/roads, _slope_counter/_road_counter, the to_dict/from_dict blocks). A new SegmentKind
+        whose entity dict is forgotten in to_dict/from_dict would silently fail to persist. This ties
+        persistence to the SegmentKind ground truth: finish one entity of each kind, round-trip the
+        whole graph, and assert the entity (by id) survives.
+        """
+        import json
+
+        from skiresort_planner.model.path_point import PathPoint
+        from skiresort_planner.model.path_segment import SegmentKind
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
+        from skiresort_planner.model.resort_graph import ResortGraph
+        from skiresort_planner.ui.kind_spec import KIND_SPECS
+
+        m = 111320.0
+        for kind in SegmentKind:
+            graph = ResortGraph()
+            pts = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=0.0, lat=-300 / m, elevation=1970.0)]
+            graph.commit_paths(paths=[ProposedPathSegment(points=pts, kind=kind)], record_undo=False)
+            entity = KIND_SPECS[kind].finish(graph, [list(graph.segments.keys())[-1]])
+            assert entity is not None
+            before_ids = {e.id for e in graph.segment_path_entities}
+
+            restored = ResortGraph.from_dict(data=json.loads(json.dumps(graph.to_dict())))
+            after_ids = {e.id for e in restored.segment_path_entities}
+            assert before_ids <= after_ids, (
+                f"a finished {kind.value} entity did not survive to_dict→from_dict — "
+                f"its per-kind dict is likely missing from the serialization block (GAP-C)"
+            )

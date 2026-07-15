@@ -627,3 +627,46 @@ class TestStateGraphIsComplete:
             f"state graph is NOT strongly connected — from {any_state}: "
             f"cannot reach {set(edges) - forward}; cannot be reached by {set(edges) - backward}"
         )
+
+
+class TestAsMermaid:
+    """as_mermaid() is the SKIRESORT_LOG_GRAPH=1 debug dump fired from after_transition. It delegates
+    to python-statemachine's `format(sm, "mermaid")` spec (added in 3.1.0). Two things must hold: the
+    call must never raise (a crash here took down the whole render fragment — the 3.0.0 library had no
+    mermaid spec, so format() hit object.__format__ and raised TypeError), and it must stay dependency
+    -free (no Graphviz/pydot). These guard the pinned floor in requirements.txt (>=3.1.0).
+    """
+
+    def _sm(self) -> PlannerStateMachine:
+        from skiresort_planner.model.resort_graph import ResortGraph
+
+        sm, _ = PlannerStateMachine.create(graph=ResortGraph(), add_ui_listener=False)
+        return sm
+
+    def test_produces_a_mermaid_state_diagram(self) -> None:
+        out = self._sm().as_mermaid()
+        assert out.startswith("stateDiagram-v2"), "must emit a Mermaid stateDiagram header"
+        assert "[*] --> idle_ready" in out, "initial state must be marked"
+
+    def test_lists_every_state(self) -> None:
+        sm = self._sm()
+        out = sm.as_mermaid()
+        for state in sm.states:
+            assert state.id in out, f"state {state.id} missing from mermaid dump"
+
+    def test_highlights_the_current_state(self) -> None:
+        sm = self._sm()
+        sm.start_slope(lon=0.0, lat=0.0, elevation=2000.0, node_id=None)
+        out = sm.as_mermaid()
+        # The library marks the active state with a `:::active` class and defines that classDef.
+        assert f"{sm.current_state_value}:::active" in out, "active state must be highlighted"
+        assert "classDef active" in out, "active classDef must be defined"
+
+    def test_never_raises_after_any_transition(self) -> None:
+        # after_transition calls this under SKIRESORT_LOG_GRAPH=1; a raise there kills the render.
+        # This is the direct regression guard for the 3.0.0 TypeError.
+        sm = self._sm()
+        sm.start_slope(lon=0.0, lat=0.0, elevation=2000.0, node_id=None)
+        sm.send("cancel_slope")
+        sm.start_road(location=PathPoint(lon=0.0, lat=0.0, elevation=2000.0))
+        assert sm.as_mermaid().startswith("stateDiagram-v2")

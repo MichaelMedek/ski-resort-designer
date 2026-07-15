@@ -6,7 +6,7 @@ exit as no-ops (no on_exit_* hook is wired), so cleanup can't accidentally break
 
 Architecture:
 - enter_* is called by the state machine's on_enter_* hook; the 3 exit_* by on_exit_lift_placing
-  and by the force/undo path via _EXIT_HOOKS.
+  and by the force/undo path via EXIT_HOOKS.
 - Functions receive the PlannerContext to modify UI state; they are idempotent.
 
 Usage in state machine:
