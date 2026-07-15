@@ -82,12 +82,12 @@ class PathSegment(Path):
     def warnings(self) -> list[Warning]:
         """Compute all warnings based on segment metrics.
 
-        Excavator warning triggers when side slope is so steep that even at
-        minimum belt width for this difficulty, excavation would exceed threshold.
+        Excavator warning applies to any kind (cross-slope earthwork). Too-steep/too-flat are
+        SKI-only concepts (`MIN/MAX_SKIABLE_PCT`) — a road may run flat or climb.
         """
         result: list[Warning] = []
 
-        # Excavator warning: side slope exceeds what MIN width can handle
+        # Excavator warning: side slope exceeds what MIN width can handle (applies to slopes + roads).
         # Formula: H_edge = (side_slope_pct * width) / 200
         # Warning when: (side_slope_pct * MIN_WIDTH) / 200 > threshold
         min_width, _ = EarthworkConfig.BELT_WIDTH_LIMITS[self.difficulty]
@@ -101,23 +101,22 @@ class PathSegment(Path):
                 )
             )
 
-        # Too steep warning
-        if self.avg_slope_pct >= SlopeConfig.MAX_SKIABLE_PCT:
-            result.append(
-                TooSteepWarning(
-                    slope_pct=self.avg_slope_pct,
-                    max_threshold_pct=SlopeConfig.MAX_SKIABLE_PCT,
+        # Ski-only gradient warnings — meaningless for a road (gentle/flat/climbing by design).
+        if self.kind == SegmentKind.SLOPE:
+            if self.avg_slope_pct >= SlopeConfig.MAX_SKIABLE_PCT:
+                result.append(
+                    TooSteepWarning(
+                        slope_pct=self.avg_slope_pct,
+                        max_threshold_pct=SlopeConfig.MAX_SKIABLE_PCT,
+                    )
                 )
-            )
-
-        # Too flat warning
-        if self.avg_slope_pct < SlopeConfig.MIN_SKIABLE_PCT:
-            result.append(
-                TooFlatWarning(
-                    slope_pct=self.avg_slope_pct,
-                    min_threshold_pct=SlopeConfig.MIN_SKIABLE_PCT,
+            if self.avg_slope_pct < SlopeConfig.MIN_SKIABLE_PCT:
+                result.append(
+                    TooFlatWarning(
+                        slope_pct=self.avg_slope_pct,
+                        min_threshold_pct=SlopeConfig.MIN_SKIABLE_PCT,
+                    )
                 )
-            )
 
         return result
 

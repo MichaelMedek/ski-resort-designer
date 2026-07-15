@@ -79,3 +79,48 @@ class TestBeltWidth:
         gentle = self._segment(kind=SegmentKind.SLOPE, side_slope_pct=2.0)
         steep = self._segment(kind=SegmentKind.SLOPE, side_slope_pct=45.0)
         assert steep.width_m < gentle.width_m
+
+
+class TestWarningsByKind:
+    """Too-flat / too-steep are SKI-only warnings — a road is gentle/flat/climbing by design, so it
+    never gets them. The excavator (cross-slope earthwork) warning applies to both kinds.
+    """
+
+    @staticmethod
+    def _gentle_segment(kind: SegmentKind) -> PathSegment:
+        # ~2% average grade (100m drop over ~5.5km) → below MIN_SKIABLE_PCT (5%) → too-flat for a slope.
+        return PathSegment(
+            points=[
+                PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
+                PathPoint(lon=0.0, lat=-0.05, elevation=1900.0),
+            ],
+            id="S1",
+            kind=kind,
+            side_slope_pct=1.0,
+        )
+
+    def test_flat_slope_gets_too_flat_warning(self) -> None:
+        from skiresort_planner.model.warning import TooFlatWarning
+
+        seg = self._gentle_segment(kind=SegmentKind.SLOPE)
+        assert any(isinstance(w, TooFlatWarning) for w in seg.warnings)
+
+    def test_flat_road_gets_no_too_flat_warning(self) -> None:
+        from skiresort_planner.model.warning import TooFlatWarning
+
+        seg = self._gentle_segment(kind=SegmentKind.ROAD)
+        assert not any(isinstance(w, TooFlatWarning) for w in seg.warnings), (
+            "a road is gentle by design — the ski too-flat warning must not apply"
+        )
+
+    def test_excavator_warning_applies_to_roads_too(self) -> None:
+        from skiresort_planner.model.warning import ExcavatorWarning
+
+        # Steep cross-slope (side_slope 60% > 50% limit) → excavator warning regardless of kind.
+        road = PathSegment(
+            points=[PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=0.0, lat=-0.005, elevation=1980.0)],
+            id="S1",
+            kind=SegmentKind.ROAD,
+            side_slope_pct=60.0,
+        )
+        assert any(isinstance(w, ExcavatorWarning) for w in road.warnings)
