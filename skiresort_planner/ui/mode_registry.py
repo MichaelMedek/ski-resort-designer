@@ -826,7 +826,7 @@ class _SlopeKindSpec(EntityKindSpec):
         return graph.slopes.get(entity_id)
 
     def render_stats(self, graph: ResortGraph, entity_id: str) -> None:
-        right_panel.SlopeStatsPanel(graph=graph).render(slope_id=entity_id)
+        right_panel.PathStatsPanel(graph=graph, kind=SegmentKind.SLOPE).render(entity_id=entity_id)
 
     def delete_action(self, entity_id: str) -> bool:
         return actions.delete_slope_action(entity_id)
@@ -842,7 +842,7 @@ class _RoadKindSpec(EntityKindSpec):
         return graph.roads.get(entity_id)
 
     def render_stats(self, graph: ResortGraph, entity_id: str) -> None:
-        right_panel.RoadStatsPanel(graph=graph).render(road_id=entity_id)
+        right_panel.PathStatsPanel(graph=graph, kind=SegmentKind.ROAD).render(entity_id=entity_id)
 
     def delete_action(self, entity_id: str) -> bool:
         return actions.delete_road_action(entity_id)
@@ -858,7 +858,7 @@ class _LiftKindSpec(EntityKindSpec):
         return graph.lifts.get(entity_id)
 
     def render_stats(self, graph: ResortGraph, entity_id: str) -> None:
-        right_panel.LiftStatsPanel(graph=graph).render(lift_id=entity_id)
+        right_panel.LiftStatsPanel(graph=graph).render(entity_id=entity_id)
 
     def delete_action(self, entity_id: str) -> bool:
         return actions.delete_lift_action(entity_id)

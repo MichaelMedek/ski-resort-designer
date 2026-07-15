@@ -6,6 +6,7 @@ browser. Two flavors: render tests assert the panel runs across slope/lift/road;
 state change (3D toggle, close panel) is asserted.
 """
 
+from contextlib import nullcontext
 from typing import Literal
 
 from skiresort_planner.model.path_point import PathPoint
@@ -19,8 +20,7 @@ from skiresort_planner.ui.right_panel import (
     ImportPlacingControlPanel,
     LiftStatsPanel,
     MergePlacingControlPanel,
-    RoadStatsPanel,
-    SlopeStatsPanel,
+    PathStatsPanel,
 )
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
@@ -101,9 +101,9 @@ def _dispatch(sm, ctx, graph) -> None:
 
 
 class TestStatsPanelsRun:
-    """Each stats panel renders its OWN metric labels — no kind shares another's
-    layout by accident (the per-kind drift that hit the sidebar). Metric labels are
-    captured to assert the distinguishing fields actually render.
+    """PathStatsPanel (slope/road) + LiftStatsPanel each render their OWN distinguishing metric
+    labels. Slope and road share one kind-parameterized class but must still show kind-correct
+    labels (Drop vs Elevation Change, difficulty vs none); these capture the labels to assert that.
     """
 
     @staticmethod
@@ -111,6 +111,7 @@ class TestStatsPanelsRun:
         labels: list[str] = []
         fake_st.metric = lambda label, *a, **k: labels.append(label)
         fake_st.subheader = lambda text, *a, **k: labels.append(text)
+        fake_st.markdown = lambda text, *a, **k: labels.append(text)
         return labels
 
     @staticmethod
@@ -125,42 +126,75 @@ class TestStatsPanelsRun:
         return metrics
 
     def test_slope_overall_gradient_value(self, fake_st, empty_graph, path_points_blue) -> None:
-        # drop/length*100 rounded: 160m over ~799m = 20% (the 800m south blue path).
+        # drop/length*100 rounded: 160m over ~799m = 20% (the 800m south blue path). Labels are
+        # unified across kinds ("Average Gradient"/"Elevation Change") — only difficulty is slope-only.
         metrics = self._capture_metrics(fake_st)
-        SlopeStatsPanel(graph=empty_graph).render(slope_id=_build_slope(empty_graph, path_points_blue))
-        assert metrics["Overall Gradient"] == "20%"
-        assert metrics["Drop"] == "160m"
+        PathStatsPanel(graph=empty_graph, kind=SegmentKind.SLOPE).render(
+            entity_id=_build_slope(empty_graph, path_points_blue)
+        )
+        assert metrics["Average Gradient"] == "20%"
+        assert metrics["Elevation Change"] == "160m"
 
     def test_road_elevation_change_is_absolute(self, fake_st, empty_graph, path_points_blue) -> None:
         # The path drops 2500m -> 2340m; roads are bidirectional, so the metric shows the
         # magnitude with no sign (regression: was "-160m").
         metrics = self._capture_metrics(fake_st)
-        RoadStatsPanel(graph=empty_graph).render(road_id=_build_road(empty_graph, path_points_blue))
+        PathStatsPanel(graph=empty_graph, kind=SegmentKind.ROAD).render(
+            entity_id=_build_road(empty_graph, path_points_blue)
+        )
         assert metrics["Elevation Change"] == "160m"
 
     def test_lift_rise_and_inclined_length_values(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         # Rise = 2500-2300 = 200m; inclined = sqrt(200^2 + horizontal^2) with horizontal ~= 999m -> 1019m.
         metrics = self._capture_metrics(fake_st)
-        LiftStatsPanel(graph=empty_graph).render(lift_id=_build_lift(empty_graph, mock_dem_blue_slope))
+        LiftStatsPanel(graph=empty_graph).render(entity_id=_build_lift(empty_graph, mock_dem_blue_slope))
         assert metrics["Vertical Rise"] == "200m"
         assert metrics["Inclined Length"] == "1019m"
 
-    def test_slope_stats_panel_shows_slope_metrics(self, fake_st, empty_graph, path_points_blue) -> None:
+    def test_slope_stats_panel_shows_difficulty_and_unified_metrics(
+        self, fake_st, empty_graph, path_points_blue
+    ) -> None:
         labels = self._capture_labels(fake_st)
-        SlopeStatsPanel(graph=empty_graph).render(slope_id=_build_slope(empty_graph, path_points_blue))
-        assert {"Top Elevation", "Drop", "Overall Gradient", "Steepest Section"} <= set(labels)
-
-    def test_road_stats_panel_shows_road_metrics(self, fake_st, empty_graph, path_points_blue) -> None:
-        labels = self._capture_labels(fake_st)
-        RoadStatsPanel(graph=empty_graph).render(road_id=_build_road(empty_graph, path_points_blue))
-        # Roads report signed elevation change + average gradient, not slope "Drop".
+        PathStatsPanel(graph=empty_graph, kind=SegmentKind.SLOPE).render(
+            entity_id=_build_slope(empty_graph, path_points_blue)
+        )
+        # Unified metric labels for every kind; the ski-specific bit is the Difficulty line (subheader-captured).
         assert {"Start Elevation", "Elevation Change", "Average Gradient", "Steepest Section"} <= set(labels)
-        assert "Drop" not in labels
+        assert any("Difficulty" in label for label in labels), "a slope shows its ski difficulty"
+
+    def test_road_stats_panel_shows_metrics_without_difficulty(self, fake_st, empty_graph, path_points_blue) -> None:
+        labels = self._capture_labels(fake_st)
+        PathStatsPanel(graph=empty_graph, kind=SegmentKind.ROAD).render(
+            entity_id=_build_road(empty_graph, path_points_blue)
+        )
+        assert {"Start Elevation", "Elevation Change", "Average Gradient", "Steepest Section"} <= set(labels)
+        assert not any("Difficulty" in label for label in labels), "a road has no ski difficulty"
 
     def test_lift_stats_panel_shows_lift_metrics(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         labels = self._capture_labels(fake_st)
-        LiftStatsPanel(graph=empty_graph).render(lift_id=_build_lift(empty_graph, mock_dem_blue_slope))
+        LiftStatsPanel(graph=empty_graph).render(entity_id=_build_lift(empty_graph, mock_dem_blue_slope))
         assert {"Vertical Rise", "Pylons", "Inclined Length", "Steepest Section"} <= set(labels)
+
+    def test_slope_and_road_both_show_segment_details_expander(self, fake_st, empty_graph, path_points_blue) -> None:
+        """Both slope and road stats panels offer the 📋 Segment Details fold-out (roads used to lack it)."""
+        expanders: list[str] = []
+
+        def _expander(label, *a, **k):
+            expanders.append(label)
+            return nullcontext()
+
+        fake_st.expander = _expander
+
+        PathStatsPanel(graph=empty_graph, kind=SegmentKind.SLOPE).render(
+            entity_id=_build_slope(empty_graph, path_points_blue)
+        )
+        assert any("Segment Details" in e for e in expanders)
+
+        expanders.clear()
+        PathStatsPanel(graph=empty_graph, kind=SegmentKind.ROAD).render(
+            entity_id=_build_road(empty_graph, path_points_blue)
+        )
+        assert any("Segment Details" in e for e in expanders), "road panel must also show Segment Details"
 
 
 # =============================================================================

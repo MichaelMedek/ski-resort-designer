@@ -54,7 +54,7 @@ from skiresort_planner.ui.pydeck_click_handler import PydeckClickResult, render_
 from skiresort_planner.ui.right_panel import (
     LiftStatsPanel,
     PathSelectionPanel,
-    SlopeStatsPanel,
+    PathStatsPanel,
 )
 from skiresort_planner.ui.state_machine import (
     PlannerStateMachine,
@@ -71,7 +71,7 @@ __all__ = [
     "render_viewing_profile",
     "SidebarRenderer",
     "PathSelectionPanel",
-    "SlopeStatsPanel",
+    "PathStatsPanel",
     "LiftStatsPanel",
     "ClickDetector",
     "dispatch_click",

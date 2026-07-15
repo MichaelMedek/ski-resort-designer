@@ -3,7 +3,7 @@
 Centralizes all right-side control panel rendering:
 - State dispatch to appropriate renderers
 - PathSelectionPanel: Path browsing, selection, and commit
-- SlopeStatsPanel: Slope statistics in viewing mode
+- PathStatsPanel: Slope/road statistics in viewing mode (kind-parameterized)
 - LiftStatsPanel: Lift statistics in viewing mode
 
 Design Principles:
@@ -14,13 +14,14 @@ Design Principles:
 
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Literal
 
 import streamlit as st
 
 from skiresort_planner.constants import MapConfig, SlopeConfig, StyleConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
+from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.model.message import (
     ImportActionMessage,
     ImportPlacingContextMessage,
@@ -49,6 +50,7 @@ if TYPE_CHECKING:
     from skiresort_planner.model.message import Message
     from skiresort_planner.model.proposed_path import ProposedPathSegment
     from skiresort_planner.model.road import Road
+    from skiresort_planner.model.segment_path import SegmentPath
     from skiresort_planner.model.slope import Slope
     from skiresort_planner.ui.mode_registry import EntityKindSpec
 
@@ -643,83 +645,99 @@ class PathSelectionPanel:
 # =============================================================================
 
 
-class SlopeStatsPanel:
-    """Renders statistics panel for a finalized slope."""
+class StatsPanel(ABC):
+    """Base for a viewed-entity statistics panel (slope/road via PathStatsPanel, lift via LiftStatsPanel).
+
+    Mirrors ControlPanel: one abstract `render(entity_id)` the dispatcher calls; the entity lookup +
+    "deleted mid-view" guard live in each subclass. Constructed with just the graph.
+    """
 
     def __init__(self, graph: ResortGraph) -> None:
         self.graph = graph
 
-    def render(self, slope_id: str) -> None:
-        """Render statistics panel for the given slope."""
-        slope = self.graph.slopes.get(slope_id)
+    @abstractmethod
+    def render(self, entity_id: str) -> None:
+        """Render this kind's stats panel for the given entity id."""
 
-        if not slope:
+
+class PathStatsPanel(StatsPanel):
+    """Stats panel for a finished SegmentPath entity — one class for slope AND road (kind-parameterized).
+
+    The kinds differ only in wording, all captured on the KindSpec (icon, shows_difficulty).
+    Same single-source pattern as PathSelectionPanel, so kinds cannot drift.
+    """
+
+    def __init__(self, graph: ResortGraph, kind: SegmentKind) -> None:
+        super().__init__(graph=graph)
+        self.kind = kind
+
+    def render(self, entity_id: str) -> None:
+        spec = KIND_SPECS[self.kind]
+        # Kind → its entity dict (data-driven, no if/else); a new kind adds one entry here.
+        # Mapping (not dict) so the covariant value type accepts dict[str, Slope] / dict[str, Road].
+        by_kind: Mapping[SegmentKind, Mapping[str, SegmentPath]] = {
+            SegmentKind.SLOPE: self.graph.slopes,
+            SegmentKind.ROAD: self.graph.roads,
+        }
+        owner = by_kind[self.kind].get(entity_id)
+        if owner is None:
             raise RuntimeError(
-                f"Slope '{slope_id}' not found in graph.slopes - "
-                "state machine transitioned to viewing but slope was deleted"
+                f"{self.kind.value} '{entity_id}' not found - state machine transitioned to viewing but it was deleted"
             )
 
-        st.subheader(f"📊 {slope.name}")
+        total_length = owner.get_total_length(segments=self.graph.segments)
+        total_drop = owner.get_total_drop(segments=self.graph.segments)
+        max_gradient = owner.get_max_gradient(segments=self.graph.segments)
+        avg_gradient = (abs(total_drop) / total_length * 100) if total_length > 0 else 0
 
-        total_length = slope.get_total_length(segments=self.graph.segments)
-        total_drop = slope.get_total_drop(segments=self.graph.segments)
-        difficulty = slope.get_difficulty(segments=self.graph.segments)
-        avg_gradient = (total_drop / total_length * 100) if total_length > 0 else 0
-        max_segment_gradient = slope.get_max_gradient(segments=self.graph.segments)
+        # Committed entities always have segments-with-points; index directly (fail loud otherwise).
+        first_seg = self.graph.segments[owner.segment_ids[0]]
+        last_seg = self.graph.segments[owner.segment_ids[-1]]
+        start_elev = first_seg.points[0].elevation
+        end_elev = last_seg.points[-1].elevation
 
-        first_seg = self.graph.segments.get(slope.segment_ids[0]) if slope.segment_ids else None
-        last_seg = self.graph.segments.get(slope.segment_ids[-1]) if slope.segment_ids else None
-        top_elev = first_seg.points[0].elevation if first_seg and first_seg.points else 0.0
-        bottom_elev = last_seg.points[-1].elevation if last_seg and last_seg.points else 0.0
-
-        diff_emoji = StyleConfig.DIFFICULTY_EMOJIS[difficulty]
-
-        st.markdown(f"**Difficulty:** {diff_emoji} {difficulty.capitalize()}")
+        st.subheader(f"{spec.icon} {owner.name}")
+        if spec.shows_difficulty:
+            difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=max_gradient)
+            st.markdown(f"**Difficulty:** {StyleConfig.DIFFICULTY_EMOJIS[difficulty]} {difficulty.capitalize()}")
 
         col1, col2 = st.columns(2)
         with col1:
-            st.metric("Top Elevation", f"{top_elev:.0f}m")
+            st.metric("Start Elevation", f"{start_elev:.0f}m")
             st.metric("Length", f"{total_length:.0f}m")
-            st.metric("Overall Gradient", f"{avg_gradient:.0f}%")
+            st.metric("Average Gradient", f"{avg_gradient:.0f}%")
         with col2:
-            st.metric("Bottom Elevation", f"{bottom_elev:.0f}m")
-            st.metric("Drop", f"{total_drop:.0f}m")
+            st.metric("End Elevation", f"{end_elev:.0f}m")
+            st.metric("Elevation Change", f"{abs(end_elev - start_elev):.0f}m")
             st.metric(
                 "Steepest Section",
-                f"{max_segment_gradient:.0f}%",
-                help=f"Steepest {SlopeConfig.ROLLING_WINDOW_M}m section within any single segment - determines difficulty rating",
+                f"{max_gradient:.0f}%",
+                help=f"Steepest {SlopeConfig.ROLLING_WINDOW_M}m section within any single segment",
             )
 
         with st.expander("📋 Segment Details", expanded=False):
-            for i, seg_id in enumerate(slope.segment_ids, 1):
-                seg = self.graph.segments.get(seg_id)
-                if not seg:
-                    continue
-
-                seg_emoji = StyleConfig.DIFFICULTY_EMOJIS[seg.difficulty]
-                seg_line = f"{i}. {seg_emoji} **{seg.difficulty.capitalize()}** — {seg.length_m:.0f}m, {seg.max_slope_pct:.0f}% steepest, {seg.width_m:.0f}m wide"
-
-                if seg.warnings:
-                    st.markdown(f"{seg_line}")
-                    for warning in seg.warnings:
-                        SegmentWarningMessage(warning_text=str(warning)).display()
+            for i, seg_id in enumerate(owner.segment_ids, 1):
+                seg = self.graph.segments[seg_id]
+                if spec.shows_difficulty:
+                    emoji = StyleConfig.DIFFICULTY_EMOJIS[seg.difficulty]
+                    line = f"{i}. {emoji} **{seg.difficulty.capitalize()}** — {seg.length_m:.0f}m, {seg.max_slope_pct:.0f}% steepest, {seg.width_m:.0f}m wide"
                 else:
-                    st.markdown(seg_line)
+                    line = f"{i}. {spec.icon} {seg.length_m:.0f}m, {seg.max_slope_pct:.0f}% steepest, {seg.width_m:.0f}m wide"
+                st.markdown(line)
+                for warning in seg.warnings:
+                    SegmentWarningMessage(warning_text=str(warning)).display()
 
 
-class LiftStatsPanel:
+class LiftStatsPanel(StatsPanel):
     """Renders statistics panel for a lift."""
 
-    def __init__(self, graph: ResortGraph) -> None:
-        self.graph = graph
-
-    def render(self, lift_id: str) -> None:
+    def render(self, entity_id: str) -> None:
         """Render statistics panel for the given lift."""
-        lift = self.graph.lifts.get(lift_id)
+        lift = self.graph.lifts.get(entity_id)
 
         if not lift:
             raise RuntimeError(
-                f"Lift '{lift_id}' not found in graph.lifts - "
+                f"Lift '{entity_id}' not found in graph.lifts - "
                 "state machine transitioned to viewing but lift was deleted"
             )
 
@@ -769,47 +787,3 @@ class LiftStatsPanel:
                     f"{max_cable_gradient:.0f}%",
                     help="Steepest gradient between any two adjacent pylons",
                 )
-
-
-class RoadStatsPanel:
-    """Renders statistics panel for a vehicle road."""
-
-    def __init__(self, graph: ResortGraph) -> None:
-        self.graph = graph
-
-    def render(self, road_id: str) -> None:
-        """Render statistics panel for the given road."""
-        road = self.graph.roads.get(road_id)
-
-        if not road:
-            raise RuntimeError(
-                f"Road '{road_id}' not found in graph.roads - "
-                "state machine transitioned to viewing but road was deleted"
-            )
-
-        st.subheader(f"{StyleConfig.ROAD_ICON} {road.name}")
-
-        total_length = road.get_total_length(segments=self.graph.segments)
-        total_drop = road.get_total_drop(segments=self.graph.segments)
-        max_gradient = road.get_max_gradient(segments=self.graph.segments)
-        avg_gradient = (abs(total_drop) / total_length * 100) if total_length > 0 else 0
-
-        # Road always has segments (validated on creation); index directly.
-        first_seg = self.graph.segments[road.segment_ids[0]]
-        last_seg = self.graph.segments[road.segment_ids[-1]]
-        start_elev = first_seg.points[0].elevation
-        end_elev = last_seg.points[-1].elevation
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Start Elevation", f"{start_elev:.0f}m")
-            st.metric("Length", f"{total_length:.0f}m")
-            st.metric("Average Gradient", f"{avg_gradient:.0f}%")
-        with col2:
-            st.metric("End Elevation", f"{end_elev:.0f}m")
-            st.metric("Elevation Change", f"{abs(end_elev - start_elev):.0f}m")
-            st.metric(
-                "Steepest Section",
-                f"{max_gradient:.0f}%",
-                help=f"Steepest {SlopeConfig.ROLLING_WINDOW_M}m section within any single segment of the road",
-            )
