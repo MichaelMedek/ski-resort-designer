@@ -68,50 +68,43 @@ def trigger_rerun(scope: Literal["app", "fragment"] = "app") -> None:
     st.rerun(scope=scope)
 
 
-def bump_map_version() -> None:
-    """Increment map_version to create fresh Pydeck component.
+def bump_camera_epoch() -> None:
+    """Increment camera_epoch → remount the Pydeck component so it re-reads initial_view_state.
 
-    This eliminates ghost clicks by creating a new component instance
-    with no memory of previous click events. Call this when completing
-    actions that should clear stale click state.
+    This is the ONLY way the camera intentionally re-frames (finish/show-view/reset/3D/search). It
+    also gives the fresh component clean click state. Do NOT call it for in-place interactions
+    (commit/cancel/undo/start/toggle) — those must keep the user's live pan.
     """
-    old_version = st.session_state.get("map_version", 0)
-    new_version = old_version + 1
-    st.session_state.map_version = new_version
-    logger.debug(f"[MAP] Bumped map_version: {old_version} -> {new_version}")
+    old = st.session_state.get("camera_epoch", 0)
+    st.session_state.camera_epoch = old + 1
+    logger.debug(f"[MAP] Bumped camera_epoch: {old} -> {old + 1}")
+
+
+def bump_dedup_epoch() -> None:
+    """Increment dedup_epoch → make regenerated proposals/markers clickable again.
+
+    Embedded in click ids only (NOT the component key), so bumping it does NOT remount or move the
+    camera. Bump it whenever the proposal/marker set is regenerated so that re-clicking the same
+    proposal index (or re-toggling the same node) after regeneration counts as a fresh click.
+    """
+    old = st.session_state.get("dedup_epoch", 0)
+    st.session_state.dedup_epoch = old + 1
+    logger.debug(f"[MAP] Bumped dedup_epoch: {old} -> {old + 1}")
 
 
 def reload_map(before: Callable[[], None] | None = None) -> None:
-    """Reload map with optional pre-reload callback.
+    """Recenter + remount the map: optional pre-callback, bump camera_epoch, then rerun.
 
-    This is the canonical way to reload the map. It provides a single point
-    for all map reloads, making the pattern explicit and consistent.
-
-    The flow is:
-    1. Execute before callback (if provided) - runs BEFORE st.rerun()
-    2. Bump map version to clear stale click state
-    3. Call trigger_rerun() which raises StopExecution
-
-    For actions that need to run AFTER the reload, use the deferred action
-    pattern (set ctx.deferred.* flags before calling this).
+    Use ONLY for flows that intentionally re-frame the camera (Reset View, 3D toggle, place-search,
+    fresh-graph load). In-place interactions must use trigger_rerun() (optionally with
+    bump_dedup_epoch()) so the user's current pan is preserved.
 
     Args:
-        before: Optional callback to execute before rerun.
-                Use for state updates that must happen before reload.
-
-    Example:
-        # Simple reload
-        reload_map()
-
-        # Reload with pre-action
-        def setup_for_reload():
-            ctx.set_selection(lon=x, lat=y, elevation=e)
-            ctx.deferred.fan_generation.add(SegmentKind.SLOPE)
-        reload_map(before=setup_for_reload)
+        before: Optional callback (e.g. set ctx.map center) run before the rerun.
     """
     if before is not None:
         before()
-    bump_map_version()
+    bump_camera_epoch()
     trigger_rerun()
 
 

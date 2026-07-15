@@ -26,7 +26,8 @@ def _session(fake_st, graph, factory=None, dem=None):
     fake_st.session_state["state_machine"] = sm
     fake_st.session_state["context"] = ctx
     fake_st.session_state["graph"] = graph
-    fake_st.session_state["map_version"] = 0
+    fake_st.session_state["camera_epoch"] = 0
+    fake_st.session_state["dedup_epoch"] = 0
     if factory is not None:
         fake_st.session_state["path_factory"] = factory
     if dem is not None:
@@ -81,12 +82,14 @@ class TestRenameEntityAction:
 
         slope = _make_slope(empty_graph, path_points_blue)
         _session(fake_st, empty_graph)
-        version_before = fake_st.session_state["map_version"]
+        epoch_before = fake_st.session_state["dedup_epoch"]
+        camera_before = fake_st.session_state["camera_epoch"]
 
         rename_entity_action(entity_id=slope.id, new_name="  Renamed  ")
 
         assert empty_graph.slopes[slope.id].name == "Renamed", "name is trimmed and applied"
-        assert fake_st.session_state["map_version"] > version_before
+        assert fake_st.session_state["dedup_epoch"] > epoch_before, "rename refreshes the label redraw"
+        assert fake_st.session_state["camera_epoch"] == camera_before, "rename must NOT recenter"
 
     def test_empty_name_is_noop(self, fake_st, empty_graph, path_points_blue) -> None:
         from skiresort_planner.ui.actions import rename_entity_action
@@ -673,14 +676,14 @@ class TestOSMImport:
             "skiresort_planner.ui.actions.OSMImporter.convert",
             lambda self, bbox, elements: ImportSummary(pistes=[piste], lifts=[lift]),
         )
-        version_before = fake_st.session_state["map_version"]
+        epoch_before = fake_st.session_state["dedup_epoch"]
 
         handled = actions.process_osm_import_deferred()
 
         assert handled is True
         assert len(graph.slopes) == 1 and len(graph.lifts) == 1
         assert len(graph.undo_stack) == 1, "import is one undoable batch"
-        assert fake_st.session_state["map_version"] > version_before
+        assert fake_st.session_state["dedup_epoch"] > epoch_before, "import redraws new geometry (no recenter)"
         assert ctx.deferred.osm_import is False, "flag consumed"
         assert ctx.deferred.osm_import_center_lon is None, "placed center consumed"
 
@@ -906,3 +909,58 @@ class TestUndoToZeroAfterFinish:
         if build.segments or build.start_location or build.start_node_id:
             resolve_build_origin(build=build, graph=empty_graph)  # must not raise
         process_path_generation_deferred()  # the deferred fan pass must not raise either
+
+
+class TestMapEpochs:
+    """camera_epoch (remount → recenter) moves ONLY on finish; dedup_epoch (click-id) moves on
+    proposal regeneration. Neither commit nor cancel nor start recenters (keeps the user's pan).
+    """
+
+    def _road_building(self, fake_st, empty_graph, path_factory, dem):
+        sm, ctx = _session(fake_st, empty_graph, path_factory, dem)
+        ctx.build_mode.mode = SegmentKind.ROAD.value
+        sm.start_road(node_id=None, location=PathPoint(lon=0.0, lat=0.0, elevation=2000.0))
+        return sm, ctx
+
+    def test_commit_does_not_recenter(self, fake_st, empty_graph, path_factory, mock_dem_red_slope_diagonal) -> None:
+        from skiresort_planner.ui.actions import commit_selected_path
+
+        dem = mock_dem_red_slope_diagonal
+        sm, ctx = self._road_building(fake_st, empty_graph, path_factory, dem)
+        pts = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=300 / M, lat=0.0, elevation=1990.0)]
+        ctx.proposals.paths = [ProposedPathSegment(points=pts, kind=SegmentKind.ROAD)]
+        ctx.proposals.selected_idx = 0
+        camera_before = fake_st.session_state["camera_epoch"]
+
+        commit_selected_path(path_idx=0)
+
+        assert fake_st.session_state["camera_epoch"] == camera_before, "commit must NOT recenter"
+
+    def test_finish_recenters(self, fake_st, empty_graph, path_factory, mock_dem_red_slope_diagonal) -> None:
+        from skiresort_planner.ui.actions import finish_current_build
+
+        dem = mock_dem_red_slope_diagonal
+        sm, ctx = self._road_building(fake_st, empty_graph, path_factory, dem)
+        pts = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=300 / M, lat=0.0, elevation=1990.0)]
+        endpoint_ids = empty_graph.commit_paths(paths=[ProposedPathSegment(points=pts, kind=SegmentKind.ROAD)])
+        sm.commit_road(segment_id=list(empty_graph.segments.keys())[-1], endpoint_node_id=endpoint_ids[0])
+        camera_before = fake_st.session_state["camera_epoch"]
+
+        finish_current_build(kind=SegmentKind.ROAD)
+
+        assert sm.is_idle_viewing_road
+        assert fake_st.session_state["camera_epoch"] > camera_before, "finish recenters on the entity"
+
+    def test_cancel_does_not_recenter(self, fake_st, empty_graph, path_factory, mock_dem_red_slope_diagonal) -> None:
+        from skiresort_planner.ui.actions import cancel_current_build
+
+        dem = mock_dem_red_slope_diagonal
+        sm, ctx = self._road_building(fake_st, empty_graph, path_factory, dem)
+        pts = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=300 / M, lat=0.0, elevation=1990.0)]
+        endpoint_ids = empty_graph.commit_paths(paths=[ProposedPathSegment(points=pts, kind=SegmentKind.ROAD)])
+        sm.commit_road(segment_id=list(empty_graph.segments.keys())[-1], endpoint_node_id=endpoint_ids[0])
+        camera_before = fake_st.session_state["camera_epoch"]
+
+        cancel_current_build(kind=SegmentKind.ROAD)
+
+        assert fake_st.session_state["camera_epoch"] == camera_before, "cancel must NOT recenter"

@@ -31,7 +31,7 @@ from skiresort_planner.ui import (
     PlannerContext,
     PlannerStateMachine,
     SidebarRenderer,
-    bump_map_version,
+    bump_camera_epoch,
     cancel_custom_path,
     commit_selected_path,
     dispatch_click,
@@ -109,8 +109,12 @@ def init_session_state() -> None:
     if "_upload_counter" not in st.session_state:
         st.session_state._upload_counter = 0
 
-    if "map_version" not in st.session_state:
-        st.session_state.map_version = 0
+    # Two independent counters (see infra.py): camera_epoch keys the map component (remount → recenter),
+    # dedup_epoch keys click ids (proposal/marker regeneration) without moving the camera.
+    if "camera_epoch" not in st.session_state:
+        st.session_state.camera_epoch = 0
+    if "dedup_epoch" not in st.session_state:
+        st.session_state.dedup_epoch = 0
 
 
 def _init_resort_from_url_or_new() -> None:
@@ -163,8 +167,8 @@ def reset_ui_state() -> None:
     st.session_state.state_machine = sm
     st.session_state.context = ctx
 
-    # Increment map version to force fresh map component
-    bump_map_version()
+    # Remount the map component for a clean slate after error recovery.
+    bump_camera_epoch()
 
     logger.debug("UI state reset complete - graph preserved")
 
@@ -256,8 +260,8 @@ def _render_map_fragment_inner() -> None:
     dem: DEMService = st.session_state.dem_service
     build_state = BUILD_STATES[sm.get_current_state_id()]
 
-    map_version = st.session_state.get("map_version", 0)
-    logger.debug(f"[RENDER] Map fragment: state={sm.get_state_name()}, map_version={map_version}")
+    camera_epoch = st.session_state.get("camera_epoch", 0)
+    logger.debug(f"[RENDER] Map fragment: state={sm.get_state_name()}, camera_epoch={camera_epoch}")
 
     # Determine 2D/3D mode early so all layers use consistent z-handling
     use_3d = ctx.viewing.view_3d
@@ -334,7 +338,7 @@ def _render_map_fragment_inner() -> None:
     # force_remount_key AND height are in the key: st_deckgl only applies height on first mount, so
     # height must change the key to force a remount when it changes.
     force_key = st.session_state.get("force_remount_key", "init")
-    map_key = f"main_map_{st.session_state.map_version}_{force_key}_{'3d' if use_3d else '2d'}_h{height}"
+    map_key = f"main_map_{st.session_state.camera_epoch}_{force_key}_{'3d' if use_3d else '2d'}_h{height}"
     click_result = render_pydeck_map(deck=deck, height=height, key=map_key)
 
     if profile is not None:
@@ -399,8 +403,8 @@ def _run_app_ui() -> None:
     renderer: MapRenderer = st.session_state.map_renderer
     renderer.graph = graph
 
-    map_version = st.session_state.get("map_version", 0)
-    logger.debug(f"[MAIN] Render cycle starting: state={sm.get_state_name()}, map_version={map_version}")
+    camera_epoch = st.session_state.get("camera_epoch", 0)
+    logger.debug(f"[MAIN] Render cycle starting: state={sm.get_state_name()}, camera_epoch={camera_epoch}")
 
     # Handle deferred actions from previous transitions.
     # Slow ops get spinners; each is dispatched at most once per render (single-dispatch chain).

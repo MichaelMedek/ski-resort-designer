@@ -41,7 +41,7 @@ from skiresort_planner.ui.actions import (
     rename_entity_action,
 )
 from skiresort_planner.ui.context import EntityKind, PlannerContext
-from skiresort_planner.ui.infra import bump_map_version, reload_map, trigger_rerun
+from skiresort_planner.ui.infra import bump_dedup_epoch, reload_map, trigger_rerun
 from skiresort_planner.ui.kind_spec import KIND_SPECS
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
@@ -199,7 +199,7 @@ def _render_entity_actions(
             # Reset pitch and bearing to top-down view (preserve zoom level)
             ctx.map.pitch = MapConfig.DEFAULT_PITCH
             ctx.map.bearing = MapConfig.DEFAULT_BEARING
-            bump_map_version()
+            bump_dedup_epoch()  # keep the user's pan (no recenter); a 3D→2D close re-frames via the view detector
             # Uses close_panel event - SM resolves to appropriate transition
             # State transition triggers st.rerun() via listener - never returns
             sm.hide_info_panel()
@@ -529,13 +529,13 @@ def _render_proposal_browser(ctx: PlannerContext, *, key_prefix: str, noun: str)
     with col_prev:
         if st.button("◀", key=f"prev_{key_prefix}", width="stretch", help="Previous"):
             ctx.proposals.selected_idx = (selected_idx - 1) % num_paths
-            reload_map()
+            trigger_rerun()  # browsing only changes the highlight — redraw in place, no recenter
     with col_nav_label:
         st.markdown(f"**◀ ▶ Browse {num_paths} {noun}**")
     with col_next:
         if st.button("▶", key=f"next_{key_prefix}", width="stretch", help="Next"):
             ctx.proposals.selected_idx = (selected_idx + 1) % num_paths
-            reload_map()
+            trigger_rerun()  # browsing only changes the highlight — redraw in place, no recenter
 
 
 # =============================================================================

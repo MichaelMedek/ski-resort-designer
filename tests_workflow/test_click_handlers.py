@@ -35,7 +35,8 @@ def _session(fake_st, graph, factory, dem):
     fake_st.session_state["graph"] = graph
     fake_st.session_state["path_factory"] = factory
     fake_st.session_state["dem_service"] = dem
-    fake_st.session_state["map_version"] = 0
+    fake_st.session_state["camera_epoch"] = 0
+    fake_st.session_state["dedup_epoch"] = 0
     return sm, ctx
 
 
@@ -993,7 +994,8 @@ class TestRoadBuildingClick:
     ) -> None:
         dem = mock_dem_red_slope_diagonal
         sm, ctx, graph = self._building(fake_st, path_factory, dem)
-        version_before = fake_st.session_state["map_version"]
+        dedup_before = fake_st.session_state["dedup_epoch"]
+        camera_before = fake_st.session_state["camera_epoch"]
 
         # A target click enters ROAD_CUSTOM_PATH and arms deferred generation; the
         # deferred pass produces the proposal(s) to browse. It commits NOTHING until a
@@ -1007,11 +1009,12 @@ class TestRoadBuildingClick:
         assert ctx.proposals.selected_idx == 0
         assert ctx.build(SegmentKind.ROAD).segments == [], "a target click proposes, it does not commit"
         assert sm.is_road_custom_path, "still targeting until a proposal is committed"
-        # The deferred pass MUST bump the map version so the fragment reruns and redraws
-        # WITH the new proposals. Regression for invisible road proposals.
-        assert fake_st.session_state["map_version"] > version_before, (
-            "generating road proposals must bump map_version to force a redraw"
+        # The deferred pass bumps dedup_epoch so the new proposals are clickable — but must NOT
+        # recenter (camera_epoch unchanged). Regression for invisible road proposals + no-jump.
+        assert fake_st.session_state["dedup_epoch"] > dedup_before, (
+            "generating road proposals must bump dedup_epoch so they are clickable"
         )
+        assert fake_st.session_state["camera_epoch"] == camera_before, "generating proposals must NOT recenter the map"
 
     def test_clicking_already_selected_proposal_commits(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal

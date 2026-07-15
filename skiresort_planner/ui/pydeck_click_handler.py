@@ -127,19 +127,24 @@ def render_pydeck_map(
 
 
 def _get_click_id(obj: dict[str, object] | None, coord: list[float] | None) -> str:
-    """Generate unique ID for click deduplication."""
+    """Generate a unique ID for click deduplication.
+
+    Object clicks fold in dedup_epoch: the map component is no longer remounted on commit/toggle
+    (that would move the camera), so this per-component dedup slot persists across reruns.
+    """
     parts = []
 
     if obj:
         obj_type = obj.get("type", "")
         obj_id = obj.get("id", "")
+        dedup_epoch = st.session_state.get("dedup_epoch", 0)
         if obj_type and obj_id:
-            parts.append(f"{obj_type}_{obj_id}")
+            parts.append(f"{obj_type}_{obj_id}_v{dedup_epoch}")
         else:
             # Use position as fallback
             pos = obj.get("position")
             if isinstance(pos, list | tuple) and len(pos) >= 2:
-                parts.append(f"pos_{float(pos[0]):.6f}_{float(pos[1]):.6f}")
+                parts.append(f"pos_{float(pos[0]):.6f}_{float(pos[1]):.6f}_v{dedup_epoch}")
 
     if coord:
         # Round coordinates for dedup tolerance

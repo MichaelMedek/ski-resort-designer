@@ -42,7 +42,7 @@ from skiresort_planner.model.message import (
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.context import PlannerContext
-from skiresort_planner.ui.infra import bump_map_version, reload_map, trigger_rerun
+from skiresort_planner.ui.infra import bump_camera_epoch, bump_dedup_epoch, reload_map, trigger_rerun
 from skiresort_planner.ui.kind_spec import KIND_SPECS
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
@@ -144,9 +144,9 @@ def process_custom_connect_deferred() -> bool:
 
     ctx.deferred.custom_connect = False
     _generate_custom_connect_paths()
-    # Only bump_map_version() here (NOT reload_map/trigger_rerun): this runs inside the current
-    # render cycle from app.py, so the natural render that follows displays the new proposals.
-    bump_map_version()
+    # New proposals were generated → bump dedup_epoch so re-clicking the same index registers. This
+    # runs inside the current render cycle from app.py, so the natural render shows the new proposals.
+    bump_dedup_epoch()
     return True
 
 
@@ -161,7 +161,7 @@ def confirm_import_action() -> None:
     ctx: PlannerContext = st.session_state.context
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx.deferred.osm_import = True
-    bump_map_version()
+    bump_dedup_epoch()
     sm.complete_import()  # → idle_ready; listener triggers the rerun that runs the deferred fetch
 
 
@@ -190,7 +190,7 @@ def confirm_merge_action() -> None:
 
     graph.merge_nodes(node_ids=node_ids, dem=dem)
     logger.info(f"Merged {len(node_ids)} nodes into {node_ids[0]}")
-    bump_map_version()
+    bump_dedup_epoch()
     sm.complete_merge()  # → idle_ready; the before-hook clears the selection
 
 
@@ -234,7 +234,7 @@ def process_osm_import_deferred() -> bool:
         lifts=[(lift.bottom, lift.top, lift.lift_type, lift.name) for lift in summary.lifts],
         dem=dem,
     )
-    bump_map_version()
+    bump_dedup_epoch()
     return True
 
 
@@ -255,9 +255,9 @@ def process_path_generation_deferred() -> bool:
     # Regenerate the fan for each pending kind that is actually the active build.
     if sm.active_build_kind in ctx.deferred.fan_generation:
         _generate_fan_for_building_state(kind=sm.active_build_kind)
-        # Only bump_map_version() here (NOT reload_map/trigger_rerun): this runs inside the current
-        # render cycle from app.py, so the following natural render shows the new proposals.
-        bump_map_version()
+        # New proposals → bump dedup_epoch (NOT the camera). Runs inside the current render cycle
+        # from app.py, so the following natural render shows the new proposals in place.
+        bump_dedup_epoch()
 
     ctx.deferred.fan_generation.clear()
     return True
@@ -466,7 +466,7 @@ def _finalize_entity(kind: SegmentKind) -> "SegmentPath":
     entity = KIND_SPECS[kind].finish(graph, build.segments)
     logger.info(f"{kind.value.capitalize()} {entity.name} (id={entity.id}) finalized")
     center_on_segment_path(ctx=ctx, graph=graph, path=entity, zoom=MapConfig.VIEWING_ZOOM)
-    bump_map_version()  # Clear stale click state
+    bump_camera_epoch()  # recenter on the finished entity (remount re-reads the framed view)
     return entity
 
 
@@ -539,15 +539,13 @@ def commit_selected_path(path_idx: int) -> None:
         _finish_connector(segment_id=segment_id, kind=kind)
         return
 
-    # Non-connector: recenter on the new endpoint, re-arm the fan, and fire the kind's
-    # commit event (fan-state self-loop, or custom-continue when in the custom-path state).
-    end_node = graph.nodes.get(endpoint_node_id)
-    if end_node is not None:
-        ctx.map.set_building_view(lon=end_node.lon, lat=end_node.lat)
+    # Non-connector: re-arm the fan and fire the kind's commit event (fan-state self-loop, or
+    # custom-continue in the custom-path state). Do NOT recenter — the user keeps their current pan;
+    # only finish/show-view/reset/3D re-frame the camera.
     ctx.clear_proposals()
     ctx.deferred.fan_generation.add(kind)
     ctx.deferred.gradient_target = committed_gradient
-    bump_map_version()
+    bump_dedup_epoch()
 
     sm.commit_active_segment(segment_id=segment_id, endpoint_node_id=endpoint_node_id)
 
@@ -594,17 +592,12 @@ def finish_current_slope() -> None:
 def _discard_build(build_ctx: "SegmentBuildContext") -> None:
     """Discard an in-progress slope/road build: strip its undo entries, delete segments, clean up.
 
-    Shared by cancel_current_slope / cancel_current_road (the SM cancel event is fired
-    by each caller). Recenters on the origin so the map doesn't jump.
+    Shared by cancel_current_slope / cancel_current_road (the SM cancel event is fired by each
+    caller). Does NOT recenter — cancel keeps the user's current pan.
     """
-    ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
 
     logger.info(f"Canceling build, discarding {len(build_ctx.segments)} segments")
-
-    origin = graph.nodes[build_ctx.start_node_id] if build_ctx.start_node_id else None
-    if origin:
-        ctx.map.set_building_view(lon=origin.lon, lat=origin.lat)
 
     # Delete the canceled segments, then drop the undo entries that referenced them — the SAME
     # scrub the graph runs after delete/merge (one implementation, reload-safe, Finish-aware).
@@ -614,7 +607,7 @@ def _discard_build(build_ctx: "SegmentBuildContext") -> None:
     graph.drop_undo_actions_for_removed_segments()
 
     graph.cleanup_isolated_nodes()  # Remove orphaned nodes from the canceled build
-    bump_map_version()  # Clear stale click state
+    bump_dedup_epoch()  # canceled segments gone → refresh marker/proposal dedup (no recenter)
 
 
 def cancel_current_build(kind: SegmentKind) -> None:
@@ -672,7 +665,7 @@ def _undo_add_segments(undone: AddSegmentsAction) -> None:
         build.endpoints = []
         logger.debug(f"[ACTION] {kind.value} undo leaves 0 segments, forcing starting")
         sm.force_starting(kind)
-    bump_map_version()
+    bump_dedup_epoch()
     trigger_rerun()
 
 
@@ -724,7 +717,7 @@ def _undo_finish(kind: SegmentKind, segment_ids: tuple[str, ...], name: str, sta
     )
     ctx.clear_proposals()  # force_building re-triggers the kind's fan from the endpoint
     sm.force_building(kind)
-    bump_map_version()
+    bump_dedup_epoch()
     trigger_rerun()
 
 
@@ -747,14 +740,12 @@ def _undo_add_lift(undone: AddLiftAction) -> None:
     # If in LiftPlacing state, force to idle (lift placement context is now stale)
     if sm.is_lift_placing:
         sm.force_idle()
-        bump_map_version()
         trigger_rerun()
         return
 
     # If we were viewing the deleted lift, force to idle (exit hooks handle cleanup)
     if sm.is_idle_viewing_lift and st.session_state.context.viewing.lift_id == undone.lift_id:
         sm.force_idle()
-        bump_map_version()
         trigger_rerun()
     else:
         reload_map()
@@ -788,7 +779,6 @@ def _undo_import_osm(undone: ImportOSMAction) -> None:
     viewing = sm.viewing_entity
     if viewing is not None and undone.removed_entity(entity_id=viewing[1]):
         sm.force_idle()
-        bump_map_version()
         trigger_rerun()
     else:
         reload_map()
@@ -915,7 +905,7 @@ def _close_panel_and_refresh(*, deleted: bool, is_viewing_deleted: bool) -> bool
     sm: PlannerStateMachine = st.session_state.state_machine
     if is_viewing_deleted:
         sm.send("close_panel")
-    bump_map_version()
+    bump_dedup_epoch()
     return True
 
 
@@ -941,7 +931,7 @@ def rename_entity_action(entity_id: str, new_name: str) -> None:
         return
     graph: ResortGraph = st.session_state.graph
     graph.rename(entity_id=entity_id, new_name=name)
-    bump_map_version()
+    bump_dedup_epoch()
 
 
 def delete_lift_action(lift_id: str) -> bool:

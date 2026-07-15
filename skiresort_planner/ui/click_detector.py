@@ -104,11 +104,12 @@ class ClickDetector:
             return f"pylon_{lift_id}_{pylon_idx}"
 
         if obj_type in {ClickConfig.TYPE_PROPOSAL_BODY, ClickConfig.TYPE_PROPOSAL_ENDPOINT}:
-            # Include map_version to make proposal IDs unique per generation
-            # This ensures clicks work after proposals are regenerated
-            map_version = st.session_state.get("map_version", 0)
+            # Include dedup_epoch so proposal IDs are unique per generation — re-clicking the same
+            # index after proposals regenerate counts as a new click (dedup_epoch is bumped on
+            # regeneration; it is NOT the camera key, so this never moves the map).
+            dedup_epoch = st.session_state.get("dedup_epoch", 0)
             proposal_idx = _as_int(obj.get("proposal_index")) or 0
-            return f"{obj_type}_{proposal_idx}_v{map_version}"
+            return f"{obj_type}_{proposal_idx}_v{dedup_epoch}"
 
         return f"{obj_type}_{obj_id}" if obj_id else obj_type
 

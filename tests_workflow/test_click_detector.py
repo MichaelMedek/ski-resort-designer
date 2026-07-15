@@ -160,12 +160,12 @@ class TestClickDetectorParsing:
         assert result.segment_id == "S3"
 
     def test_get_object_id_dedup_keys(self, detector: ClickDetector, fake_st) -> None:
-        """Dedup keys are formatted per-type; proposals embed map_version so regenerated ones re-click.
+        """Dedup keys are formatted per-type; proposals embed dedup_epoch so regenerated ones re-click.
 
-        Guards the regression where dropping map_version from the proposal key would make a
-        freshly regenerated proposal collide with the previous generation's key and be swallowed.
+        Guards the regression where dropping the epoch from the proposal key would make a freshly
+        regenerated proposal collide with the previous generation's key and be swallowed.
         """
-        fake_st.session_state["map_version"] = 5
+        fake_st.session_state["dedup_epoch"] = 5
         assert detector._get_object_id(obj={"type": "pylon", "lift_id": "L1", "pylon_index": 3}) == "pylon_L1_3"
         assert detector._get_object_id(obj={"type": "node", "id": "N42"}) == "node_N42"
         assert (

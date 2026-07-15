@@ -41,7 +41,13 @@ from skiresort_planner.ui.bottom_chart import (
 from skiresort_planner.ui.center_map import MapRenderer
 from skiresort_planner.ui.click_detector import ClickDetector
 from skiresort_planner.ui.context import PlannerContext
-from skiresort_planner.ui.infra import bump_map_version, reload_map, trigger_rerun, viewport_map_height
+from skiresort_planner.ui.infra import (
+    bump_camera_epoch,
+    bump_dedup_epoch,
+    reload_map,
+    trigger_rerun,
+    viewport_map_height,
+)
 from skiresort_planner.ui.left_panel import SidebarRenderer
 from skiresort_planner.ui.mode_registry import dispatch_click, render_control_panel
 from skiresort_planner.ui.pydeck_click_handler import PydeckClickResult, render_pydeck_map
@@ -70,7 +76,8 @@ __all__ = [
     "ClickDetector",
     "dispatch_click",
     "render_control_panel",
-    "bump_map_version",
+    "bump_camera_epoch",
+    "bump_dedup_epoch",
     "cancel_custom_path",
     "cancel_current_road",
     "cancel_current_slope",

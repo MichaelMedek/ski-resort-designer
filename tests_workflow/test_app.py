@@ -34,7 +34,8 @@ def _seed_full_session(fake_st, dem):
     ss["dem_service"] = dem
     ss["path_factory"] = PathFactory(dem_service=dem)
     ss["map_renderer"] = MapRenderer(graph=graph)
-    ss["map_version"] = 0
+    ss["camera_epoch"] = 0
+    ss["dedup_epoch"] = 0
     ss["_upload_counter"] = 0
     return graph, sm, ctx
 
@@ -59,21 +60,23 @@ class TestSessionHelpers:
         assert isinstance(ss["graph"], ResortGraph)
         assert ss["state_machine"] is not None
         assert ss["map_renderer"] is not None
-        assert ss["map_version"] == 0
+        assert ss["camera_epoch"] == 0
+        assert ss["dedup_epoch"] == 0
 
     def test_reset_ui_state_preserves_graph(self, fake_st, path_points_blue) -> None:
         graph = ResortGraph()
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         graph.finish_slope(segment_ids=list(graph.segments.keys()))
         fake_st.session_state["graph"] = graph
-        fake_st.session_state["map_version"] = 0
+        fake_st.session_state["camera_epoch"] = 0
 
         app.reset_ui_state()
 
-        # Graph preserved; a fresh state machine + context installed.
+        # Graph preserved; a fresh state machine + context installed; camera remounts (recovery).
         assert fake_st.session_state["graph"] is graph
         assert len(graph.slopes) == 1
         assert fake_st.session_state["state_machine"] is not None
+        assert fake_st.session_state["camera_epoch"] == 1
 
     def test_load_dem_data_returns_true_when_loaded(self, fake_st, mock_dem_blue_slope) -> None:
         fake_st.session_state["dem_service"] = mock_dem_blue_slope  # already loaded

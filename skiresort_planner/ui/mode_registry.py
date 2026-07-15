@@ -704,7 +704,7 @@ class BuilderOperation(ABC):
         A button only highlights; the mode start (state entry) always happens later on the first
         map click. This is a PURE UI pre-selection with no map change (state stays idle_ready), so
         it uses a plain rerun — NOT reload_map() — to avoid a needless deck.gl remount (the map is
-        keyed on map_version, which reload_map bumps). Ops that actually change the map (e.g. the
+        keyed on camera_epoch, which reload_map bumps). Ops that actually change the map (e.g. the
         lift op re-typing a viewed lift) override this and reload_map() only when they do.
         """
         ctx.build_mode.mode = self.mode

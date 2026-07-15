@@ -32,7 +32,7 @@ from skiresort_planner.ui.actions import (
     confirm_import_action,
     resolve_build_origin,
 )
-from skiresort_planner.ui.infra import bump_map_version, reload_map
+from skiresort_planner.ui.infra import bump_camera_epoch, bump_dedup_epoch, trigger_rerun
 from skiresort_planner.ui.kind_spec import KIND_SPECS
 from skiresort_planner.ui.validators import (
     validate_custom_target_distance,
@@ -68,7 +68,7 @@ def _select_or_commit_proposal(ctx: PlannerContext, idx: int) -> None:
         commit_selected_path(path_idx=idx)  # re-click the selected one → commit
     else:
         ctx.proposals.selected_idx = idx
-        reload_map()  # first click just selects + redraws
+        trigger_rerun()  # first click just highlights the proposal — redraw in place, no recenter
 
 
 def _commit_proposal_endpoint(ctx: PlannerContext, idx: int) -> None:
@@ -622,7 +622,7 @@ def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) ->
 
     logger.info(f"Lift {lift.name} created successfully")
     center_on_lift(ctx=ctx, graph=graph, lift=lift, zoom=MapConfig.VIEWING_ZOOM)
-    bump_map_version()
+    bump_camera_epoch()  # completing a lift shows its viewer → recenter on it
     sm.complete_lift(lift_id=lift.id)
 
 
@@ -653,7 +653,7 @@ def handle_import_placing_click(click_info: ClickInfo, elevation: float | None) 
         ctx.deferred.osm_import_center_lon = click_info.lon
         ctx.deferred.osm_import_center_lat = click_info.lat
         sm.retarget_import()
-        reload_map()
+        trigger_rerun()  # redraw the box at the clicked point (already on-screen — no recenter)
         return
 
     logger.debug(f"[IMPORT] Ignoring {click_info.display_name} — click the center dot or terrain to re-place")
@@ -674,7 +674,10 @@ def handle_merge_placing_click(click_info: ClickInfo, elevation: float | None) -
         assert click_info.node_id is not None  # Validated in ClickInfo
         logger.debug(f"[MERGE] Node click: toggling {click_info.node_id} in the merge selection")
         sm.toggle_merge_node(node_id=click_info.node_id)
-        reload_map()
+        # Refresh dedup so the SAME node can be toggled again (on/off/on);
+        # redraw the red selection in place — no recenter.
+        bump_dedup_epoch()
+        trigger_rerun()
         return
 
     # Anything else (terrain or a non-node marker) is not selectable for merge.
