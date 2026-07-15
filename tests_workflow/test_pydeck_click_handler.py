@@ -24,11 +24,9 @@ class TestPydeckClickResult:
 
 
 class TestGetClickId:
-    def test_object_with_type_and_id(self, fake_st) -> None:
-        # Object ids fold in dedup_epoch (0 here) so a regeneration makes the same target re-clickable.
-        fake_st.session_state["dedup_epoch"] = 0
+    def test_object_with_type_and_id(self) -> None:
         cid = _get_click_id(obj={"type": "slope", "id": "SL1"}, coord=None)
-        assert cid == "slope_SL1_v0"
+        assert cid == "slope_SL1"
 
     def test_object_without_id_uses_position(self) -> None:
         cid = _get_click_id(obj={"type": "", "position": [10.123456, 46.654321]}, coord=None)
@@ -38,15 +36,18 @@ class TestGetClickId:
         cid = _get_click_id(obj=None, coord=[10.123456, 46.654321])
         assert cid == "coord_10.12346_46.65432"
 
-    def test_object_and_coord_combined(self, fake_st) -> None:
-        fake_st.session_state["dedup_epoch"] = 0
+    def test_object_and_coord_combined(self) -> None:
         cid = _get_click_id(obj={"type": "lift", "id": "L1"}, coord=[1.0, 2.0])
-        assert cid == "lift_L1_v0_coord_1.00000_2.00000"
+        assert cid == "lift_L1_coord_1.00000_2.00000"
 
-    def test_object_epoch_changes_id(self, fake_st) -> None:
-        # A dedup_epoch bump changes the id → the SAME target counts as a fresh click after regen.
-        fake_st.session_state["dedup_epoch"] = 7
-        assert _get_click_id(obj={"type": "lift", "id": "L1"}, coord=None) == "lift_L1_v7"
+    def test_id_is_stable_across_dedup_epoch_bumps(self, fake_st) -> None:
+        # The ghost gate MUST be epoch-free: the same click re-returned after a commit (which bumps
+        # dedup_epoch) must produce the SAME id so it is suppressed — else the commit loops forever.
+        fake_st.session_state["dedup_epoch"] = 3
+        before = _get_click_id(obj={"type": "proposal_endpoint", "id": "endpoint_1"}, coord=[1.0, 2.0])
+        fake_st.session_state["dedup_epoch"] = 4
+        after = _get_click_id(obj={"type": "proposal_endpoint", "id": "endpoint_1"}, coord=[1.0, 2.0])
+        assert before == after, "ghost re-return must stay suppressed across a dedup_epoch bump"
 
     def test_no_data_is_empty(self) -> None:
         assert _get_click_id(obj=None, coord=None) == ""
