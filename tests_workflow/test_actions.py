@@ -792,3 +792,36 @@ class TestOSMImport:
         _flag_import()
         actions.process_osm_import_deferred()  # same area again
         assert len(graph.slopes) == 1 and len(graph.lifts) == 1, "no duplicates on re-import"
+
+
+class TestSegmentOriginStaleNode:
+    """_segment_origin must tolerate a stale origin-node id.
+
+    A custom-connect from a fresh terrain origin materialises an isolated graph node as the build's
+    start_node_id. If undo/cancel then cleans that node (0 connections) before a segment commits, the
+    id dangles. Fan regeneration must fall back to the preserved start_location.
+    """
+
+    def test_falls_back_to_start_location_when_origin_node_cleaned(self, empty_graph) -> None:
+        from skiresort_planner.ui.actions import _segment_origin
+        from skiresort_planner.ui.context import SegmentBuildContext
+
+        build = SegmentBuildContext(
+            start_node_id="N291",  # dangling: not in the graph (was cleaned up)
+            start_location=PathPoint(lon=8.019, lat=46.584, elevation=3065.0),
+        )
+        lon, lat, elevation, start_node_id = _segment_origin(build=build, graph=empty_graph)
+
+        assert (lon, lat, elevation) == (8.019, 46.584, 3065.0), "falls back to the pending origin"
+        assert start_node_id is None, "a cleaned origin is a fresh point, not a reusable node"
+
+    def test_uses_node_when_present(self, empty_graph, path_points_blue) -> None:
+        from skiresort_planner.ui.actions import _segment_origin
+        from skiresort_planner.ui.context import SegmentBuildContext
+
+        node, _ = empty_graph.get_or_create_node(lon=8.02, lat=46.58, elevation=3000.0)
+        build = SegmentBuildContext(start_node_id=node.id)
+        lon, lat, elevation, start_node_id = _segment_origin(build=build, graph=empty_graph)
+
+        assert (lon, lat, elevation) == (node.lon, node.lat, node.elevation)
+        assert start_node_id == node.id, "an existing origin node is returned for reuse on commit"

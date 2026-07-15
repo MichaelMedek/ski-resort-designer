@@ -308,16 +308,18 @@ def _generate_fan_for_building_state(kind: SegmentKind) -> None:
 def _segment_origin(build: "SegmentBuildContext", graph: ResortGraph) -> tuple[float, float, float, str | None]:
     """Resolve the point a new fan segment radiates from — shared by every kind.
 
-    Reads only the SegmentBuildContext: the last committed endpoint, else the origin
-    node, else the pending origin location. Returns (lon, lat, elevation, start_node_id);
-    start_node_id is the node to reuse on commit (None for a brand-new origin point).
-    Raises if the build has no resolvable origin (a programming error — the state machine
-    never queues generation without one).
+    Reads only the SegmentBuildContext: the last committed endpoint, else the origin node, else the
+    pending origin location. Returns (lon, lat, elevation, start_node_id); start_node_id is the node
+    to reuse on commit (None for a brand-new origin point). If the origin node id is stale (its node
+    was cleaned from the graph before a segment committed), falls back to start_location. Raises only
+    if the build has no origin at all.
     """
     node_id = build.endpoints[-1] if build.endpoints else build.start_node_id
-    if node_id is not None:
-        node = graph.nodes[node_id]  # must exist: it's a committed endpoint or the origin node
+    # If the node exists in the graph, take its coordiantes
+    if node_id is not None and node_id in graph.nodes:
+        node = graph.nodes[node_id]
         return node.lon, node.lat, node.elevation, node.id
+    # The origin node was cleaned from the graph. Fall back to the pending terrain origin it was materialised from.
     if build.start_location is not None:
         loc = build.start_location
         return loc.lon, loc.lat, loc.elevation, None

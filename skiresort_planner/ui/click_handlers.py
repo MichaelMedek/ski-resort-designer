@@ -425,10 +425,10 @@ def _handle_custom_connect_click(click_info: ClickInfo, elevation: float | None)
     elif ctx.custom_connect.start_node:  # CUSTOM_PATH re-target: keep existing start
         start = graph.nodes[ctx.custom_connect.start_node]
         start_lon, start_lat, start_elevation = start.lon, start.lat, start.elevation
-    elif build.start_node_id:  # STARTING from an existing node
+    elif build.start_node_id and build.start_node_id in graph.nodes:  # STARTING from an existing node
         start = graph.nodes[build.start_node_id]
         start_lon, start_lat, start_elevation = start.lon, start.lat, start.elevation
-    elif build.start_location is not None:  # STARTING from a pending terrain origin
+    elif build.start_location is not None:  # STARTING from a pending terrain origin (or a stale, cleaned origin node)
         loc = build.start_location
         start_lon, start_lat, start_elevation = loc.lon, loc.lat, loc.elevation
     else:
