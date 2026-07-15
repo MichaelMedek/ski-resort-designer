@@ -584,6 +584,10 @@ class PathSelectionPanel:
             ).display()
             if self.ctx.custom_connect.force_mode:
                 self._render_cancel_connection(is_connector=False)
+            else:
+                # Fan-out that yielded nothing (e.g. all directions too steep): routing to a custom
+                # target may still work. Make that discoverable now that there is no button.
+                st.caption("🎯 Or click any point or node on the map to route a path there.")
             return
 
         num_paths = len(self.ctx.proposals.paths)

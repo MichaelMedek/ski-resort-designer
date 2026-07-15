@@ -338,11 +338,12 @@ class PathBuildingContextMessage(Message):
             return f"{self.icon} **{self.name}** — New {self.kind.capitalize()}\n\n- 📍 Start: {start_loc}\n- ↔️ No segments committed yet"
 
         # Building: roads have no ski difficulty, so lead the stats line with the drop instead.
+        # Show drop/gradient as MAGNITUDES (the backend has "downhill is positive").
         lead = f"{self.difficulty_emoji} • " if self.difficulty_emoji else ""
         return (
             f"{self.icon} **{self.name}** — Committed Progress — {self.num_segments} ↔️\n\n"
-            f"- {lead}↓{self.total_drop_m:.0f}m drop • {self.total_length_m:.0f}m\n"
-            f"- 📐 {self.avg_gradient_pct:.0f}% overall / {self.max_gradient_pct:.0f}% steepest\n"
+            f"- {lead}↕{abs(self.total_drop_m):.0f}m • {self.total_length_m:.0f}m\n"
+            f"- 📐 {abs(self.avg_gradient_pct):.0f}% overall / {abs(self.max_gradient_pct):.0f}% steepest\n"
             f"- 📍 {self.start_elevation_m:.0f}m → {self.current_elevation_m:.0f}m"
         )
 
@@ -513,10 +514,11 @@ class PathActionMessage(Message):
         difficulty_line = (
             f"- {self.path_difficulty_emoji} {self.path_difficulty.capitalize()} • " if self.path_difficulty else "- "
         )
+        # Show drop and gradient as MAGNITUDES: the backend has "downhill is positive".
         return (
             f"{header}\n\n"
-            f"{difficulty_line}↕{self.path_drop_m:.0f}m • {self.path_length_m:.0f}m\n"
-            f"- 📐 {self.actual_gradient_pct:.0f}% overall ({self.target_gradient_pct:.0f}% target)\n"
+            f"{difficulty_line}↕{abs(self.path_drop_m):.0f}m • {self.path_length_m:.0f}m\n"
+            f"- 📐 {abs(self.actual_gradient_pct):.0f}% overall ({abs(self.target_gradient_pct):.0f}% target)\n"
             f"- 📍 {self.start_elevation_m:.0f}m → {self.end_elevation_m:.0f}m\n"
             f"{action}"
         )

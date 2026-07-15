@@ -113,6 +113,27 @@ class TestPathActionMessageTooSteep:
         assert "No Paths Available" in msg
         assert "Too steep" not in msg, "no cap recorded → no steepness line, just the generic guidance"
 
+    def test_selecting_shows_magnitudes_for_a_climbing_road(self) -> None:
+        # A climbing road has a negative drop/gradient in the backend's "downhill is positive" sign;
+        # the selection message shows MAGNITUDES so it never reads a confusing "-5m / -3%" on a climb.
+        from skiresort_planner.model.message import PathActionMessage
+
+        msg = PathActionMessage(
+            kind=SegmentKind.ROAD,
+            is_selecting_path=True,
+            num_paths=2,
+            selected_path_idx=1,
+            actual_gradient_pct=-3.0,
+            target_gradient_pct=12.0,
+            path_length_m=150.0,
+            path_drop_m=-5.0,
+            start_elevation_m=3438.0,
+            end_elevation_m=3443.0,
+        ).message
+        assert "↕5m" in msg and "-5m" not in msg, "drop shown as magnitude"
+        assert "3%" in msg and "-3%" not in msg, "gradient shown as magnitude"
+        assert "3438m → 3443m" in msg, "direction still conveyed by the elevation line"
+
 
 class TestOSMImportMessages:
     def test_error_message(self) -> None:
