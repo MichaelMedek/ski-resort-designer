@@ -813,14 +813,39 @@ class TestSegmentOrigin:
         assert (lon, lat, elevation) == (8.019, 46.584, 3065.0), "routes from the pending origin location"
         assert start_node_id is None, "no node yet — commit_paths mints it"
 
-    def test_raises_on_dangling_node_id(self, empty_graph) -> None:
+    def test_stale_origin_node_falls_back_to_start_location(self, empty_graph) -> None:
+        from skiresort_planner.ui.actions import resolve_build_origin
+        from skiresort_planner.ui.context import SegmentBuildContext
+
+        # The origin node was cleaned when the last segment was undone, but start_location survives
+        # (restored by _restore_build_context). The dangling id is ignored; the location is used.
+        build = SegmentBuildContext(
+            start_node_id="N999",  # cleaned as isolated
+            start_location=PathPoint(lon=8.019, lat=46.584, elevation=3065.0),
+        )
+        lon, lat, elevation, start_node_id = resolve_build_origin(build=build, graph=empty_graph)
+        assert (lon, lat, elevation) == (8.019, 46.584, 3065.0), "falls back to the origin location"
+        assert start_node_id is None, "the stale id is not reused"
+
+    def test_raises_when_no_origin_at_all(self, empty_graph) -> None:
         import pytest
 
         from skiresort_planner.ui.actions import resolve_build_origin
         from skiresort_planner.ui.context import SegmentBuildContext
 
-        # A non-None start_node_id must be a live node; a missing one is an invariant violation.
+        # No endpoint, a dangling origin id, and NO location fallback → genuine programming error.
         build = SegmentBuildContext(start_node_id="N999")
+        with pytest.raises(ValueError, match="no start node or location"):
+            resolve_build_origin(build=build, graph=empty_graph)
+
+    def test_endpoint_must_be_live(self, empty_graph) -> None:
+        import pytest
+
+        from skiresort_planner.ui.actions import resolve_build_origin
+        from skiresort_planner.ui.context import SegmentBuildContext
+
+        # A committed endpoint must exist — a missing one is an invariant violation (strict []).
+        build = SegmentBuildContext(endpoints=["N999"])
         with pytest.raises(KeyError):
             resolve_build_origin(build=build, graph=empty_graph)
 
@@ -834,3 +859,50 @@ class TestSegmentOrigin:
 
         assert (lon, lat, elevation) == (node.lon, node.lat, node.elevation)
         assert start_node_id == node.id, "an existing origin node is returned for reuse on commit"
+
+
+class TestUndoToZeroAfterFinish:
+    """Regression: build a road, finish, undo the finish, then undo each segment back to zero.
+
+    The final undo cleans the origin node (now isolated); the build must stay resolvable — the fan
+    regenerates from the origin location, not a dangling start_node_id (was 'KeyError: N###').
+    """
+
+    def test_undo_all_segments_after_finish_regenerates_without_crash(
+        self, fake_st, empty_graph, path_factory, mock_dem_red_slope_diagonal
+    ) -> None:
+        from skiresort_planner.ui.actions import (
+            process_path_generation_deferred,
+            resolve_build_origin,
+            undo_last_action,
+        )
+
+        dem = mock_dem_red_slope_diagonal
+        m = 111320.0
+        sm, ctx = _session(fake_st, empty_graph, path_factory, dem)
+        ctx.build_mode.mode = SegmentKind.ROAD.value
+
+        # Start a road from fresh terrain and commit two segments (undo actions recorded).
+        sm.start_road(node_id=None, location=PathPoint(lon=0.0, lat=0.0, elevation=2000.0))
+        for i in range(1, 3):
+            pts = [
+                PathPoint(lon=(i - 1) * 300 / m, lat=0.0, elevation=2000.0 - (i - 1) * 10),
+                PathPoint(lon=i * 300 / m, lat=0.0, elevation=2000.0 - i * 10),
+            ]
+            endpoint_ids = empty_graph.commit_paths(paths=[ProposedPathSegment(points=pts, kind=SegmentKind.ROAD)])
+            seg = list(empty_graph.segments.keys())[-1]
+            sm.commit_road(segment_id=seg, endpoint_node_id=endpoint_ids[0])
+
+        road = empty_graph.finish_road(segment_ids=ctx.build(SegmentKind.ROAD).segments)
+        sm.finish_road(entity_id=road.id)
+        assert sm.is_idle_viewing_road
+
+        # Undo everything: finish, then each segment. The last undo cleans the origin node.
+        while empty_graph.undo_stack:
+            undo_last_action()
+
+        # The build must still resolve its origin without a dangling id (the crash was here).
+        build = ctx.build(SegmentKind.ROAD)
+        if build.segments or build.start_location or build.start_node_id:
+            resolve_build_origin(build=build, graph=empty_graph)  # must not raise
+        process_path_generation_deferred()  # the deferred fan pass must not raise either

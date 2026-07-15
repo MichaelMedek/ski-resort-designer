@@ -310,18 +310,27 @@ def resolve_build_origin(
 ) -> tuple[float, float, float, str | None]:
     """Resolve the point a build's next path radiates from — the single origin resolver.
 
-    Priority: the current committed endpoint → a custom-connect re-target origin (``custom_start_node``)
-    → the build's own starting origin node → the pending terrain location. Returns
-    (lon, lat, elevation, node_id); node_id is the node to reuse on commit, or None for a fresh
-    terrain origin that has no node yet (commit_paths mints it). No node is ever materialised before
-    commit, so any non-None id is guaranteed live..
+    Priority: the current committed endpoint → the origin node (a custom-connect re-target origin or
+    the build's own starting node) → the pending terrain location. Returns (lon, lat, elevation,
+    node_id); node_id is the node to reuse on commit, or None when the origin is a location with no
+    node yet (commit_paths mints it).
+
+    A committed endpoint must exist (strict). The ORIGIN node id, by contrast, is only a reuse hint:
+    it can be cleaned as isolated once the last segment is undone, so start_location is the
+    authoritative fallback. Raises only if neither an endpoint, a live origin node, nor a location
+    is available.
     """
-    node_id = build.endpoints[-1] if build.endpoints else (custom_start_node or build.start_node_id)
-    if node_id is not None:
-        node = graph.nodes[node_id]
+    if build.endpoints:
+        node = graph.nodes[build.endpoints[-1]]  # committed endpoint — must be live
+        return node.lon, node.lat, node.elevation, node.id
+
+    origin_node_id = custom_start_node or build.start_node_id
+    if origin_node_id is not None and origin_node_id in graph.nodes:
+        node = graph.nodes[origin_node_id]
         return node.lon, node.lat, node.elevation, node.id
     if build.start_location is not None:
-        loc = build.start_location  # fresh terrain origin — not yet a node (minted at commit)
+        # Fresh terrain origin, or an origin whose node was cleaned when its last segment was undone.
+        loc = build.start_location
         return loc.lon, loc.lat, loc.elevation, None
     raise ValueError(f"cannot resolve build origin: {build=} has no start node or location")
 
@@ -686,9 +695,14 @@ def _restore_build_context(
     build_ctx.start_node_id = start_node_id
 
     assert build_ctx.segments, "finish-undo must have ≥1 segment (finish_* never records an empty finish)"
+    first_seg = graph.segments.get(build_ctx.segments[0])
     last_seg = graph.segments.get(build_ctx.segments[-1])
+    assert first_seg and first_seg.points, f"restored segment {build_ctx.segments[0]} must exist with points"
     assert last_seg and last_seg.points, f"restored segment {build_ctx.segments[-1]} must exist with points"
 
+    # Carry the origin as a LOCATION too, not only as start_node_id: undoing the segments one by one
+    # eventually cleans the origin node. The origin node still exists now, so snapshot the first segment's start point.
+    build_ctx.start_location = first_seg.points[0]
     build_ctx.endpoints = [last_seg.end_node_id]
     return last_seg.end_node_id
 
