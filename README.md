@@ -42,6 +42,11 @@ source ".venv-skiresort/bin/activate"
 streamlit run skiresort_planner/app.py
 ```
 
+Or to launch it in debug mode and log to file:
+```bash
+SKIRESORT_LOG_LEVEL=DEBUG streamlit run skiresort_planner/app.py 2>&1 | tee output/debug_$(date +%Y%m%d_%H%M%S).log
+```
+
 ---
 
 ## Terrain Data

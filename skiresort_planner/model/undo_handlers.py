@@ -67,6 +67,7 @@ class _AddSegmentsHandler(UndoHandler):
         for seg_id in add_seg.segment_ids:
             graph.segments.pop(seg_id, None)
         graph.cleanup_isolated_nodes()  # Remove orphaned nodes from segment removal
+        logger.info(f"Undid ADD_SEGMENTS: removed {len(add_seg.segment_ids)} segment(s)")
 
     def describe(self, action: UndoAction, graph: "ResortGraph") -> str:
         segments_act = cast(AddSegmentsAction, action)
@@ -89,6 +90,9 @@ class _FinishSlopeHandler(UndoHandler):
         graph.slopes.pop(finish.slope_id, None)
         for seg_id in finish.segment_ids:
             graph.segments[seg_id].name = f"Segment {seg_id[1:]}"
+        logger.info(
+            f"Undid FINISH_SLOPE: ungrouped {finish.slope_name} back to {len(finish.segment_ids)} building segment(s)"
+        )
 
     def describe(self, action: UndoAction, graph: "ResortGraph") -> str:
         finish_slope_act = cast(FinishSlopeAction, action)
@@ -102,6 +106,7 @@ class _AddLiftHandler(UndoHandler):
         add_lift = cast(AddLiftAction, action)
         graph.lifts.pop(add_lift.lift_id, None)
         graph.cleanup_isolated_nodes()  # Remove orphaned station nodes
+        logger.info(f"Undid ADD_LIFT: removed lift {add_lift.lift_id}")
 
     def describe(self, action: UndoAction, graph: "ResortGraph") -> str:
         add_lift_act = cast(AddLiftAction, action)
@@ -119,6 +124,9 @@ class _FinishRoadHandler(UndoHandler):
         graph.roads.pop(finish_road.road_id, None)
         for seg_id in finish_road.segment_ids:
             graph.segments[seg_id].name = f"Segment {seg_id[1:]}"
+        logger.info(
+            f"Undid FINISH_ROAD: ungrouped {finish_road.road_name} back to {len(finish_road.segment_ids)} building segment(s)"
+        )
 
     def describe(self, action: UndoAction, graph: "ResortGraph") -> str:
         finish_road_act = cast(FinishRoadAction, action)

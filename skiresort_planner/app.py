@@ -6,7 +6,6 @@ Features fan-pattern path generation, lift placement, and elevation profiles.
 Run: streamlit run skiresort_planner/app.py
 """
 
-import logging
 import traceback
 import uuid
 from typing import TYPE_CHECKING
@@ -50,8 +49,9 @@ from skiresort_planner.ui.terrain_layer import create_aws_terrain_layer
 if TYPE_CHECKING:
     from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 
-configure_logging()
-logger = logging.getLogger(__name__)
+# app.py runs as the Streamlit entry script (__name__ == "__main__", outside our package tree), so
+# take the configured package logger and derive app's child from it — no hardcoded name.
+logger = configure_logging().getChild("app")
 
 
 # CSS to give the map the full window height. Streamlit exposes no API for any of these,

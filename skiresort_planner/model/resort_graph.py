@@ -868,6 +868,7 @@ class ResortGraph:
         if isinstance(entity, SegmentPath):
             for seg_id in entity.segment_ids:
                 self.segments[seg_id].name = new_name
+        logger.info(f"Renamed {entity_id} to '{new_name}'")
 
     def delete_slope(self, slope_id: str) -> bool:
         """Delete a slope and its segments.
@@ -1202,6 +1203,10 @@ class ResortGraph:
         graph._lift_counter = counters["lift"]
         graph._road_counter = counters.get("road", 0)
 
+        logger.info(
+            f"Loaded resort: {len(graph.nodes)} nodes, {len(graph.segments)} segments, "
+            f"{len(graph.slopes)} slopes, {len(graph.roads)} roads, {len(graph.lifts)} lifts"
+        )
         return graph
 
     def to_gpx(self) -> str:
@@ -1299,4 +1304,6 @@ class ResortGraph:
         for node_id in isolated_node_ids:
             del self.nodes[node_id]
 
+        if isolated_node_ids:
+            logger.debug(f"Cleaned up {len(isolated_node_ids)} isolated node(s): {isolated_node_ids}")
         return len(isolated_node_ids)

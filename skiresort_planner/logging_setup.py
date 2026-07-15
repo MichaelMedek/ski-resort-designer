@@ -1,32 +1,30 @@
-"""Central logging configuration for the Ski Resort Planner.
+"""Logging setup: configure ONLY our package logger, never root.
 
-`configure_logging()` is called once at app startup (app.py). It reads one environment variable:
+Root config (`basicConfig`) would cascade our level to every library — at DEBUG.
+`propagate=False` keeps our level to our code; libraries keep their default (WARNING+ still reaches stderr).
 
-    SKIRESORT_LOG_LEVEL   Root log level, default INFO (case-insensitive: DEBUG/INFO/WARNING/ERROR).
-                          Set DEBUG to surface the per-rerun/per-click detail INFO suppresses.
-
-Capture a run to a file by redirecting: `streamlit run skiresort_planner/app.py > run.log 2>&1`.
-
-Level policy: Streamlit re-runs the whole script on every interaction, so render/dispatch/click/
-transition events are logged at DEBUG to keep the default INFO console readable. INFO is for
-once-per-action milestones (resort loaded, OSM import summary, autosave); WARNING/ERROR mark real
-problems with identifying context.
+    SKIRESORT_LOG_LEVEL   default INFO; set DEBUG for per-rerun/click/transition detail.
 """
 
 import logging
 import os
 
 ENV_LEVEL = "SKIRESORT_LOG_LEVEL"
+PACKAGE_LOGGER = "skiresort_planner"
 
 
-def configure_logging() -> None:
-    """Configure root logging from SKIRESORT_LOG_LEVEL (default INFO).
+def configure_logging() -> logging.Logger:
+    """Configure and return the package logger: level from SKIRESORT_LOG_LEVEL, one handler (idempotent).
 
-    Idempotent: logging.basicConfig no-ops if the root logger already has handlers, so repeated
-    Streamlit reruns don't stack handlers.
+    Returned so the entry script (app.py, whose __name__ is "__main__") can log under our hierarchy
+    via `configure_logging().getChild("app")` instead of a hardcoded name.
     """
-    logging.basicConfig(
-        level=os.environ.get(ENV_LEVEL, "INFO").upper(),
-        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    logger = logging.getLogger(PACKAGE_LOGGER)
+    logger.setLevel(os.environ.get(ENV_LEVEL, "INFO").upper())
+    logger.propagate = False  # our level applies to our code alone — root/libraries stay at their default
+
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s", datefmt="%H:%M:%S"))
+        logger.addHandler(handler)
+    return logger
