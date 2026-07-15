@@ -378,6 +378,9 @@ class ViewingContext(BaseContext):
 
     def set_viewed(self, kind: SegmentKind, entity_id: str) -> None:
         """Set the viewed entity by its SegmentKind (slope or road) — one kind-generic setter."""
+        assert kind in ViewingContext._SET_VIEWED_SETTERS, (
+            f"kind {kind} must be in _SET_VIEWED_SETTERS (module-level assert should have caught this at import)"
+        )
         getattr(self, ViewingContext._SET_VIEWED_SETTERS[kind])(entity_id)
 
     # =========================================================================
@@ -755,6 +758,9 @@ class PlannerContext:
 
     def build(self, kind: SegmentKind) -> SegmentBuildContext:
         """The build context for a given SegmentKind (slope, road, …)."""
+        assert kind in self.builds, (
+            f"kind {kind} must be initialized in builds dict; this is set by __init__ for every SegmentKind"
+        )
         return self.builds[kind]
 
     def clear_builds(self) -> None:

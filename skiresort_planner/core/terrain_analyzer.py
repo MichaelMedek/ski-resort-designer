@@ -142,6 +142,7 @@ class TerrainAnalyzer:
             Hex color string from StyleConfig.SLOPE_COLORS
         """
         difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=slope_pct)
+        assert difficulty in StyleConfig.SLOPE_COLORS, f"classify_difficulty returned unknown difficulty: {difficulty}"
         return StyleConfig.SLOPE_COLORS[difficulty]
 
     @staticmethod
@@ -265,6 +266,9 @@ class TerrainAnalyzer:
         if not samples_x or total_weight == 0:
             return TerrainGradient(slope_pct=0.0, bearing_deg=0.0)
 
+        assert len(samples_x) > 0 and total_weight > 0, (
+            "Gradient computation requires non-empty samples and positive weight"
+        )
         # Average weighted gradients
         grad_x = sum(samples_x) / total_weight
         grad_y = sum(samples_y) / total_weight
@@ -293,6 +297,9 @@ class TerrainAnalyzer:
         if gradient.slope_pct < SlopeConfig.MIN_SKIABLE_PCT:
             return None
 
+        assert gradient.slope_pct >= SlopeConfig.MIN_SKIABLE_PCT, (
+            "get_orientation should only be reached if slope meets minimum skiable threshold"
+        )
         fall_line = gradient.bearing_deg
 
         return TerrainOrientation(

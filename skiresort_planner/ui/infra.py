@@ -38,6 +38,9 @@ def _autosave_if_dirty() -> None:
     resort_id = st.session_state.get("resort_id")
     graph = st.session_state.get("graph")
     if resort_id is None or graph is None:
+        logger.warning(
+            f"Autosave skipped: uninitialized state (resort_id={resort_id}, graph={'set' if graph else None})"
+        )
         return
 
     token = graph.change_token()
@@ -75,7 +78,7 @@ def bump_map_version() -> None:
     old_version = st.session_state.get("map_version", 0)
     new_version = old_version + 1
     st.session_state.map_version = new_version
-    logger.info(f"[MAP] Bumped map_version: {old_version} -> {new_version}")
+    logger.debug(f"[MAP] Bumped map_version: {old_version} -> {new_version}")
 
 
 def reload_map(before: Callable[[], None] | None = None) -> None:

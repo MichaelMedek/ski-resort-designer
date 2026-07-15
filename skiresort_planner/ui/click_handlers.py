@@ -92,23 +92,23 @@ def _start_mode_from_terrain(
     """
     build_mode = ctx.build_mode.mode
     if ctx.build_mode.is_slope():
-        logger.info(f"[IDLE] Terrain click: starting new slope at ({lat:.6f}, {lon:.6f})")
+        logger.debug(f"[IDLE] Terrain click: starting new slope at ({lat:.6f}, {lon:.6f})")
         ctx.map.set_building_view(lon=lon, lat=lat)
         # Selection + fan arming happen in the before-hook / enter_slope_starting (Single Point
         # of Truth), like roads — not here.
         sm.start_building(lon=lon, lat=lat, elevation=elevation, node_id=None)
     elif ctx.build_mode.is_lift():
-        logger.info(f"[IDLE] Terrain click: starting {build_mode} at ({lat:.6f}, {lon:.6f})")
+        logger.debug(f"[IDLE] Terrain click: starting {build_mode} at ({lat:.6f}, {lon:.6f})")
         ctx.map.set_building_view(lon=lon, lat=lat)
         sm.select_lift_start(node_id=None, location=PathPoint(lon=lon, lat=lat, elevation=elevation))
     elif ctx.build_mode.is_road():
-        logger.info(f"[IDLE] Terrain click: starting road at ({lat:.6f}, {lon:.6f})")
+        logger.debug(f"[IDLE] Terrain click: starting road at ({lat:.6f}, {lon:.6f})")
         ctx.map.set_building_view(lon=lon, lat=lat)
         # Selection is set in before_start_road (Single Point of Truth), mirroring slopes.
         sm.select_road_start(node_id=None, location=PathPoint(lon=lon, lat=lat, elevation=elevation))
     elif ctx.build_mode.is_import():
         # Center+zoom (like slope/lift/road) so the box stays framed after Confirm.
-        logger.info(f"[IDLE] Terrain click: placing import box center at ({lat:.6f}, {lon:.6f})")
+        logger.debug(f"[IDLE] Terrain click: placing import box center at ({lat:.6f}, {lon:.6f})")
         ctx.map.set_building_view(lon=lon, lat=lat)
         sm.start_import(lon=lon, lat=lat)
     elif ctx.build_mode.is_merge():
@@ -125,28 +125,28 @@ def _start_mode_from_node(ctx: PlannerContext, sm: PlannerStateMachine, node: No
     """
     build_mode = ctx.build_mode.mode
     if ctx.build_mode.is_slope():
-        logger.info(f"[IDLE] Node click: starting slope from {node.id}")
+        logger.debug(f"[IDLE] Node click: starting slope from {node.id}")
         ctx.map.set_building_view(lon=node.lon, lat=node.lat)
         # Selection + fan arming happen in the before-hook / enter_slope_starting (Single Point of
         # Truth), like roads — not here.
         sm.start_building(lon=node.lon, lat=node.lat, elevation=node.elevation, node_id=node.id)
     elif ctx.build_mode.is_lift():
-        logger.info(f"[IDLE] Node click: starting {build_mode} from {node.id}")
+        logger.debug(f"[IDLE] Node click: starting {build_mode} from {node.id}")
         ctx.map.set_building_view(lon=node.lon, lat=node.lat)
         sm.select_lift_start(node_id=node.id)
     elif ctx.build_mode.is_road():
-        logger.info(f"[IDLE] Node click: starting road from {node.id}")
+        logger.debug(f"[IDLE] Node click: starting road from {node.id}")
         ctx.map.set_building_view(lon=node.lon, lat=node.lat)
         # Selection is set in before_start_road (Single Point of Truth), mirroring slopes.
         sm.select_road_start(node_id=node.id)
     elif ctx.build_mode.is_import():
-        logger.info(f"[IDLE] Node click: placing import box center at {node.id}")
+        logger.debug(f"[IDLE] Node click: placing import box center at {node.id}")
         ctx.map.set_building_view(lon=node.lon, lat=node.lat)
         sm.start_import(lon=node.lon, lat=node.lat)
     elif ctx.build_mode.is_merge():
         # First node click starts merge. Center like every mode, select the node, then transition
         # (start_merge reruns via listener, so select BEFORE it).
-        logger.info(f"[IDLE] Node click: starting merge from {node.id}")
+        logger.debug(f"[IDLE] Node click: starting merge from {node.id}")
         ctx.map.set_building_view(lon=node.lon, lat=node.lat)
         ctx.merge.toggle(node.id)
         sm.start_merge()
@@ -204,7 +204,7 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
             slope = graph.slopes.get(click_info.slope_id)
             if not slope:
                 raise RuntimeError(f"Slope {click_info.slope_id} not found in graph")
-            logger.info(f"[IDLE] Slope click: showing panel for {slope.name}")
+            logger.debug(f"[IDLE] Slope click: showing panel for {slope.name}")
             center_on_slope(ctx=ctx, graph=graph, slope=slope, zoom=MapConfig.VIEWING_ZOOM)
             sm.show_slope_info_panel(slope_id=slope.id)  # Triggers st.rerun() via listener
             return
@@ -216,9 +216,9 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
             assert click_info.segment_id is not None  # Validated in ClickInfo
             parent = graph.get_entity_by_segment_id(segment_id=click_info.segment_id)
             if not parent:
-                logger.info(f"[IDLE] Segment {click_info.segment_id} click: orphan segment, ignoring")
+                logger.debug(f"[IDLE] Segment {click_info.segment_id} click: orphan segment, ignoring")
                 return
-            logger.info(f"[IDLE] Segment click: showing panel for {parent.name}")
+            logger.debug(f"[IDLE] Segment click: showing panel for {parent.name}")
             if isinstance(parent, Slope):
                 center_on_slope(ctx=ctx, graph=graph, slope=parent, zoom=MapConfig.VIEWING_ZOOM)
                 sm.show_slope_info_panel(slope_id=parent.id)
@@ -235,7 +235,7 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
             lift = graph.lifts.get(click_info.lift_id)
             if not lift:
                 raise RuntimeError(f"Lift {click_info.lift_id} not found in graph")
-            logger.info(f"[IDLE] Lift click: showing panel for {lift.name}")
+            logger.debug(f"[IDLE] Lift click: showing panel for {lift.name}")
             # Sync build_mode and lift.type to the viewed lift's type
             ctx.build_mode.mode = lift.lift_type
             ctx.lift.type = lift.lift_type
@@ -249,7 +249,7 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
             lift = graph.lifts.get(click_info.lift_id)
             if not lift:
                 raise RuntimeError(f"Lift {click_info.lift_id} not found in graph")
-            logger.info(f"[IDLE] Pylon click: showing panel for {lift.name}")
+            logger.debug(f"[IDLE] Pylon click: showing panel for {lift.name}")
             # Sync build_mode and lift.type to the viewed lift's type
             ctx.build_mode.mode = lift.lift_type
             ctx.lift.type = lift.lift_type
@@ -263,7 +263,7 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
             road = graph.roads.get(click_info.road_id)
             if not road:
                 raise RuntimeError(f"Road {click_info.road_id} not found in graph")
-            logger.info(f"[IDLE] Road click: showing panel for {road.name}")
+            logger.debug(f"[IDLE] Road click: showing panel for {road.name}")
             center_on_road(ctx=ctx, graph=graph, road=road, zoom=MapConfig.VIEWING_ZOOM)
             sm.show_road_info_panel(road_id=road.id)  # Triggers st.rerun() via listener
             return
@@ -393,7 +393,7 @@ def _handle_custom_connect_click(click_info: ClickInfo, elevation: float | None)
         assert click_info.lon is not None and click_info.lat is not None  # Validated in ClickInfo
         target_lon, target_lat = click_info.lon, click_info.lat
         target_elevation = elevation
-        logger.info(f"Custom connect terrain click at ({target_lat:.6f}, {target_lon:.6f})")
+        logger.debug(f"Custom connect terrain click at ({target_lat:.6f}, {target_lon:.6f})")
     elif click_info.marker_type == MarkerType.NODE:
         # click_type must be MARKER if not TERRAIN
         assert click_info.node_id is not None  # Validated in ClickInfo
@@ -403,7 +403,7 @@ def _handle_custom_connect_click(click_info: ClickInfo, elevation: float | None)
         target_lon, target_lat = node.lon, node.lat
         target_elevation = node.elevation
         target_node_id = node.id  # reuse this exact node on commit (identity, not proximity)
-        logger.info(f"Custom connect snapped to existing node {node.id}")
+        logger.debug(f"Custom connect snapped to existing node {node.id}")
     else:
         # Other marker types during custom connect = user error
         InvalidClickMessage(
@@ -450,10 +450,14 @@ def _handle_custom_connect_click(click_info: ClickInfo, elevation: float | None)
     if error := validate_custom_target_distance(
         start_lat=start_lat, start_lon=start_lon, target_lat=target_lat, target_lon=target_lon
     ):
+        logger.warning(
+            f"Custom connect distance validation failed from ({start_lat:.6f}, {start_lon:.6f}) "
+            f"to ({target_lat:.6f}, {target_lon:.6f}): {error.message}"
+        )
         error.display()
         return
 
-    logger.info(
+    logger.debug(
         f"Custom connect from ({start_lat:.6f}, {start_lon:.6f}, {start_elevation:.0f}m) "
         f"to ({target_lat:.6f}, {target_lon:.6f}, {target_elevation:.0f}m)"
     )
@@ -559,7 +563,7 @@ def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) ->
         end_elevation = end_node_existing.elevation
         end_lon = end_node_existing.lon
         end_lat = end_node_existing.lat
-        logger.info(f"[LIFT_PLACING] Node click: completing lift to {end_node_id}")
+        logger.debug(f"[LIFT_PLACING] Node click: completing lift to {end_node_id}")
     elif click_info.click_type == MapClickType.TERRAIN:
         assert click_info.lat is not None and click_info.lon is not None
         if elevation is None:
@@ -576,6 +580,9 @@ def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) ->
     # VALIDATION: Using elevations only - no nodes created yet for terrain clicks
     # ─────────────────────────────────────────────────────────────────────────
     if error := validate_lift_goes_uphill(start_elevation=start_elevation, end_elevation=end_elevation):
+        logger.warning(
+            f"Lift uphill validation failed: start={start_elevation:.0f}m, end={end_elevation:.0f}m: {error.message}"
+        )
         error.display()
         return  # No orphan nodes - nothing was created
 
@@ -585,6 +592,10 @@ def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) ->
         and end_node_id is not None
         and (error := validate_lift_different_nodes(start_node_id=ctx.lift.start_node_id, end_node_id=end_node_id))
     ):
+        logger.info(
+            f"Lift same-node validation failed: start_node={ctx.lift.start_node_id}, "
+            f"end_node={end_node_id}: {error.message}"
+        )
         error.display()
         return
 
@@ -644,21 +655,21 @@ def handle_import_placing_click(click_info: ClickInfo, elevation: float | None) 
 
     # Center-dot re-click → confirm (the documented shortcut, like re-clicking a proposal).
     if click_info.click_type == MapClickType.MARKER and click_info.marker_type == MarkerType.IMPORT_CENTER:
-        logger.info("[IMPORT] Center-dot click: confirming import")
+        logger.debug("[IMPORT] Center-dot click: confirming import")
         confirm_import_action()
         return
 
     # Terrain click → re-place the box center (keep placing, redraw the box).
     if click_info.click_type == MapClickType.TERRAIN:
         assert click_info.lat is not None and click_info.lon is not None
-        logger.info(f"[IMPORT] Terrain click: re-placing box center at ({click_info.lat:.6f}, {click_info.lon:.6f})")
+        logger.debug(f"[IMPORT] Terrain click: re-placing box center at ({click_info.lat:.6f}, {click_info.lon:.6f})")
         ctx.deferred.osm_import_center_lon = click_info.lon
         ctx.deferred.osm_import_center_lat = click_info.lat
         sm.retarget_import()
         reload_map()
         return
 
-    logger.info(f"[IMPORT] Ignoring {click_info.display_name} — click the center dot or terrain to re-place")
+    logger.debug(f"[IMPORT] Ignoring {click_info.display_name} — click the center dot or terrain to re-place")
 
 
 def handle_merge_placing_click(click_info: ClickInfo, elevation: float | None) -> None:
@@ -674,7 +685,7 @@ def handle_merge_placing_click(click_info: ClickInfo, elevation: float | None) -
     # NODE marker → toggle it in the selection.
     if click_info.click_type == MapClickType.MARKER and click_info.marker_type == MarkerType.NODE:
         assert click_info.node_id is not None  # Validated in ClickInfo
-        logger.info(f"[MERGE] Node click: toggling {click_info.node_id} in the merge selection")
+        logger.debug(f"[MERGE] Node click: toggling {click_info.node_id} in the merge selection")
         sm.toggle_merge_node(node_id=click_info.node_id)
         reload_map()
         return

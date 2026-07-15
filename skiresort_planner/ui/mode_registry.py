@@ -891,6 +891,9 @@ def render_control_panel(
     on_cancel_connection: Callable[[], None],
 ) -> None:
     """Render the current state's right-side control panel."""
+    assert sm.get_current_state_id() in BUILD_STATES, (
+        f"State {sm.get_current_state_id()} must be registered in BUILD_STATES"
+    )
     panel = BUILD_STATES[sm.get_current_state_id()].control_panel(
         sm=sm, ctx=ctx, graph=graph, on_commit=on_commit, on_cancel_connection=on_cancel_connection
     )
@@ -899,6 +902,9 @@ def render_control_panel(
 
 def get_click_handler(sm: PlannerStateMachine) -> ClickHandler:
     """The current state's map-click handler."""
+    assert sm.get_current_state_id() in BUILD_STATES, (
+        f"State {sm.get_current_state_id()} must be registered in BUILD_STATES"
+    )
     return BUILD_STATES[sm.get_current_state_id()].click_handler()
 
 
@@ -915,7 +921,7 @@ def dispatch_click(click_info: ClickInfo) -> None:
             OutsideTerrainMessage(lat=click_info.lat, lon=click_info.lon).display()
             return
 
-    logger.info(f"Dispatching {click_info.display_name} in state {sm.get_state_name()}")
+    logger.debug(f"Dispatching {click_info.display_name} in state {sm.get_state_name()}")
     get_click_handler(sm=sm)(click_info, elevation)
 
 

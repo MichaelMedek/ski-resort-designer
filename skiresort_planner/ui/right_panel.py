@@ -129,7 +129,7 @@ def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, kind: Enti
     noun = kind.value
     if ctx.viewing.view_3d:
         if _action_button("🗺️ Return to 2D View", key=f"{noun}_2d_view", help="Return to the top-down 2D map"):
-            logger.info(f"Switching to 2D view from {noun} {entity_id}")
+            logger.debug(f"Switching to 2D view from {noun} {entity_id}")
             ctx.viewing.disable_3d()
             # Reset pitch, bearing, and zoom to top-down 2D view
             ctx.map.pitch = MapConfig.DEFAULT_PITCH
@@ -160,7 +160,7 @@ def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, kind: Enti
                 raise ValueError(f"Unknown {kind=}")
             reload_map()  # Never returns - raises StopExecution
     elif _action_button("🏔️ View in 3D", key=f"{noun}_3d_view", help=f"View {noun} from the side with terrain"):
-        logger.info(f"Switching to 3D view for {noun} {entity_id}")
+        logger.debug(f"Switching to 3D view for {noun} {entity_id}")
         ctx.viewing.enable_3d()
         reload_map()  # Never returns - raises StopExecution
 
@@ -194,7 +194,7 @@ def _render_entity_actions(
     # Bottom-left: Close.
     with bottom_left:
         if _action_button("✖️ Close", key=f"close_{noun}", help="Close this panel to start building again"):
-            logger.info(f"Closing {noun} panel for {entity_id}")
+            logger.debug(f"Closing {noun} panel for {entity_id}")
             ctx.viewing.disable_3d()
             # Reset pitch and bearing to top-down view (preserve zoom level)
             ctx.map.pitch = MapConfig.DEFAULT_PITCH
@@ -615,7 +615,7 @@ class PathSelectionPanel:
             continue_help="Add this segment and continue building",
         )
         if st.button(commit_label, type="primary", width="stretch", help=commit_help):
-            logger.info(f"UI: Commit button clicked for path {selected_idx}, is_connector={is_connector}")
+            logger.debug(f"UI: Commit button clicked for path {selected_idx}, is_connector={is_connector}")
             self.on_commit(selected_idx)
 
         # While showing custom-connect proposals, offer a way back to fan-out.
@@ -632,7 +632,7 @@ class PathSelectionPanel:
         """
         cancel_label = "✖️ Cancel Connection" if is_connector else "✖️ Cancel Custom Path"
         if st.button(cancel_label, width="stretch", help="Return to regular fan-out path proposals"):
-            logger.info(f"UI: {cancel_label} clicked")
+            logger.debug(f"UI: {cancel_label} clicked")
             self.on_cancel_connection()
 
 

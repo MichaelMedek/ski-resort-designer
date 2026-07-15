@@ -10,8 +10,6 @@ Renders elevation profiles showing:
 Reference: DETAILS_UI.md for profile display
 """
 
-import logging
-
 import plotly.graph_objects as go
 
 from skiresort_planner.constants import ChartConfig, LiftConfig, LiftType, StyleConfig
@@ -25,8 +23,6 @@ from skiresort_planner.model.road import Road
 from skiresort_planner.model.segment_path import SegmentPath, steepest_section_pct
 from skiresort_planner.model.slope import Slope
 from skiresort_planner.ui.context import EntityKind
-
-logger = logging.getLogger(__name__)
 
 
 class ProfileChart:

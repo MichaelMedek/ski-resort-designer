@@ -131,7 +131,7 @@ class PathBuildSidebarPanel(SidebarPanel):
             help=f"Discard current {kind.value} and return to IDLE",
             key=f"cancel_{kind.value}_btn",
         ):
-            logger.info(f"UI: Cancel {kind.value} requested for {self.ctx.build(kind).name}")
+            logger.debug(f"UI: Cancel {kind.value} requested for {self.ctx.build(kind).name}")
             cancel_current_build(kind=kind)
 
         # Path settings apply only to fan-out proposals; hide the whole block while
@@ -150,7 +150,7 @@ class PathBuildSidebarPanel(SidebarPanel):
             key=f"segment_length_slider_{kind.value}",
         )
         if segment_length != self.ctx.segment_length_m:
-            logger.info(f"UI: Segment length changed to {segment_length}m")
+            logger.debug(f"UI: Segment length changed to {segment_length}m")
             self.ctx.segment_length_m = segment_length
             self.ctx.click_dedup.pending_recompute = True
 

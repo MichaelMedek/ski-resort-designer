@@ -202,18 +202,18 @@ class OSMImporter:
             return  # only alpine downhill runs; ignore connection/snow_park/playground/sled/yes
         name = _piste_name(tags)
         if name is None:
-            logger.info(
+            logger.debug(
                 f"Skipped piste way/{osm_id}: unnamed (potentially outdated/duplicate — only named runs import)"
             )
             summary.skipped += 1
             return
         if len(vertices) < 2 or not _fully_inside(vertices=vertices, bbox=bbox):
-            logger.info(f"Skipped piste '{name}' (way/{osm_id}): reaches outside the import area")
+            logger.debug(f"Skipped piste '{name}' (way/{osm_id}): reaches outside the import area")
             summary.skipped += 1
             return
         resampled = self._resample(vertices)
         if resampled is None:
-            logger.info(f"Skipped piste '{name}' (way/{osm_id}): over a DEM nodata hole")
+            logger.debug(f"Skipped piste '{name}' (way/{osm_id}): over a DEM nodata hole")
             summary.skipped += 1
             return
         # A ski run only goes down; trim an OSM out-and-back to its longest descending stretch
@@ -221,7 +221,7 @@ class OSMImporter:
         points = _longest_descending_run(resampled)
         length = _polyline_length_m([(p.lon, p.lat) for p in points])
         if length < OSMConfig.MIN_PISTE_LENGTH_M:
-            logger.info(
+            logger.debug(
                 f"Skipped piste '{name}' (way/{osm_id}): descending run {length:.0f}m "
                 f"< {OSMConfig.MIN_PISTE_LENGTH_M:.0f}m min"
             )
@@ -238,29 +238,31 @@ class OSMImporter:
         lift_type = OSMConfig.AERIALWAY_TO_LIFT_TYPE.get(aerialway)
         if lift_type is None:
             # station/pylon/zip_line/magic_carpet/rope_tow/yes/… are not skiable lifts — not counted.
-            logger.info(f"Ignored lift way/{osm_id}: unmapped aerialway='{aerialway}' (not a skiable lift)")
+            logger.debug(f"Ignored lift way/{osm_id}: unmapped aerialway='{aerialway}' (not a skiable lift)")
             return
         name = _lift_name(tags)
         if name is None:
-            logger.info(
+            logger.debug(
                 f"Skipped {aerialway} way/{osm_id}: unnamed (potentially outdated/duplicate — only named lifts import)"
             )
             summary.skipped += 1
             return
         if len(vertices) < 2 or not _fully_inside(vertices=vertices, bbox=bbox):
-            logger.info(f"Skipped lift '{name}' (way/{osm_id}): reaches outside the import area")
+            logger.debug(f"Skipped lift '{name}' (way/{osm_id}): reaches outside the import area")
             summary.skipped += 1
             return
         length = _polyline_length_m(vertices)
         if length < OSMConfig.MIN_LIFT_LENGTH_M:
-            logger.info(f"Skipped lift '{name}' (way/{osm_id}): {length:.0f}m < {OSMConfig.MIN_LIFT_LENGTH_M:.0f}m min")
+            logger.debug(
+                f"Skipped lift '{name}' (way/{osm_id}): {length:.0f}m < {OSMConfig.MIN_LIFT_LENGTH_M:.0f}m min"
+            )
             summary.skipped += 1
             return
         # Only the two stations matter; OSM intermediate pylons are dropped (we regenerate them).
         bottom = self._point(vertices[0])
         top = self._point(vertices[-1])
         if bottom is None or top is None:
-            logger.info(f"Skipped lift '{name}' (way/{osm_id}): a station is over a DEM nodata hole")
+            logger.debug(f"Skipped lift '{name}' (way/{osm_id}): a station is over a DEM nodata hole")
             summary.skipped += 1
             return
         # A lift runs valley→mountain; orient bottom = lower station.
@@ -363,7 +365,7 @@ def _dedupe_longest_per_name(items: list[_Named], kind: str) -> tuple[list[_Name
             kept.append(item)
         else:
             dropped += 1
-            logger.info(
+            logger.debug(
                 f"Skipped {kind} '{item.name}': duplicate name, {item.length_m:.0f}m "
                 f"< kept {longest[item.name].length_m:.0f}m"
             )

@@ -630,11 +630,12 @@ class TestStateGraphIsComplete:
 
 
 class TestAsMermaid:
-    """as_mermaid() is the SKIRESORT_LOG_GRAPH=1 debug dump fired from after_transition. It delegates
-    to python-statemachine's `format(sm, "mermaid")` spec (added in 3.1.0). Two things must hold: the
-    call must never raise (a crash here took down the whole render fragment — the 3.0.0 library had no
-    mermaid spec, so format() hit object.__format__ and raised TypeError), and it must stay dependency
-    -free (no Graphviz/pydot). These guard the pinned floor in requirements.txt (>=3.1.0).
+    """as_mermaid() is dumped ONCE at startup by PlannerStateMachine.create() (the state graph is
+    fixed at class-definition time, so re-dumping per transition would only spam the log). It
+    delegates to python-statemachine's `format(sm, "mermaid")` spec (added in 3.1.0). Two things
+    must hold: the call must never raise (a crash here took down the whole render fragment — the
+    3.0.0 library had no mermaid spec, so format() hit object.__format__ and raised TypeError), and
+    it must stay dependency-free (no Graphviz/pydot). These guard the pinned floor (>=3.1.0).
     """
 
     def _sm(self) -> PlannerStateMachine:
@@ -662,9 +663,9 @@ class TestAsMermaid:
         assert f"{sm.current_state_value}:::active" in out, "active state must be highlighted"
         assert "classDef active" in out, "active classDef must be defined"
 
-    def test_never_raises_after_any_transition(self) -> None:
-        # after_transition calls this under SKIRESORT_LOG_GRAPH=1; a raise there kills the render.
-        # This is the direct regression guard for the 3.0.0 TypeError.
+    def test_never_raises_across_transitions(self) -> None:
+        # create() calls as_mermaid() at startup; it must never raise. This is the direct
+        # regression guard for the 3.0.0 TypeError. Re-check after transitions for good measure.
         sm = self._sm()
         sm.start_slope(lon=0.0, lat=0.0, elevation=2000.0, node_id=None)
         sm.send("cancel_slope")

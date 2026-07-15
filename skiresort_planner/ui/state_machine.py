@@ -261,7 +261,6 @@ Both start and end nodes are only created AFTER validation passes.
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import NoReturn, Protocol, cast
@@ -330,11 +329,7 @@ class StreamlitUIListener:
         When _defer_rerun flag is set in session_state, the rerun is skipped to allow
         multiple state transitions before a single UI refresh.
         """
-        logger.info(f"[STATE] {source.name} --({event})--> {target.name}")
-        # Opt-in live debugging: SKIRESORT_LOG_GRAPH=1 dumps the whole state network (Mermaid, current
-        # state highlighted) after each transition — for diagnosing a stuck/again-only-once flow.
-        if os.environ.get("SKIRESORT_LOG_GRAPH") == "1":
-            logger.info("[STATE][GRAPH]\n%s", cast("PlannerStateMachine", machine).as_mermaid())
+        logger.debug(f"[STATE] {source.name} --({event})--> {target.name}")
 
         # NOTE: Orphaned node cleanup is NOT called here. It's called explicitly
         # in operations that remove entities (undo, delete, cancel). This prevents
@@ -343,10 +338,10 @@ class StreamlitUIListener:
 
         # Check if rerun should be deferred (used during compound operations)
         if st.session_state.get("_defer_rerun"):
-            logger.info(f'[STATE] Deferring st.rerun() after {event} transition (compound operation)"')
+            logger.debug(f'[STATE] Deferring st.rerun() after {event} transition (compound operation)"')
             return
 
-        logger.info(f'[STATE] Calling st.rerun() after {event} transition"')
+        logger.debug(f'[STATE] Calling st.rerun() after {event} transition"')
         trigger_rerun()
 
 
@@ -983,6 +978,8 @@ class PlannerStateMachine(StateMachine):
         build.start_node_id = node_id
         build.start_location = None if node_id else location
         build.name = name
+        if node_id is None:
+            logger.debug(f"[STATE] _init_build({kind.value}): no node_id, using start_location={location}")
 
         origin = self._resort_graph.nodes.get(node_id) if node_id else None
         if origin is not None:
@@ -1007,6 +1004,7 @@ class PlannerStateMachine(StateMachine):
 
     def _add_segment_to_active_build(self, segment_id: str, endpoint_node_id: str) -> None:
         """Append a committed segment to the active build (any kind) and clear proposals."""
+        assert endpoint_node_id, "endpoint_node_id must be non-empty after segment commit"
         build = self._active_build()
         build.segments.append(segment_id)
         build.endpoints = [endpoint_node_id]
@@ -1184,13 +1182,19 @@ class PlannerStateMachine(StateMachine):
             node, _ = self._resort_graph.get_or_create_node(lon=loc.lon, lat=loc.lat, elevation=loc.elevation)
             start_node_id = node.id
             build.start_node_id = start_node_id
+            logger.debug(
+                f"[STATE] _before_target_from_starting: materialised origin node {start_node_id} "
+                f"at ({loc.lon:.5f}, {loc.lat:.5f}, {loc.elevation:.1f})"
+            )
         self.context.custom_connect.start_node = start_node_id
         self.context.custom_connect.target_location = target_location
         self.context.custom_connect.target_node = target_node
 
     def _before_target_from_building(self, target_location: LonLatElev, target_node: str | None = None) -> None:
         """From *_BUILDING: route from the active build's current endpoint to the clicked target."""
-        self.context.custom_connect.start_node = self._active_build().endpoints[0]
+        endpoints = self._active_build().endpoints
+        assert endpoints, "endpoints must be non-empty in *_BUILDING state (segment committed before routing)"
+        self.context.custom_connect.start_node = endpoints[0]
         self.context.custom_connect.target_location = target_location
         self.context.custom_connect.target_node = target_node
 
@@ -1344,6 +1348,7 @@ class PlannerStateMachine(StateMachine):
         self.context.clear_custom_connect()
         self.context.viewing.clear()
         state: State = getattr(self, state_id)
+        assert state is not None, f"state_id {state_id} must resolve to a State object for kind {kind.value}"
         self._set_current_state(state=state)
         self._run_enter_hook(state)
 
@@ -1476,9 +1481,12 @@ class PlannerStateMachine(StateMachine):
         sm = PlannerStateMachine(graph=graph, context=context)
         if add_ui_listener:
             sm.add_listener(StreamlitUIListener())  # type: ignore[no-untyped-call]
-            logger.info("Created PlannerStateMachine with StreamlitUIListener")
+            logger.debug("Created PlannerStateMachine with StreamlitUIListener")
         else:
-            logger.info("Created PlannerStateMachine without UI listener")
+            logger.debug("Created PlannerStateMachine without UI listener")
+        # The state graph is fixed at class-definition time, so dump it ONCE here.
+        # Paste this block into https://mermaid.live to see the diagram.
+        logger.info("[STATE][GRAPH] Full state machine (paste into mermaid.live):\n%s", sm.as_mermaid())
         return sm, context
 
 

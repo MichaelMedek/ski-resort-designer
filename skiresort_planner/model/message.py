@@ -92,7 +92,7 @@ class ToastMessage(ABC):
         import streamlit as st
 
         logger = logging.getLogger(__name__)
-        logger.info(f"[TOAST] {self.icon} {self.message}")
+        logger.debug(f"[TOAST] {self.icon} {self.message}")
         st.toast(f"{self.icon} {self.message}")
 
 

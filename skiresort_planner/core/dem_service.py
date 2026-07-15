@@ -49,7 +49,7 @@ def download_dem_from_huggingface(
         requests.RequestException: If download fails.
     """
     if target_path.exists():
-        logger.info(f"DEM already exists at {target_path}")
+        logger.debug(f"DEM already exists at {target_path}")
         return target_path
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -200,6 +200,7 @@ class DEMService:
         """
         self._ensure_loaded()
         assert self._dem is not None
+        assert self._dem_crs is not None, "DEM CRS must be set after _ensure_loaded()"
         b = self._dem.bounds  # type: ignore[attr-defined]
 
         if self._dem_crs != "EPSG:4326":

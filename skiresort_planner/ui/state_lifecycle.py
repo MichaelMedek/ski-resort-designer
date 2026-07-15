@@ -115,7 +115,7 @@ def enter_idle_ready(ctx: PlannerContext) -> None:
     ctx.selection.clear()
     ctx.click_dedup.clear_marker()
     ctx.viewing.clear()
-    logger.info(
+    logger.debug(
         f"[LIFECYCLE] idle_ready complete: map_center=({ctx.map.lat:.4f}, {ctx.map.lon:.4f}), zoom={ctx.map.zoom}"
     )
 
@@ -142,7 +142,7 @@ def enter_idle_viewing_slope(ctx: PlannerContext) -> None:
 
     End state: Panel visible showing slope details
     """
-    logger.debug("ENTER: idle_viewing_slope - showing panel, clearing building state")
+    logger.debug("[LIFECYCLE] ENTER: idle_viewing_slope - showing panel, clearing building state")
     _enter_viewing_panel(ctx)
 
 
@@ -168,7 +168,7 @@ def enter_idle_viewing_lift(ctx: PlannerContext) -> None:
 
     End state: Panel visible showing lift details
     """
-    logger.debug("ENTER: idle_viewing_lift - showing panel, clearing building state")
+    logger.debug("[LIFECYCLE] ENTER: idle_viewing_lift - showing panel, clearing building state")
     _enter_viewing_panel(ctx)
 
 
@@ -196,7 +196,7 @@ def enter_slope_starting(ctx: PlannerContext) -> None:
 
     End state: Panel hidden, ready for path proposals
     """
-    logger.debug("ENTER: slope_starting - hiding panel, clearing marker dedup, arming slope fan")
+    logger.debug("[LIFECYCLE] ENTER: slope_starting - hiding panel, clearing marker dedup, arming slope fan")
     _enter_fan_state(ctx, SegmentKind.SLOPE)
 
 
@@ -227,7 +227,7 @@ def enter_slope_building(ctx: PlannerContext) -> None:
 
     End state: Panel hidden, continuing to build
     """
-    logger.debug("ENTER: slope_building - hiding panel, preserving building context, arming slope fan")
+    logger.debug("[LIFECYCLE] ENTER: slope_building - hiding panel, preserving building context, arming slope fan")
     _enter_fan_state(ctx, SegmentKind.SLOPE)
 
 
@@ -253,7 +253,7 @@ def enter_slope_custom_path(ctx: PlannerContext) -> None:
 
     End state: Path proposals shown from start to custom target
     """
-    logger.debug("ENTER: slope_custom_path - clearing marker, triggering deferred path generation")
+    logger.debug("[LIFECYCLE] ENTER: slope_custom_path - clearing marker, triggering deferred path generation")
     _enter_custom_path(ctx)
 
 
@@ -284,7 +284,7 @@ def enter_lift_placing(ctx: PlannerContext) -> None:
 
     End state: Panel hidden, ready for end station click
     """
-    logger.debug("ENTER: lift_placing - hiding panel")
+    logger.debug("[LIFECYCLE] ENTER: lift_placing - hiding panel")
     # SINGLE POINT OF TRUTH: Hide panel for placement mode
     ctx.viewing.hide_panel()
     ctx.click_dedup.clear_marker()
@@ -303,7 +303,7 @@ def exit_lift_placing(ctx: PlannerContext) -> None:
     Note: before_complete_lift and before_cancel_lift handle showing/hiding panel.
     The lift context should be cleared since placement is done.
     """
-    logger.debug("EXIT: lift_placing - clearing lift context")
+    logger.debug("[LIFECYCLE] EXIT: lift_placing - clearing lift context")
     ctx.lift.clear()
 
 
@@ -316,7 +316,7 @@ def exit_import_placing(ctx: PlannerContext) -> None:
     fetch flag is deliberately left alone — a confirmed import sets it just before this runs and
     consumes it in process_osm_import_deferred.
     """
-    logger.debug("EXIT: import_placing - clearing placed import-box center")
+    logger.debug("[LIFECYCLE] EXIT: import_placing - clearing placed import-box center")
     ctx.deferred.osm_import_center_lon = None
     ctx.deferred.osm_import_center_lat = None
 
@@ -328,7 +328,7 @@ def exit_merge_placing(ctx: PlannerContext) -> None:
     here guarantees no stale selection survives the exit regardless of transition (or a force_*
     during undo).
     """
-    logger.debug("EXIT: merge_placing - clearing merge selection")
+    logger.debug("[LIFECYCLE] EXIT: merge_placing - clearing merge selection")
     ctx.merge.clear()
 
 
@@ -343,7 +343,7 @@ def enter_import_placing(ctx: PlannerContext) -> None:
 
     End state: Panel hidden, box drawn from the stored center, ready for confirm.
     """
-    logger.debug("ENTER: import_placing - hiding panel")
+    logger.debug("[LIFECYCLE] ENTER: import_placing - hiding panel")
     ctx.viewing.hide_panel()
     ctx.click_dedup.clear_marker()
 
@@ -358,7 +358,7 @@ def enter_merge_placing(ctx: PlannerContext) -> None:
 
     End state: Panel hidden, selected nodes drawn red, ready for confirm.
     """
-    logger.debug("ENTER: merge_placing - hiding panel")
+    logger.debug("[LIFECYCLE] ENTER: merge_placing - hiding panel")
     ctx.viewing.hide_panel()
     ctx.click_dedup.clear_marker()
 
@@ -374,7 +374,7 @@ def enter_idle_viewing_road(ctx: PlannerContext) -> None:
     Mirrors enter_idle_viewing_lift: the road_id was set by a before_* hook;
     this guarantees the panel is visible and clears any stale building state.
     """
-    logger.debug("ENTER: idle_viewing_road - showing panel, clearing building state")
+    logger.debug("[LIFECYCLE] ENTER: idle_viewing_road - showing panel, clearing building state")
     _enter_viewing_panel(ctx)
 
 
@@ -391,7 +391,7 @@ def enter_road_starting(ctx: PlannerContext) -> None:
     marker is fresh, and triggers the road fan from the origin, regardless of
     which transition brought us here.
     """
-    logger.debug("ENTER: road_starting - hiding panel, clearing marker dedup, arming road fan")
+    logger.debug("[LIFECYCLE] ENTER: road_starting - hiding panel, clearing marker dedup, arming road fan")
     _enter_fan_state(ctx, SegmentKind.ROAD)
 
 
@@ -403,7 +403,7 @@ def enter_road_building(ctx: PlannerContext) -> None:
     context (it holds the committed segments!), hides the panel, and triggers the
     road fan from the new endpoint.
     """
-    logger.debug("ENTER: road_building - hiding panel, preserving road context, arming road fan")
+    logger.debug("[LIFECYCLE] ENTER: road_building - hiding panel, preserving road context, arming road fan")
     _enter_fan_state(ctx, SegmentKind.ROAD)
 
 
@@ -415,7 +415,7 @@ def enter_road_custom_path(ctx: PlannerContext) -> None:
     generation, which resolves the active build (road) and routes to the target.
     Fires on the retarget self-loop too, so a new target click regenerates proposals.
     """
-    logger.debug("ENTER: road_custom_path - clearing marker, triggering deferred custom-connect generation")
+    logger.debug("[LIFECYCLE] ENTER: road_custom_path - clearing marker, triggering deferred custom-connect generation")
     _enter_custom_path(ctx)
 
 

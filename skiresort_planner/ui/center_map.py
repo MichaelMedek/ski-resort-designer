@@ -963,7 +963,7 @@ class MapRenderer:
 
         # Proposal paths (NOT pickable - use markers for selection/commit)
         if path_data:
-            logger.info(
+            logger.debug(
                 f"[RENDER] proposal layer: {len(path_data)} path(s), is_custom_path={is_custom_path}, "
                 f"first_color={path_data[0]['color']}"
             )

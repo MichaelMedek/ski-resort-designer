@@ -22,6 +22,7 @@ from skiresort_planner.constants import (
 )
 from skiresort_planner.core.dem_service import DEMService, download_dem_from_huggingface
 from skiresort_planner.generators.path_factory import PathFactory
+from skiresort_planner.logging_setup import configure_logging
 from skiresort_planner.model.message import DEMLoadingMessage
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.persistence import backup_store
@@ -49,7 +50,7 @@ from skiresort_planner.ui.terrain_layer import create_aws_terrain_layer
 if TYPE_CHECKING:
     from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 
-logging.basicConfig(level=logging.INFO)
+configure_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -139,6 +140,7 @@ def _init_resort_from_url_or_new() -> None:
 
     st.session_state.resort_id = backup_store.new_resort_id()
     st.query_params["resort"] = st.session_state.resort_id
+    logger.info(f"Created new resort {st.session_state.resort_id} (no backup found)")
 
 
 def reset_ui_state() -> None:
@@ -164,7 +166,7 @@ def reset_ui_state() -> None:
     # Increment map version to force fresh map component
     bump_map_version()
 
-    logger.info("UI state reset complete - graph preserved")
+    logger.debug("UI state reset complete - graph preserved")
 
 
 def load_dem_data() -> bool:
@@ -192,6 +194,7 @@ def load_dem_data() -> bool:
         def update_progress(progress: float) -> None:
             progress_bar.progress(progress, text=f"Downloading... {progress * 100:.0f}%")
 
+        logger.info(f"Downloading DEM from Hugging Face to {dem_path}")
         download_dem_from_huggingface(target_path=dem_path, progress_callback=update_progress)
         progress_bar.progress(1.0, text="Download complete!")
 
@@ -226,7 +229,6 @@ def _render_map_fragment() -> None:
     """
     try:
         _render_map_fragment_inner()
-        logger.debug("[RENDER] _render_map_fragment_inner() completed successfully")
     except Exception as e:
         # Log full traceback for debugging
         error_msg = f"{type(e).__name__}: {e}"
@@ -255,7 +257,7 @@ def _render_map_fragment_inner() -> None:
     build_state = BUILD_STATES[sm.get_current_state_id()]
 
     map_version = st.session_state.get("map_version", 0)
-    logger.info(f"[RENDER] Map fragment: state={sm.get_state_name()}, map_version={map_version}")
+    logger.debug(f"[RENDER] Map fragment: state={sm.get_state_name()}, map_version={map_version}")
 
     # Determine 2D/3D mode early so all layers use consistent z-handling
     use_3d = ctx.viewing.view_3d
@@ -398,7 +400,7 @@ def _run_app_ui() -> None:
     renderer.graph = graph
 
     map_version = st.session_state.get("map_version", 0)
-    logger.info(f"[MAIN] Render cycle starting: state={sm.get_state_name()}, map_version={map_version}")
+    logger.debug(f"[MAIN] Render cycle starting: state={sm.get_state_name()}, map_version={map_version}")
 
     # Handle deferred actions from previous transitions.
     # Slow ops get spinners; each is dispatched at most once per render (single-dispatch chain).

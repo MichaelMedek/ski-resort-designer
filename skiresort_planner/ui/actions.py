@@ -301,7 +301,7 @@ def _generate_fan_for_building_state(kind: SegmentKind) -> None:
         ctx.deferred.gradient_target = None
     else:
         ctx.proposals.selected_idx = 0 if kept else None
-    logger.info(f"Generated {len(kept)} {kind.value}-fan paths from ({lat:.6f}, {lon:.6f})")
+    logger.debug(f"Generated {len(kept)} {kind.value}-fan paths from ({lat:.6f}, {lon:.6f})")
 
 
 def _segment_origin(build: "SegmentBuildContext", graph: ResortGraph) -> tuple[float, float, float, str | None]:
@@ -337,7 +337,7 @@ def _generate_custom_connect_paths() -> None:
     sm: PlannerStateMachine = st.session_state.state_machine
 
     if not ctx.custom_connect.target_location:
-        logger.warning("No custom target location set")
+        logger.debug("No custom target location set")
         ctx.clear_custom_connect()
         return
 
@@ -356,7 +356,7 @@ def _generate_custom_connect_paths() -> None:
         start_node = graph.nodes.get(ctx.custom_connect.start_node)
 
     if not start_node:
-        logger.warning("Cannot find start node for custom connect")
+        logger.debug("Cannot find start node for custom connect")
         ctx.clear_custom_connect()
         return
 
@@ -423,7 +423,9 @@ def _generate_custom_connect_paths() -> None:
     ctx.proposals.selected_idx = 0 if proposals else None
     # Note: force_mode, target_location, start_node already set by the target before-hook.
     # No cleanup here - before_cancel_* and before_commit_* hooks handle it on exit.
-    logger.info(f"Generated {len(proposals)} custom paths from {start_node.id} to ({target_lat:.6f}, {target_lon:.6f})")
+    logger.debug(
+        f"Generated {len(proposals)} custom paths from {start_node.id} to ({target_lat:.6f}, {target_lon:.6f})"
+    )
 
 
 def _find_closest_gradient_path(paths: "list[ProposedPathSegment]", target_gradient: float) -> int:
@@ -456,9 +458,6 @@ def _finalize_entity(kind: SegmentKind) -> "SegmentPath":
     build = ctx.build(kind)
 
     entity = KIND_SPECS[kind].finish(graph, build.segments)
-    if not entity:
-        raise RuntimeError(f"finishing {kind.value} failed for segments: {build.segments}")
-
     logger.info(f"{kind.value.capitalize()} {entity.name} (id={entity.id}) finalized")
     center_on_segment_path(ctx=ctx, graph=graph, path=entity, zoom=MapConfig.VIEWING_ZOOM)
     bump_map_version()  # Clear stale click state
@@ -517,7 +516,13 @@ def commit_selected_path(path_idx: int) -> None:
         raise RuntimeError(f"graph.commit_paths() returned empty for path {path_idx + 1}")
 
     segment_id = list(graph.segments.keys())[-1]
+    assert segment_id in graph.segments, (
+        f"segment_id {segment_id} not found in graph.segments after commit_paths (internal state corruption)"
+    )
     endpoint_node_id = end_node_ids[0]
+    assert endpoint_node_id in graph.nodes, (
+        f"endpoint_node_id {endpoint_node_id} returned by commit_paths not in graph.nodes (internal state bug)"
+    )
     logger.info(
         f"Committed path {path_idx + 1} as segment {segment_id}: "
         f"{path.length_m:.0f}m, {path.avg_slope_pct:.1f}%, endpoint={endpoint_node_id}"
@@ -663,11 +668,11 @@ def _undo_add_segments(undone: AddSegmentsAction) -> None:
     if remaining:
         last_seg = graph.segments.get(remaining[-1])
         build.endpoints = [last_seg.end_node_id] if last_seg else []
-        logger.info(f"[ACTION] {kind.value} undo leaves {len(remaining)} segments, forcing building")
+        logger.debug(f"[ACTION] {kind.value} undo leaves {len(remaining)} segments, forcing building")
         sm.force_building(kind)
     else:
         build.endpoints = []
-        logger.info(f"[ACTION] {kind.value} undo leaves 0 segments, forcing starting")
+        logger.debug(f"[ACTION] {kind.value} undo leaves 0 segments, forcing starting")
         sm.force_starting(kind)
     bump_map_version()
     trigger_rerun()
@@ -832,7 +837,7 @@ def undo_last_action() -> None:
     if not graph.undo_stack:
         return
 
-    logger.info(f"[ACTION] Undo requested, state={sm.get_state_name()}, undo_stack_size={len(graph.undo_stack)}")
+    logger.debug(f"[ACTION] Undo requested, state={sm.get_state_name()}, undo_stack_size={len(graph.undo_stack)}")
 
     # Special case: in a build state with no committed segments → cancel that
     # build instead of popping an unrelated undo entry (slopes cancel_slope, roads cancel_road).
@@ -843,7 +848,7 @@ def undo_last_action() -> None:
         return
 
     undone = graph.undo_last()
-    logger.info(f"[ACTION] Undone: {undone.action_type.name}")
+    logger.debug(f"[ACTION] Undone: {undone.action_type.name}")
 
     # Dispatch UI side-effects via the registry keyed by ActionType.name. The bypass (force_*) is
     # legal only inside this scope — undo_running() is what permits it; outside it, force_* raises.
@@ -863,7 +868,7 @@ def cancel_custom_path() -> None:
     Path regeneration is triggered by before_* hooks.
     """
     sm: PlannerStateMachine = st.session_state.state_machine
-    logger.info("[ACTION] Cancel Connection - triggering state transition")
+    logger.debug("[ACTION] Cancel Connection - triggering state transition")
     sm.cancel_custom_connect()
 
 

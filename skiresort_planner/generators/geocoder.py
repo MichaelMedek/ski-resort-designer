@@ -52,7 +52,7 @@ def geocode(query: str) -> GeocodeResult | None:
         return None
 
     if not results:
-        logger.info(f"Nominatim found no place for {query!r}")
+        logger.debug(f"Nominatim found no place for {query!r}")
         return None
 
     top = results[0]

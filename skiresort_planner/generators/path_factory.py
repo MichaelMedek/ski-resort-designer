@@ -242,7 +242,7 @@ class PathFactory:
         terrain_slope_pct = gradient.slope_pct
         fall_line_bearing = gradient.bearing_deg
 
-        logger.info(
+        logger.debug(
             f"_generate_fan: start=({lon:.5f}, {lat:.5f}, {elevation:.0f}m), "
             f"terrain_slope={terrain_slope_pct:.1f}%, fall_line={fall_line_bearing:.0f}°, "
             f"{len(targets)} targets, center_stop={apply_center_stop}"
@@ -287,11 +287,14 @@ class PathFactory:
                 if path is None:
                     continue
                 if target.difficulty:
+                    assert target.difficulty in count_by_diff, (
+                        f"difficulty {target.difficulty!r} not in count_by_diff (predefined from DIFFICULTIES)"
+                    )
                     count_by_diff[target.difficulty] += 1
                 paths_generated += 1
                 yield path
 
-        logger.info(f"_generate_fan complete: {paths_generated} paths (by difficulty: {count_by_diff})")
+        logger.debug(f"_generate_fan complete: {paths_generated} paths (by difficulty: {count_by_diff})")
 
     def _trace_path_for_config(
         self,
@@ -311,6 +314,10 @@ class PathFactory:
         )
 
         if not traced or not traced.points:
+            logger.debug(
+                f"_trace_path_for_config: no path from ({lon:.5f}, {lat:.5f}) "
+                f"target_grade={config.target_slope_pct:.1f}%, side={config.side.value}, kind={kind.value}"
+            )
             return None
 
         return ProposedPathSegment(
@@ -410,7 +417,7 @@ class PathFactory:
 
         removed_count = len(paths) - len(unique)
         if removed_count > 0:
-            logger.info(f"Deduplicated paths: removed {removed_count} similar paths")
+            logger.debug(f"Deduplicated paths: removed {removed_count} similar paths")
 
         return unique
 
@@ -494,6 +501,12 @@ class PathFactory:
                 gradient_mode=gradient_mode,
             )
             if path is None:
+                logger.debug(
+                    f"generate_manual_paths: planner found no path for kind={kind.value}, "
+                    f"difficulty={config.difficulty!r}, grade={config.grade!r}, "
+                    f"target_grade={config.target_slope_pct:.1f}% from ({start_lon:.5f}, {start_lat:.5f}) "
+                    f"to ({target_lon:.5f}, {target_lat:.5f})"
+                )
                 continue
             path.kind = kind
             path.target_difficulty = config.difficulty  # "" for roads
@@ -503,7 +516,7 @@ class PathFactory:
         # Deduplicate paths (keep gentlest slope for overlapping paths)
         unique_paths = self._deduplicate_paths(paths=all_paths)
 
-        logger.info(f"generate_manual_paths: {len(all_paths)} raw → {len(unique_paths)} unique paths")
+        logger.debug(f"generate_manual_paths: {len(all_paths)} raw → {len(unique_paths)} unique paths")
 
         # No straight-line fabrication here. When the planner finds nothing viable,
         # this yields nothing: a slope is refused above MAX_SKIABLE_PCT, a road above

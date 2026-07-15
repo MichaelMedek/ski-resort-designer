@@ -255,6 +255,10 @@ class PathTracer:
 
             # Check bounds - break if outside DEM coverage
             if not (bounds[0] <= next_lon <= bounds[2] and bounds[1] <= next_lat <= bounds[3]):
+                logger.info(
+                    f"Path tracing stopped at DEM boundary after {total_dist:.0f}m of {target_length_m:.0f}m target "
+                    f"(next point ({next_lon:.6f}, {next_lat:.6f}) outside bounds)"
+                )
                 break
 
             next_elev = self._dem.get_elevation(lon=next_lon, lat=next_lat)
@@ -283,6 +287,7 @@ class PathTracer:
             logger.warning(f"Path too short: {len(points)} points < {PathConfig.MIN_PATH_POINTS} minimum")
             return None
 
+        assert len(points) >= PathConfig.MIN_PATH_POINTS, "Path must have minimum required points to access first/last"
         total_drop = points[0].elevation - points[-1].elevation
         avg_slope = (total_drop / total_dist * 100) if total_dist > 0 else 0.0
         difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=abs(avg_slope))

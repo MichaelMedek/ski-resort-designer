@@ -42,7 +42,7 @@ class KindSpec:
     may_climb: bool
     has_direct_fallback: bool
     too_steep_message: Callable[[float | None], ToastMessage]
-    finish: Callable[[ResortGraph, list[str]], SegmentPath | None]
+    finish: Callable[[ResortGraph, list[str]], SegmentPath]
     starting_state: str
     building_state: str
     custom_path_state: str

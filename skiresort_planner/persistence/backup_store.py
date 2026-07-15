@@ -55,6 +55,7 @@ def load(resort_id: str) -> ResortGraph | None:
     """Read backups/<resort_id>.json and return the graph, or None if missing."""
     path = _path_for(resort_id)
     if not path.exists():
+        logger.debug(f"No backup found for resort {resort_id} at {path}")
         return None
     return ResortGraph.from_dict(data=json.loads(path.read_text()))
 

@@ -77,6 +77,7 @@ def _perform_reset_resort() -> None:
     """
     current = st.session_state.get("resort_id")
     if current:
+        logger.info(f"Resetting resort: deleting backup for resort_id={current}")
         backup_store.delete(resort_id=current)
     st.query_params["resort"] = backup_store.new_resort_id()
     # Drop all session data so init_session_state rebuilds fresh.
@@ -215,6 +216,7 @@ class SidebarRenderer:
 
         result = geocode(query)
         if result is None:
+            logger.warning(f"UI: Geocode found no result for query {query.strip()!r}")
             PlaceNotFoundMessage(query=query.strip()).display()
             return
 
