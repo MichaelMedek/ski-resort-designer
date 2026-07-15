@@ -822,6 +822,7 @@ class ResortGraph:
             self.roads.pop(path.id, None)
         else:
             raise RuntimeError(f"merge collapse: unexpected path type {type(path).__name__}")
+        logger.info(f"Merge collapsed {path.name} to zero length — deleted it and its {len(path.segment_ids)} segments")
         return path.segment_ids
 
     def _remove_collapsed_lift(self, lift: Lift) -> None:
@@ -831,6 +832,7 @@ class ResortGraph:
         its snapshot already carries this lift for restore.
         """
         self.lifts.pop(lift.id, None)
+        logger.info(f"Merge collapsed lift {lift.name} to zero length — deleted it")
 
     # =========================================================================
     # Undo Operations
