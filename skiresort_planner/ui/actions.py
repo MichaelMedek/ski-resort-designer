@@ -268,8 +268,8 @@ def _generate_fan_for_building_state(kind: SegmentKind) -> None:
 
     Kind-generic: the factory builds the kind's target set (slopes descend green→black;
     roads fan signed green descend/climb/flat), every proposal is hard-capped at the
-    kind's max grade, and if routes existed but all exceed the cap the user is told and
-    the kind supports refusal. On an empty (no-route) fan nothing is shown.
+    kind's max grade, and if routes existed but all exceed the cap the gentlest grade is
+    stashed for the right-panel "too steep" detail. On an empty (no-route) fan nothing is shown.
     """
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
@@ -282,8 +282,6 @@ def _generate_fan_for_building_state(kind: SegmentKind) -> None:
         factory.generate_fan(kind=kind, lon=lon, lat=lat, elevation=elevation, target_length_m=ctx.segment_length_m)
     )
     kept, gentlest = factory.filter_by_max_grade(paths=fan, cap_pct=spec.max_grade_pct)
-    if fan and not kept:
-        spec.too_steep_message(gentlest).display()
 
     # Extending from an existing node: reuse it exactly on commit (never duplicate it).
     if start_node_id is not None:
@@ -291,6 +289,9 @@ def _generate_fan_for_building_state(kind: SegmentKind) -> None:
             p.start_node_id = start_node_id
 
     ctx.proposals.paths = kept
+    # When the fan had routes but all exceed the cap, stash the gentlest grade so the right panel
+    # can explain why. `gentlest` is None when the fan was empty for another reason.
+    ctx.proposals.too_steep_gentlest_pct = gentlest if (fan and not kept) else None
 
     # Smart recommendation: pre-select the proposal whose gradient is closest to the last
     # committed segment's gradient. Set by commit_selected_path for EVERY kind (slopes and
@@ -326,10 +327,11 @@ def _segment_origin(build: "SegmentBuildContext", graph: ResortGraph) -> tuple[f
 def _generate_custom_connect_paths() -> None:
     """Generate proposals routing the active build to the clicked custom target (any kind).
 
-    Kind-generic via KIND_SPECS. Every candidate is capped at the kind's max grade. When
-    none fit: a kind with a direct fallback (roads) offers a straight bridge/cut if it is
-    within the cap; otherwise the kind's too-steep message refuses. Slopes have no
-    fallback, so an all-too-steep result simply refuses.
+    Kind-generic via KIND_SPECS. The grid planner's in-cap serpentine routes are offered, and the
+    direct straight line is ALWAYS appended on top (last, not pre-selected) when it is itself within
+    the kind's max grade — so the user can choose it even when curvy routes exist. When nothing fits
+    (no in-cap serpentine and the straight line over cap), the proposals list is left empty and the
+    gentlest over-cap grade is stashed so the right panel can explain why (no toast).
     """
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
@@ -374,31 +376,24 @@ def _generate_custom_connect_paths() -> None:
     cap = spec.max_grade_pct
     proposals, gentlest = factory.filter_by_max_grade(paths=candidates, cap_pct=cap)
 
-    if not proposals:
-        # No in-cap serpentine. If this kind offers a direct bridge/cut fallback, try it;
-        # otherwise (slopes) refuse. The too-steep message handles gentlest=None ("no route").
-        if spec.has_direct_fallback:
-            direct = factory.straight_line(
-                kind=kind,
-                start_lon=start_node.lon,
-                start_lat=start_node.lat,
-                start_elevation=start_node.elevation,
-                target_lon=target_lon,
-                target_lat=target_lat,
-                target_elevation=target_elevation,
-            )
-            if direct.max_slope_pct <= cap:
-                # A direct line within the cap → offer it
-                proposals = [direct]
-            else:
-                # Even the direct line is too steep → refuse, reporting the gentlest grade
-                # seen (the direct line, or a gentler serpentine candidate if one existed).
-                gentlest_grade = direct.max_slope_pct if gentlest is None else min(gentlest, direct.max_slope_pct)
-                spec.too_steep_message(gentlest_grade).display()
-        else:
-            # No fallback (slopes): refuse. gentlest is the closest over-cap route, or None
-            # if the planner found no route at all — the message renders both cases.
-            spec.too_steep_message(gentlest).display()
+    # Always also offer the straight line ON TOP of the planner proposals (for every kind), so the
+    # user can pick it even when curvy routes exist — appended LAST so the planner's gentlest stays
+    # the default selection. Only offered when it is itself within the cap.
+    straight = factory.straight_line(
+        kind=kind,
+        start_lon=start_node.lon,
+        start_lat=start_node.lat,
+        start_elevation=start_node.elevation,
+        target_lon=target_lon,
+        target_lat=target_lat,
+        target_elevation=target_elevation,
+    )
+    if straight.max_slope_pct <= cap:
+        proposals.append(straight)
+    elif not proposals:
+        # Nothing fits (no in-cap serpentine AND the straight line is over cap): record the gentlest
+        # grade seen so the right panel can explain WHY.
+        gentlest = straight.max_slope_pct if gentlest is None else min(gentlest, straight.max_slope_pct)
 
     # Extend from the existing start node → reuse it exactly on commit (no duplicate).
     for p in proposals:
@@ -421,6 +416,7 @@ def _generate_custom_connect_paths() -> None:
 
     ctx.proposals.paths = proposals
     ctx.proposals.selected_idx = 0 if proposals else None
+    ctx.proposals.too_steep_gentlest_pct = None if proposals else gentlest
     # Note: force_mode, target_location, start_node already set by the target before-hook.
     # No cleanup here - before_cancel_* and before_commit_* hooks handle it on exit.
     logger.debug(
@@ -600,20 +596,12 @@ def _discard_build(build_ctx: "SegmentBuildContext") -> None:
     if origin:
         ctx.map.set_building_view(lon=origin.lon, lat=origin.lat)
 
-    # Clear undo entries for the segments being canceled (they become invalid).
-    canceled_segment_ids = set(build_ctx.segments)
-    graph.undo_stack = [
-        action
-        for action in graph.undo_stack
-        if not (
-            action.action_type == ActionType.ADD_SEGMENTS
-            and any(sid in canceled_segment_ids for sid in cast(AddSegmentsAction, action).segment_ids)
-        )
-    ]
-
+    # Delete the canceled segments, then drop the undo entries that referenced them — the SAME
+    # scrub the graph runs after delete/merge (one implementation, reload-safe, Finish-aware).
     for seg_id in build_ctx.segments:
         if seg_id in graph.segments:
             del graph.segments[seg_id]
+    graph.drop_undo_actions_for_removed_segments()
 
     graph.cleanup_isolated_nodes()  # Remove orphaned nodes from the canceled build
     bump_map_version()  # Clear stale click state

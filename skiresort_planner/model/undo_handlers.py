@@ -72,10 +72,8 @@ class _AddSegmentsHandler(UndoHandler):
     def describe(self, action: UndoAction, graph: "ResortGraph") -> str:
         segments_act = cast(AddSegmentsAction, action)
         n_segments = len(segments_act.segment_ids)
-        # Roads commit via the same AddSegmentsAction path — name slope/road by kind.
-        first_seg = graph.segments.get(segments_act.segment_ids[0]) if segments_act.segment_ids else None
-        if first_seg is None:
-            raise RuntimeError(f"AddSegmentsAction references missing segment {segments_act.segment_ids}")
+        # segment_ids is never empty (commit_paths pushes this only for ≥1 new segment)
+        first_seg = graph.segments[segments_act.segment_ids[0]]
         # SegmentKind is a str-Enum, so .value ("slope"/"road") is reload-safe.
         return f"Remove {n_segments} segment(s) from current {first_seg.kind.value}"
 

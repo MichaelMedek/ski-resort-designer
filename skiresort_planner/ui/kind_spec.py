@@ -13,7 +13,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from skiresort_planner.constants import MapConfig, PathConfig, SlopeConfig, StyleConfig
-from skiresort_planner.model.message import PathTooSteepMessage, ToastMessage
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.model.segment_path import SegmentPath
@@ -28,7 +27,9 @@ class KindSpec:
         icon: Kind glyph for UI messages/labels.
         max_grade_pct: Build-time hard cap on the steepest section (magnitude).
         may_climb: Whether a route of this kind may gain elevation (roads yes, slopes no).
-        too_steep_message: Factory building the refusal toast when no in-cap route fits.
+        too_steep_subject / too_steep_two_sided: framing for the "too steep" panel detail —
+            ``subject`` ("to ski" / "for a car road") and whether the cap is a ±band (roads) or a
+            single-sided ceiling (slopes). See model.message.too_steep_detail.
         finish: Group the given committed segment ids into the finished entity.
         starting_state / building_state / custom_path_state: the 3 state-machine state
             ids for this kind's build flow.
@@ -40,8 +41,8 @@ class KindSpec:
     icon: str  # Kind glyph for UI messages/labels (⛷️ slope, 🛣️ road).
     max_grade_pct: float
     may_climb: bool
-    has_direct_fallback: bool
-    too_steep_message: Callable[[float | None], ToastMessage]
+    too_steep_subject: str  # "to ski" / "for a car road" — used in the too-steep panel detail
+    too_steep_two_sided: bool  # roads cap a ±band; slopes a single-sided ceiling
     finish: Callable[[ResortGraph, list[str]], SegmentPath]
     starting_state: str
     building_state: str
@@ -66,13 +67,8 @@ KIND_SPECS: dict[SegmentKind, KindSpec] = {
         icon=StyleConfig.SLOPE_ICON,
         max_grade_pct=float(SlopeConfig.MAX_SKIABLE_PCT),
         may_climb=False,
-        has_direct_fallback=False,
-        too_steep_message=lambda gentlest: PathTooSteepMessage(
-            gentlest_pct=gentlest,
-            max_grade_pct=float(SlopeConfig.MAX_SKIABLE_PCT),
-            subject="to ski",
-            two_sided=False,
-        ),
+        too_steep_subject="to ski",
+        too_steep_two_sided=False,
         finish=lambda graph, segment_ids: graph.finish_slope(segment_ids=segment_ids),
         starting_state="slope_starting",
         building_state="slope_building",
@@ -88,13 +84,8 @@ KIND_SPECS: dict[SegmentKind, KindSpec] = {
         icon=StyleConfig.ROAD_ICON,
         max_grade_pct=float(PathConfig.ROAD_MAX_GRADIENT_PCT),
         may_climb=True,
-        has_direct_fallback=True,
-        too_steep_message=lambda gentlest: PathTooSteepMessage(
-            gentlest_pct=gentlest,
-            max_grade_pct=float(PathConfig.ROAD_MAX_GRADIENT_PCT),
-            subject="for a car road",
-            two_sided=True,
-        ),
+        too_steep_subject="for a car road",
+        too_steep_two_sided=True,
         finish=lambda graph, segment_ids: graph.finish_road(segment_ids=segment_ids),
         starting_state="road_starting",
         building_state="road_building",

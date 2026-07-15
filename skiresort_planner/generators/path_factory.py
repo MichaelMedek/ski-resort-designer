@@ -28,7 +28,6 @@ from skiresort_planner.constants import (
     GeometricTuningConfig,
     PathConfig,
     SlopeConfig,
-    StyleConfig,
 )
 from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.core.geo_calculator import GeoCalculator
@@ -536,10 +535,11 @@ class PathFactory:
     ) -> ProposedPathSegment:
         """A direct straight-line connector (bridge/cut) between two points, of the given kind.
 
-        The fallback when the grid planner finds no in-grade route; the caller still
-        hard-caps it at the kind's max grade. Densified to RESAMPLE_STEP_M by linear
-        interpolation (matching the planner/finish density) but stays a straight 3D line,
-        not DEM-sampled. Only kinds whose KindSpec.has_direct_fallback is True use this.
+        Offered as an additional proposal alongside the grid-planner routes (for every kind), so
+        the user can pick the straight line even when curvy routes exist; the caller still hard-caps
+        it at the kind's max grade and only offers it when under cap. Densified to RESAMPLE_STEP_M by
+        linear interpolation (matching the planner/finish density) but stays a straight 3D line, not
+        DEM-sampled.
         """
         distance_m = GeoCalculator.haversine_distance_m(
             lat1=start_lat, lon1=start_lon, lat2=target_lat, lon2=target_lon
@@ -557,7 +557,7 @@ class PathFactory:
             points=points,
             target_slope_pct=0.0,  # No target grade for a direct line
             target_difficulty="",  # A direct connector carries no ski difficulty
-            sector_name=f"{StyleConfig.ROAD_ICON} Direct {kind.value.capitalize()} (bridge/cut)",
+            sector_name="📏 Straight line",
             is_connector=True,
             kind=kind,
         )

@@ -9,10 +9,11 @@ import re
 from skiresort_planner.model.message import (
     LiftMustGoUphillMessage,
     OSMImportErrorMessage,
-    PathTooSteepMessage,
     TargetNotDownhillMessage,
     TargetTooFarMessage,
+    too_steep_detail,
 )
+from skiresort_planner.model.path_segment import SegmentKind
 
 
 def _first_number(text: str) -> float:
@@ -22,42 +23,36 @@ def _first_number(text: str) -> float:
     return float(m.group())
 
 
-class TestPathTooSteepMessage:
-    """One unified refusal toast for both kinds. Roads use a ±band (two_sided=True) and "for a car
-    road"; slopes use a single-sided ceiling (two_sided=False) and "to ski".
+class TestTooSteepDetail:
+    """The shared "too steep" why-line (model.message.too_steep_detail), rendered in the right
+    panel's No-Paths block. Roads use a ±band (two_sided=True) and "for a car road"; slopes use a
+    single-sided ceiling (two_sided=False) and "to ski".
     """
 
     def test_road_just_over_cap_reads_strictly_above_limit(self) -> None:
-        # Fires only when every route is strictly over the band. A value just over the cap
-        # must NOT render "15%, over the ±15% limit" (a self-contradiction). It shows a
-        # decimal strictly above 15.
-        msg = PathTooSteepMessage(
-            gentlest_pct=15.02, max_grade_pct=15.0, subject="for a car road", two_sided=True
-        ).message
+        # A value just over the cap must NOT render "15%, over the ±15% limit" (a
+        # self-contradiction). It shows a decimal strictly above 15.
+        msg = too_steep_detail(gentlest_pct=15.02, max_grade_pct=15.0, subject="for a car road", two_sided=True)
         assert "±15% limit" in msg
         shown = _first_number(msg.split("gentlest possible is")[1])
         assert shown > 15.0, f"gentlest must read strictly above the ±15% cap: {msg}"
 
     def test_road_clearly_over_cap_message(self) -> None:
-        msg = PathTooSteepMessage(
-            gentlest_pct=22.0, max_grade_pct=15.0, subject="for a car road", two_sided=True
-        ).message
+        msg = too_steep_detail(gentlest_pct=22.0, max_grade_pct=15.0, subject="for a car road", two_sided=True)
         assert "22.0%" in msg and "±15% limit" in msg and "car road" in msg
 
     def test_road_no_route_branch(self) -> None:
-        msg = PathTooSteepMessage(
-            gentlest_pct=None, max_grade_pct=15.0, subject="for a car road", two_sided=True
-        ).message
+        msg = too_steep_detail(gentlest_pct=None, max_grade_pct=15.0, subject="for a car road", two_sided=True)
         assert "no route" in msg and "±15%" in msg
 
     def test_slope_uses_single_sided_ceiling_wording(self) -> None:
         # Slopes are one-sided: no ± prefix, wording "to ski".
-        msg = PathTooSteepMessage(gentlest_pct=80.0, max_grade_pct=70.0, subject="to ski", two_sided=False).message
+        msg = too_steep_detail(gentlest_pct=80.0, max_grade_pct=70.0, subject="to ski", two_sided=False)
         assert "to ski" in msg and "70% limit" in msg and "±" not in msg
         assert "80.0%" in msg
 
     def test_slope_no_route_branch(self) -> None:
-        msg = PathTooSteepMessage(gentlest_pct=None, max_grade_pct=70.0, subject="to ski", two_sided=False).message
+        msg = too_steep_detail(gentlest_pct=None, max_grade_pct=70.0, subject="to ski", two_sided=False)
         assert "no route" in msg and "under 70%" in msg and "±" not in msg
 
 
@@ -90,6 +85,33 @@ class TestLiftMustGoUphillMessage:
         assert "-0m" not in msg and "+0m" not in msg, f"must not render a misleading zero diff: {msg}"
         diff_shown = _first_number(msg.split("(")[1])
         assert diff_shown < 0, f"a downhill lift must show a negative diff: {msg}"
+
+
+class TestPathActionMessageTooSteep:
+    """The empty-paths branch of PathActionMessage folds in the too-steep detail (this replaced the
+    transient toast). The detail appears only when a cap was recorded; otherwise the generic block.
+    """
+
+    def test_no_paths_block_includes_too_steep_detail(self) -> None:
+        from skiresort_planner.model.message import PathActionMessage
+
+        msg = PathActionMessage(
+            kind=SegmentKind.ROAD,
+            is_custom_path=True,
+            too_steep_cap_pct=15.0,
+            too_steep_gentlest_pct=22.0,
+            too_steep_subject="for a car road",
+            too_steep_two_sided=True,
+        ).message
+        assert "No Paths Available" in msg
+        assert "22.0%" in msg and "±15% limit" in msg, "the exact steepness detail is consolidated here"
+
+    def test_no_paths_block_without_detail_is_generic(self) -> None:
+        from skiresort_planner.model.message import PathActionMessage
+
+        msg = PathActionMessage(kind=SegmentKind.SLOPE, is_custom_path=True).message
+        assert "No Paths Available" in msg
+        assert "Too steep" not in msg, "no cap recorded → no steepness line, just the generic guidance"
 
 
 class TestOSMImportMessages:

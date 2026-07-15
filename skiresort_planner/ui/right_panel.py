@@ -572,7 +572,16 @@ class PathSelectionPanel:
             # No proposals (e.g. a too-steep custom target). Show the message, but if we are
             # routing a custom target (force_mode) still offer the escape back to the fan.
             # A connector needs a real path, so an empty result is never a connector → always "Cancel Custom Path".
-            PathActionMessage(kind=self.kind, is_custom_path=self.ctx.custom_connect.force_mode).display()
+            # A too-steep result stashes the gentlest grade → surface the exact "why" here
+            spec = KIND_SPECS[self.kind]
+            PathActionMessage(
+                kind=self.kind,
+                is_custom_path=self.ctx.custom_connect.force_mode,
+                too_steep_gentlest_pct=self.ctx.proposals.too_steep_gentlest_pct,
+                too_steep_cap_pct=spec.max_grade_pct,
+                too_steep_subject=spec.too_steep_subject,
+                too_steep_two_sided=spec.too_steep_two_sided,
+            ).display()
             if self.ctx.custom_connect.force_mode:
                 self._render_cancel_connection(is_connector=False)
             return

@@ -125,10 +125,13 @@ class ProposalContext(BaseContext):
 
     paths: list[ProposedPathSegment] = field(default_factory=list)
     selected_idx: int | None = None
+    # The magnitude of the gentlest route found when a target/fan yielded NO in-cap route.
+    too_steep_gentlest_pct: float | None = None
 
     def clear(self) -> None:
         self.paths = []
         self.selected_idx = None
+        self.too_steep_gentlest_pct = None
 
 
 @dataclass

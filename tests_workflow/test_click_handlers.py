@@ -14,7 +14,7 @@ mode's click flow is exercised the same way:
 
 import pytest
 
-from skiresort_planner.constants import PathConfig
+from skiresort_planner.constants import PathConfig, SlopeConfig
 from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.click_info import ClickInfo, MapClickType, MarkerType
 from skiresort_planner.model.path_point import PathPoint
@@ -613,6 +613,67 @@ class TestSlopeBuildingEdgeCases:
         assert len(graph.segments) == 1, "the connector proposal commits"
         assert sm.is_idle_viewing_slope, "a committed connector auto-finishes the slope"
 
+    def test_straight_line_appended_on_top_of_planner_proposals(
+        self, fake_st, path_factory, mock_dem_red_slope_diagonal
+    ) -> None:
+        """A SLOPE custom-connect offers the straight line on TOP of the planner routes (last,
+        not pre-selected), when both the planner routes and the straight line are within cap.
+        Slopes previously had no straight-line option at all — this is the new capability.
+        """
+        from skiresort_planner.ui.actions import process_custom_connect_deferred
+        from skiresort_planner.ui.click_handlers import handle_path_building_click
+
+        dem = mock_dem_red_slope_diagonal
+        sm, ctx, _graph = self._building(fake_st, dem, path_factory)
+        # A gentle downhill target the planner can reach AND a straight line can reach in-cap.
+        handle_path_building_click(
+            ClickInfo(click_type=MapClickType.TERRAIN, lat=-300 / M, lon=0.0),
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-300 / M),
+        )
+        process_custom_connect_deferred()
+
+        assert sm.is_slope_custom_path
+        assert len(ctx.proposals.paths) >= 2, "planner route(s) PLUS the straight line"
+        assert "straight line" in ctx.proposals.paths[-1].sector_name.lower(), "straight line is appended LAST"
+        assert not any("straight line" in p.sector_name.lower() for p in ctx.proposals.paths[:-1]), (
+            "only the last proposal is the straight line"
+        )
+        assert ctx.proposals.selected_idx == 0, "the planner's gentlest stays pre-selected, not the straight line"
+
+    def test_straight_line_omitted_when_over_cap_but_planner_succeeds(
+        self, fake_st, path_factory, mock_dem_red_slope_diagonal
+    ) -> None:
+        """If the straight line is over cap but planner routes fit, only planner routes show."""
+        from skiresort_planner.ui.actions import process_custom_connect_deferred
+        from skiresort_planner.ui.click_handlers import handle_path_building_click
+
+        dem = mock_dem_red_slope_diagonal
+        sm, ctx, graph = self._building(fake_st, dem, path_factory)
+        # A reachable downhill node target so we enter custom-path. Force the planner to return one
+        # in-cap route and the straight line to be over the slope cap → only the planner route shows.
+        node, _ = graph.get_or_create_node(lon=0.0, lat=-300 / M, elevation=2400.0)
+        in_cap = ProposedPathSegment(
+            points=[PathPoint(lon=0.0, lat=0.0, elevation=2500.0), PathPoint(lon=0.0, lat=-300 / M, elevation=2400.0)],
+            target_difficulty="blue",
+        )
+        over_cap_straight = ProposedPathSegment(
+            points=[PathPoint(lon=0.0, lat=0.0, elevation=2500.0), PathPoint(lon=0.0, lat=-1 / M, elevation=2400.0)],
+            is_connector=True,
+        )
+        assert over_cap_straight.max_slope_pct > float(SlopeConfig.MAX_SKIABLE_PCT), "straight line must be over cap"
+        mp = pytest.MonkeyPatch()
+        mp.setattr(path_factory, "generate_manual_paths", lambda **kwargs: iter([in_cap]))
+        mp.setattr(path_factory, "straight_line", lambda **kwargs: over_cap_straight)
+        handle_path_building_click(
+            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id), elevation=None
+        )
+        process_custom_connect_deferred()
+        mp.undo()
+
+        assert sm.is_slope_custom_path
+        assert len(ctx.proposals.paths) == 1, "only the in-cap planner route (straight line over cap dropped)"
+        assert "straight line" not in ctx.proposals.paths[0].sector_name.lower()
+
     def test_proposal_body_index_out_of_range_is_noop(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal, path_points_blue
     ) -> None:
@@ -1061,13 +1122,18 @@ class TestRoadBuildingClick:
             ClickInfo(click_type=MapClickType.TERRAIN, lat=-300 / M, lon=0.0),
             elevation=dem.get_elevation_or_raise(lon=0.0, lat=-300 / M),
         )
-        assert ctx.proposals.paths == [], "steep target proposes nothing"
+        assert ctx.proposals.paths == [], "steep target proposes nothing (even the straight line is over cap)"
         assert ctx.build(SegmentKind.ROAD).segments == [], "steep target commits nothing"
         # The target click transitions into ROAD_CUSTOM_PATH; the deferred pass then finds no
         # in-band route and refuses (the user cancels or retargets from there).
         assert sm.is_road_custom_path, "stays in the custom-path flow, no segment added"
         assert len(graph.segments) == 0
-        assert any("too steep" in t.lower() for t in toasts), "the user is told the road is too steep"
+        # No transient toast any more — the "too steep" detail is consolidated into the persistent
+        # right-panel block, flagged on the proposals context.
+        assert toasts == [], "no transient too-steep toast for roads"
+        assert ctx.proposals.too_steep_gentlest_pct is not None, (
+            "the too-steep reason is stashed for the right-panel detail"
+        )
 
     def test_stray_marker_click_is_rejected(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         from skiresort_planner.ui.click_handlers import handle_path_building_click
@@ -1223,15 +1289,13 @@ class TestRoadBuildingEdgeCases:
         )
         assert last_endpoint_id in graph.nodes, "the reused endpoint is a real graph node, not a duplicate"
 
-    def test_straight_line_road_fallback_offered_when_grid_fails_but_direct_fits(
+    def test_straight_line_offered_when_grid_returns_only_over_cap(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
     ) -> None:
-        """When the grid planner returns only over-cap routes, a direct road (≤15%) is offered.
+        """When the grid planner returns only over-cap routes, the in-cap straight line is offered.
 
-        The grid planner is forced to yield only an over-cap serpentine; the endpoint-to-
-        endpoint grade is gentle, so the handler must fall back to a single DIRECT road
-        (a bridge/cut) rather than refuse. Contrasts with the slope fallback, which is
-        offered unconditionally.
+        The grid planner is forced to yield only an over-cap serpentine; the endpoint-to-endpoint
+        grade is gentle, so the straight line (≤15%) is the sole surviving proposal.
         """
         from skiresort_planner.ui.actions import process_custom_connect_deferred
         from skiresort_planner.ui.click_handlers import handle_path_building_click
@@ -1240,8 +1304,8 @@ class TestRoadBuildingEdgeCases:
         sm, ctx, _graph = self._building(fake_st, path_factory, dem)
         toasts = _capture_toasts(pytest.MonkeyPatch())
 
-        # Force the grid planner to emit only an OVER-cap candidate so the direct-line
-        # fallback branch is the only way to reach the (gently reachable) target.
+        # Force the grid planner to emit only an OVER-cap candidate so only the straight line
+        # (to the gently reachable target) survives the cap.
         over_cap = ProposedPathSegment(
             points=[PathPoint(lon=0.0, lat=0.0, elevation=2500.0), PathPoint(lon=150 / M, lat=0.0, elevation=2400.0)],
             kind=SegmentKind.ROAD,
@@ -1250,7 +1314,7 @@ class TestRoadBuildingEdgeCases:
         mp = pytest.MonkeyPatch()
         mp.setattr(path_factory, "generate_manual_paths", lambda **kwargs: iter([over_cap]))
 
-        # Target ~15m east, ~1m drop → a direct line well under 15%. The fallback lives in
+        # Target ~15m east, ~1m drop → a straight line well under 15%. Generation lives in
         # the deferred pass, so keep the mock active across it (do NOT use self._target here).
         handle_path_building_click(
             ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=15 / M),
@@ -1259,21 +1323,19 @@ class TestRoadBuildingEdgeCases:
         process_custom_connect_deferred()
         mp.undo()
 
-        assert len(ctx.proposals.paths) == 1, "the direct road is offered as the sole proposal"
+        assert len(ctx.proposals.paths) == 1, "only the in-cap straight line survives"
         straight = ctx.proposals.paths[0]
         assert enum_eq(a=straight.kind, b=SegmentKind.ROAD)
         assert straight.max_slope_pct <= float(PathConfig.ROAD_MAX_GRADIENT_PCT)
-        assert "road" in straight.sector_name.lower()
-        assert not toasts, "an in-band direct road must NOT raise a too-steep toast"
+        assert "straight line" in straight.sector_name.lower()
+        assert not toasts, "an in-band straight line must NOT raise a too-steep toast"
         assert sm.is_road_custom_path
 
-    def test_straight_line_road_fallback_refused_when_direct_also_too_steep(
-        self, fake_st, mock_dem_black_slope
-    ) -> None:
-        """A car road is refused when even the direct line exceeds ±15% (unlike a slope).
+    def test_straight_line_refused_when_direct_also_too_steep(self, fake_st, mock_dem_black_slope) -> None:
+        """A car road is refused when even the straight line exceeds ±15%.
 
         Straight down the 45% DEM the direct grade is ~45% — over the cap — so neither a
-        serpentine nor the direct fallback fits, and the user is told.
+        serpentine nor the straight line fits, and the too-steep state is flagged (no toast).
         """
         from skiresort_planner.core.path_tracer import PathTracer
         from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
@@ -1291,11 +1353,14 @@ class TestRoadBuildingEdgeCases:
             ClickInfo(click_type=MapClickType.TERRAIN, lat=-300 / M, lon=0.0),
             elevation=dem.get_elevation_or_raise(lon=0.0, lat=-300 / M),
         )
-        assert ctx.proposals.paths == [], "no serpentine and no in-band direct line → nothing proposed"
+        assert ctx.proposals.paths == [], "no serpentine and no in-band straight line → nothing proposed"
         assert ctx.build(SegmentKind.ROAD).segments == [], "nothing committed"
         assert sm.is_road_custom_path
         assert len(graph.segments) == 0
-        assert any("too steep" in t.lower() for t in toasts), "the user is told the road is too steep"
+        assert toasts == [], "no transient too-steep toast for roads"
+        assert ctx.proposals.too_steep_gentlest_pct is not None, (
+            "the too-steep reason is stashed for the right-panel detail"
+        )
 
     def test_straight_line_fallback_carries_connector_and_start_node_ids(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal

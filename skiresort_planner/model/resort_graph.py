@@ -142,6 +142,20 @@ class ResortGraph:
         while len(self.undo_stack) > UndoConfig.MAX_UNDO_STACK_SIZE:
             self.undo_stack.pop(0)
 
+    def drop_undo_actions_for_removed_segments(self) -> None:
+        """Drop undo entries left dangling after their segments were removed.
+
+        Keyed on the ``segment_ids`` attribute, so it needs no per-type list: actions without it
+        (delete/merge, which snapshot their own state) are self-contained and always kept. Called by
+        every segment-removal path — delete_slope/road, merge collapse, and the cancel-build discard.
+        """
+
+        def keep(action: UndoAction) -> bool:
+            segment_ids: tuple[str, ...] = getattr(action, "segment_ids", ())
+            return not segment_ids or any(sid in self.segments for sid in segment_ids)
+
+        self.undo_stack = [action for action in self.undo_stack if keep(action)]
+
     # =========================================================================
     # Node Operations
     # =========================================================================
@@ -545,6 +559,7 @@ class ResortGraph:
             )
         )
         self.cleanup_isolated_nodes()
+        self.drop_undo_actions_for_removed_segments()
         logger.info(f"Deleted road {road.name} with {len(road.segment_ids)} segments")
         return True
 
@@ -806,6 +821,9 @@ class ResortGraph:
                 paths_before=paths_before,
             )
         )
+        # A merge can collapse a zero-length slope/road and delete its segments (_remove_collapsed_path);
+        # drop any now-stale AddSegmentsAction that referenced them.
+        self.drop_undo_actions_for_removed_segments()
         logger.info(f"Merged {len(node_ids)} nodes into {survivor_id} at ({med_lat:.5f}, {med_lon:.5f})")
 
     def _remove_collapsed_path(self, path: "SegmentPath") -> list[str]:
@@ -900,6 +918,7 @@ class ResortGraph:
             )
         )
         self.cleanup_isolated_nodes()
+        self.drop_undo_actions_for_removed_segments()
         logger.info(f"Deleted slope {slope.name} with {len(slope.segment_ids)} segments")
         return True
 

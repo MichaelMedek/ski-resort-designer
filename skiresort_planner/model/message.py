@@ -118,35 +118,6 @@ class InvalidClickMessage(ToastMessage):
 
 
 @dataclass(frozen=True)
-class PathTooSteepMessage(ToastMessage):
-    """No path proposal fits within the kind's grade cap to the clicked point (slope OR road).
-
-    One toast for every path kind. The two legitimate per-kind differences are passed in as data,
-    not hardcoded per class: ``subject`` ("to ski" / "for a car road") and ``two_sided`` (roads use
-    a ±band, slopes a single-sided ceiling). Reports the gentlest gradient that COULD be found.
-    """
-
-    gentlest_pct: float | None  # magnitude of the gentlest route found, or None if no route
-    max_grade_pct: float
-    subject: str  # e.g. "to ski" / "for a car road"
-    two_sided: bool  # roads cap ±band; slopes a single-sided ceiling
-
-    @property
-    def icon(self) -> str:
-        return "⚠️"
-
-    @property
-    def message(self) -> str:
-        band = f"±{self.max_grade_pct:.0f}%" if self.two_sided else f"{self.max_grade_pct:.0f}%"
-        if self.gentlest_pct is None:
-            reach = f"within {band}" if self.two_sided else f"under {band}"
-            return f"Too steep {self.subject} — no route to that point {reach}."
-        # Round the gentlest UP to 0.1% so it never renders equal to the cap
-        gentlest_shown = math.ceil(self.gentlest_pct * 10) / 10
-        return f"Too steep {self.subject} — gentlest possible is {gentlest_shown:.1f}%, over the {band} limit."
-
-
-@dataclass(frozen=True)
 class OutsideTerrainMessage(ToastMessage):
     """User clicked outside DEM/terrain coverage."""
 
@@ -463,6 +434,22 @@ class MergePlacingContextMessage(Message):
 # =============================================================================
 
 
+def too_steep_detail(gentlest_pct: float | None, max_grade_pct: float, subject: str, *, two_sided: bool) -> str:
+    """The "why" line for a too-steep path result (slope OR road), shared by the panels.
+
+    ``subject`` ("to ski" / "for a car road") and ``two_sided`` (roads cap a ±band, slopes a
+    single-sided ceiling) are the two per-kind differences, passed as data. ``gentlest_pct`` is the
+    magnitude of the gentlest route found, or None when the planner found no route at all.
+    """
+    band = f"±{max_grade_pct:.0f}%" if two_sided else f"{max_grade_pct:.0f}%"
+    if gentlest_pct is None:
+        reach = f"within {band}" if two_sided else f"under {band}"
+        return f"Too steep {subject} — no route to that point {reach}."
+    # Round the gentlest UP to 0.1% so it never renders equal to the cap
+    gentlest_shown = math.ceil(gentlest_pct * 10) / 10
+    return f"Too steep {subject} — gentlest possible is {gentlest_shown:.1f}%, over the {band} limit."
+
+
 @dataclass(frozen=True)
 class PathActionMessage(Message):
     """RIGHT panel: action instruction while selecting a path proposal (slope OR road).
@@ -493,50 +480,74 @@ class PathActionMessage(Message):
     is_connector: bool = False
     target_node_id: str | None = None
 
+    # Too-steep detail for the empty-paths branch. `too_steep_gentlest_pct`:
+    # None means NOT too steep (plain guidance); a value means too steep and IS the gentlest grade to report.
+    too_steep_gentlest_pct: float | None = None
+    too_steep_cap_pct: float = 0.0
+    too_steep_subject: str = ""
+    too_steep_two_sided: bool = False
+
     @property
     def level(self) -> MessageLevel:
         return MessageLevel.WARNING
 
     @property
     def message(self) -> str:
+        # Two states: either a proposal is selected (show its stats) or the list is empty (guidance).
         if self.is_selecting_path:
-            is_conn = self.is_connector and self.target_node_id
-            path_label = "Custom Proposal" if self.is_custom_path else "Proposed Segment"
-            if is_conn:
-                header = f"🏁 **{path_label} {self.selected_path_idx + 1}/{self.num_paths}** → {self.target_node_id}"
-                # self.kind is a StrEnum → renders as "slope"/"road" directly.
-                action = f"- ✅ **Commit to finish {self.kind}** or use ◀▶ to browse"
-            else:
-                header = f"🎯 **{path_label} {self.selected_path_idx + 1}/{self.num_paths}**"
-                action = "- ✅ **Commit** to add segment or use ◀▶ to browse"
-            # Roads carry no ski difficulty, so drop that line for them.
-            difficulty_line = (
-                f"- {self.path_difficulty_emoji} {self.path_difficulty.capitalize()} • "
-                if self.path_difficulty
-                else "- "
-            )
-            return (
-                f"{header}\n\n"
-                f"{difficulty_line}↕{self.path_drop_m:.0f}m • {self.path_length_m:.0f}m\n"
-                f"- 📐 {self.actual_gradient_pct:.0f}% overall ({self.target_gradient_pct:.0f}% target)\n"
-                f"- 📍 {self.start_elevation_m:.0f}m → {self.end_elevation_m:.0f}m\n"
-                f"{action}"
-            )
+            return self._selecting_message()
+        return self._empty_message()
 
-        # No flags set - show fallback message for empty paths (terrain too steep, etc.)
+    def _selecting_message(self) -> str:
+        """The stats block for the currently-selected proposal (is_selecting_path)."""
+        is_conn = self.is_connector and self.target_node_id
+        path_label = "Custom Proposal" if self.is_custom_path else "Proposed Segment"
+        if is_conn:
+            header = f"🏁 **{path_label} {self.selected_path_idx + 1}/{self.num_paths}** → {self.target_node_id}"
+            # self.kind is a StrEnum → renders as "slope"/"road" directly.
+            action = f"- ✅ **Commit to finish {self.kind}** or use ◀▶ to browse"
+        else:
+            header = f"🎯 **{path_label} {self.selected_path_idx + 1}/{self.num_paths}**"
+            action = "- ✅ **Commit** to add segment or use ◀▶ to browse"
+        # Roads carry no ski difficulty, so drop that line for them.
+        difficulty_line = (
+            f"- {self.path_difficulty_emoji} {self.path_difficulty.capitalize()} • " if self.path_difficulty else "- "
+        )
+        return (
+            f"{header}\n\n"
+            f"{difficulty_line}↕{self.path_drop_m:.0f}m • {self.path_length_m:.0f}m\n"
+            f"- 📐 {self.actual_gradient_pct:.0f}% overall ({self.target_gradient_pct:.0f}% target)\n"
+            f"- 📍 {self.start_elevation_m:.0f}m → {self.end_elevation_m:.0f}m\n"
+            f"{action}"
+        )
+
+    def _empty_message(self) -> str:
+        """The "No Paths Available" block, led by the too-steep reason when that's the cause."""
+        # too_steep_gentlest_pct is the single signal: set → too steep (lead with the why line).
+        if self.too_steep_gentlest_pct is not None:
+            reason = (
+                too_steep_detail(
+                    gentlest_pct=self.too_steep_gentlest_pct,
+                    max_grade_pct=self.too_steep_cap_pct,
+                    subject=self.too_steep_subject,
+                    two_sided=self.too_steep_two_sided,
+                )
+                + "\n\n"
+            )
+        else:
+            reason = ""
+
+        # The escape differs by origin: a custom target returns to the fan via Cancel Custom Path,
+        # a fan extension steps back via Undo.
         if self.is_custom_path:
-            # Routing to a custom target that yielded nothing (too steep): guide to a better
-            # target or the escape, NOT "Undo" (Cancel Custom Path returns to the fan).
-            return (
-                "⚠️ **No Paths Available**\n\n"
+            guidance = (
                 "- 👆 Click a **gentler** point or **node** to route there\n"
                 "- Or ✖️ **Cancel Custom Path** to go back to the fan-out"
             )
-        return (
-            "⚠️ **No Paths Available**\n\n"
-            "- 👆 Click a **downhill** point or **node** to route a path to it\n"
-            "- Or ↩️ **Undo** to go back"
-        )
+        else:
+            guidance = "- 👆 Click a **downhill** point or **node** to route a path to it\n- Or ↩️ **Undo** to go back"
+
+        return f"⚠️ **No Paths Available**\n\n{reason}{guidance}"
 
 
 @dataclass(frozen=True)
