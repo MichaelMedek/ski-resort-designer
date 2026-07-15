@@ -981,7 +981,7 @@ class PlannerStateMachine(StateMachine):
         if node_id is None:
             logger.debug(f"[STATE] _init_build({kind.value}): no node_id, using start_location={location}")
 
-        origin = self._resort_graph.nodes.get(node_id) if node_id else None
+        origin = self._resort_graph.nodes[node_id] if node_id else None
         if origin is not None:
             self.context.set_selection(lon=origin.lon, lat=origin.lat, elevation=origin.elevation)
         elif location is not None:
@@ -1169,24 +1169,16 @@ class PlannerStateMachine(StateMachine):
         return self.context.build(self.active_build_kind)
 
     def _before_target_from_starting(self, target_location: LonLatElev, target_node: str | None = None) -> None:
-        """From *_STARTING: get-or-create the origin node, then route to the target.
+        """From *_STARTING: route to the target from the build's origin WITHOUT minting a node.
 
-        Kind-agnostic: the origin has no committed segment yet, so materialise it from the
-        active build's start_location (every build stores its origin there uniformly).
+        The origin node is created only at commit (commit_paths), mirroring lift placement: an
+        uncommitted origin is carried as build.start_location and never materialised early.
+
+        start_node is the origin id ONLY when the build began from an existing (connected) node
+        (build.start_node_id set by _init_build); a fresh terrain origin stays None and is routed
+        from build.start_location by the custom-connect generator.
         """
-        build = self._active_build()
-        start_node_id = build.start_node_id
-        if start_node_id is None:
-            loc = build.start_location
-            assert loc is not None, "starting a custom-connect path requires the build's start_location"
-            node, _ = self._resort_graph.get_or_create_node(lon=loc.lon, lat=loc.lat, elevation=loc.elevation)
-            start_node_id = node.id
-            build.start_node_id = start_node_id
-            logger.debug(
-                f"[STATE] _before_target_from_starting: materialised origin node {start_node_id} "
-                f"at ({loc.lon:.5f}, {loc.lat:.5f}, {loc.elevation:.1f})"
-            )
-        self.context.custom_connect.start_node = start_node_id
+        self.context.custom_connect.start_node = self._active_build().start_node_id
         self.context.custom_connect.target_location = target_location
         self.context.custom_connect.target_node = target_node
 

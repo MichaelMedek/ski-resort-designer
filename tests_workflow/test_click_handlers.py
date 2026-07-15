@@ -740,7 +740,9 @@ class TestSlopeBuildingEdgeCases:
         )
         assert sm.is_slope_custom_path
         origin_before = ctx.custom_connect.start_node
-        assert origin_before is not None, "custom-path records the routing origin"
+        assert origin_before is None, "a fresh terrain origin is a pending location, not a node id"
+        loc_before = ctx.build(SegmentKind.SLOPE).start_location
+        assert loc_before is not None, "the routing origin is carried as a location"
 
         # Second downhill click (further south) re-targets; the origin must be preserved.
         handle_path_building_click(
@@ -748,7 +750,8 @@ class TestSlopeBuildingEdgeCases:
             elevation=dem.get_elevation_or_raise(lon=0.0, lat=-600 / M),
         )
         assert sm.is_slope_custom_path, "re-target stays in custom path"
-        assert ctx.custom_connect.start_node == origin_before, "re-target keeps the original origin node"
+        assert ctx.custom_connect.start_node == origin_before, "re-target keeps the original origin (still None)"
+        assert ctx.build(SegmentKind.SLOPE).start_location == loc_before, "re-target keeps the origin location"
 
     def test_import_center_marker_while_building_raises_unhandled(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
@@ -1238,29 +1241,26 @@ class TestRoadBuildingEdgeCases:
     def test_brand_new_terrain_start_proposals_have_no_node_ids(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
     ) -> None:
-        # A first segment from a fresh terrain origin: the custom-connect target click materialises
-        # the origin node (in the transition's before-hook, like slopes), and every proposal reuses
-        # that ONE node as its start — never a duplicate. A terrain target is not a node, so the
-        # proposals carry no target node id.
+        # A first segment from a fresh terrain origin: NO origin node is materialised while routing
+        # (the origin is a pending location, minted only at commit). So proposals carry no start node
+        # id yet, and committing mints BOTH the origin and the endpoint node.
         from skiresort_planner.ui.actions import commit_selected_path
 
         dem = mock_dem_red_slope_diagonal
         _sm, ctx, graph = self._building(fake_st, path_factory, dem)
+        nodes_at_start = len(graph.nodes)
         self._target(
             ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=300 / M),
             elevation=dem.get_elevation_or_raise(lon=300 / M, lat=0.0),
         )
         assert ctx.proposals.paths, "a reachable target proposes at least one route"
-        start_ids = {p.start_node_id for p in ctx.proposals.paths}
-        assert len(start_ids) == 1, "every proposal shares the single materialised origin node"
-        origin_id = start_ids.pop()
-        assert origin_id in graph.nodes, "the origin was materialised as a real graph node, reused (not duplicated)"
+        assert all(not p.start_node_id for p in ctx.proposals.paths), "no origin node before commit"
         assert all(not p.target_node_id for p in ctx.proposals.paths), "a terrain target is not a node"
-        # Committing must not mint a second origin node — the proposal's start node is reused.
+        assert len(graph.nodes) == nodes_at_start, "routing a fresh-terrain target materialises no node"
+        # Committing mints the origin AND the endpoint (neither existed before) — one origin, no dup.
         nodes_before = len(graph.nodes)
         commit_selected_path(path_idx=0)
-        assert origin_id in graph.nodes, "commit reuses the materialised origin node"
-        assert len(graph.nodes) == nodes_before + 1, "commit adds only the endpoint node, not a new origin"
+        assert len(graph.nodes) == nodes_before + 2, "commit adds the origin + endpoint nodes"
 
     def test_extension_proposals_anchor_on_the_last_endpoint(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal

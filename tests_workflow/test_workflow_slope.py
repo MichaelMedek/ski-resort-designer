@@ -254,9 +254,10 @@ class TestCustomPathBranch:
         assert ctx.custom_connect.force_mode is True, "force_mode set by _before_target_from_starting"
         assert ctx.custom_connect.target_location == target, "target_location recorded verbatim"
         assert ctx.custom_connect.target_node is None, "terrain target has no node id"
-        # start_node was materialised from the terrain selection (node_id was None)
-        assert ctx.custom_connect.start_node is not None, "origin node created for the route"
-        assert ctx.custom_connect.start_node in graph.nodes, "origin node exists in graph"
+        # A fresh terrain origin is NOT materialised as a node here — carried as a pending location,
+        # minted only at commit, so no isolated node can be swept out from under a stored id.
+        assert ctx.custom_connect.start_node is None, "fresh terrain origin carries no node id yet"
+        assert ctx.build(SegmentKind.SLOPE).start_location is not None, "origin carried as a location"
 
     def test_cancel_custom_with_no_segments_returns_to_starting(self, workflow_setup: WorkflowSetup) -> None:
         """cancel_custom with 0 committed segments takes the has_no_segments guard to SlopeStarting."""

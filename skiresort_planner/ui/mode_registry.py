@@ -388,18 +388,17 @@ class _PathBuildingState(BuildState):
                     )
                 )
         if ctx.custom_connect.force_mode and ctx.custom_connect.start_node:
-            start_node = graph.nodes.get(ctx.custom_connect.start_node)
-            if start_node:
-                gradient = terrain_analyzer.compute_gradient(lon=start_node.lon, lat=start_node.lat)
-                layers.append(
-                    renderer.create_direction_arrow_layer(
-                        start_lat=start_node.lat,
-                        start_lon=start_node.lon,
-                        bearing_deg=gradient.bearing_deg,
-                        direction="downhill",
-                        use_3d=use_3d,
-                    )
+            start_node = graph.nodes[ctx.custom_connect.start_node]  # live node (never dangling)
+            gradient = terrain_analyzer.compute_gradient(lon=start_node.lon, lat=start_node.lat)
+            layers.append(
+                renderer.create_direction_arrow_layer(
+                    start_lat=start_node.lat,
+                    start_lon=start_node.lon,
+                    bearing_deg=gradient.bearing_deg,
+                    direction="downhill",
+                    use_3d=use_3d,
                 )
+            )
         return layers
 
     def view_state(self, ctx: PlannerContext, graph: ResortGraph, *, use_3d: bool) -> ViewState:

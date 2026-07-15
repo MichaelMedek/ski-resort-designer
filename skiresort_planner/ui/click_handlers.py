@@ -30,6 +30,7 @@ from skiresort_planner.ui.actions import (
     center_on_slope,
     commit_selected_path,
     confirm_import_action,
+    resolve_build_origin,
 )
 from skiresort_planner.ui.infra import bump_map_version, reload_map
 from skiresort_planner.ui.kind_spec import KIND_SPECS
@@ -416,26 +417,12 @@ def _handle_custom_connect_click(click_info: ClickInfo, elevation: float | None)
         OutsideTerrainMessage(lat=target_lat, lon=target_lon).display()
         return
 
-    # Resolve the START coordinates for validation. No node is created here — the
-    # STARTING origin node is materialised in the transition's before-hook. Every kind
-    # stores its origin uniformly (endpoint → re-target start_node → build.start_location).
-    if build.endpoints:  # BUILDING: current endpoint
-        start = graph.nodes[build.endpoints[0]]
-        start_lon, start_lat, start_elevation = start.lon, start.lat, start.elevation
-    elif ctx.custom_connect.start_node:  # CUSTOM_PATH re-target: keep existing start
-        start = graph.nodes[ctx.custom_connect.start_node]
-        start_lon, start_lat, start_elevation = start.lon, start.lat, start.elevation
-    elif build.start_node_id and build.start_node_id in graph.nodes:  # STARTING from an existing node
-        start = graph.nodes[build.start_node_id]
-        start_lon, start_lat, start_elevation = start.lon, start.lat, start.elevation
-    elif build.start_location is not None:  # STARTING from a pending terrain origin (or a stale, cleaned origin node)
-        loc = build.start_location
-        start_lon, start_lat, start_elevation = loc.lon, loc.lat, loc.elevation
-    else:
-        raise RuntimeError(
-            f"No start point to route from: endpoints={build.endpoints}, "
-            f"start_node={ctx.custom_connect.start_node}, start_node_id={build.start_node_id}"
-        )
+    # Resolve the origin coords for validation via the shared resolver (endpoint → re-target origin
+    # → starting node → pending terrain location). No node is minted before commit, so a fresh
+    # terrain origin is just a location; any node id it returns is guaranteed live.
+    start_lon, start_lat, start_elevation, _ = resolve_build_origin(
+        build=build, graph=graph, custom_start_node=ctx.custom_connect.start_node
+    )
 
     # Validate range for every kind; downhill only for kinds that may not climb (the validator
     # itself skips the check when may_climb, so there is no per-kind branch here).

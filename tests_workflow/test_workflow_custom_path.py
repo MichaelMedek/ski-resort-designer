@@ -53,9 +53,42 @@ class TestSelectCustomTargetWorkflow:
 
         assert sm.current_state_value == "slope_custom_path", "Should route to custom path"
         assert ctx.custom_connect.force_mode, "force_mode set while showing custom proposals"
-        # The origin node was materialised from the selection and captured as start_node.
-        assert ctx.custom_connect.start_node is not None
-        assert ctx.build(SegmentKind.SLOPE).start_node_id == ctx.custom_connect.start_node
+        # A FRESH TERRAIN origin is NOT materialised as a node here — it stays a pending location and
+        # the node is minted only at commit (so cleanup_isolated_nodes can never sweep a dangling id).
+        assert ctx.custom_connect.start_node is None, "fresh terrain origin carries no node id yet"
+        assert ctx.build(SegmentKind.SLOPE).start_node_id is None, "no node materialised before commit"
+        assert ctx.build(SegmentKind.SLOPE).start_location is not None, "origin carried as a location"
+
+    def test_cleanup_mid_custom_connect_then_regenerate_does_not_crash(self, workflow_setup: WorkflowSetup) -> None:
+        """Regression (KeyError 'N###'): cleanup_isolated_nodes mid custom-connect must not dangle.
+
+        The reported crash: start from fresh terrain → custom-connect (STARTING) → a cleanup fires
+        (Reset View / undo / delete swept the isolated origin) → next action reads a stale origin id.
+        With no node materialised before commit, cleanup finds nothing to sweep and regeneration
+        routes from start_location. This asserts the whole chain completes without KeyError.
+        """
+        from skiresort_planner.ui.actions import resolve_build_origin
+
+        sm, ctx, graph, factory, dem = workflow_setup
+        start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
+        sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
+        target_lat = -500 / M
+        target_elev = dem.get_elevation_or_raise(lon=0.0, lat=target_lat)
+        sm.select_custom_target(target_location=(0.0, target_lat, target_elev))  # type: ignore[attr-defined]  # dynamic python-statemachine event
+        assert sm.current_state_value == "slope_custom_path"
+
+        nodes_before = dict(graph.nodes)
+        graph.cleanup_isolated_nodes()  # Reset View / undo / delete would call this mid-build
+        assert graph.nodes == nodes_before, "no isolated origin node existed to sweep (root fix)"
+
+        # Resolving the origin (what the deferred generator / re-target does) must route from
+        # start_location, not a dangling id — no KeyError.
+        build = ctx.build(SegmentKind.SLOPE)
+        lon, lat, elevation, start_node_id = resolve_build_origin(
+            build=build, graph=graph, custom_start_node=ctx.custom_connect.start_node
+        )
+        assert start_node_id is None, "fresh terrain origin routes from location, no node id"
+        assert (lon, lat, elevation) == (0.0, 0.0, start_elev), "routes from the pending origin"
 
     def test_select_target_from_building_state(self, workflow_setup: WorkflowSetup) -> None:
         """SlopeBuilding → select_custom_target → SlopeCustomPath."""

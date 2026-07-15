@@ -794,34 +794,43 @@ class TestOSMImport:
         assert len(graph.slopes) == 1 and len(graph.lifts) == 1, "no duplicates on re-import"
 
 
-class TestSegmentOriginStaleNode:
-    """_segment_origin must tolerate a stale origin-node id.
+class TestSegmentOrigin:
+    """_segment_origin resolves the point a fan radiates from.
 
-    A custom-connect from a fresh terrain origin materialises an isolated graph node as the build's
-    start_node_id. If undo/cancel then cleans that node (0 connections) before a segment commits, the
-    id dangles. Fan regeneration must fall back to the preserved start_location.
+    No origin node is materialised before commit, so start_node_id is either a LIVE node (existing
+    junction / committed endpoint) or None (fresh terrain origin, carried as start_location). A
+    non-None id must therefore resolve strictly — a dangling id is a bug and raises (fail-fast).
     """
 
-    def test_falls_back_to_start_location_when_origin_node_cleaned(self, empty_graph) -> None:
-        from skiresort_planner.ui.actions import _segment_origin
+    def test_falls_back_to_start_location_when_no_origin_node(self, empty_graph) -> None:
+        from skiresort_planner.ui.actions import resolve_build_origin
         from skiresort_planner.ui.context import SegmentBuildContext
 
-        build = SegmentBuildContext(
-            start_node_id="N291",  # dangling: not in the graph (was cleaned up)
-            start_location=PathPoint(lon=8.019, lat=46.584, elevation=3065.0),
-        )
-        lon, lat, elevation, start_node_id = _segment_origin(build=build, graph=empty_graph)
+        # Fresh terrain origin: no node yet, carried as start_location.
+        build = SegmentBuildContext(start_location=PathPoint(lon=8.019, lat=46.584, elevation=3065.0))
+        lon, lat, elevation, start_node_id = resolve_build_origin(build=build, graph=empty_graph)
 
-        assert (lon, lat, elevation) == (8.019, 46.584, 3065.0), "falls back to the pending origin"
-        assert start_node_id is None, "a cleaned origin is a fresh point, not a reusable node"
+        assert (lon, lat, elevation) == (8.019, 46.584, 3065.0), "routes from the pending origin location"
+        assert start_node_id is None, "no node yet — commit_paths mints it"
+
+    def test_raises_on_dangling_node_id(self, empty_graph) -> None:
+        import pytest
+
+        from skiresort_planner.ui.actions import resolve_build_origin
+        from skiresort_planner.ui.context import SegmentBuildContext
+
+        # A non-None start_node_id must be a live node; a missing one is an invariant violation.
+        build = SegmentBuildContext(start_node_id="N999")
+        with pytest.raises(KeyError):
+            resolve_build_origin(build=build, graph=empty_graph)
 
     def test_uses_node_when_present(self, empty_graph, path_points_blue) -> None:
-        from skiresort_planner.ui.actions import _segment_origin
+        from skiresort_planner.ui.actions import resolve_build_origin
         from skiresort_planner.ui.context import SegmentBuildContext
 
         node, _ = empty_graph.get_or_create_node(lon=8.02, lat=46.58, elevation=3000.0)
         build = SegmentBuildContext(start_node_id=node.id)
-        lon, lat, elevation, start_node_id = _segment_origin(build=build, graph=empty_graph)
+        lon, lat, elevation, start_node_id = resolve_build_origin(build=build, graph=empty_graph)
 
         assert (lon, lat, elevation) == (node.lon, node.lat, node.elevation)
         assert start_node_id == node.id, "an existing origin node is returned for reuse on commit"

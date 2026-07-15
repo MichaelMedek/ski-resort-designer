@@ -276,7 +276,7 @@ def _generate_fan_for_building_state(kind: SegmentKind) -> None:
     factory: PathFactory = st.session_state.path_factory
     spec = KIND_SPECS[kind]
 
-    lon, lat, elevation, start_node_id = _segment_origin(build=ctx.build(kind), graph=graph)
+    lon, lat, elevation, start_node_id = resolve_build_origin(build=ctx.build(kind), graph=graph)
 
     fan = list(
         factory.generate_fan(kind=kind, lon=lon, lat=lat, elevation=elevation, target_length_m=ctx.segment_length_m)
@@ -305,25 +305,25 @@ def _generate_fan_for_building_state(kind: SegmentKind) -> None:
     logger.debug(f"Generated {len(kept)} {kind.value}-fan paths from ({lat:.6f}, {lon:.6f})")
 
 
-def _segment_origin(build: "SegmentBuildContext", graph: ResortGraph) -> tuple[float, float, float, str | None]:
-    """Resolve the point a new fan segment radiates from — shared by every kind.
+def resolve_build_origin(
+    build: "SegmentBuildContext", graph: ResortGraph, *, custom_start_node: str | None = None
+) -> tuple[float, float, float, str | None]:
+    """Resolve the point a build's next path radiates from — the single origin resolver.
 
-    Reads only the SegmentBuildContext: the last committed endpoint, else the origin node, else the
-    pending origin location. Returns (lon, lat, elevation, start_node_id); start_node_id is the node
-    to reuse on commit (None for a brand-new origin point). If the origin node id is stale (its node
-    was cleaned from the graph before a segment committed), falls back to start_location. Raises only
-    if the build has no origin at all.
+    Priority: the current committed endpoint → a custom-connect re-target origin (``custom_start_node``)
+    → the build's own starting origin node → the pending terrain location. Returns
+    (lon, lat, elevation, node_id); node_id is the node to reuse on commit, or None for a fresh
+    terrain origin that has no node yet (commit_paths mints it). No node is ever materialised before
+    commit, so any non-None id is guaranteed live..
     """
-    node_id = build.endpoints[-1] if build.endpoints else build.start_node_id
-    # If the node exists in the graph, take its coordiantes
-    if node_id is not None and node_id in graph.nodes:
+    node_id = build.endpoints[-1] if build.endpoints else (custom_start_node or build.start_node_id)
+    if node_id is not None:
         node = graph.nodes[node_id]
         return node.lon, node.lat, node.elevation, node.id
-    # The origin node was cleaned from the graph. Fall back to the pending terrain origin it was materialised from.
     if build.start_location is not None:
-        loc = build.start_location
+        loc = build.start_location  # fresh terrain origin — not yet a node (minted at commit)
         return loc.lon, loc.lat, loc.elevation, None
-    raise ValueError(f"cannot generate fan: {build=} has no origin (start node or location)")
+    raise ValueError(f"cannot resolve build origin: {build=} has no start node or location")
 
 
 def _generate_custom_connect_paths() -> None:
@@ -353,23 +353,19 @@ def _generate_custom_connect_paths() -> None:
     spec = KIND_SPECS[kind]
     build = ctx.build(kind)
 
-    start_node = None
-    if build.endpoints:
-        start_node = graph.nodes.get(build.endpoints[0])
-    elif ctx.custom_connect.start_node:
-        start_node = graph.nodes.get(ctx.custom_connect.start_node)
-
-    if not start_node:
-        logger.debug("Cannot find start node for custom connect")
-        ctx.clear_custom_connect()
-        return
+    # Resolve the origin (shared resolver): a committed endpoint, the re-target origin, the starting
+    # node, or the pending terrain location. start_node_id is None for a fresh terrain origin →
+    # commit_paths mints the node from these coords.
+    start_lon, start_lat, start_elevation, start_node_id = resolve_build_origin(
+        build=build, graph=graph, custom_start_node=ctx.custom_connect.start_node
+    )
 
     candidates = list(
         factory.generate_manual_paths(
             kind=kind,
-            start_lon=start_node.lon,
-            start_lat=start_node.lat,
-            start_elevation=start_node.elevation,
+            start_lon=start_lon,
+            start_lat=start_lat,
+            start_elevation=start_elevation,
             target_lon=target_lon,
             target_lat=target_lat,
             target_elevation=target_elevation,
@@ -383,9 +379,9 @@ def _generate_custom_connect_paths() -> None:
     # the default selection. Only offered when it is itself within the cap.
     straight = factory.straight_line(
         kind=kind,
-        start_lon=start_node.lon,
-        start_lat=start_node.lat,
-        start_elevation=start_node.elevation,
+        start_lon=start_lon,
+        start_lat=start_lat,
+        start_elevation=start_elevation,
         target_lon=target_lon,
         target_lat=target_lat,
         target_elevation=target_elevation,
@@ -397,9 +393,11 @@ def _generate_custom_connect_paths() -> None:
         # grade seen so the right panel can explain WHY.
         gentlest = straight.max_slope_pct if gentlest is None else min(gentlest, straight.max_slope_pct)
 
-    # Extend from the existing start node → reuse it exactly on commit (no duplicate).
-    for p in proposals:
-        p.start_node_id = start_node.id
+    # Reuse the existing origin node exactly on commit. When there is no node yet (fresh terrain),
+    # leave start_node_id unset — commit_paths mints the origin from the path's first point.
+    if start_node_id is not None:
+        for p in proposals:
+            p.start_node_id = start_node_id
 
     # Target node: prefer the clicked node's identity (drift-proof); fall back to a
     # proximity lookup only for a terrain target that happens to sit on a node.
@@ -422,7 +420,8 @@ def _generate_custom_connect_paths() -> None:
     # Note: force_mode, target_location, start_node already set by the target before-hook.
     # No cleanup here - before_cancel_* and before_commit_* hooks handle it on exit.
     logger.debug(
-        f"Generated {len(proposals)} custom paths from {start_node.id} to ({target_lat:.6f}, {target_lon:.6f})"
+        f"Generated {len(proposals)} custom paths from ({start_lat:.6f}, {start_lon:.6f}) "
+        f"to ({target_lat:.6f}, {target_lon:.6f})"
     )
 
 
@@ -594,7 +593,7 @@ def _discard_build(build_ctx: "SegmentBuildContext") -> None:
 
     logger.info(f"Canceling build, discarding {len(build_ctx.segments)} segments")
 
-    origin = graph.nodes.get(build_ctx.start_node_id) if build_ctx.start_node_id else None
+    origin = graph.nodes[build_ctx.start_node_id] if build_ctx.start_node_id else None
     if origin:
         ctx.map.set_building_view(lon=origin.lon, lat=origin.lat)
 
