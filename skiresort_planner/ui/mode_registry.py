@@ -33,7 +33,6 @@ import streamlit as st
 
 from skiresort_planner.constants import StyleConfig
 from skiresort_planner.core.dem_service import DEMService
-from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.click_info import ClickInfo, MapClickType
 from skiresort_planner.model.message import OutsideTerrainMessage
 from skiresort_planner.model.path_segment import SegmentKind
@@ -41,7 +40,7 @@ from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui import actions, bottom_chart, click_handlers, right_panel, sidebar_panels
 from skiresort_planner.ui.center_map import MapRenderer
 from skiresort_planner.ui.context import BuildMode, EntityKind, PlannerContext
-from skiresort_planner.ui.infra import reload_map, trigger_rerun
+from skiresort_planner.ui.infra import bump_camera_epoch, trigger_rerun
 from skiresort_planner.ui.kind_spec import KIND_SPECS
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
@@ -130,7 +129,7 @@ class BuildState(ABC):
 
     @abstractmethod
     def bottom_profile(self, ctx: PlannerContext, graph: ResortGraph) -> ProfileSpec | None:
-        """The elevation profile below the map, or None when the state shows none."""
+        """The elevation profile shown in the right column, or None when the state shows none."""
 
     @abstractmethod
     def merge_highlight_node_ids(self, ctx: PlannerContext) -> list[str] | None:
@@ -292,8 +291,8 @@ class _EntityViewingState(BuildState):
 
     def info_block(self, ctx: PlannerContext) -> InfoBlock:
         # Same bullets for every viewed kind; only lifts add the change-type line.
-        # enum_eq is reload-safe: EntityKind survives Streamlit reloads while the class is redefined.
-        bullets = ["🔄 Use lift buttons to change type"] if enum_eq(a=self.kind, b=EntityKind.LIFT) else []
+        # EntityKind is a StrEnum, so `==` is reload-safe (survives Streamlit's class redefinition).
+        bullets = ["🔄 Use lift buttons to change type"] if self.kind == EntityKind.LIFT else []
         bullets.append("✖️ **Close** the right panel to return")
         bullets.append(f"{StyleConfig.BUILDING_ICON} Click terrain/node → new {self.kind.value}")
         return InfoBlock(
@@ -703,9 +702,9 @@ class BuilderOperation(ABC):
 
         A button only highlights; the mode start (state entry) always happens later on the first
         map click. This is a PURE UI pre-selection with no map change (state stays idle_ready), so
-        it uses a plain rerun — NOT reload_map() — to avoid a needless deck.gl remount (the map is
-        keyed on camera_epoch, which reload_map bumps). Ops that actually change the map (e.g. the
-        lift op re-typing a viewed lift) override this and reload_map() only when they do.
+        it uses a plain rerun — no camera_epoch bump — to avoid a needless deck.gl remount (the map
+        is keyed on camera_epoch). Ops that actually change the map (e.g. the lift op re-typing a
+        viewed lift) override this and bump_camera_epoch() only when they do.
         """
         ctx.build_mode.mode = self.mode
         trigger_rerun()
@@ -713,13 +712,7 @@ class BuilderOperation(ABC):
 
 def _idle_not_building(sm: PlannerStateMachine) -> bool:
     """True while idle and not mid-build/placement (all buttons disable during a build/placement)."""
-    return not (
-        sm.is_any_slope_state
-        or sm.is_lift_placing
-        or sm.is_any_road_state
-        or sm.is_import_placing
-        or sm.is_merge_placing
-    )
+    return not (sm.is_any_path_state or sm.is_lift_placing or sm.is_import_placing or sm.is_merge_placing)
 
 
 class _SlopeOperation(BuilderOperation):
@@ -755,14 +748,13 @@ class _LiftOperation(BuilderOperation):
     def on_select(self, ctx: PlannerContext, sm: PlannerStateMachine) -> None:
         # select_lift_type_action sets build_mode/lift.type AND, when viewing a lift, re-types it
         # (recomputes pylons/catenary → a REAL map change). So capture whether we were viewing a
-        # lift, then reload_map() (remount) if we re-typed one, else a plain rerun (pure highlight,
-        # no remount) — mirroring the base on_select's no-remount rule.
+        # lift, then a bare remount (bump_camera_epoch) if we re-typed one so the redraw takes — the
+        # camera keeps the current view (already framed on the lift); else a plain rerun (highlight only).
         retyped_viewed_lift = sm.is_idle_viewing_lift
         actions.select_lift_type_action(self.mode)
         if retyped_viewed_lift:
-            reload_map()
-        else:
-            trigger_rerun()
+            bump_camera_epoch()
+        trigger_rerun()
 
 
 class _ImportOperation(BuilderOperation):
@@ -889,14 +881,19 @@ def render_control_panel(
     on_commit: Callable[[int], None],
     on_cancel_connection: Callable[[], None],
 ) -> None:
-    """Render the current state's right-side control panel."""
+    """Render the current state's right-side control panel, then its elevation profile."""
     assert sm.get_current_state_id() in BUILD_STATES, (
         f"State {sm.get_current_state_id()} must be registered in BUILD_STATES"
     )
-    panel = BUILD_STATES[sm.get_current_state_id()].control_panel(
+    build_state = BUILD_STATES[sm.get_current_state_id()]
+    panel = build_state.control_panel(
         sm=sm, ctx=ctx, graph=graph, on_commit=on_commit, on_cancel_connection=on_cancel_connection
     )
     panel.render()
+
+    profile = build_state.bottom_profile(ctx=ctx, graph=graph)
+    if profile is not None:
+        st.plotly_chart(profile.fig, width="stretch", key=profile.key)
 
 
 def get_click_handler(sm: PlannerStateMachine) -> ClickHandler:

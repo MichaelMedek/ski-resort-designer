@@ -15,7 +15,6 @@ mode's click flow is exercised the same way:
 import pytest
 
 from skiresort_planner.constants import PathConfig, SlopeConfig
-from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.click_info import ClickInfo, MapClickType, MarkerType
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
@@ -269,8 +268,8 @@ class TestIdleClickRouting:
 
     def test_click_segment_opens_parent_road_panel(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         # Parity with the slope case: a SEGMENT marker whose parent is a ROAD (one-frame race before
-        # the map re-tags it) must open the ROAD panel, not fall through to a slope panel. This is
-        # the asymmetry fix — get_entity_by_segment_id + isinstance dispatch resolves either kind.
+        # the map re-tags it) must open the ROAD panel, not fall through to a slope panel. Resolved by
+        # get_entity_by_segment_id + reload-safe `.kind` dispatch (never isinstance).
         from skiresort_planner.ui.click_handlers import handle_idle_click
 
         graph = ResortGraph()
@@ -284,6 +283,44 @@ class TestIdleClickRouting:
         )
         assert sm.is_idle_viewing_road, "a road segment resolves to the ROAD panel (not slope)"
         assert ctx.viewing.road_id == road.id
+
+    def test_click_segment_on_reloaded_slope_class_does_not_crash(
+        self, fake_st, path_factory, mock_dem_red_slope_diagonal, path_points_blue
+    ) -> None:
+        """Regression for the `unhandled parent entity Slope` crash.
+
+        A Streamlit module reload redefines both the Slope class AND the SegmentKind enum, so the old
+        `isinstance(parent, Slope)` dispatch failed for a slope built under the pre-reload class and
+        raised. The fix branches on the reload-safe `.kind` StrEnum (value-compared). Simulate the
+        reload with a fresh SegmentKind class (same values) as the entity's kind; dispatch must still
+        open the slope panel — identity differs, value matches.
+        """
+        from enum import StrEnum
+        from typing import Any
+
+        from skiresort_planner.ui.click_handlers import handle_idle_click
+
+        graph = ResortGraph()
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        assert slope is not None
+        seg_id = slope.segment_ids[0]
+
+        # A distinct SegmentKind class (as after a reload): a different object, equal by value. Go
+        # through Any so mypy doesn't fold slope.kind to its ClassVar literal (this is a runtime reload
+        # simulation, not a statically-knowable value).
+        reloaded_kind: Any = StrEnum("SegmentKind", {"SLOPE": "slope", "ROAD": "road"})  # type: ignore[misc]  # functional enum name mirrors the reloaded class
+        reloaded_slope_kind: Any = reloaded_kind.SLOPE
+        object.__setattr__(slope, "kind", reloaded_slope_kind)
+        assert reloaded_slope_kind is not SegmentKind.SLOPE, "must be a different class instance (reload)"
+        assert reloaded_slope_kind == SegmentKind.SLOPE, "StrEnum compares equal by value across the reload"
+
+        sm, ctx = _session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
+        handle_idle_click(
+            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SEGMENT, segment_id=seg_id), elevation=None
+        )
+        assert sm.is_idle_viewing_slope, "reload-safe .kind dispatch opens the slope panel without crashing"
+        assert ctx.viewing.slope_id == slope.id
 
     def test_click_lift_opens_panel_and_syncs_mode(self, fake_st, path_factory, mock_dem_blue_slope) -> None:
         from skiresort_planner.ui.click_handlers import handle_idle_click
@@ -1086,7 +1123,7 @@ class TestRoadBuildingClick:
         assert len(ctx.build(SegmentKind.ROAD).segments) == 1
         assert len(graph.roads) == 0, "no Road entity until Finish Road"
         # The committed segment's kind IS road — identity lives on the segment, not a UI list.
-        assert enum_eq(a=graph.segments[ctx.build(SegmentKind.ROAD).segments[-1]].kind, b=SegmentKind.ROAD)
+        assert graph.segments[ctx.build(SegmentKind.ROAD).segments[-1]].kind == SegmentKind.ROAD
         # Per-segment undo: the commit pushed an AddSegmentsAction.
         assert graph.undo_stack, "committing a road segment records an undo entry"
         assert graph.undo_stack[-1].action_type.name == "ADD_SEGMENTS"
@@ -1328,7 +1365,7 @@ class TestRoadBuildingEdgeCases:
 
         assert len(ctx.proposals.paths) == 1, "only the in-cap straight line survives"
         straight = ctx.proposals.paths[0]
-        assert enum_eq(a=straight.kind, b=SegmentKind.ROAD)
+        assert straight.kind == SegmentKind.ROAD
         assert straight.max_slope_pct <= float(PathConfig.ROAD_MAX_GRADIENT_PCT)
         assert "straight line" in straight.sector_name.lower()
         assert not toasts, "an in-band straight line must NOT raise a too-steep toast"
@@ -1429,7 +1466,7 @@ class TestRoadBuildingEdgeCases:
         assert all(p.max_slope_pct <= float(PathConfig.ROAD_MAX_GRADIENT_PCT) for p in ctx.proposals.paths), (
             "every road-fan proposal is within the ±15% band"
         )
-        assert all(enum_eq(a=p.kind, b=SegmentKind.ROAD) for p in ctx.proposals.paths)
+        assert all(p.kind == SegmentKind.ROAD for p in ctx.proposals.paths)
 
     def test_road_fan_filter_drops_over_cap_routes_on_steep_terrain(self, fake_st, mock_dem_black_slope) -> None:
         """On 45% terrain the ±15% filter drops the steep-green routes but keeps the gentle ones.

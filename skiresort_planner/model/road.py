@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 from skiresort_planner.constants import EntityPrefixes, NameConfig
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.segment_path import SegmentPath
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,7 @@ class Road(SegmentPath):
     """
 
     ID_PREFIX: ClassVar[str] = EntityPrefixes.ROAD
+    kind: ClassVar[SegmentKind] = SegmentKind.ROAD
 
     @staticmethod
     def generate_name(road_id: str, avg_bearing: float) -> str:

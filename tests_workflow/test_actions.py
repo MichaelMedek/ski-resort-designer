@@ -9,7 +9,6 @@ delete actions for slope/lift/road uniformly.
 import pytest
 
 from skiresort_planner.constants import MapConfig
-from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
@@ -482,7 +481,7 @@ class TestRoadBuildingActionFlow:
         assert sm.is_road_building_only, "road commit stays in road_building"
         assert len(ctx.build(SegmentKind.ROAD).segments) == 1
         assert len(graph.roads) == 0, "no Road entity until Finish Road"
-        assert enum_eq(a=graph.segments[ctx.build(SegmentKind.ROAD).segments[-1]].kind, b=SegmentKind.ROAD)
+        assert graph.segments[ctx.build(SegmentKind.ROAD).segments[-1]].kind == SegmentKind.ROAD
         assert graph.undo_stack[-1].action_type.name == "ADD_SEGMENTS", "per-segment undo recorded"
 
     def test_finish_then_undo_restores_road_building(
@@ -586,6 +585,47 @@ class TestDeferredProcessing:
         _sm, ctx = _session(fake_st, ResortGraph(), factory=path_factory, dem=mock_dem_red_slope_diagonal)
         ctx.deferred.custom_connect = False
         assert process_custom_connect_deferred() is False
+
+
+class TestGradientPreselection:
+    """_preselect_by_gradient — shared by the fan and custom-connect generators so both
+    keep grade continuity across committed segments (the pre-selection used to fire only
+    for the fan).
+    """
+
+    def _paths(self, *slopes: float) -> "list[ProposedPathSegment]":
+        # Two-point segments whose avg_slope_pct is the given grade (100m run).
+        out = []
+        for s in slopes:
+            pts = [PathPoint(lon=0.0, lat=0.0, elevation=1000.0), PathPoint(lon=0.001, lat=0.0, elevation=1000.0 - s)]
+            out.append(ProposedPathSegment(points=pts, kind=SegmentKind.SLOPE))
+        return out
+
+    def test_preselects_closest_gradient_and_consumes_target(self, fake_st, mock_dem_blue_slope) -> None:
+        from skiresort_planner.ui.actions import _preselect_by_gradient
+
+        _sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
+        paths = self._paths(5.0, 18.0, 30.0)
+        ctx.deferred.gradient_target = 17.0  # closest to the 18% path (index 1)
+        _preselect_by_gradient(ctx=ctx, paths=paths)
+        assert ctx.proposals.selected_idx == 1, "pre-selects the proposal nearest the last committed grade"
+        assert ctx.deferred.gradient_target is None, "one-shot: the target is consumed"
+
+    def test_defaults_to_first_without_target(self, fake_st, mock_dem_blue_slope) -> None:
+        from skiresort_planner.ui.actions import _preselect_by_gradient
+
+        _sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
+        ctx.deferred.gradient_target = None
+        _preselect_by_gradient(ctx=ctx, paths=self._paths(5.0, 18.0))
+        assert ctx.proposals.selected_idx == 0, "no target → first proposal"
+
+    def test_none_when_no_paths(self, fake_st, mock_dem_blue_slope) -> None:
+        from skiresort_planner.ui.actions import _preselect_by_gradient
+
+        _sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
+        ctx.deferred.gradient_target = 17.0
+        _preselect_by_gradient(ctx=ctx, paths=[])
+        assert ctx.proposals.selected_idx is None, "empty proposals → no selection"
 
 
 class TestOSMImport:

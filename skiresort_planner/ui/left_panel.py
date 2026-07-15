@@ -31,9 +31,9 @@ from skiresort_planner.model.message import (
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.model.undo_handlers import UNDO_HANDLERS
 from skiresort_planner.persistence import backup_store
-from skiresort_planner.ui.actions import undo_last_action
+from skiresort_planner.ui.actions import undo_cancels_current_build, undo_last_action
 from skiresort_planner.ui.context import BuildMode, PlannerContext
-from skiresort_planner.ui.infra import reload_map, trigger_rerun
+from skiresort_planner.ui.infra import bump_camera_epoch, reload_map, trigger_rerun
 from skiresort_planner.ui.mode_registry import BUILD_STATES, OPERATIONS, BuilderOperation, OperationGroup
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
@@ -41,11 +41,19 @@ logger = logging.getLogger(__name__)
 
 
 def _describe_undo_action(action: UndoAction, graph: ResortGraph) -> str:
-    """Generate human-readable description of what undo will do.
-
-    Delegates to the UNDO_HANDLERS registry (keyed by ActionType.name, reload-safe).
-    """
+    """Human-readable description of a specific undo-stack action (reload-safe registry lookup)."""
     return UNDO_HANDLERS[action.action_type.name].describe(action=action, graph=graph)
+
+
+def _describe_next_undo(sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph) -> str:
+    """Description of what the NEXT undo will do.
+
+    Mirrors undo_last_action's branch (via undo_cancels_current_build) so the confirmation text
+    matches the real behaviour: cancelling an in-progress build reads as such.
+    """
+    if undo_cancels_current_build(sm=sm, ctx=ctx):
+        return f"Cancel building the current {sm.active_build_kind.value} and return to idle."
+    return _describe_undo_action(action=graph.undo_stack[-1], graph=graph)
 
 
 def _request_pending_undo() -> None:
@@ -54,11 +62,10 @@ def _request_pending_undo() -> None:
 
 
 @st.dialog("Confirm Undo")
-def _confirm_undo_dialog(action: UndoAction, graph: ResortGraph) -> None:
+def _confirm_undo_dialog(sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph) -> None:
     """Show confirmation dialog before undoing an action."""
-    description = _describe_undo_action(action=action, graph=graph)
     st.write("**Action to undo:**")
-    st.write(description)
+    st.write(_describe_next_undo(sm=sm, ctx=ctx, graph=graph))
 
     col_yes, col_no = st.columns(2)
     with col_yes:
@@ -220,10 +227,8 @@ class SidebarRenderer:
             PlaceNotFoundMessage(query=query.strip()).display()
             return
 
-        self.ctx.map.set_center(lon=result.lon, lat=result.lat)
-        self.ctx.map.zoom = MapConfig.DEFAULT_ZOOM
         logger.info(f"UI: Search centered map on {result.display_name!r} ({result.lat:.4f}, {result.lon:.4f})")
-        reload_map()
+        reload_map(center=(result.lon, result.lat), zoom=MapConfig.DEFAULT_ZOOM)
 
     def _render_always_available(self) -> None:
         """Render the always-available controls: place search, undo, and reset view."""
@@ -232,7 +237,7 @@ class SidebarRenderer:
         self._render_reset_view_button()
 
     def _render_undo_button(self) -> None:
-        """Render the undo button (opens a confirmation dialog for the last action)."""
+        """Render the undo button (opens a confirmation dialog for the next undo)."""
         can_undo = bool(self.graph.undo_stack)
         if st.button(
             "↩️ Undo Last Action",
@@ -240,8 +245,7 @@ class SidebarRenderer:
             disabled=not can_undo,
             help="Nothing to undo" if not can_undo else "Undo the last action",
         ):
-            last_action = self.graph.undo_stack[-1]
-            _confirm_undo_dialog(action=last_action, graph=self.graph)
+            _confirm_undo_dialog(sm=self.sm, ctx=self.ctx, graph=self.graph)
 
     def _render_reset_view_button(self) -> None:
         """Render the reset-view button (recenters camera to defaults, cleans orphan nodes)."""
@@ -255,7 +259,9 @@ class SidebarRenderer:
             removed = self.graph.cleanup_isolated_nodes()
             if removed > 0:
                 logger.warning(f"Reset View cleaned {removed} orphaned node(s)")
-            reload_map()  # Bumps version and triggers rerun
+            # Reset zoom/pitch/bearing (reset_view) but keep the user where they are: reframe on the
+            # current center at the default zoom.
+            reload_map(center=(self.ctx.map.lon, self.ctx.map.lat), zoom=MapConfig.DEFAULT_ZOOM)
 
     def _render_mode_selector(self) -> None:
         """Render unified build type selector with 7 buttons.
@@ -434,13 +440,6 @@ class SidebarRenderer:
                     loaded_graph = ResortGraph.from_dict(data=data)
                     st.session_state.graph = loaded_graph
 
-                    # Center map on mean lat/lon of all nodes
-                    center = loaded_graph.get_center()
-                    if center is not None:
-                        center_lon, center_lat = center
-                        self.ctx.map.set_center(lon=center_lon, lat=center_lat)
-                        logger.info(f"Centered map on mean: ({center_lat:.5f}, {center_lon:.5f})")
-
                     logger.info(f"Loaded resort from file: {uploaded_file.name}")
                     st.session_state._upload_counter = st.session_state.get("_upload_counter", 0) + 1
                     # Persist as the session's working backup so an F5 restores it
@@ -448,7 +447,14 @@ class SidebarRenderer:
                     if resort_id:
                         backup_store.save(graph=loaded_graph, resort_id=resort_id)
                         st.session_state._saved_token = loaded_graph.change_token()
-                    reload_map()  # Fresh graph needs map version bump for Pydeck
+                    # Frame the loaded resort; empty graph → bare remount.
+                    center = loaded_graph.get_center()
+                    if center is not None:
+                        logger.info(f"Centered map on mean: ({center[1]:.5f}, {center[0]:.5f})")
+                        reload_map(center=center, zoom=MapConfig.DEFAULT_ZOOM)
+                    else:
+                        bump_camera_epoch()
+                        trigger_rerun()
                 except Exception as e:
                     FileLoadErrorMessage(error=str(e)).display()
                     logger.error(f"Failed to load resort file: {e}")

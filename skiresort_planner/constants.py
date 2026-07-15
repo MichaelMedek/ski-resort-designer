@@ -70,7 +70,6 @@ class MapConfig:
     # Zoom levels for different modes
     # Higher number = more zoomed in, lower = more zoomed out
     # Reduced zoom levels to prevent camera going underground with 3D terrain
-    BUILDING_ZOOM = 14  # Working zoom for building slopes/lifts
     VIEWING_ZOOM = 13  # Overview after finishing slope/lift (zoomed out)
     VIEW_3D_ZOOM = 14  # 3D side view - balanced zoom
     VIEW_3D_MIN_ZOOM = 12  # Minimum zoom for high elevation (prevents camera under terrain)
@@ -78,7 +77,6 @@ class MapConfig:
 
     # Pitch angles for different modes
     # Use 0 (top-down) for all modes to ensure accurate terrain clicks
-    BUILDING_PITCH = 0  # Top-down view for precise placement during building
     VIEWING_PITCH = 0  # Top-down view for viewing (tilted views cause terrain click issues)
     VIEW_3D_PITCH = 25  # 25° angle for 3D - more from above to avoid mountains blocking view
     DEFAULT_PITCH = 0  # Always start top-down
@@ -214,8 +212,7 @@ class GeometricTuningConfig:
 
     # --- Fan tracer (path_tracer.py) + fan breadth (path_factory.py) ---
     STEP_SIZE_M = 30  # Path trace / terrain-sample / node-snap step (smaller = smoother, slower)
-    MIN_TRAVERSE_ANGLE_DEG = 2  # Ensures left/right paths diverge on gentle terrain
-    MAX_TRAVERSE_ANGLE_DEG = 89  # Physical limit (near-horizontal traverse)
+    MIN_TRAVERSE_ANGLE_DEG = 2  # Keeps left/right paths diverging and the traverse off straight up/down
     MAX_TURN_PER_STEP_DEG = 40.0  # Max angular change per step to prevent self-intersection
     BEARING_SMOOTHING_WINDOW = 4  # Number of recent bearings to average when smoothing
     FLAT_TERRAIN_THRESHOLD_PCT = 15.0  # Below this slope %, use bearing smoothing (no clear fall line)

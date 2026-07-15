@@ -25,7 +25,6 @@ from skiresort_planner.constants import GeometricTuningConfig, PlannerConfig
 from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
-from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_smoothing import resample_cubic_spline
 from skiresort_planner.model.proposed_path import ProposedPathSegment
@@ -112,13 +111,13 @@ class LeastCostPathPlanner:
         """
         # The segment must actually run in its mode's direction (net drop / net climb).
         net_drop = start_elevation - target_elevation
-        if enum_eq(a=gradient_mode, b=GradientMode.DOWNHILL) and net_drop <= 0:
+        if gradient_mode == GradientMode.DOWNHILL and net_drop <= 0:
             logger.debug(
                 f"plan: no path — DOWNHILL mode but net_drop={net_drop:.1f}m <= 0 "
                 f"(start_elev={start_elevation:.0f}m, target_elev={target_elevation:.0f}m)"
             )
             return None
-        if enum_eq(a=gradient_mode, b=GradientMode.UPHILL) and net_drop >= 0:
+        if gradient_mode == GradientMode.UPHILL and net_drop >= 0:
             logger.debug(
                 f"plan: no path — UPHILL mode but net_drop={net_drop:.1f}m >= 0 "
                 f"(start_elev={start_elevation:.0f}m, target_elev={target_elevation:.0f}m)"
@@ -452,7 +451,7 @@ class LeastCostPathPlanner:
         # (actual_grade < 0), UPHILL penalizes descending (actual_grade > 0). This
         # one-way monotonicity is what makes loops impossible.
         against_penalty = 1.0
-        wrong_way = actual_grade < 0 if enum_eq(a=gradient_mode, b=GradientMode.DOWNHILL) else actual_grade > 0
+        wrong_way = actual_grade < 0 if gradient_mode == GradientMode.DOWNHILL else actual_grade > 0
         if wrong_way:
             against_penalty = exp(abs(actual_grade) / GeometricTuningConfig.COST_SIGMA)
 

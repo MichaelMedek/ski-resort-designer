@@ -18,12 +18,12 @@ import logging
 import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from skiresort_planner.model.path_segment import SegmentKind
 
 
-class MessageLevel(Enum):
+class MessageLevel(StrEnum):
     """Display level for UI messages."""
 
     INFO = "info"  # Blue - context/status/loading

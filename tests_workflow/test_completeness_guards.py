@@ -282,37 +282,92 @@ class TestEnumDispatchCompleteness:
 # =============================================================================
 
 
-class TestReloadSafeEnumComparisons:
-    """Enum members must be compared with enum_eq, never raw ``==`` / ``!=``.
+# =============================================================================
+# 3. Reload-safe enums: every domain enum is a StrEnum; no isinstance on domain classes
+# =============================================================================
 
-    Streamlit re-imports modules on rerun, creating a FRESH enum class per reload; a value built
-    against the OLD class fails ``==`` against the NEW class's member (identity/hash differ). The
-    repo convention is enum_eq (see enum_utils + test_enum_utils). A stray ``kind == SegmentKind.X``
-    silently misbehaves after a reload (e.g. the difficulty emoji vanishing on a slope), so this
-    scans the ui layer's AST for any comparison whose operand names one of the reload-fragile enums.
+
+class TestReloadSafeEnums:
+    """Reload safety is enforced structurally, not by a comparison helper.
+
+    Streamlit re-imports modules on rerun, creating a FRESH class object per reload. Two patterns
+    break across that boundary and are BANNED in production source:
+      1. A plain ``Enum`` domain type — ``==`` is identity-based, so an old-class member fails against
+         a new-class member. A ``StrEnum`` compares by string value and is reload-safe, so raw ``==``
+         is correct and no ``enum_eq`` helper is needed.
+      2. ``isinstance(x, <domain class>)`` — an object built before the reload (it lives in the
+         preserved graph/session_state) is an instance of the OLD class and fails ``isinstance``
+         against the freshly-imported class. Branch on a reload-safe ``.kind`` StrEnum instead.
+
+    These guards make either pattern impossible to (re)introduce. Genuine builtin/library isinstance
+    (dict/list/float/requests.RequestException on external input) is fine and not matched here.
     """
 
-    def test_no_raw_equality_against_fragile_enums(self) -> None:
-        fragile = {"SegmentKind", "EntityKind"}
+    # Domain classes whose identity is destroyed by a Streamlit reload. isinstance against these in
+    # production is the reload-fragility bug (the `unhandled parent entity Slope` crash).
+    _DOMAIN_CLASSES = {"Slope", "Road", "SegmentPath", "Lift"}
 
-        def names_fragile_enum(node: ast.expr) -> bool:
-            # Matches `SegmentKind.SLOPE` / `EntityKind.ROAD` (Attribute on a fragile enum name).
-            return isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in fragile
+    def test_every_domain_enum_is_a_str_enum(self) -> None:
+        """No production enum may subclass a bare ``Enum`` — StrEnum (or IntEnum) only.
 
+        A bare ``class X(Enum)`` is identity-compared and breaks after a reload. This scans every
+        production module's class defs and flags any that inherit ``Enum`` directly rather than the
+        value-based ``StrEnum``/``IntEnum``.
+        """
         offenders: list[str] = []
-        for py in (PACKAGE_DIR / "ui").rglob("*.py"):
+        for py in PACKAGE_DIR.rglob("*.py"):
             tree = ast.parse(py.read_text(), filename=str(py))
             for node in ast.walk(tree):
-                if not isinstance(node, ast.Compare):
+                if not isinstance(node, ast.ClassDef):
                     continue
-                if not all(isinstance(op, ast.Eq | ast.NotEq) for op in node.ops):
-                    continue
-                operands = [node.left, *node.comparators]
-                if any(names_fragile_enum(o) for o in operands):
-                    offenders.append(f"{py.relative_to(PACKAGE_DIR)}:{node.lineno}")
+                base_names = {b.id for b in node.bases if isinstance(b, ast.Name)}
+                # `Enum` directly (not StrEnum/IntEnum) is the reload-fragile case.
+                if "Enum" in base_names:
+                    offenders.append(f"{py.relative_to(PACKAGE_DIR)}:{node.lineno} class {node.name}(Enum)")
         assert not offenders, (
-            f"Enum members must be compared with enum_eq (reload-safe), not raw ==/!=. Offenders: {offenders}"
+            "Domain enums must subclass StrEnum (reload-safe value comparison), never bare Enum. "
+            f"Offenders: {offenders}"
         )
+
+    def test_no_isinstance_on_domain_classes_in_production(self) -> None:
+        """``isinstance(x, Slope|Road|SegmentPath|Lift)`` is reload-unsafe and banned in source.
+
+        Branch on the entity's ``.kind`` StrEnum instead. Genuine builtin/library isinstance checks
+        (dict, list|tuple, int|float, requests.RequestException) are not matched — only our own
+        domain classes.
+        """
+        offenders: list[str] = []
+        for py in PACKAGE_DIR.rglob("*.py"):
+            tree = ast.parse(py.read_text(), filename=str(py))
+            for node in ast.walk(tree):
+                if not (
+                    isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "isinstance"
+                ):
+                    continue
+                if len(node.args) < 2:
+                    continue
+                # Second arg is the type(s): a Name, or a tuple/BinOp of Names.
+                type_arg = node.args[1]
+                named = {n.id for n in ast.walk(type_arg) if isinstance(n, ast.Name)}
+                hit = named & self._DOMAIN_CLASSES
+                if hit:
+                    offenders.append(f"{py.relative_to(PACKAGE_DIR)}:{node.lineno} isinstance(..., {sorted(hit)})")
+        assert not offenders, (
+            "isinstance on domain classes is reload-unsafe (fails after a Streamlit reimport). "
+            f"Branch on the .kind StrEnum instead. Offenders: {offenders}"
+        )
+
+    def test_enum_eq_helper_is_gone(self) -> None:
+        """The enum_eq helper must not exist — StrEnum + raw ``==`` replaces it entirely.
+
+        Guards against re-adding the crutch (and against a stray import of a deleted module).
+        """
+        assert not (PACKAGE_DIR / "enum_utils.py").exists(), "enum_utils.py must be deleted; use StrEnum + raw =="
+        offenders: list[str] = []
+        for py in PACKAGE_DIR.rglob("*.py"):
+            if "enum_eq" in py.read_text():
+                offenders.append(str(py.relative_to(PACKAGE_DIR)))
+        assert not offenders, f"enum_eq is removed; no production file may reference it. Offenders: {offenders}"
 
 
 # =============================================================================

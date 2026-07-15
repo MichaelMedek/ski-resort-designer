@@ -622,8 +622,10 @@ class TestGrandResortTour:
         assert sm.is_road_starting, f"Should be starting a road, got {sm.get_state_name()}"
 
         # Click terrain to the east (gentle) → routes into ROAD_CUSTOM_PATH; the deferred
-        # pass on the following run generates the proposals.
-        at.session_state["command_queue"] = [("click_terrain", 0.004, 0.0)]
+        # pass on the following run generates the proposals. Target sits in open terrain,
+        # clear of SLOPE_1's nodes by >LIFT_END_NODE_THRESHOLD_M, so the road stays a
+        # standalone build (non-connector) rather than snapping to a node and auto-finishing.
+        at.session_state["command_queue"] = [("click_terrain", 0.003, 0.0)]
         at.run()
         sm = at.session_state["state_machine"]
         assert sm.is_road_custom_path, f"Road target click enters custom-path, got {sm.get_state_name()}"

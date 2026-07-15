@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, ClassVar, TypeVar, cast
 
 from skiresort_planner.constants import SlopeConfig
 from skiresort_planner.model.node_connected import NodeConnected
+from skiresort_planner.model.path_segment import SegmentKind
 
 if TYPE_CHECKING:
     from skiresort_planner.model.path_point import PathPoint
@@ -57,6 +58,8 @@ class SegmentPath(NodeConnected):
 
     # Subclasses set their entity id prefix (e.g. "SL", "R").
     ID_PREFIX: ClassVar[str] = ""
+    # Reload-safe entity discriminator (StrEnum): concrete subclasses set it (Slope→SLOPE, Road→ROAD).
+    kind: ClassVar[SegmentKind]
 
     @property
     def number(self) -> int:
@@ -111,6 +114,19 @@ class SegmentPath(NodeConnected):
     def has_warnings(self, segments: dict[str, "PathSegment"]) -> bool:
         """True if any segment carries a warning."""
         return any(segments[sid].has_warnings for sid in self.segment_ids if sid in segments)
+
+    def center(self, segments: dict[str, "PathSegment"]) -> tuple[float, float]:
+        """(lon, lat) midpoint of the group's first-start → last-end point.
+
+        Args:
+            segments: Dict of segment_id -> PathSegment.
+
+        Returns:
+            (lon, lat) midpoint.
+        """
+        first, last = segments[self.segment_ids[0]], segments[self.segment_ids[-1]]
+        start_pt, end_pt = first.points[0], last.points[-1]
+        return ((start_pt.lon + end_pt.lon) / 2, (start_pt.lat + end_pt.lat) / 2)
 
     @classmethod
     def from_dict(cls: type[T], data: dict[str, object]) -> T:

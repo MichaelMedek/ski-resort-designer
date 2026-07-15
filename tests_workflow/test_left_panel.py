@@ -274,6 +274,25 @@ class TestDescribeUndoAction:
         empty_graph.merge_nodes(node_ids=[a.id, b.id], dem=dem)
         assert self._describe_top(empty_graph) == "Un-merge 2 nodes"
 
+    def test_next_undo_describes_build_cancel_not_stale_stack_entry(
+        self, empty_graph, path_points_blue, mock_dem_blue_slope
+    ) -> None:
+        """In a build state with no committed segments, the next undo CANCELS the build — the dialog
+        must say so, not describe the unrelated previous stack action (the off-by-one bug).
+        """
+        from skiresort_planner.ui.left_panel import _describe_next_undo
+
+        # A prior committed slope sits on the undo stack (the stale entry the old code would describe).
+        _build_slope(empty_graph, path_points_blue)
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        # Now START a new slope build with no committed segments yet.
+        sm.start_building(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
+        assert sm.is_slope_starting
+
+        label = _describe_next_undo(sm=sm, ctx=ctx, graph=empty_graph)
+        assert "Cancel building" in label and "slope" in label.lower()
+        assert "segment" not in label.lower(), "must not describe the stale committed-slope stack entry"
+
 
 # =============================================================================
 # Dialog action helpers (extracted from @st.dialog bodies to be testable)

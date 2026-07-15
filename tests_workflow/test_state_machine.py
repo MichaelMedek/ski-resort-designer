@@ -342,6 +342,26 @@ class TestKindSpecResolvesAgainstStateMachine:
                 ev = getattr(spec, attr)
                 assert ev in events, f"KIND_SPECS[{kind}].{attr}={ev!r} is not a state-machine event"
 
+    def test_is_any_path_state_covers_every_kind_build_state(self) -> None:
+        """is_any_path_state must be True in EVERY kind's 3 build states and False elsewhere.
+
+        Guards the drift `is_any_slope_state or is_any_road_state` had: a new SegmentKind's states are
+        covered automatically because is_any_path_state derives from KIND_SPECS.
+        """
+        from skiresort_planner.model.resort_graph import ResortGraph
+        from skiresort_planner.ui.kind_spec import KIND_SPECS
+
+        sm, _ = PlannerStateMachine.create(graph=ResortGraph(), add_ui_listener=False)
+        build_state_ids = {
+            sid
+            for spec in KIND_SPECS.values()
+            for sid in (spec.starting_state, spec.building_state, spec.custom_path_state)
+        }
+        for sid in self._sm_state_ids():
+            _force_state(sm, sid)
+            expected = sid in build_state_ids
+            assert sm.is_any_path_state is expected, f"is_any_path_state wrong in state {sid!r} (expected {expected})"
+
 
 def _force_state(sm: PlannerStateMachine, state_name: str) -> None:
     """Force state machine to a specific state for testing.

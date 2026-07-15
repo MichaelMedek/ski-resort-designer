@@ -482,8 +482,8 @@ class MapContext(BaseContext):
     """Map UI state for Pydeck.
 
     State Machine Integration:
-    - Use set_building_view() when entering building states (zoomed in, top-down)
-    - Viewing/3D camera is set by center_on_* + calculate_3d_view_for_* in actions/center_map
+    - Building states do NOT recenter — the user keeps their current pan/zoom.
+    - Viewing/3D camera is set by center_on_* + calculate_3d_view_for_* in actions/center_map.
 
     Note: center is [lon, lat] order (GeoJSON/Pydeck standard).
     """
@@ -527,20 +527,13 @@ class MapContext(BaseContext):
         self.lon = lon
         self.lat = lat
 
-    def set_building_view(self, lon: float, lat: float) -> None:
-        """Set map to building mode: centered, zoomed in, top-down.
-
-        Use when starting slope building or lift placement.
-        Provides precise placement view for accurate clicking.
-
-        Args:
-            lon: Center longitude
-            lat: Center latitude
-        """
+    def set_view(self, lon: float, lat: float, zoom: int, pitch: float = MapConfig.VIEWING_PITCH) -> None:
+        """Frame the map on an explicit center+zoom (north-up). Single source for camera framing."""
         self.lon = lon
         self.lat = lat
-        self.zoom = MapConfig.BUILDING_ZOOM
-        self.pitch = MapConfig.BUILDING_PITCH
+        self.zoom = zoom
+        self.pitch = pitch
+        self.bearing = MapConfig.DEFAULT_BEARING
 
     def reset_view(self) -> None:
         """Reset zoom, pitch, and bearing to defaults for 2D viewing."""

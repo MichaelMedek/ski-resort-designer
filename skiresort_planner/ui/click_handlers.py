@@ -22,11 +22,11 @@ from skiresort_planner.model.click_info import ClickInfo, MapClickType, MarkerTy
 from skiresort_planner.model.message import InvalidClickMessage, OutsideTerrainMessage
 from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint
-from skiresort_planner.model.road import Road
-from skiresort_planner.model.slope import Slope
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.ui.actions import (
     center_on_lift,
     center_on_road,
+    center_on_segment_path,
     center_on_slope,
     commit_selected_path,
     confirm_import_action,
@@ -88,29 +88,25 @@ def _start_mode_from_terrain(
 ) -> None:
     """Start the selected build mode from a fresh TERRAIN point (idle first click).
 
-    Every mode centers+zooms once here (the single shared first-click centering). Merge is the
-    exception: it only starts from a node, so a terrain click is guided, not acted on.
+    Does NOT recenter the map — the user keeps their current pan/zoom (only finish / view-panel /
+    Reset View / 3D / place-search reframe the camera). Merge is the exception in intent only: it
+    starts from a node, so a terrain click is guided, not acted on.
     """
     build_mode = ctx.build_mode.mode
     if ctx.build_mode.is_slope():
         logger.debug(f"[IDLE] Terrain click: starting new slope at ({lat:.6f}, {lon:.6f})")
-        ctx.map.set_building_view(lon=lon, lat=lat)
         # Selection + fan arming happen in the before-hook / enter_slope_starting (Single Point
         # of Truth), like roads — not here.
         sm.start_building(lon=lon, lat=lat, elevation=elevation, node_id=None)
     elif ctx.build_mode.is_lift():
         logger.debug(f"[IDLE] Terrain click: starting {build_mode} at ({lat:.6f}, {lon:.6f})")
-        ctx.map.set_building_view(lon=lon, lat=lat)
         sm.select_lift_start(node_id=None, location=PathPoint(lon=lon, lat=lat, elevation=elevation))
     elif ctx.build_mode.is_road():
         logger.debug(f"[IDLE] Terrain click: starting road at ({lat:.6f}, {lon:.6f})")
-        ctx.map.set_building_view(lon=lon, lat=lat)
         # Selection is set in before_start_road (Single Point of Truth), mirroring slopes.
         sm.select_road_start(node_id=None, location=PathPoint(lon=lon, lat=lat, elevation=elevation))
     elif ctx.build_mode.is_import():
-        # Center+zoom (like slope/lift/road) so the box stays framed after Confirm.
         logger.debug(f"[IDLE] Terrain click: placing import box center at ({lat:.6f}, {lon:.6f})")
-        ctx.map.set_building_view(lon=lon, lat=lat)
         sm.start_import(lon=lon, lat=lat)
     elif ctx.build_mode.is_merge():
         # Merge starts from a NODE, not terrain. Guide the user, stay idle.
@@ -123,32 +119,28 @@ def _start_mode_from_node(ctx: PlannerContext, sm: PlannerStateMachine, node: No
     """Start the selected build mode from an existing NODE (idle first click).
 
     Mirrors _start_mode_from_terrain, reusing the node's identity so the flow snaps to the junction.
+    Does NOT recenter the map — the user keeps their current view.
     """
     build_mode = ctx.build_mode.mode
     if ctx.build_mode.is_slope():
         logger.debug(f"[IDLE] Node click: starting slope from {node.id}")
-        ctx.map.set_building_view(lon=node.lon, lat=node.lat)
         # Selection + fan arming happen in the before-hook / enter_slope_starting (Single Point of
         # Truth), like roads — not here.
         sm.start_building(lon=node.lon, lat=node.lat, elevation=node.elevation, node_id=node.id)
     elif ctx.build_mode.is_lift():
         logger.debug(f"[IDLE] Node click: starting {build_mode} from {node.id}")
-        ctx.map.set_building_view(lon=node.lon, lat=node.lat)
         sm.select_lift_start(node_id=node.id)
     elif ctx.build_mode.is_road():
         logger.debug(f"[IDLE] Node click: starting road from {node.id}")
-        ctx.map.set_building_view(lon=node.lon, lat=node.lat)
         # Selection is set in before_start_road (Single Point of Truth), mirroring slopes.
         sm.select_road_start(node_id=node.id)
     elif ctx.build_mode.is_import():
         logger.debug(f"[IDLE] Node click: placing import box center at {node.id}")
-        ctx.map.set_building_view(lon=node.lon, lat=node.lat)
         sm.start_import(lon=node.lon, lat=node.lat)
     elif ctx.build_mode.is_merge():
-        # First node click starts merge. Center like every mode, select the node, then transition
-        # (start_merge reruns via listener, so select BEFORE it).
+        # First node click starts merge. Select the node, then transition (start_merge reruns via
+        # listener, so select BEFORE it). No recenter — keep the user's view.
         logger.debug(f"[IDLE] Node click: starting merge from {node.id}")
-        ctx.map.set_building_view(lon=node.lon, lat=node.lat)
         ctx.merge.toggle(node.id)
         sm.start_merge()
     else:
@@ -220,14 +212,14 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
                 logger.debug(f"[IDLE] Segment {click_info.segment_id} click: orphan segment, ignoring")
                 return
             logger.debug(f"[IDLE] Segment click: showing panel for {parent.name}")
-            if isinstance(parent, Slope):
-                center_on_slope(ctx=ctx, graph=graph, slope=parent, zoom=MapConfig.VIEWING_ZOOM)
+            # parent is a SegmentPath; branch on its reload-safe .kind (never isinstance).
+            center_on_segment_path(ctx=ctx, graph=graph, path=parent, zoom=MapConfig.VIEWING_ZOOM)
+            if parent.kind == SegmentKind.SLOPE:
                 sm.show_slope_info_panel(slope_id=parent.id)
-            elif isinstance(parent, Road):
-                center_on_road(ctx=ctx, graph=graph, road=parent, zoom=MapConfig.VIEWING_ZOOM)
+            elif parent.kind == SegmentKind.ROAD:
                 sm.show_road_info_panel(road_id=parent.id)
             else:
-                raise RuntimeError(f"[IDLE] Segment click: unhandled parent entity {type(parent).__name__}.")
+                raise RuntimeError(f"[IDLE] Segment click: unhandled parent kind {parent.kind}.")
             return
 
         # LIFT → Show lift panel and sync build mode
@@ -621,8 +613,9 @@ def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) ->
     )
 
     logger.info(f"Lift {lift.name} created successfully")
+    # Frame the new lift + remount, but do NOT rerun here — sm.complete_lift's listener reruns.
     center_on_lift(ctx=ctx, graph=graph, lift=lift, zoom=MapConfig.VIEWING_ZOOM)
-    bump_camera_epoch()  # completing a lift shows its viewer → recenter on it
+    bump_camera_epoch()
     sm.complete_lift(lift_id=lift.id)
 
 

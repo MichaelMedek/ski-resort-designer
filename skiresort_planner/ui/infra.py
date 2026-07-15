@@ -8,17 +8,16 @@ mocking 10+ places where st.rerun might be called directly.
 
 IMPORTANT: Only infrastructure belongs here (rerun, map version).
 - Session state object access (sm, ctx, graph) stays in actions.py
-- UI presentation (st.spinner) stays in app.py caller around process_*_deferred calls
+- UI presentation (st.toast progress cues) stays in app.py around process_*_deferred calls
 """
 
 import logging
-from collections.abc import Callable
 from typing import Literal
 
 import streamlit as st
 from streamlit_js_eval import streamlit_js_eval  # type: ignore[import-untyped]
 
-from skiresort_planner.constants import ChartConfig
+from skiresort_planner.constants import ChartConfig, MapConfig
 from skiresort_planner.persistence import backup_store
 
 logger = logging.getLogger(__name__)
@@ -92,35 +91,28 @@ def bump_dedup_epoch() -> None:
     logger.debug(f"[MAP] Bumped dedup_epoch: {old} -> {old + 1}")
 
 
-def reload_map(before: Callable[[], None] | None = None) -> None:
-    """Recenter + remount the map: optional pre-callback, bump camera_epoch, then rerun.
+def reload_map(*, center: tuple[float, float], zoom: int, pitch: float = MapConfig.VIEWING_PITCH) -> None:
+    """Recenter + remount the map on an EXPLICIT frame (center=(lon,lat)), north-up, then rerun.
 
-    Use ONLY for flows that intentionally re-frame the camera (Reset View, 3D toggle, place-search,
-    fresh-graph load). In-place interactions must use trigger_rerun() (optionally with
-    bump_dedup_epoch()) so the user's current pan is preserved.
-
-    Args:
-        before: Optional callback (e.g. set ctx.map center) run before the rerun.
+    The only way to intentionally move the camera; mandatory args so no caller can remount on a stale
+    view. Keep-current-view remounts use bump_camera_epoch(); in-place redraws use trigger_rerun().
     """
-    if before is not None:
-        before()
+    ctx = st.session_state.context
+    ctx.map.set_view(lon=center[0], lat=center[1], zoom=zoom, pitch=pitch)
     bump_camera_epoch()
     trigger_rerun()
 
 
-def viewport_map_height(reserved_below_px: int = 0) -> int | None:
+def viewport_map_height() -> int | None:
     """Map height in px that fills the browser window, or None only on first load.
 
-    The  JS component reports parent.innerHeight (the real browser window), and only on
-    the render its round-trip resolved — every other rerun returns None. We cache the
-    last real value so the map never blanks on the constant reruns a stateful app makes.
-
-    Args:
-        reserved_below_px: Height to leave free below the map (e.g. an elevation
-            profile chart) so it stays visible without scrolling. 0 = map fills all.
+    The JS component reports parent.innerHeight (the real browser window), and only on the render its
+    round-trip resolved — every other rerun returns None. We cache the last real value so the map
+    never blanks on the constant reruns a stateful app makes. Height is state-independent (the profile
+    lives in the right column, not below the map) so it stays constant and never remounts the deck.
 
     Returns None only before the very first successful read (caller shows a placeholder);
-    thereafter the cached viewport height minus reserved space, floored at a minimum.
+    thereafter the cached viewport height, floored at a minimum.
     """
     value = streamlit_js_eval(js_expressions="parent.innerHeight", key="window_inner_height")
     if isinstance(value, int | float):
@@ -128,11 +120,7 @@ def viewport_map_height(reserved_below_px: int = 0) -> int | None:
     window_height = st.session_state.get("window_height_px")
     if window_height is None:
         return None
-    available: int = int(window_height) - ChartConfig.MAP_TOP_OFFSET_PX - reserved_below_px
+    available: int = int(window_height) - ChartConfig.MAP_TOP_OFFSET_PX
     result = max(available, ChartConfig.MAP_MIN_HEIGHT_PX)
-    # Diagnostic: js-eval returns the real innerHeight only on the rerun its round-trip resolved,
-    logger.debug(
-        f"[MAP] viewport_map_height: js_eval={value!r} cached_window={window_height} "
-        f"reserved={reserved_below_px} -> height={result}"
-    )
+    logger.debug(f"[MAP] viewport_map_height: js_eval={value!r} cached_window={window_height} -> height={result}")
     return result

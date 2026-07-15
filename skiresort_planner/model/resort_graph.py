@@ -22,7 +22,6 @@ from typing import TYPE_CHECKING, NamedTuple, TypedDict, cast
 from skiresort_planner.constants import EntityPrefixes, GeometricTuningConfig, MergeConfig, UndoConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
-from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.actions import (
     AddLiftAction,
     AddSegmentsAction,
@@ -834,12 +833,12 @@ class ResortGraph:
         """
         for seg_id in path.segment_ids:
             self.segments.pop(seg_id, None)
-        if isinstance(path, Slope):
+        if path.kind == SegmentKind.SLOPE:
             self.slopes.pop(path.id, None)
-        elif isinstance(path, Road):
+        elif path.kind == SegmentKind.ROAD:
             self.roads.pop(path.id, None)
         else:
-            raise RuntimeError(f"merge collapse: unexpected path type {type(path).__name__}")
+            raise RuntimeError(f"merge collapse: unexpected path kind {path.kind}")
         logger.info(f"Merge collapsed {path.name} to zero length — deleted it and its {len(path.segment_ids)} segments")
         return path.segment_ids
 
@@ -883,7 +882,9 @@ class ResortGraph:
         if entity is None:
             raise KeyError(f"No slope/lift/road with id {entity_id}")
         entity.name = new_name
-        if isinstance(entity, SegmentPath):
+        # Slopes/roads own segments and rename them too; a Lift does not. Structural (hasattr) check —
+        # reload-safe, unlike isinstance(entity, SegmentPath) which breaks across a Streamlit reload.
+        if hasattr(entity, "segment_ids"):
             for seg_id in entity.segment_ids:
                 self.segments[seg_id].name = new_name
         logger.info(f"Renamed {entity_id} to '{new_name}'")
@@ -1085,12 +1086,12 @@ class ResortGraph:
         return min(elevations), max(elevations)
 
     def get_center(self) -> tuple[float, float] | None:
-        """Return (lon, lat) mean of all node coordinates, or None if empty."""
+        """Return (lon, lat) per-coordinate median of all nodes, or None if empty."""
         if not self.nodes:
             return None
         lons = [n.lon for n in self.nodes.values()]
         lats = [n.lat for n in self.nodes.values()]
-        return sum(lons) / len(lons), sum(lats) / len(lats)
+        return statistics.median(lons), statistics.median(lats)
 
     def get_parking_nodes(self) -> list[Node]:
         """Nodes where a road meets a slope or lift — computed parking places.
@@ -1196,7 +1197,7 @@ class ResortGraph:
         for road in graph.roads.values():
             for seg_id in road.segment_ids:
                 seg = graph.segments.get(seg_id)
-                assert seg is not None and enum_eq(a=seg.kind, b=SegmentKind.ROAD), (
+                assert seg is not None and seg.kind == SegmentKind.ROAD, (
                     f"road {road.id} owns segment {seg_id} with kind "
                     f"{seg.kind if seg else 'MISSING'} — expected ROAD (corrupt/stale save)"
                 )

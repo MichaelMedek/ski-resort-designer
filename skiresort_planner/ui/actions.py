@@ -13,6 +13,7 @@ This module handles:
 """
 
 import logging
+import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
 
@@ -42,7 +43,7 @@ from skiresort_planner.model.message import (
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.context import PlannerContext
-from skiresort_planner.ui.infra import bump_camera_epoch, bump_dedup_epoch, reload_map, trigger_rerun
+from skiresort_planner.ui.infra import bump_camera_epoch, bump_dedup_epoch, trigger_rerun
 from skiresort_planner.ui.kind_spec import KIND_SPECS
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
@@ -70,17 +71,8 @@ def center_on_segment_path(
     pitch: float = MapConfig.VIEWING_PITCH,
 ) -> None:
     """Center map on a segment-group entity's midpoint (shared by slopes and roads)."""
-    segments = [graph.segments.get(sid) for sid in path.segment_ids]
-    if segments and segments[0] and segments[-1]:
-        first_seg, last_seg = segments[0], segments[-1]
-        if first_seg.points and last_seg.points:
-            start_pt, end_pt = first_seg.points[0], last_seg.points[-1]
-            ctx.map.set_center(
-                lon=(start_pt.lon + end_pt.lon) / 2,
-                lat=(start_pt.lat + end_pt.lat) / 2,
-            )
-            ctx.map.zoom = zoom
-            ctx.map.pitch = pitch
+    lon, lat = path.center(segments=graph.segments)
+    ctx.map.set_view(lon=lon, lat=lat, zoom=zoom, pitch=pitch)
 
 
 def center_on_slope(
@@ -113,15 +105,8 @@ def center_on_lift(
     pitch: float = MapConfig.VIEWING_PITCH,
 ) -> None:
     """Center map on lift midpoint with specified zoom and pitch."""
-    start_node = graph.nodes.get(lift.start_node_id)
-    end_node = graph.nodes.get(lift.end_node_id)
-    if start_node and end_node:
-        ctx.map.set_center(
-            lon=(start_node.lon + end_node.lon) / 2,
-            lat=(start_node.lat + end_node.lat) / 2,
-        )
-        ctx.map.zoom = zoom
-        ctx.map.pitch = pitch
+    lon, lat = lift.center(nodes=graph.nodes)
+    ctx.map.set_view(lon=lon, lat=lat, zoom=zoom, pitch=pitch)
 
 
 # =============================================================================
@@ -131,8 +116,6 @@ def center_on_lift(
 
 def process_custom_connect_deferred() -> bool:
     """Process pending custom connect path generation.
-
-    Call this wrapped in st.spinner() from app.py.
 
     Returns:
         True if processed, False if nothing pending.
@@ -198,8 +181,8 @@ def process_osm_import_deferred() -> bool:
     """Process a pending OSM import: fetch the chosen area, convert, add as one undoable batch.
 
     The area is the square box the user placed and confirmed (ctx.deferred.osm_import_center_*
-    + half-width). Call this wrapped in st.spinner() from app.py. Returns True if it handled a
-    pending import. Any network/parse error shows an error toast and imports nothing.
+    + half-width). Returns True if it handled a pending import. Any network/parse error shows an
+    error toast and imports nothing.
     """
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
@@ -221,6 +204,7 @@ def process_osm_import_deferred() -> bool:
     ctx.deferred.osm_import_center_lon = None
     ctx.deferred.osm_import_center_lat = None
 
+    t0 = time.perf_counter()
     try:
         importer = OSMImporter(dem=dem)
         summary = importer.convert(bbox=bbox, elements=importer.fetch(bbox=bbox))
@@ -234,14 +218,16 @@ def process_osm_import_deferred() -> bool:
         lifts=[(lift.bottom, lift.top, lift.lift_type, lift.name) for lift in summary.lifts],
         dem=dem,
     )
+    logger.info(
+        f"OSM import: {len(summary.pistes)} pistes + {len(summary.lifts)} lifts "
+        f"in {(time.perf_counter() - t0) * 1000:.0f}ms"
+    )
     bump_dedup_epoch()
     return True
 
 
 def process_path_generation_deferred() -> bool:
     """Process pending path generation.
-
-    Call this wrapped in st.spinner() from app.py.
 
     Returns:
         True if processed, False if nothing pending.
@@ -278,6 +264,7 @@ def _generate_fan_for_building_state(kind: SegmentKind) -> None:
 
     lon, lat, elevation, start_node_id = resolve_build_origin(build=ctx.build(kind), graph=graph)
 
+    t0 = time.perf_counter()
     fan = list(
         factory.generate_fan(kind=kind, lon=lon, lat=lat, elevation=elevation, target_length_m=ctx.segment_length_m)
     )
@@ -293,16 +280,10 @@ def _generate_fan_for_building_state(kind: SegmentKind) -> None:
     # can explain why. `gentlest` is None when the fan was empty for another reason.
     ctx.proposals.too_steep_gentlest_pct = gentlest if (fan and not kept) else None
 
-    # Smart recommendation: pre-select the proposal whose gradient is closest to the last
-    # committed segment's gradient. Set by commit_selected_path for EVERY kind (slopes and
-    # roads), so both get continuity of grade across committed segments.
-    if kept and ctx.deferred.gradient_target is not None:
-        best_idx = _find_closest_gradient_path(paths=kept, target_gradient=ctx.deferred.gradient_target)
-        ctx.proposals.selected_idx = best_idx
-        ctx.deferred.gradient_target = None
-    else:
-        ctx.proposals.selected_idx = 0 if kept else None
-    logger.debug(f"Generated {len(kept)} {kind.value}-fan paths from ({lat:.6f}, {lon:.6f})")
+    _preselect_by_gradient(ctx=ctx, paths=kept)
+    logger.debug(
+        f"Generated {len(kept)} {kind.value}-fan paths from ({lat:.6f}, {lon:.6f}) in {(time.perf_counter() - t0) * 1000:.0f}ms"
+    )
 
 
 def resolve_build_origin(
@@ -369,6 +350,7 @@ def _generate_custom_connect_paths() -> None:
         build=build, graph=graph, custom_start_node=ctx.custom_connect.start_node
     )
 
+    t0 = time.perf_counter()
     candidates = list(
         factory.generate_manual_paths(
             kind=kind,
@@ -424,14 +406,30 @@ def _generate_custom_connect_paths() -> None:
             p.sector_name = f"🔗 {p.sector_name}"
 
     ctx.proposals.paths = proposals
-    ctx.proposals.selected_idx = 0 if proposals else None
+    _preselect_by_gradient(ctx=ctx, paths=proposals)
     ctx.proposals.too_steep_gentlest_pct = None if proposals else gentlest
     # Note: force_mode, target_location, start_node already set by the target before-hook.
     # No cleanup here - before_cancel_* and before_commit_* hooks handle it on exit.
     logger.debug(
         f"Generated {len(proposals)} custom paths from ({start_lat:.6f}, {start_lon:.6f}) "
-        f"to ({target_lat:.6f}, {target_lon:.6f})"
+        f"to ({target_lat:.6f}, {target_lon:.6f}) in {(time.perf_counter() - t0) * 1000:.0f}ms"
     )
+
+
+def _preselect_by_gradient(ctx: "PlannerContext", paths: "list[ProposedPathSegment]") -> None:
+    """Pre-select the proposal whose gradient is closest to the last committed segment's.
+
+    Shared by the fan and custom-connect generators so both give continuity of grade
+    across committed segments. Consumes ctx.deferred.gradient_target (one-shot); falls
+    back to the first proposal when no target is pending, and None when there are none.
+    """
+    if paths and ctx.deferred.gradient_target is not None:
+        ctx.proposals.selected_idx = _find_closest_gradient_path(
+            paths=paths, target_gradient=ctx.deferred.gradient_target
+        )
+        ctx.deferred.gradient_target = None
+    else:
+        ctx.proposals.selected_idx = 0 if paths else None
 
 
 def _find_closest_gradient_path(paths: "list[ProposedPathSegment]", target_gradient: float) -> int:
@@ -465,8 +463,10 @@ def _finalize_entity(kind: SegmentKind) -> "SegmentPath":
 
     entity = KIND_SPECS[kind].finish(graph, build.segments)
     logger.info(f"{kind.value.capitalize()} {entity.name} (id={entity.id}) finalized")
+    # Frame the finished entity + remount, but do NOT rerun here — the caller fires the finish event
+    # whose state-machine listener reruns. (reload_map reruns, which would preempt that send.)
     center_on_segment_path(ctx=ctx, graph=graph, path=entity, zoom=MapConfig.VIEWING_ZOOM)
-    bump_camera_epoch()  # recenter on the finished entity (remount re-reads the framed view)
+    bump_camera_epoch()
     return entity
 
 
@@ -567,7 +567,10 @@ def recompute_paths() -> None:
     else:
         ctx.clear_custom_connect()
         _generate_fan_for_building_state(kind=sm.active_build_kind)
-    reload_map()  # Clear stale click state so proposal 1 can be clicked
+    # New proposals → bump dedup so proposal 1 is clickable again; do NOT recenter (keep the user's
+    # pan — reload_map would remount and snap the camera to the stale stored view).
+    bump_dedup_epoch()
+    trigger_rerun()
 
 
 # =============================================================================
@@ -748,13 +751,15 @@ def _undo_add_lift(undone: AddLiftAction) -> None:
         sm.force_idle()
         trigger_rerun()
     else:
-        reload_map()
+        bump_dedup_epoch()  # redraw from the graph in place — undo must NOT recenter (keep the view)
+        trigger_rerun()
 
 
 def _undo_delete_entity(undone: DeleteSlopeAction | DeleteLiftAction | DeleteRoadAction) -> None:
     """Handle undo of any DELETE_* action: the graph already restored the entity; just redraw."""
     logger.info(f"Restored deleted entity ({type(undone).__name__})")
-    reload_map()
+    bump_dedup_epoch()  # redraw in place — undo must NOT recenter (keep the user's view)
+    trigger_rerun()
 
 
 def _undo_finish_road(undone: FinishRoadAction) -> None:
@@ -781,13 +786,15 @@ def _undo_import_osm(undone: ImportOSMAction) -> None:
         sm.force_idle()
         trigger_rerun()
     else:
-        reload_map()
+        bump_dedup_epoch()  # redraw in place — undo must NOT recenter (keep the user's view)
+        trigger_rerun()
 
 
 def _undo_merge_nodes(undone: MergeNodesAction) -> None:
     """Handle undo of MERGE_NODES: the graph already restored the nodes/endpoints — just redraw."""
     logger.info(f"Undone node merge into {undone.survivor_id}")
-    reload_map()
+    bump_dedup_epoch()  # redraw in place — undo must NOT recenter (keep the user's view)
+    trigger_rerun()
 
 
 # UI side-effect per action type, keyed by ActionType.name.
@@ -809,6 +816,16 @@ assert set(_UNDO_SIDE_EFFECTS) == _action_names, (
     f"_UNDO_SIDE_EFFECTS keys must match ActionType members exactly. "
     f"Missing: {_action_names - set(_UNDO_SIDE_EFFECTS)}; stray: {set(_UNDO_SIDE_EFFECTS) - _action_names}"
 )
+
+
+def undo_cancels_current_build(sm: PlannerStateMachine, ctx: PlannerContext) -> bool:
+    """True if the next undo CANCELS the in-progress build (back to idle) rather than popping the
+    undo stack — i.e. a slope/road build state with no committed segments yet.
+
+    Single source of truth shared by undo_last_action (the branch) and the undo dialog (its label),
+    so the confirmation text can never drift from what undo actually does.
+    """
+    return sm.is_any_path_state and not ctx.build(sm.active_build_kind).segments
 
 
 def undo_last_action() -> None:
@@ -834,7 +851,7 @@ def undo_last_action() -> None:
 
     # Special case: in a build state with no committed segments → cancel that
     # build instead of popping an unrelated undo entry (slopes cancel_slope, roads cancel_road).
-    if (sm.is_any_slope_state or sm.is_any_road_state) and not ctx.build(sm.active_build_kind).segments:
+    if undo_cancels_current_build(sm=sm, ctx=ctx):
         kind = sm.active_build_kind
         logger.info(f"[ACTION] No segments in {kind.value} building state, canceling via undo")
         sm.send(KIND_SPECS[kind].cancel_event)

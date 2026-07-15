@@ -47,7 +47,7 @@ class TestProfileChartRendering:
         segment = list(graph.segments.values())[0]
 
         chart = ProfileChart(height=300)
-        fig = chart.render_segment(segment=segment, difficulty="blue", title="Test Segment")
+        fig = chart.render_segment(segment=segment, difficulty="blue")
 
         assert len(fig.data) > 0, "Figure should have data traces"
 
@@ -69,12 +69,12 @@ class TestProfileChartRendering:
         difficulty = slope.get_difficulty(segments=empty_graph.segments)
         line_colors = [tr.line.color for tr in fig.data if tr.line and tr.line.color]
         assert StyleConfig.SLOPE_COLORS[difficulty] in line_colors
-        # Stats caption carries the slope framing (length + drop).
-        annotations = " ".join(a.text for a in fig.layout.annotations)
-        assert "Length:" in annotations and "Drop:" in annotations
+        # No title/stats caption — that info lives in the right-side panel, not the plot.
+        assert not fig.layout.title.text
+        assert " ".join(a.text for a in fig.layout.annotations) == ""
 
-    def test_road_chart_renders_brown_with_climb_stats(self, empty_graph) -> None:
-        """render_road produces a figure (brown, elevation-change caption)."""
+    def test_road_chart_renders_brown_without_redundant_caption(self, empty_graph) -> None:
+        """render_road produces a brown figure with no title/stats caption (panel shows those)."""
         from skiresort_planner.model.path_point import PathPoint
         from skiresort_planner.model.path_segment import SegmentKind
         from skiresort_planner.model.proposed_path import ProposedPathSegment
@@ -92,8 +92,9 @@ class TestProfileChartRendering:
 
         line_colors = [tr.line.color for tr in fig.data if tr.line and tr.line.color]
         assert StyleConfig.ROAD_COLOR in line_colors
-        annotations = " ".join(a.text for a in fig.layout.annotations)
-        assert "Elevation change:" in annotations and "Steepest:" in annotations
+        # No title/stats caption — that info lives in the right-side panel, not the plot.
+        assert not fig.layout.title.text
+        assert " ".join(a.text for a in fig.layout.annotations) == ""
 
     def test_lift_chart_renders_terrain_cable_pylons(self, empty_graph, mock_dem_blue_slope) -> None:
         """render_lift produces a figure with terrain + cable + pylon traces."""
@@ -117,10 +118,8 @@ class TestProfileChartRendering:
         # Each pylon is drawn as a width-6 line bar (stations use width 8, cable 3, terrain 2).
         pylon_bars = [tr for tr in fig.data if tr.line and tr.line.width == 6]
         assert len(pylon_bars) == len(lift.pylons)
-        # Title reports pylon count, vertical rise, and uses the chairlift color on pylon bars.
-        rise = top.elevation - bottom.elevation
-        assert f"{len(lift.pylons)} pylons" in fig.layout.title.text
-        assert f"{rise:.0f}m rise" in fig.layout.title.text
+        # No title/stats caption — the right-side panel shows name + stats; pylon bars use the chairlift color.
+        assert not fig.layout.title.text
         assert all(bar.line.color == StyleConfig.LIFT_COLORS["chairlift"] for bar in pylon_bars)
 
     def test_building_profile_slope(self, empty_graph, path_points_blue) -> None:
@@ -158,7 +157,6 @@ class TestProfileChartRendering:
         """
         from enum import Enum
 
-        from skiresort_planner.enum_utils import enum_eq
         from skiresort_planner.model.path_segment import SegmentKind
         from skiresort_planner.model.proposed_path import ProposedPathSegment
         from skiresort_planner.ui.bottom_chart import render_building_profile
@@ -172,8 +170,8 @@ class TestProfileChartRendering:
         reloaded_kind = Enum("SegmentKind", {"SLOPE": "slope", "ROAD": "road"}, type=str)  # type: ignore[misc]  # functional enum name intentionally matches the reloaded class, not the variable
         empty_graph.segments[seg_id].kind = reloaded_kind.ROAD
         assert empty_graph.segments[seg_id].kind is not SegmentKind.ROAD, "must be a different class instance"
-        assert enum_eq(a=empty_graph.segments[seg_id].kind, b=SegmentKind.ROAD), (
-            "enum_eq must still match ROAD by value"
+        assert empty_graph.segments[seg_id].kind == SegmentKind.ROAD, (
+            "StrEnum == must still match ROAD by value across a reload"
         )
 
         # Must not raise 'Unknown segment kind' and must still render the road.

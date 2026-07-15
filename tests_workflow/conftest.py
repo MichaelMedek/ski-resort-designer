@@ -260,6 +260,23 @@ class MockDEMService(DEMService):
         return elev
 
 
+class ConeDEMService(MockDEMService):
+    """Radial cone: elevation = summit − radius·grade. Contours are circles, so the fall
+    line ROTATES along any contour — the curved terrain that exposes contour drift that
+    the planar MockDEMService (constant fall line) cannot.
+    """
+
+    def __init__(self, summit: float, grade_pct: float) -> None:
+        """Args: summit elevation at origin; grade_pct radial slope (rise/run %)."""
+        self.summit = summit
+        self.grade_pct = grade_pct
+        self._bounds = (-2.0, -2.0, 2.0, 2.0)
+
+    def get_elevation(self, lon: float, lat: float) -> float | None:
+        M = MapConfig.METERS_PER_DEGREE_EQUATOR
+        return self.summit - float(((lon * M) ** 2 + (lat * M) ** 2) ** 0.5) * self.grade_pct / 100.0
+
+
 # =============================================================================
 # MOCK DEM FIXTURES
 # =============================================================================
@@ -281,6 +298,12 @@ def mock_dem_black_slope() -> MockDEMService:
 def mock_dem_red_slope_diagonal() -> MockDEMService:
     """Mock DEM: 30% south slope + 10% east slope (diagonal fall line)."""
     return MockDEMService(base_elevation=2500.0, slope_ns_pct=30.0, slope_ew_pct=10.0)
+
+
+@pytest.fixture
+def cone_dem_steep() -> ConeDEMService:
+    """Steep radial cone (25% terrain) — curved terrain for contour-drift tests."""
+    return ConeDEMService(summit=4000.0, grade_pct=50.0)
 
 
 # =============================================================================

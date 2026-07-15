@@ -31,7 +31,6 @@ from skiresort_planner.constants import (
     StyleConfig,
 )
 from skiresort_planner.core.geo_calculator import GeoCalculator
-from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.generators.osm_importer import bbox_around
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
@@ -441,7 +440,7 @@ class MapRenderer:
             )
             icon_position = [mid_pt.lon, mid_pt.lat, icon_z]
 
-            if enum_eq(a=segment.kind, b=SegmentKind.ROAD):
+            if segment.kind == SegmentKind.ROAD:
                 # Road segment: flat brown. A finished road opens its panel on click;
                 # an in-build road segment (no Road entity yet) stays segment-typed.
                 road = road_of.get(seg_id)
@@ -467,7 +466,7 @@ class MapRenderer:
                 continue
 
             # Slope segment: difficulty-colored. (Any other kind must be handled above.)
-            if not enum_eq(a=segment.kind, b=SegmentKind.SLOPE):
+            if segment.kind != SegmentKind.SLOPE:
                 raise ValueError(f"segment {seg_id} has unhandled kind for rendering: {segment.kind!r}")
             slope = slope_of.get(seg_id)
             if slope is not None:
@@ -658,8 +657,7 @@ class MapRenderer:
                 )
 
             # Lift icon at midpoint (average elevation)
-            mid_lat = (start_node.lat + end_node.lat) / 2
-            mid_lon = (start_node.lon + end_node.lon) / 2
+            mid_lon, mid_lat = lift.center(nodes=self.graph.nodes)
             mid_elev = (start_node.elevation + end_node.elevation) / 2
             icon_z = self._get_z(
                 elevation=mid_elev,
@@ -846,10 +844,10 @@ class MapRenderer:
 
             is_selected = selected_idx is not None and i == selected_idx
             # Road proposals are brown (translucent → solid when selected); slope
-            # proposals are difficulty-colored. enum_eq is reload-safe.
-            if enum_eq(a=proposal.kind, b=SegmentKind.ROAD):
+            # proposals are difficulty-colored. SegmentKind is a StrEnum → `==` is reload-safe.
+            if proposal.kind == SegmentKind.ROAD:
                 color = list(StyleConfig.ROAD_PROPOSAL_COLOR_RGBA)
-            elif enum_eq(a=proposal.kind, b=SegmentKind.SLOPE):
+            elif proposal.kind == SegmentKind.SLOPE:
                 color = list(StyleConfig.SLOPE_COLORS_RGBA[proposal.difficulty])
             else:
                 raise ValueError(f"Unexpected {proposal.kind=}")

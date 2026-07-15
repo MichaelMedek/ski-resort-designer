@@ -21,10 +21,9 @@ mistakes.
 3. **Grep for the mechanical smells** across the changed files (fast first pass):
    - Defensive fallbacks on internal data: `\.get(` on graph/context dicts, `if .* is None`,
      `try:` blocks that swallow, `-> .* | None` returns whose callers just raise anyway.
-   - Log-before-raise: a `logger.` line immediately followed (within ~3 lines) by `raise`
-     (use a paren-balance-aware scan — multi-line logger calls are easy to miss).
    - Drift risk: two fields assigned from the same condition; a hardcoded set/list of enum names.
    - Duplication: the same multi-line block appearing in 2+ changed files.
+   - Unreadble long comment and docstring blocks
 
 4. **Read each candidate in context** and classify against the principles. Be precise, not trigger-happy:
    - A `.get()` on genuine external input (a map-click id, DEM value, file field) is CORRECT — leave it.

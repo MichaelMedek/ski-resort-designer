@@ -77,6 +77,32 @@ class TestPathTracerDownhill:
         # wrong-target regression, loose enough for terrain-adaptive tracing.
         assert path.avg_slope_pct == pytest.approx(target_pct, abs=8.0)
 
+    @pytest.mark.parametrize("target_pct", [7.0, 12.0, -7.0])
+    def test_signed_target_not_biased_steeper(self, mock_dem_blue_slope, target_pct: float) -> None:
+        """The traced average must not be systematically STEEPER than the target.
+
+        Regression for the step-target floor bug: on 20% terrain a 7% descent used to
+        drift to ~11% (and a −7% climb to ~−11%) because the clamp floored each step at
+        MIN_SKIABLE_PCT, so an overshoot could never self-correct back toward the target.
+        ±3pp is tight enough to catch that bias (the ±8pp convergence test cannot). Noise
+        off for a clean path.
+        """
+        import random
+
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(random, "gauss", lambda mu, sigma: 0.0)
+        try:
+            tracer = PathTracer(dem=mock_dem_blue_slope)
+            path = tracer.trace_hill(
+                start_lon=0.0, start_lat=0.0, target_grade_pct=target_pct, side="center", target_length_m=500
+            )
+        finally:
+            monkeypatch.undo()
+        assert path is not None
+        assert path.avg_slope_pct == pytest.approx(target_pct, abs=3.0), (
+            "traced average must track the target, not ratchet steeper"
+        )
+
     def test_steeper_target_drops_more(self, mock_dem_black_slope) -> None:
         """A steeper target over the same length must lose more elevation."""
         tracer = PathTracer(dem=mock_dem_black_slope)
@@ -193,6 +219,30 @@ class TestPathTracerUphillAndContour:
         east_west_m = abs(path.points[-1].lon - path.points[0].lon)
         north_south_m = abs(path.points[-1].lat - path.points[0].lat)
         assert east_west_m > north_south_m, "Contour runs across the fall line, not along it"
+
+    @pytest.mark.parametrize("side", ["left", "right"])
+    def test_contour_stays_level_on_curved_terrain(self, cone_dem_steep, side: str) -> None:
+        """A 0% contour must stay near level even where the fall line ROTATES under it.
+
+        Regression for the reference-bearing bug: on the radial cone (fall line rotates
+        along every contour) a contour used to drift to ~6.5% because the reference stayed
+        on the downhill fall line and no step could climb the accumulated drop back. This
+        is the "a flat trace perpendicular to the ridge must ALWAYS exist" guarantee, on
+        the curved terrain planar mocks cannot express. Noise off for a clean path.
+        """
+        import random
+
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(random, "gauss", lambda mu, sigma: 0.0)
+        try:
+            tracer = PathTracer(dem=cone_dem_steep)
+            path = tracer.trace_hill(
+                start_lon=0.005, start_lat=0.0, target_grade_pct=0.0, side=side, target_length_m=400
+            )
+        finally:
+            monkeypatch.undo()
+        assert path is not None
+        assert abs(path.avg_slope_pct) < SlopeConfig.MIN_SKIABLE_PCT, "Contour must hold near-level on curved terrain"
 
     def test_climb_diverges_left_right(self, mock_dem_red_slope_diagonal) -> None:
         """Left/right still diverge when climbing (side_sign applies to the flipped bearing)."""

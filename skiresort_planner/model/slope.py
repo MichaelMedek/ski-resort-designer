@@ -15,14 +15,12 @@ Reference: DETAILS.md
 import logging
 import random
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar
+from typing import ClassVar
 
 from skiresort_planner.constants import EntityPrefixes, NameConfig
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
+from skiresort_planner.model.path_segment import PathSegment, SegmentKind
 from skiresort_planner.model.segment_path import SegmentPath
-
-if TYPE_CHECKING:
-    from skiresort_planner.model.path_segment import PathSegment
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +43,7 @@ class Slope(SegmentPath):
     """
 
     ID_PREFIX: ClassVar[str] = EntityPrefixes.SLOPE
+    kind: ClassVar[SegmentKind] = SegmentKind.SLOPE
 
     @staticmethod
     def generate_name(

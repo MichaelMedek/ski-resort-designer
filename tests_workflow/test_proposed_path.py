@@ -1,7 +1,6 @@
 """Unit tests for ProposedPathSegment computed metrics (model/proposed_path.py)."""
 
 from skiresort_planner.constants import SlopeConfig
-from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
@@ -33,7 +32,7 @@ class TestProposedSegmentComputedProperties:
         assert segment.is_connector is False
         assert segment.target_node_id == ""
         assert segment.start_node_id == ""
-        assert enum_eq(a=segment.kind, b=SegmentKind.SLOPE)
+        assert segment.kind == SegmentKind.SLOPE
 
 
 class TestMaxSlopeRollingWindow:

@@ -22,7 +22,7 @@ import logging
 import math
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from skiresort_planner.constants import (
     GeometricTuningConfig,
@@ -33,7 +33,6 @@ from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.path_tracer import PathTracer
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
-from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.generators.connection_planners import GradientMode, LeastCostPathPlanner
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
@@ -42,7 +41,7 @@ from skiresort_planner.model.proposed_path import ProposedPathSegment
 logger = logging.getLogger(__name__)
 
 
-class Side(Enum):
+class Side(StrEnum):
     """Traverse direction relative to fall line."""
 
     LEFT = "left"
@@ -467,7 +466,7 @@ class PathFactory:
 
         # The grid planner ignores `side` (grade-only cost), so every config leaves
         # GradeConfig.side at its CENTER default — no dead LEFT/RIGHT duplication here.
-        if enum_eq(a=kind, b=SegmentKind.ROAD):
+        if kind == SegmentKind.ROAD:
             # A road holds a GREEN grade, signed by the endpoints' direction (climb or
             # descend). Same routing as a green slope; sign is the only difference. On
             # steep ground the planner serpentines to hold it (§7.3).
@@ -477,7 +476,7 @@ class PathFactory:
                 GradeConfig(difficulty="", grade="road", target_slope_pct=grade)
                 for grade in self._road_target_grades(signed_drop=signed_drop)
             ]
-        elif enum_eq(a=kind, b=SegmentKind.SLOPE):
+        elif kind == SegmentKind.SLOPE:
             gradient_mode = GradientMode.DOWNHILL  # slopes always descend
             configs = [
                 GradeConfig(difficulty=difficulty, grade=grade_name, target_slope_pct=target_slope)

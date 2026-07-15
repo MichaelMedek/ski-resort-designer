@@ -841,6 +841,15 @@ class PlannerStateMachine(StateMachine):
         return self.is_slope_starting or self.is_slope_building_only or self.is_slope_custom_path
 
     @property
+    def is_any_path_state(self) -> bool:
+        """True in ANY segment-path build state (slope, road, or a future kind)."""
+        current = self.get_current_state_id()
+        return any(
+            current in {spec.starting_state, spec.building_state, spec.custom_path_state}
+            for spec in KIND_SPECS.values()
+        )
+
+    @property
     def active_build_kind(self) -> SegmentKind:
         """The SegmentKind currently being built, resolved from the active state id.
 

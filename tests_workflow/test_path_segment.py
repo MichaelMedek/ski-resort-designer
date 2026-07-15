@@ -1,6 +1,5 @@
 """Unit tests for the PathSegment model (model/path_segment.py)."""
 
-from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import PathSegment, SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
@@ -14,14 +13,14 @@ class TestSegmentKind:
     def test_slope_commit_defaults_to_slope_kind(self, empty_graph, path_points_blue) -> None:
         empty_graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         seg = list(empty_graph.segments.values())[-1]
-        assert enum_eq(a=seg.kind, b=SegmentKind.SLOPE)
+        assert seg.kind == SegmentKind.SLOPE
 
     def test_road_commit_carries_road_kind(self, empty_graph, path_points_blue) -> None:
         empty_graph.commit_paths(
             paths=[ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)]
         )
         seg = list(empty_graph.segments.values())[-1]
-        assert enum_eq(a=seg.kind, b=SegmentKind.ROAD)
+        assert seg.kind == SegmentKind.ROAD
 
     def test_from_dict_defaults_to_slope_when_kind_absent(self) -> None:
         # Pre-enum saves have no "kind" key → SLOPE (backward compatible).
@@ -35,7 +34,7 @@ class TestSegmentKind:
             "start_node_id": "N1",
             "end_node_id": "N2",
         }
-        assert enum_eq(a=PathSegment.from_dict(data=data).kind, b=SegmentKind.SLOPE)
+        assert PathSegment.from_dict(data=data).kind == SegmentKind.SLOPE
 
     def test_from_dict_reads_road_kind(self) -> None:
         data: dict[str, object] = {
@@ -49,7 +48,7 @@ class TestSegmentKind:
             "end_node_id": "N2",
             "kind": "road",
         }
-        assert enum_eq(a=PathSegment.from_dict(data=data).kind, b=SegmentKind.ROAD)
+        assert PathSegment.from_dict(data=data).kind == SegmentKind.ROAD
 
 
 class TestBeltWidth:

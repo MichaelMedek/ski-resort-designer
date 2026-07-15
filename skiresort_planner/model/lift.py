@@ -387,6 +387,21 @@ class Lift(NodeConnected):
             lon2=end.lon,
         )
 
+    def center(self, nodes: dict[str, "Node"]) -> tuple[float, float]:
+        """(lon, lat) midpoint between the two station nodes.
+
+        Args:
+            nodes: Dict of node_id -> Node.
+
+        Returns:
+            (lon, lat) midpoint.
+        """
+        start = nodes.get(self.start_node_id)
+        end = nodes.get(self.end_node_id)
+        if not start or not end:
+            raise ValueError(f"Start or end node not found for lift {self.id}")
+        return ((start.lon + end.lon) / 2, (start.lat + end.lat) / 2)
+
     def update_type(self, new_type: str, start_node: "Node", end_node: "Node") -> None:
         """Change lift type and refresh type-dependent geometry.
 

@@ -7,7 +7,7 @@ will do (``describe``). Both are model-safe (graph mutation + pure text — no S
 The registry is keyed by ``ActionType.name`` (a plain str), NOT the enum member: the undo stack
 lives in ``st.session_state`` and, after a Streamlit module reload, holds actions built against an
 OLD ``ActionType`` class. An enum-keyed dict (identity hash) would miss those; ``.name`` is a stable
-string across reloads. This mirrors the reload-safety that ``enum_eq`` provided in the old chains.
+string across reloads. ActionType is a StrEnum, so ``==`` comparisons are reload-safe too.
 
 An import-time bijection assert guarantees every ActionType has exactly one handler — a new action
 type that forgets to register here fails the first time this module is imported.
@@ -29,11 +29,12 @@ from skiresort_planner.model.actions import (
     MergeNodesAction,
     UndoAction,
 )
-from skiresort_planner.model.road import Road
-from skiresort_planner.model.slope import Slope
+from skiresort_planner.model.path_segment import SegmentKind
 
 if TYPE_CHECKING:
     from skiresort_planner.model.resort_graph import ResortGraph
+    from skiresort_planner.model.road import Road
+    from skiresort_planner.model.slope import Slope
 
 import logging
 
@@ -233,12 +234,12 @@ class _MergeNodesHandler(UndoHandler):
         for lift_before in merge.lifts_before:
             graph.lifts[lift_before.id] = lift_before
         for path_before in merge.paths_before:
-            if isinstance(path_before, Slope):
-                graph.slopes[path_before.id] = path_before
-            elif isinstance(path_before, Road):
-                graph.roads[path_before.id] = path_before
+            if path_before.kind == SegmentKind.SLOPE:
+                graph.slopes[path_before.id] = cast("Slope", path_before)
+            elif path_before.kind == SegmentKind.ROAD:
+                graph.roads[path_before.id] = cast("Road", path_before)
             else:
-                raise RuntimeError(f"merge undo: unexpected path type {type(path_before).__name__}")
+                raise RuntimeError(f"merge undo: unexpected path kind {path_before.kind}")
         logger.info(f"Reverted merge into {merge.survivor_id}: restored {len(merge.deleted_nodes)} nodes")
 
     def describe(self, action: UndoAction, graph: "ResortGraph") -> str:

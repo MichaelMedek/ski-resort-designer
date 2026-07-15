@@ -21,7 +21,6 @@ import streamlit as st
 
 from skiresort_planner.constants import MapConfig, SlopeConfig, StyleConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
-from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.message import (
     ImportActionMessage,
     ImportPlacingContextMessage,
@@ -41,7 +40,7 @@ from skiresort_planner.ui.actions import (
     rename_entity_action,
 )
 from skiresort_planner.ui.context import EntityKind, PlannerContext
-from skiresort_planner.ui.infra import bump_dedup_epoch, reload_map, trigger_rerun
+from skiresort_planner.ui.infra import bump_camera_epoch, bump_dedup_epoch, reload_map, trigger_rerun
 from skiresort_planner.ui.kind_spec import KIND_SPECS
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
@@ -131,38 +130,21 @@ def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, kind: Enti
         if _action_button("🗺️ Return to 2D View", key=f"{noun}_2d_view", help="Return to the top-down 2D map"):
             logger.debug(f"Switching to 2D view from {noun} {entity_id}")
             ctx.viewing.disable_3d()
-            # Reset pitch, bearing, and zoom to top-down 2D view
-            ctx.map.pitch = MapConfig.DEFAULT_PITCH
-            ctx.map.bearing = MapConfig.DEFAULT_BEARING
-            ctx.map.zoom = MapConfig.DEFAULT_ZOOM
-            # Update map center to entity center so we don't jump to stale position.
-            # The viewed entity is guaranteed to exist (caller validated it). enum_eq is
-            # reload-safe: EntityKind survives Streamlit reloads while the class is redefined.
-            if enum_eq(a=kind, b=EntityKind.SLOPE) or enum_eq(a=kind, b=EntityKind.ROAD):
-                # Both are segment groups → center on their segment endpoints.
-                owner = graph.slopes[entity_id] if enum_eq(a=kind, b=EntityKind.SLOPE) else graph.roads[entity_id]
-                lats, lons = [], []
-                for seg_id in owner.segment_ids:
-                    seg = graph.segments[seg_id]
-                    lats.append(seg.points[0].lat)
-                    lons.append(seg.points[0].lon)
-                    lats.append(seg.points[-1].lat)
-                    lons.append(seg.points[-1].lon)
-                ctx.map.lat = sum(lats) / len(lats)
-                ctx.map.lon = sum(lons) / len(lons)
-            elif enum_eq(a=kind, b=EntityKind.LIFT):
-                lift = graph.lifts[entity_id]
-                start_node = graph.nodes[lift.start_node_id]
-                end_node = graph.nodes[lift.end_node_id]
-                ctx.map.lat = (start_node.lat + end_node.lat) / 2
-                ctx.map.lon = (start_node.lon + end_node.lon) / 2
+            # Reframe top-down on the viewed entity (not a stale position). EntityKind is a StrEnum,
+            # so `==` is reload-safe.
+            if kind in (EntityKind.SLOPE, EntityKind.ROAD):
+                owner = graph.slopes[entity_id] if kind == EntityKind.SLOPE else graph.roads[entity_id]
+                center = owner.center(segments=graph.segments)
+            elif kind == EntityKind.LIFT:
+                center = graph.lifts[entity_id].center(nodes=graph.nodes)
             else:
                 raise ValueError(f"Unknown {kind=}")
-            reload_map()  # Never returns - raises StopExecution
+            reload_map(center=center, zoom=MapConfig.DEFAULT_ZOOM)  # Never returns - raises StopExecution
     elif _action_button("🏔️ View in 3D", key=f"{noun}_3d_view", help=f"View {noun} from the side with terrain"):
         logger.debug(f"Switching to 3D view for {noun} {entity_id}")
         ctx.viewing.enable_3d()
-        reload_map()  # Never returns - raises StopExecution
+        bump_camera_epoch()  # 3D fit is computed in view_state; bare remount re-reads it
+        trigger_rerun()  # Never returns - raises StopExecution
 
 
 def _render_entity_actions(
@@ -367,9 +349,7 @@ class PathBuildingControlPanel(ControlPanel):
 
         if segs > 0:
             stats = self.graph.get_segment_stats(segment_ids=build.segments)
-            emoji = (
-                StyleConfig.DIFFICULTY_EMOJIS[stats["difficulty"]] if enum_eq(a=self.kind, b=SegmentKind.SLOPE) else ""
-            )
+            emoji = StyleConfig.DIFFICULTY_EMOJIS[stats["difficulty"]] if self.kind == SegmentKind.SLOPE else ""
             return PathBuildingContextMessage(
                 icon=spec.icon,
                 kind=self.kind,
@@ -568,6 +548,8 @@ class PathSelectionPanel:
     def render(self) -> None:
         """Render the path selection panel."""
         noun = KIND_SPECS[self.kind].display_noun  # "Slope" / "Road"
+        # Committed-segment warnings surface here regardless of proposal state.
+        self._render_committed_warnings()
         if not self.ctx.proposals.paths:
             # No proposals (e.g. a too-steep custom target). Show the message, but if we are
             # routing a custom target (force_mode) still offer the escape back to the fan.
@@ -638,6 +620,13 @@ class PathSelectionPanel:
             # Fan-out mode: the panel showed auto-generated proposals, but the user can
             # also aim anywhere. Make that discoverable now that there is no button.
             st.caption("🎯 Or click any point or node on the map to route a path there.")
+
+    def _render_committed_warnings(self) -> None:
+        """Surface any warnings on already-committed segments as ⚠️ messages (not on the plot)."""
+        for seg_id in self.ctx.build(self.kind).segments:
+            seg = self.graph.segments[seg_id]  # a committed build segment must exist — let it crash if not
+            for warning in seg.warnings:
+                SegmentWarningMessage(warning_text=str(warning)).display()
 
     def _render_cancel_connection(self, *, is_connector: bool) -> None:
         """The escape back to fan-out during custom-connect. Label adapts: a connector routes to a

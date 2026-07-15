@@ -422,6 +422,39 @@ class TestControlPanelDispatch:
         assert sm.is_slope_starting
         _dispatch(sm, ctx, empty_graph)
 
+    def test_building_panel_surfaces_committed_segment_warning(
+        self, fake_st, empty_graph, path_points_blue, monkeypatch
+    ) -> None:
+        """A committed segment's warning must surface as a ⚠️ warning MESSAGE in the building panel
+        (not as a plot annotation) — regression for moving warnings off the elevation chart.
+        """
+        import streamlit as real_st
+
+        from skiresort_planner.model.path_segment import PathSegment
+        from skiresort_planner.model.warning import TooFlatWarning
+
+        # SegmentWarningMessage.display() does a local `import streamlit` (WARNING → st.warning),
+        # so capture on the real streamlit module, not the per-module fake.
+        warnings: list[str] = []
+        monkeypatch.setattr(real_st, "warning", lambda text, *a, **k: warnings.append(text), raising=False)
+        monkeypatch.setattr(
+            PathSegment, "warnings", property(lambda self: [TooFlatWarning(slope_pct=1.0, min_threshold_pct=5.0)])
+        )
+
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        sm.start_building(
+            lon=path_points_blue[0].lon, lat=path_points_blue[0].lat, elevation=path_points_blue[0].elevation
+        )
+        empty_graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        seg_id = list(empty_graph.segments.keys())[-1]
+        sm.commit_path(segment_id=seg_id, endpoint_node_id=empty_graph.segments[seg_id].end_node_id)  # type: ignore[attr-defined]  # dynamic python-statemachine event
+
+        _dispatch(sm, ctx, empty_graph)
+
+        assert any("Too Flat" in w for w in warnings), (
+            f"building panel must show the ⚠️ too-flat warning; got {warnings}"
+        )
+
     def test_lift_placing_panel_runs(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         from skiresort_planner.model.path_point import PathPoint
 

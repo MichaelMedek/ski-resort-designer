@@ -15,7 +15,6 @@ import streamlit as st
 
 from skiresort_planner.constants import (
     AppConfig,
-    ChartConfig,
     DEMConfig,
     MapConfig,
 )
@@ -316,21 +315,12 @@ def _render_map_fragment_inner() -> None:
             merge_node_ids=build_state.merge_highlight_node_ids(ctx),
         )
 
-    # Spinner only during a view change (2D/3D toggle, Reset View).
-    if is_view_change:
-        with st.spinner("🔄 Switching view..."):
-            deck = _build_deck()
-    else:
-        deck = _build_deck()
+    deck = _build_deck()
 
-    # One elevation profile renders below the map, chosen by the current state (in-build slope/road,
-    # viewed entity, or none). Reserve room only when there is one; else the map fills the viewport.
-    profile = build_state.bottom_profile(ctx=ctx, graph=graph)
-    reserved = ChartConfig.PROFILE_HEIGHT_PX if profile is not None else 0
-
-    # Map height that fills the browser window. None only on first load, before the js-eval
-    # round-trip resolves (cached thereafter, so reruns keep the size).
-    height = viewport_map_height(reserved_below_px=reserved)
+    # Map height fills the browser window — CONSTANT across every lifecycle state so the pydeck
+    # component key never changes from a height shift. The elevation profile renders in the RIGHT column.
+    # None only on first load, before the js-eval round-trip resolves (cached thereafter, so reruns keep the size).
+    height = viewport_map_height()
     if height is None:
         st.info("📐 Sizing map to your window…")
         return
@@ -341,16 +331,13 @@ def _render_map_fragment_inner() -> None:
     map_key = f"main_map_{st.session_state.camera_epoch}_{force_key}_{'3d' if use_3d else '2d'}_h{height}"
     # Diagnostic: a CHANGED map_key remounts the deck.gl iframe (camera snaps to initial_view_state).
     last_map_key = st.session_state.get("_last_map_key")
-    logger.info(
-        f"[MAP] key={map_key} (changed={last_map_key != map_key}) height={height} reserved={reserved} "
-        f"profile={profile is not None} camera_epoch={st.session_state.camera_epoch} force_key={force_key} "
+    logger.debug(
+        f"[MAP] key={map_key} (changed={last_map_key != map_key}) height={height} "
+        f"camera_epoch={st.session_state.camera_epoch} force_key={force_key} "
         f"view=({view_lat:.5f},{view_lon:.5f},z{view_zoom},p{view_pitch:.1f},b{view_bearing:.1f})"
     )
     st.session_state._last_map_key = map_key
     click_result = render_pydeck_map(deck=deck, height=height, key=map_key)
-
-    if profile is not None:
-        st.plotly_chart(profile.fig, width="stretch", key=profile.key)
 
     # Clicks are disabled in 3D (deck.gl picking is unreliable under pitch); warn instead.
     if use_3d:
@@ -412,24 +399,24 @@ def _run_app_ui() -> None:
     renderer.graph = graph
 
     camera_epoch = st.session_state.get("camera_epoch", 0)
-    logger.info(
-        f"[MAIN] ===== Full rerun ===== state={sm.get_state_name()} camera_epoch={camera_epoch} "
+    logger.debug(
+        f"[MAIN] ===== rerun ===== state={sm.get_state_name()} camera_epoch={camera_epoch} "
         f"dedup_epoch={st.session_state.get('dedup_epoch', 0)} "
         f"deferred(osm={ctx.deferred.osm_import},custom={ctx.deferred.custom_connect},"
         f"fan={bool(ctx.deferred.fan_generation)})"
     )
 
-    # Handle deferred actions from previous transitions.
-    # Slow ops get spinners; each is dispatched at most once per render (single-dispatch chain).
+    # Deferred actions (once per render). Progress uses st.toast, NOT st.spinner: a body spinner
+    # shifts the body element order between reruns, re-creating the map iframe (flash + camera reset);
+    # a toast is a transient overlay that never touches the layout. Fan is fast (no cue).
     if ctx.deferred.osm_import:
-        with st.spinner("🗺️ Importing lifts & pistes from OpenStreetMap..."):
-            process_osm_import_deferred()
+        st.toast("🗺️ Importing lifts & pistes from OpenStreetMap…")
+        process_osm_import_deferred()
     elif ctx.deferred.custom_connect:
-        with st.spinner("🎯 Computing custom path options..."):
-            process_custom_connect_deferred()
+        st.toast("🎯 Computing custom path options…")
+        process_custom_connect_deferred()
     elif ctx.deferred.fan_generation:
-        with st.spinner("🗺️ Generating path options..."):
-            process_path_generation_deferred()
+        process_path_generation_deferred()  # fast — no cue needed
 
     # Sidebar (fire-and-forget: its panels call actions directly on button clicks)
     sidebar = SidebarRenderer(state_machine=sm, context=ctx, graph=graph)

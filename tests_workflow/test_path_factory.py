@@ -7,7 +7,6 @@ Focus on _are_paths_similar and _deduplicate_paths which are mathematical compar
 import pytest
 
 from skiresort_planner.constants import GeometricTuningConfig, SlopeConfig
-from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.generators.path_factory import GradeConfig, PathFactory, Side
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
@@ -299,7 +298,7 @@ class TestRoadModeNoStraightLineFallback:
             "road mode must never emit the straight-line fallback"
         )
         # Road-mode proposals carry the ROAD kind so the committed segment is a road.
-        assert all(enum_eq(a=p.kind, b=SegmentKind.ROAD) for p in paths)
+        assert all(p.kind == SegmentKind.ROAD for p in paths)
 
     def test_slope_mode_yields_no_fabricated_fallback(self, path_factory) -> None:
         # Slope mode no longer fabricates a straight-line fallback: it yields only real
@@ -317,7 +316,7 @@ class TestRoadModeNoStraightLineFallback:
                 kind=SegmentKind.SLOPE,
             )
         )
-        assert all(enum_eq(a=p.kind, b=SegmentKind.SLOPE) for p in paths), "slope-mode proposals are SLOPE kind"
+        assert all(p.kind == SegmentKind.SLOPE for p in paths), "slope-mode proposals are SLOPE kind"
         assert all("fallback" not in (p.sector_name or "").lower() for p in paths), (
             "slope mode no longer fabricates a straight-line fallback"
         )
@@ -380,7 +379,7 @@ class TestGenerateRoadFan:
         """Every road-fan proposal is a ROAD-kind, non-connector segment."""
         paths = list(path_factory.generate_fan(kind=SegmentKind.ROAD, lon=0.0, lat=0.0, elevation=2500.0))
         assert paths
-        assert all(enum_eq(a=p.kind, b=SegmentKind.ROAD) for p in paths), "road fan yields ROAD kind"
+        assert all(p.kind == SegmentKind.ROAD for p in paths), "road fan yields ROAD kind"
         assert all(p.is_connector is False for p in paths), "fan proposals are not connectors"
 
     def test_road_fan_grades_are_single_sourced_green(self, path_factory: PathFactory) -> None:
@@ -444,7 +443,7 @@ class TestStraightLine:
             assert pt.lat == pytest.approx(s_lat + (t_lat - s_lat) * frac, abs=1e-12)
             assert pt.elevation == pytest.approx(s_elev + (t_elev - s_elev) * frac, abs=1e-9)
         assert road.is_connector
-        assert enum_eq(a=road.kind, b=SegmentKind.ROAD)
+        assert road.kind == SegmentKind.ROAD
         assert road.target_difficulty == "", "a road carries no ski difficulty"
 
 

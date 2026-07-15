@@ -18,17 +18,17 @@ STRICT: All click detection flows through ClickInfo. Any deviation is a bug.
 """
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 
-class MapClickType(Enum):
+class MapClickType(StrEnum):
     """Source of click on the map - EXACTLY one per interaction."""
 
     MARKER = "marker"  # Clicked on a marker (has tooltip)
     TERRAIN = "terrain"  # Clicked on empty map (raw coordinates)
 
 
-class MarkerType(Enum):
+class MarkerType(StrEnum):
     """Type of marker clicked. None for terrain clicks."""
 
     NODE = "node"
