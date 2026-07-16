@@ -88,7 +88,7 @@ class PisteImport:
     @property
     def length_m(self) -> float:
         """Ground length of the run (sum of legs between consecutive DEM-sampled points)."""
-        return sum(self.points[i].distance_to(other=self.points[i + 1]) for i in range(len(self.points) - 1))
+        return PathPoint.total_length_m(self.points)
 
 
 @dataclass(frozen=True)

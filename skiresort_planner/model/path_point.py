@@ -80,6 +80,11 @@ class PathPoint:
             cum.append(cum[-1] + points[i - 1].distance_to(other=points[i]))
         return cum
 
+    @staticmethod
+    def total_length_m(points: list["PathPoint"]) -> float:
+        """Total polyline length (m) — 0 for fewer than two points. Single source for path length."""
+        return PathPoint.cumulative_distances(points)[-1] if len(points) >= 2 else 0.0
+
     def __repr__(self) -> str:
         return f"PathPoint(lon={self.lon:.5f}, lat={self.lat:.5f}, elev={self.elevation:.1f}m)"
 

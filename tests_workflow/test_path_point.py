@@ -48,3 +48,20 @@ class TestCumulativeDistances:
     def test_empty_is_zero_seed(self) -> None:
         # Seeded with [0.0]; no pairs to accumulate.
         assert PathPoint.cumulative_distances([]) == [0.0]
+
+
+class TestTotalLength:
+    """PathPoint.total_length_m — single source for polyline length (was inline-duplicated)."""
+
+    def test_matches_cumulative_last(self) -> None:
+        pts = [
+            PathPoint(lon=10.0, lat=46.0, elevation=2000.0),
+            PathPoint(lon=10.001, lat=46.0, elevation=1990.0),
+            PathPoint(lon=10.002, lat=46.0, elevation=1980.0),
+        ]
+        assert PathPoint.total_length_m(pts) == pytest.approx(PathPoint.cumulative_distances(pts)[-1])
+        assert PathPoint.total_length_m(pts) > 0
+
+    def test_fewer_than_two_points_is_zero(self) -> None:
+        assert PathPoint.total_length_m([]) == 0.0
+        assert PathPoint.total_length_m([PathPoint(lon=10.0, lat=46.0, elevation=2000.0)]) == 0.0

@@ -56,9 +56,7 @@ class Path:
     @property
     def length_m(self) -> float:
         """Total path length in meters (computed from point distances)."""
-        if len(self.points) < 2:
-            return 0.0
-        return sum(self.points[i].distance_to(other=self.points[i + 1]) for i in range(len(self.points) - 1))
+        return PathPoint.total_length_m(self.points)
 
     @property
     def avg_slope_pct(self) -> float:
