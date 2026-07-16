@@ -210,22 +210,14 @@ class PathTracer:
                 smoothing_weight = GeometricTuningConfig.BEARING_SMOOTHING_WEIGHT * (
                     1.0 - terrain_slope / flat_terrain_threshold
                 )
-                diff = terrain_bearing - smoothed_bearing
-                if diff > 180:
-                    diff -= 360
-                elif diff < -180:
-                    diff += 360
+                diff = GeoCalculator.normalize_bearing_diff(terrain_bearing - smoothed_bearing)
                 target_bearing = (smoothed_bearing + (1.0 - smoothing_weight) * diff) % 360
             else:
                 target_bearing = terrain_bearing
 
             # Self-intersection prevention
             if previous_bearing is not None:
-                turn_angle = target_bearing - previous_bearing
-                while turn_angle > 180:
-                    turn_angle -= 360
-                while turn_angle < -180:
-                    turn_angle += 360
+                turn_angle = GeoCalculator.normalize_bearing_diff(target_bearing - previous_bearing)
                 if abs(turn_angle) > max_turn_per_step:
                     clamped_turn = max_turn_per_step if turn_angle > 0 else -max_turn_per_step
                     target_bearing = (previous_bearing + clamped_turn) % 360

@@ -257,6 +257,7 @@ class TestPlannerIntegration:
             target_lat=47.001,
             target_elevation=2100.0,  # Higher than start
             target_grade_pct=20.0,
+            smoothing_factor=GeometricTuningConfig.SLOPE_SMOOTHING_FACTOR,
         )
 
         assert result is None, "Uphill path should return None"
@@ -271,6 +272,7 @@ class TestPlannerIntegration:
             target_lat=47.0,
             target_elevation=1900.0,
             target_grade_pct=20.0,
+            smoothing_factor=GeometricTuningConfig.SLOPE_SMOOTHING_FACTOR,
         )
 
         assert result is None, "Zero distance path should return None"
@@ -295,6 +297,7 @@ class TestPlannerIntegration:
             target_lat=47.0 + step_deg,
             target_elevation=target_elev,
             target_grade_pct=20.0,
+            smoothing_factor=GeometricTuningConfig.SLOPE_SMOOTHING_FACTOR,
             gradient_mode=GradientMode.DOWNHILL,
         )
 
@@ -323,6 +326,7 @@ class TestPlannerIntegration:
             target_lat=47.0 - step_deg,
             target_elevation=target_elev,
             target_grade_pct=-20.0,
+            smoothing_factor=GeometricTuningConfig.SLOPE_SMOOTHING_FACTOR,
             gradient_mode=GradientMode.UPHILL,
         )
 
@@ -351,6 +355,7 @@ class TestPlannerIntegration:
             target_lat=47.0 + step_deg,
             target_elevation=target_elev,
             target_grade_pct=-20.0,
+            smoothing_factor=GeometricTuningConfig.SLOPE_SMOOTHING_FACTOR,
             gradient_mode=GradientMode.UPHILL,
         )
 

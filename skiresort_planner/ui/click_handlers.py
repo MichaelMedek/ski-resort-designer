@@ -229,9 +229,8 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
             if not lift:
                 raise RuntimeError(f"Lift {click_info.lift_id} not found in graph")
             logger.debug(f"[IDLE] Lift click: showing panel for {lift.name}")
-            # Sync build_mode and lift.type to the viewed lift's type
+            # Sync build mode to the viewed lift's type (single source of truth for selection)
             ctx.build_mode.mode = lift.lift_type
-            ctx.lift.type = lift.lift_type
             center_on_lift(ctx=ctx, graph=graph, lift=lift, zoom=MapConfig.VIEWING_ZOOM)
             sm.show_lift_info_panel(lift_id=lift.id)  # Triggers st.rerun() via listener
             return
@@ -243,9 +242,8 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
             if not lift:
                 raise RuntimeError(f"Lift {click_info.lift_id} not found in graph")
             logger.debug(f"[IDLE] Pylon click: showing panel for {lift.name}")
-            # Sync build_mode and lift.type to the viewed lift's type
+            # Sync build mode to the viewed lift's type (single source of truth for selection)
             ctx.build_mode.mode = lift.lift_type
-            ctx.lift.type = lift.lift_type
             center_on_lift(ctx=ctx, graph=graph, lift=lift, zoom=MapConfig.VIEWING_ZOOM)
             sm.show_lift_info_panel(lift_id=lift.id)  # Triggers st.rerun() via listener
             return
@@ -608,7 +606,7 @@ def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) ->
     lift = graph.add_lift(
         start_node_id=start_node.id,
         end_node_id=end_node.id,
-        lift_type=ctx.lift.type,
+        lift_type=ctx.build_mode.mode,
         dem=dem,
     )
 

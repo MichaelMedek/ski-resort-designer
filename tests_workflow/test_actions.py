@@ -365,7 +365,6 @@ class TestSelectLiftTypeAction:
         select_lift_type_action(lift_type="gondola")
 
         assert ctx.build_mode.mode == "gondola", "the next lift will be built as a gondola"
-        assert ctx.lift.type == "gondola"
 
     def test_retypes_the_viewed_lift(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         from skiresort_planner.ui.actions import select_lift_type_action
@@ -384,7 +383,7 @@ class TestSelectLiftTypeAction:
         select_lift_type_action(lift_type="gondola")
 
         assert empty_graph.lifts[lift.id].lift_type == "gondola", "update_type re-typed the viewed lift"
-        assert ctx.build_mode.mode == "gondola" and ctx.lift.type == "gondola"
+        assert ctx.build_mode.mode == "gondola"
 
 
 class TestSlopeBuildingActionFlow:
@@ -586,11 +585,47 @@ class TestDeferredProcessing:
         ctx.deferred.custom_connect = False
         assert process_custom_connect_deferred() is False
 
+    def test_custom_connect_orders_shortest_first_straight_last(
+        self, fake_st, monkeypatch, path_factory, mock_dem_red_slope_diagonal
+    ) -> None:
+        # Custom-connect sorts serpentine proposals SHORTEST→longest, appends the straight line LAST,
+        # and pre-selects the shortest (index 0) — NOT the gradient-closest (that's the fan's rule).
+        from skiresort_planner.ui import actions
+
+        dem = mock_dem_red_slope_diagonal
+        sm, ctx = _session(fake_st, ResortGraph(), factory=path_factory, dem=dem)
+        start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
+        sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
+        ctx.selection.set(lon=0.0, lat=0.0, elevation=start_elev)
+
+        # A run of N points stepping south by `step` metres each — length scales with (N-1)*step.
+        def _seg(n: int, step: float) -> ProposedPathSegment:
+            pts = [PathPoint(lon=0.0, lat=-(i * step) / M, elevation=start_elev - i * step * 0.1) for i in range(n)]
+            return ProposedPathSegment(points=pts, is_connector=False)
+
+        long_route, short_route = _seg(6, 100.0), _seg(3, 100.0)  # ~500m vs ~200m, out of order
+        straight = _seg(2, 150.0)  # the straight line, appended last regardless of length
+        monkeypatch.setattr(path_factory, "generate_manual_paths", lambda **_: [long_route, short_route])
+        monkeypatch.setattr(path_factory, "straight_line", lambda **_: straight)
+
+        ctx.custom_connect.target_location = (0.0, -500 / M, dem.get_elevation_or_raise(lon=0.0, lat=-500 / M))
+        ctx.deferred.gradient_target = 99.0  # a stale fan target must be IGNORED by custom-connect
+        ctx.deferred.custom_connect = True
+        assert actions.process_custom_connect_deferred() is True
+
+        paths = ctx.proposals.paths
+        lengths = [p.length_m for p in paths]
+        assert lengths[:2] == sorted(lengths[:2]), "serpentine proposals ordered shortest-first"
+        assert paths[0] is short_route, "shortest route is first"
+        assert paths[-1] is straight, "straight line appended last"
+        assert ctx.proposals.selected_idx == 0, "shortest route pre-selected (not gradient-closest)"
+        assert ctx.deferred.gradient_target is None, "stale fan gradient target consumed/ignored"
+
 
 class TestGradientPreselection:
-    """_preselect_by_gradient — shared by the fan and custom-connect generators so both
-    keep grade continuity across committed segments (the pre-selection used to fire only
-    for the fan).
+    """_preselect_by_rule — the fan passes the closest-gradient rule (grade continuity across
+    committed segments); custom-connect passes a shortest-first (index 0) rule. Both always
+    consume the one-shot gradient_target.
     """
 
     def _paths(self, *slopes: float) -> "list[ProposedPathSegment]":
@@ -601,30 +636,39 @@ class TestGradientPreselection:
             out.append(ProposedPathSegment(points=pts, kind=SegmentKind.SLOPE))
         return out
 
-    def test_preselects_closest_gradient_and_consumes_target(self, fake_st, mock_dem_blue_slope) -> None:
-        from skiresort_planner.ui.actions import _preselect_by_gradient
+    def test_gradient_rule_preselects_closest_and_consumes_target(self, fake_st, mock_dem_blue_slope) -> None:
+        from skiresort_planner.ui.actions import _closest_gradient_rule, _preselect_by_rule
 
         _sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
         paths = self._paths(5.0, 18.0, 30.0)
         ctx.deferred.gradient_target = 17.0  # closest to the 18% path (index 1)
-        _preselect_by_gradient(ctx=ctx, paths=paths)
+        _preselect_by_rule(ctx=ctx, paths=paths, rule=_closest_gradient_rule(ctx))
         assert ctx.proposals.selected_idx == 1, "pre-selects the proposal nearest the last committed grade"
         assert ctx.deferred.gradient_target is None, "one-shot: the target is consumed"
 
-    def test_defaults_to_first_without_target(self, fake_st, mock_dem_blue_slope) -> None:
-        from skiresort_planner.ui.actions import _preselect_by_gradient
+    def test_gradient_rule_defaults_to_first_without_target(self, fake_st, mock_dem_blue_slope) -> None:
+        from skiresort_planner.ui.actions import _closest_gradient_rule, _preselect_by_rule
 
         _sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
         ctx.deferred.gradient_target = None
-        _preselect_by_gradient(ctx=ctx, paths=self._paths(5.0, 18.0))
+        _preselect_by_rule(ctx=ctx, paths=self._paths(5.0, 18.0), rule=_closest_gradient_rule(ctx))
         assert ctx.proposals.selected_idx == 0, "no target → first proposal"
 
+    def test_shortest_rule_selects_index_zero(self, fake_st, mock_dem_blue_slope) -> None:
+        from skiresort_planner.ui.actions import _preselect_by_rule, _shortest_rule
+
+        _sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
+        ctx.deferred.gradient_target = 17.0  # a stale fan target must still be consumed
+        _preselect_by_rule(ctx=ctx, paths=self._paths(5.0, 18.0), rule=_shortest_rule)
+        assert ctx.proposals.selected_idx == 0, "custom-connect shortest-first → index 0"
+        assert ctx.deferred.gradient_target is None, "stale fan target consumed even for the shortest rule"
+
     def test_none_when_no_paths(self, fake_st, mock_dem_blue_slope) -> None:
-        from skiresort_planner.ui.actions import _preselect_by_gradient
+        from skiresort_planner.ui.actions import _closest_gradient_rule, _preselect_by_rule
 
         _sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
         ctx.deferred.gradient_target = 17.0
-        _preselect_by_gradient(ctx=ctx, paths=[])
+        _preselect_by_rule(ctx=ctx, paths=[], rule=_closest_gradient_rule(ctx))
         assert ctx.proposals.selected_idx is None, "empty proposals → no selection"
 
 

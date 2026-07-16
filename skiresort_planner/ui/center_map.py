@@ -316,7 +316,6 @@ class MapRenderer:
     def _calculate_3d_view_for_entity(
         graph: ResortGraph,
         entity: "Slope | Road | Lift",
-        label: str,
     ) -> tuple[float, float, float, int, float]:
         """Side-view camera for any start/end-node entity (slope, road, or lift).
 
@@ -326,15 +325,12 @@ class MapRenderer:
         Args:
             graph: Resort graph (for node lookup).
             entity: A Slope/Road/Lift with start_node_id/end_node_id.
-            label: Entity label for the error message.
 
         Returns:
             Tuple (lat, lon, bearing, zoom, pitch) for camera settings.
         """
-        start_node = graph.nodes.get(entity.start_node_id)
-        end_node = graph.nodes.get(entity.end_node_id)
-        if not start_node or not end_node:
-            raise ValueError(f"{label} {entity.id} has missing nodes")
+        start_node = graph.nodes[entity.start_node_id]
+        end_node = graph.nodes[entity.end_node_id]
 
         return MapRenderer._calculate_3d_view_for_endpoints(
             start_lat=start_node.lat,
@@ -355,7 +351,7 @@ class MapRenderer:
         slope = graph.slopes.get(slope_id)
         if not slope:
             raise ValueError(f"Slope {slope_id} not found")
-        return MapRenderer._calculate_3d_view_for_entity(graph=graph, entity=slope, label="Slope")
+        return MapRenderer._calculate_3d_view_for_entity(graph=graph, entity=slope)
 
     @staticmethod
     def calculate_3d_view_for_road(
@@ -366,7 +362,7 @@ class MapRenderer:
         road = graph.roads.get(road_id)
         if not road:
             raise ValueError(f"Road {road_id} not found")
-        return MapRenderer._calculate_3d_view_for_entity(graph=graph, entity=road, label="Road")
+        return MapRenderer._calculate_3d_view_for_entity(graph=graph, entity=road)
 
     @staticmethod
     def calculate_3d_view_for_lift(
@@ -377,7 +373,7 @@ class MapRenderer:
         lift = graph.lifts.get(lift_id)
         if not lift:
             raise ValueError(f"Lift {lift_id} not found")
-        return MapRenderer._calculate_3d_view_for_entity(graph=graph, entity=lift, label="Lift")
+        return MapRenderer._calculate_3d_view_for_entity(graph=graph, entity=lift)
 
     # =========================================================================
     # SEGMENT LAYERS
@@ -602,12 +598,8 @@ class MapRenderer:
         icon_data = []
 
         for lift_id, lift in self.graph.lifts.items():
-            start_node = self.graph.nodes.get(lift.start_node_id)
-            end_node = self.graph.nodes.get(lift.end_node_id)
-
-            if start_node is None or end_node is None:
-                # A lift's endpoint nodes always exist in the graph
-                raise RuntimeError(f"Lift {lift_id} has missing nodes")
+            start_node = self.graph.nodes[lift.start_node_id]
+            end_node = self.graph.nodes[lift.end_node_id]
 
             color = list(StyleConfig.LIFT_COLORS_RGBA[lift.lift_type])
 
@@ -1045,41 +1037,37 @@ class MapRenderer:
             flat_z=MapConfig.Z_OFFSET_2D_MARKERS,
         )
 
-        # Fall line arrow (difficulty colored)
-        if orientation.fall_line is not None:
+        def _append_arrow(bearing_deg: float, arrow_color: list[int], name: str) -> None:
             end_lon, end_lat = GeoCalculator.destination(
                 lon=lon,
                 lat=lat,
-                bearing_deg=orientation.fall_line,
+                bearing_deg=bearing_deg,
                 distance_m=MarkerConfig.ORIENTATION_ARROW_LENGTH_M,
-            )
-            color = StyleConfig.SLOPE_COLORS_RGBA.get(
-                orientation.difficulty_color.lower() if orientation.difficulty_color else "green",
-                [34, 197, 94, 230],  # Default green if not found
             )
             arrow_data.append(
                 {
                     "path": [[lon, lat, arrow_z], [end_lon, end_lat, arrow_z]],
-                    "color": color,
-                    "name": "Fall line",
+                    "color": arrow_color,
+                    "name": name,
                 }
             )
 
+        # Fall line arrow (difficulty colored)
+        if orientation.fall_line is not None:
+            # difficulty_color is a hex string; map it back to the matching RGBA, defaulting to green.
+            color = next(
+                (
+                    list(rgba)
+                    for name, rgba in StyleConfig.SLOPE_COLORS_RGBA.items()
+                    if StyleConfig.SLOPE_COLORS[name] == orientation.difficulty_color
+                ),
+                list(StyleConfig.SLOPE_COLORS_RGBA["green"]),
+            )
+            _append_arrow(orientation.fall_line, color, "Fall line")
+
         # Contour arrows (gray)
         for bearing in [orientation.contour_left, orientation.contour_right]:
-            end_lon, end_lat = GeoCalculator.destination(
-                lon=lon,
-                lat=lat,
-                bearing_deg=bearing,
-                distance_m=MarkerConfig.ORIENTATION_ARROW_LENGTH_M,
-            )
-            arrow_data.append(
-                {
-                    "path": [[lon, lat, arrow_z], [end_lon, end_lat, arrow_z]],
-                    "color": MarkerConfig.ORIENTATION_CONTOUR_COLOR,
-                    "name": "Contour",
-                }
-            )
+            _append_arrow(bearing, MarkerConfig.ORIENTATION_CONTOUR_COLOR, "Contour")
 
         layers = []
 
@@ -1104,7 +1092,7 @@ class MapRenderer:
                     [{"position": [lon, lat, arrow_z], "name": "Selection point"}],
                     get_position="position",
                     get_radius=MarkerConfig.DIRECTION_CENTER_MARKER_RADIUS,
-                    get_fill_color=arrow_data[0]["color"] if arrow_data else [255, 255, 255, 200],
+                    get_fill_color=arrow_data[0]["color"],
                     get_line_color=[255, 255, 255, 255],
                     stroked=True,
                     line_width_min_pixels=3,

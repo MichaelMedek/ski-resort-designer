@@ -13,7 +13,7 @@ from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
-from skiresort_planner.ui.context import EntityKind, PlannerContext
+from skiresort_planner.ui.context import BuildMode, EntityKind, PlannerContext
 from skiresort_planner.ui.mode_registry import ENTITY_KIND_SPECS, render_control_panel
 from skiresort_planner.ui.right_panel import (
     EntityInfoControlPanel,
@@ -493,6 +493,7 @@ class TestControlPanelDispatch:
         from skiresort_planner.model.path_point import PathPoint
 
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        ctx.build_mode.mode = BuildMode.CHAIRLIFT  # lift type selected before entering LIFT_PLACING
         loc = PathPoint(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
         sm.start_lift(node_id=None, location=loc)
         assert sm.is_lift_placing

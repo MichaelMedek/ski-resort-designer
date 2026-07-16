@@ -9,6 +9,7 @@ like a bridge/cut/fill.
 """
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from math import cos, radians
 
@@ -42,14 +43,6 @@ class _SplineFit:
     cumdist: npt.NDArray[np.float64]  # per-input-point arc length (the spline parameter u)
 
 
-def _cumulative_distances(points: list[PathPoint]) -> list[float]:
-    """Cumulative horizontal distance (m) along a polyline, starting at 0."""
-    cum = [0.0]
-    for i in range(1, len(points)):
-        cum.append(cum[-1] + points[i - 1].distance_to(other=points[i]))
-    return cum
-
-
 def _fit_spline(
     points: list[PathPoint], smoothing_factor: float, step_m: float, weights: npt.NDArray[np.float64] | None
 ) -> _SplineFit | None:
@@ -72,7 +65,7 @@ def _fit_spline(
     ys = np.array([(p.lat - lat0) * m_per_deg for p in points])
     elevs = np.array([p.elevation for p in points])
 
-    cumdist = np.array(_cumulative_distances(points=points))
+    cumdist = np.array(PathPoint.cumulative_distances(points))
     if float(cumdist[-1]) < step_m * 2:
         return None
 
@@ -112,6 +105,11 @@ def _eval_spline(fit: _SplineFit, dists: npt.NDArray[np.float64]) -> list[PathPo
     ]
 
 
+def _uniform_resampling_grid(total_length: float, step_m: float) -> npt.NDArray[np.float64]:
+    """Uniform distance grid from 0 to total_length inclusive, at step_m intervals."""
+    return np.arange(0, total_length + step_m / 2, step_m)
+
+
 def resample_cubic_spline(points: list[PathPoint], smoothing_factor: float, step_m: float) -> list[PathPoint]:
     """Fit a cubic smoothing spline through points and resample it every step_m. Elevation
     is the spline's 3rd dimension (not DEM-sampled).
@@ -123,8 +121,26 @@ def resample_cubic_spline(points: list[PathPoint], smoothing_factor: float, step
     if fit is None:
         return points
     total_length = float(fit.cumdist[-1])
-    new_dists = np.arange(0, total_length + step_m / 2, step_m)
+    new_dists = _uniform_resampling_grid(total_length, step_m)
     return _eval_spline(fit=fit, dists=new_dists)
+
+
+def smooth_proposal_points(
+    points: list[PathPoint],
+    smoothing_factor: float,
+    step_m: float,
+    elevation_fn: Callable[[float, float], float | None],
+) -> list[PathPoint]:
+    """Smooth a single-segment proposal (spline) then re-query the DEM at each new position.
+
+    Shared by the fan tracer and the grid planner: both are ground-hugging ribbons, so after
+    rounding the horizontal jitter every resampled point takes its DEM elevation (not the
+    spline's interpolated one). Returns points unchanged when too short to smooth.
+    """
+    smoothed = resample_cubic_spline(points=points, smoothing_factor=smoothing_factor, step_m=step_m)
+    if smoothed is points:
+        return points
+    return [PathPoint(lon=p.lon, lat=p.lat, elevation=elevation_fn(p.lon, p.lat) or p.elevation) for p in smoothed]
 
 
 def smooth_joined_path(
@@ -174,7 +190,7 @@ def smooth_joined_path(
     # Resample on a uniform grid but force an exact sample at every junction arc-position,
     # so each cut lands on its node and adjacent segments share that point by value.
     total_length = float(fit.cumdist[-1])
-    base = np.arange(0, total_length + step_m / 2, step_m)
+    base = _uniform_resampling_grid(total_length, step_m)
     junction_dists = [float(fit.cumdist[j]) for j in junction_after]
     all_dists = np.array(sorted(set(base.tolist()) | set(junction_dists)))
     smoothed = _eval_spline(fit=fit, dists=all_dists)

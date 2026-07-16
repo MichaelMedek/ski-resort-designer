@@ -25,6 +25,7 @@ import numpy as np
 import numpy.typing as npt
 import rasterio
 import requests
+from rasterio.io import DatasetReader
 from rasterio.warp import transform
 
 from skiresort_planner.constants import DEMConfig
@@ -87,7 +88,7 @@ class DEMService:
     _instance: Optional["DEMService"] = None
     _load_lock = threading.Lock()
     _dem_path: Path
-    _dem: object = None
+    _dem: DatasetReader | None = None
     _dem_crs: str | None = None
     _dem_array: npt.NDArray[np.float64] | None = None
     _dem_transform: object = None
@@ -201,7 +202,7 @@ class DEMService:
         self._ensure_loaded()
         assert self._dem is not None
         assert self._dem_crs is not None, "DEM CRS must be set after _ensure_loaded()"
-        b = self._dem.bounds  # type: ignore[attr-defined]
+        b = self._dem.bounds
 
         if self._dem_crs != "EPSG:4326":
             # Transform corners to WGS84

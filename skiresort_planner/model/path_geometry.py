@@ -71,21 +71,12 @@ class Path:
     def max_slope_pct(self) -> float:
         """Steepest-section slope MAGNITUDE (always ≥ 0) within any rolling window.
 
-        "Steepest section" is a magnitude by definition — how steep the ground
-        is over ROLLING_WINDOW_M, regardless of whether the path climbs or
-        descends. Both consumers want the magnitude: difficulty classification
-        (steeper = harder) and the road ±gradient cap (a 16% climb is as invalid
-        as a 16% descent).
-
-        Algorithm:
-        1. Seed with abs(avg_slope_pct)
-        2. For each starting point, walk forward point by point
-        3. When cumulative distance exceeds the window, take that section's
-           slope magnitude and keep the maximum across all windows
+        Magnitude by definition (a 16% climb is as steep as a 16% descent); used by both
+        difficulty classification and the road ±gradient cap. Rolls a ROLLING_WINDOW_M window
+        from each point and keeps the max, falling back to abs(avg_slope_pct) on short paths.
 
         Returns:
-            Steepest slope magnitude in percent. Falls back to abs(avg_slope_pct)
-            when the path is shorter than the rolling window.
+            Steepest slope magnitude in percent.
         """
         window_m = SlopeConfig.ROLLING_WINDOW_M
         max_slope = abs(self.avg_slope_pct)  # Magnitude seed
@@ -94,10 +85,8 @@ class Path:
         if self.length_m < window_m or len(self.points) < 2:
             return max_slope
 
-        # Build cumulative distances for efficient lookup
-        cum_dist = [0.0]
-        for i in range(len(self.points) - 1):
-            cum_dist.append(cum_dist[-1] + self.points[i].distance_to(other=self.points[i + 1]))
+        # Cumulative distance at each point, for efficient window lookup.
+        cum_dist = PathPoint.cumulative_distances(self.points)
 
         # Roll window starting from each point
         for start_idx in range(len(self.points) - 1):

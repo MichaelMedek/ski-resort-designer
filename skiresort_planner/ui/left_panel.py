@@ -46,14 +46,20 @@ def _describe_undo_action(action: UndoAction, graph: ResortGraph) -> str:
 
 
 def _describe_next_undo(sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph) -> str:
-    """Description of what the NEXT undo will do.
+    """Description of what the NEXT undo will do."""
+    return _describe_undo_action(action=graph.undo_stack[-1], graph=graph)
 
-    Mirrors undo_last_action's branch (via undo_cancels_current_build) so the confirmation text
-    matches the real behaviour: cancelling an in-progress build reads as such.
+
+def _next_undo_skips_confirm(sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph) -> bool:
+    """Whether the next undo runs without the confirmation dialog.
+
+    True for a routine builder step — peeling a just-committed path segment mid-build (the
+    handler's ``skip_confirm``). Cancelling an in-progress build (no committed segments) also
+    counts, since it is the same one-tap "step back" the builder expects.
     """
     if undo_cancels_current_build(sm=sm, ctx=ctx):
-        return f"Cancel building the current {sm.active_build_kind.value} and return to idle."
-    return _describe_undo_action(action=graph.undo_stack[-1], graph=graph)
+        return True
+    return UNDO_HANDLERS[graph.undo_stack[-1].action_type.name].skip_confirm
 
 
 def _request_pending_undo() -> None:
@@ -237,7 +243,9 @@ class SidebarRenderer:
         self._render_reset_view_button()
 
     def _render_undo_button(self) -> None:
-        """Render the undo button (opens a confirmation dialog for the next undo)."""
+        """Render the undo button. Routine builder steps (peeling a segment / cancelling a
+        just-started build) undo immediately; everything else confirms via a dialog first.
+        """
         can_undo = bool(self.graph.undo_stack)
         if st.button(
             "↩️ Undo Last Action",
@@ -245,7 +253,11 @@ class SidebarRenderer:
             disabled=not can_undo,
             help="Nothing to undo" if not can_undo else "Undo the last action",
         ):
-            _confirm_undo_dialog(sm=self.sm, ctx=self.ctx, graph=self.graph)
+            if _next_undo_skips_confirm(sm=self.sm, ctx=self.ctx, graph=self.graph):
+                _request_pending_undo()
+                trigger_rerun()
+            else:
+                _confirm_undo_dialog(sm=self.sm, ctx=self.ctx, graph=self.graph)
 
     def _render_reset_view_button(self) -> None:
         """Render the reset-view button (recenters camera to defaults, cleans orphan nodes)."""
@@ -336,17 +348,16 @@ class SidebarRenderer:
         lift's type is highlighted instead (the lift buttons re-type the viewed lift).
         """
         if self.sm.is_idle_viewing_lift and self.ctx.viewing.lift_id and BuildMode.is_lift(mode):
-            viewed_lift = self.graph.lifts.get(self.ctx.viewing.lift_id)
-            return viewed_lift is not None and viewed_lift.lift_type == mode
+            return self.graph.lifts[self.ctx.viewing.lift_id].lift_type == mode
         return current_mode == mode
 
     def _render_resort_stats(self) -> None:
         """Render resort summary statistics panel with detailed breakdowns."""
         with st.expander("📊 Resort Summary", expanded=False):
             stats = self.graph.get_stats()
-            total_slopes = stats.get("total_slopes", 0)
-            total_lifts = stats.get("total_lifts", 0)
-            total_roads = stats.get("total_roads", 0)
+            total_slopes = stats["total_slopes"]
+            total_lifts = stats["total_lifts"]
+            total_roads = stats["total_roads"]
 
             # Header with counts
             st.markdown(f"**{total_slopes} Slopes • {total_lifts} Lifts • {total_roads} Roads**")
@@ -410,7 +421,7 @@ class SidebarRenderer:
             # === ROADS SECTION ===
             st.markdown(f"**{StyleConfig.ROAD_ICON} Roads**")
             if total_roads > 0:
-                road_length = stats.get("total_road_length_m", 0.0)
+                road_length = stats["total_road_length_m"]
                 # Elevation change across all roads (mirrors slope drop / lift rise line).
                 road_elev_change = sum(
                     abs(road.get_total_drop(segments=self.graph.segments)) for road in self.graph.roads.values()

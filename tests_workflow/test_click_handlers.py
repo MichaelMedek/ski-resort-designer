@@ -814,6 +814,7 @@ class TestLiftPlacingClick:
     def _placing(self, fake_st, dem, factory):
         graph = ResortGraph()
         sm, ctx = _session(fake_st, graph, factory, dem)
+        ctx.build_mode.mode = BuildMode.CHAIRLIFT  # lift type is selected before entering LIFT_PLACING
         loc = PathPoint(lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M))
         sm.start_lift(node_id=None, location=loc)
         return sm, ctx, graph
@@ -869,6 +870,27 @@ class TestLiftPlacingClick:
         assert len(graph.lifts) == 1
         assert sm.is_idle_viewing_lift
 
+    def test_built_lift_type_matches_selected_button(self, fake_st, path_factory, mock_dem_blue_slope) -> None:
+        # Regression: the built lift's type MUST equal the selected build mode, not a stale default.
+        # Bug was a duplicated ctx.lift.type that reset to GONDOLA on exit while build_mode kept the
+        # selected type — so a freshly-selected chairlift silently built a gondola.
+        from skiresort_planner.ui.click_handlers import handle_lift_placing_click
+
+        dem = mock_dem_blue_slope
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st, graph, path_factory, dem)
+        ctx.build_mode.mode = BuildMode.CHAIRLIFT  # user clicked the Chairlift button
+        loc = PathPoint(lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M))
+        sm.start_lift(node_id=None, location=loc)
+
+        handle_lift_placing_click(
+            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0),
+        )
+        assert len(graph.lifts) == 1
+        built = next(iter(graph.lifts.values()))
+        assert built.lift_type == "chairlift", "the built lift must match the selected button, not a stale default"
+
 
 class TestLiftPlacingEdgeCases:
     """Reject, validation, and node-reuse branches of handle_lift_placing_click.
@@ -882,6 +904,7 @@ class TestLiftPlacingEdgeCases:
         """Enter lift_placing with the bottom station being an EXISTING node (start_node_id set)."""
         graph = ResortGraph()
         sm, ctx = _session(fake_st, graph, factory, dem)
+        ctx.build_mode.mode = BuildMode.CHAIRLIFT  # lift type is selected before entering LIFT_PLACING
         bottom, _ = graph.get_or_create_node(
             lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M)
         )
@@ -937,6 +960,7 @@ class TestLiftPlacingEdgeCases:
         dem = mock_dem_blue_slope
         graph = ResortGraph()
         sm, ctx = _session(fake_st, graph, path_factory, dem)
+        ctx.build_mode.mode = BuildMode.CHAIRLIFT  # lift type selected before entering LIFT_PLACING
         loc = PathPoint(lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M))
         sm.start_lift(node_id=None, location=loc)  # pending-location start: no start node materialised yet
 

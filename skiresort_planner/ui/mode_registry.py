@@ -1,22 +1,10 @@
 """Central registries for the app's per-state, per-mode, and per-kind behaviour.
 
-This module is the single dispatch hub at the top of the UI layer: it imports the panels, click
-handlers, actions, and renderers, and exposes three registries plus the two dispatch entry points
-(`render_control_panel`, `dispatch_click`). Nothing below it imports this module at runtime, so the
-dependency flow is one-directional.
-
-Three registries, each keyed to cover its axis exactly (asserted at import):
-
-- ``BUILD_STATES`` — one ``BuildState`` per state-machine state. A ``BuildState`` owns the complete
-  per-state UI surface: right panel, click handler, map overlay layers, camera view state, bottom
-  elevation profile, merge-highlight ids, and custom-path flag. Keys == the state-machine state ids.
-- ``OPERATIONS`` — one ``BuilderOperation`` per build mode (the sidebar build-type buttons): its
-  group, its ``enabled(sm)`` greyout rule, and its ``on_select`` action. Keys == ``BuildMode.ALL``.
-- ``ENTITY_KIND_SPECS`` — one ``EntityKindSpec`` per ``EntityKind``: the viewed-entity id, entity
-  lookup, stats panel, and delete action. Keys == the ``EntityKind`` members.
-
-The abstract methods make it impossible to register a state/mode/kind with a part missing; the
-import-time bijection asserts make it impossible to add a state/mode/kind without registering it.
+The single dispatch hub at the top of the UI layer; exposes `render_control_panel` and
+`dispatch_click` over three registries, each keyed to cover its axis exactly (asserted at import):
+``BUILD_STATES`` (one BuildState per state-machine state), ``OPERATIONS`` (one BuilderOperation per
+BuildMode), and ``ENTITY_KIND_SPECS`` (one EntityKindSpec per EntityKind). Abstract methods + the
+bijection asserts make it impossible to add a state/mode/kind without fully registering it.
 """
 
 from __future__ import annotations
@@ -333,13 +321,11 @@ class _IdleViewingLiftState(_EntityViewingState):
 
 
 class _PathBuildingState(BuildState):
-    """The build states for ANY path kind (slope or road): the *_starting / *_building /
-    *_custom_path trio. One kind-parameterized class (mirroring PathBuildingControlPanel and
-    PathBuildSidebarPanel) so slope and road cannot drift.
+    """Build states for ANY path kind (slope/road): the *_starting / *_building / *_custom_path trio.
 
-    Every state draws fall-line orientation arrows at the build origin (ctx.selection) and, while
-    routing a custom-connect path, a downhill direction arrow from the start node. The in-build
-    elevation profile renders below the map once ≥1 segment is committed.
+    One kind-parameterized class (mirroring the path control/sidebar panels) so slope and road can't
+    drift. Draws fall-line arrows at the origin, a downhill arrow while custom-connecting, and the
+    in-build elevation profile once ≥1 segment is committed.
     """
 
     def __init__(self, state_key: str, kind: SegmentKind) -> None:
@@ -700,11 +686,8 @@ class BuilderOperation(ABC):
     def on_select(self, ctx: PlannerContext, sm: PlannerStateMachine) -> None:
         """Highlight this mode — the invariant EVERY builder button shares.
 
-        A button only highlights; the mode start (state entry) always happens later on the first
-        map click. This is a PURE UI pre-selection with no map change (state stays idle_ready), so
-        it uses a plain rerun — no camera_epoch bump — to avoid a needless deck.gl remount (the map
-        is keyed on camera_epoch). Ops that actually change the map (e.g. the lift op re-typing a
-        viewed lift) override this and bump_camera_epoch() only when they do.
+        A pure UI pre-selection (state stays idle_ready); mode start happens on the first map click.
+        Uses a plain rerun — no camera_epoch bump — to avoid a needless deck.gl remount.
         """
         ctx.build_mode.mode = self.mode
         trigger_rerun()
@@ -746,10 +729,8 @@ class _LiftOperation(BuilderOperation):
         return sm.is_idle_viewing_lift
 
     def on_select(self, ctx: PlannerContext, sm: PlannerStateMachine) -> None:
-        # select_lift_type_action sets build_mode/lift.type AND, when viewing a lift, re-types it
-        # (recomputes pylons/catenary → a REAL map change). So capture whether we were viewing a
-        # lift, then a bare remount (bump_camera_epoch) if we re-typed one so the redraw takes — the
-        # camera keeps the current view (already framed on the lift); else a plain rerun (highlight only).
+        # Re-typing a viewed lift recomputes its geometry (a REAL map change) → bare remount so the
+        # redraw takes, keeping the current framing; otherwise a plain rerun (highlight only).
         retyped_viewed_lift = sm.is_idle_viewing_lift
         actions.select_lift_type_action(self.mode)
         if retyped_viewed_lift:

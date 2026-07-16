@@ -554,12 +554,8 @@ class PathActionMessage(Message):
 
 @dataclass(frozen=True)
 class LiftActionMessage(Message):
-    """RIGHT panel: Specific action instruction for lift placement.
+    """RIGHT panel: instruction to select the top station during lift placement."""
 
-    Covers: selecting top station (bottom station selection has no right panel message)
-    """
-
-    is_awaiting_top: bool = False
     bottom_elevation_m: float = 0.0
 
     @property
@@ -568,14 +564,11 @@ class LiftActionMessage(Message):
 
     @property
     def message(self) -> str:
-        if self.is_awaiting_top:
-            return (
-                "⬆️ **Select Top Station**\n\n"
-                f"- 👆 Click terrain **above {self.bottom_elevation_m:.0f}m**\n"
-                "- ⚪ Or click a higher **node**"
-            )
-        # No right panel message needed for lift idle
-        raise ValueError("No action message to display - all flags are False")
+        return (
+            "⬆️ **Select Top Station**\n\n"
+            f"- 👆 Click terrain **above {self.bottom_elevation_m:.0f}m**\n"
+            "- ⚪ Or click a higher **node**"
+        )
 
 
 @dataclass(frozen=True)

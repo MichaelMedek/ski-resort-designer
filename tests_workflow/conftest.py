@@ -277,6 +277,33 @@ class ConeDEMService(MockDEMService):
         return self.summit - float(((lon * M) ** 2 + (lat * M) ** 2) ** 0.5) * self.grade_pct / 100.0
 
 
+class RoughDEMService(MockDEMService):
+    """A steady south descent plus a sinusoidal bump train (rolling knolls) along the fall line.
+
+    The bumps make the steepest-300m window sensitive to smoothing: rounding the corners
+    shifts which sub-section is steepest, so a RAW fan proposal and its finish-smoothed self
+    can straddle a difficulty band — the terrain shape that reproduces the blue→red-on-finish
+    bug that planar/cone mocks are too smooth to show.
+    """
+
+    def __init__(self, slope_ns_pct: float = 20.0, bump_amp_m: float = 12.0, bump_wavelength_m: float = 180.0) -> None:
+        """Args: mean N-S grade %, bump amplitude (m), bump wavelength (m) along the descent."""
+        self.slope_ns_pct = slope_ns_pct
+        self.bump_amp_m = bump_amp_m
+        self.bump_wavelength_m = bump_wavelength_m
+        self._bounds = (-2.0, -2.0, 2.0, 2.0)
+
+    def get_elevation(self, lon: float, lat: float) -> float | None:
+        import math
+
+        y = lat * MapConfig.METERS_PER_DEGREE_EQUATOR
+        return (
+            3000.0
+            + y * self.slope_ns_pct / 100.0
+            + self.bump_amp_m * math.sin(2 * math.pi * y / self.bump_wavelength_m)
+        )
+
+
 # =============================================================================
 # MOCK DEM FIXTURES
 # =============================================================================
@@ -304,6 +331,12 @@ def mock_dem_red_slope_diagonal() -> MockDEMService:
 def cone_dem_steep() -> ConeDEMService:
     """Steep radial cone (25% terrain) — curved terrain for contour-drift tests."""
     return ConeDEMService(summit=4000.0, grade_pct=50.0)
+
+
+@pytest.fixture
+def rough_dem_bumpy() -> RoughDEMService:
+    """20% descent with 12m knolls — bumpy terrain where finish-smoothing can shift difficulty."""
+    return RoughDEMService(slope_ns_pct=20.0, bump_amp_m=12.0)
 
 
 # =============================================================================

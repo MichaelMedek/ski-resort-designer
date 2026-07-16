@@ -355,7 +355,7 @@ $$S_{\text{max}} = \max_{\text{window}} \left( \frac{\Delta h_{\text{window}}}{L
 
 ### 6.2 Slope Classification (Multi-Segment)
 
-The final slope classification is determined by the **steepest section among all segments**. A short steep section will make the entire slope not skiable for beginners, even if the overall average is low.
+The final slope classification is the **steepest section among all segments** at least 100 m long. A short steep section makes the whole slope unskiable for beginners even if the overall average is low.
 
 ---
 
@@ -388,7 +388,7 @@ Each path variant uses **Dijkstra's algorithm** (via SciPy's C-optimized impleme
 
 3. **Dijkstra Search:** SciPy's `shortest_path()` finds the minimum-cost path through the sparse graph.
 
-4. **Spline Smoothing:** The raw grid path has staircase artifacts (only 8 movement directions). A cubic smoothing spline is fitted through the points and resampled at 7m intervals. Elevations are re-queried from the DEM for accuracy.
+4. **Spline Smoothing:** The raw grid path has staircase artifacts (only 8 movement directions). A cubic smoothing spline is fitted through the points at the kind's finish factor (`SLOPE_SMOOTHING_FACTOR` / `ROAD_SMOOTHING_FACTOR`) — the SAME factor the whole-path finish (§5.8) uses, so the proposal previews the finished shape — resampled at 7m, with elevations re-queried from the DEM.
 
 **Cost Function:**
 

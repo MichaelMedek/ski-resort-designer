@@ -1,15 +1,7 @@
 """UI Actions - All action functions for ski resort planner.
 
-Centralizes all action functions that modify UI state, trigger state
-machine transitions, or perform business logic operations.
-
-This module handles:
-- Map centering (center_on_slope, center_on_lift)
-- Path operations (commit_selected_path, recompute_paths)
-- Slope operations (finish_current_slope, cancel_current_slope)
-- Undo operations (undo_last_action)
-- Custom direction mode (enter/cancel)
-- Deferred action handling (process_*_deferred)
+Centralizes the functions that modify UI state, trigger state-machine transitions, or run business
+logic: map centering, path/slope/road ops, undo, custom-connect, and deferred action handling.
 """
 
 import logging
@@ -280,7 +272,7 @@ def _generate_fan_for_building_state(kind: SegmentKind) -> None:
     # can explain why. `gentlest` is None when the fan was empty for another reason.
     ctx.proposals.too_steep_gentlest_pct = gentlest if (fan and not kept) else None
 
-    _preselect_by_gradient(ctx=ctx, paths=kept)
+    _preselect_by_rule(ctx=ctx, paths=kept, rule=_closest_gradient_rule(ctx))
     logger.debug(
         f"Generated {len(kept)} {kind.value}-fan paths from ({lat:.6f}, {lon:.6f}) in {(time.perf_counter() - t0) * 1000:.0f}ms"
     )
@@ -365,9 +357,12 @@ def _generate_custom_connect_paths() -> None:
     cap = spec.max_grade_pct
     proposals, gentlest = factory.filter_by_max_grade(paths=candidates, cap_pct=cap)
 
+    # Custom-connect orders proposals SHORTEST first and the straight line is appended last.
+    proposals.sort(key=lambda p: p.length_m)
+
     # Always also offer the straight line ON TOP of the planner proposals (for every kind), so the
-    # user can pick it even when curvy routes exist — appended LAST so the planner's gentlest stays
-    # the default selection. Only offered when it is itself within the cap.
+    # user can pick it even when curvy routes exist — appended LAST (after the shortest-first sort),
+    # so it stays the final option and the shortest planner route stays the default. In-cap only.
     straight = factory.straight_line(
         kind=kind,
         start_lon=start_lon,
@@ -406,7 +401,8 @@ def _generate_custom_connect_paths() -> None:
             p.sector_name = f"🔗 {p.sector_name}"
 
     ctx.proposals.paths = proposals
-    _preselect_by_gradient(ctx=ctx, paths=proposals)
+    # Custom-connect orders shortest-first, so the shortest route (index 0) is the selection.
+    _preselect_by_rule(ctx=ctx, paths=proposals, rule=_shortest_rule)
     ctx.proposals.too_steep_gentlest_pct = None if proposals else gentlest
     # Note: force_mode, target_location, start_node already set by the target before-hook.
     # No cleanup here - before_cancel_* and before_commit_* hooks handle it on exit.
@@ -416,20 +412,34 @@ def _generate_custom_connect_paths() -> None:
     )
 
 
-def _preselect_by_gradient(ctx: "PlannerContext", paths: "list[ProposedPathSegment]") -> None:
-    """Pre-select the proposal whose gradient is closest to the last committed segment's.
+def _preselect_by_rule(
+    ctx: "PlannerContext",
+    paths: "list[ProposedPathSegment]",
+    rule: "Callable[[list[ProposedPathSegment]], int]",
+) -> None:
+    """Set the pre-selected proposal index from `rule`, or None when there are no paths.
 
-    Shared by the fan and custom-connect generators so both give continuity of grade
-    across committed segments. Consumes ctx.deferred.gradient_target (one-shot); falls
-    back to the first proposal when no target is pending, and None when there are none.
+    Shared by the fan (closest-gradient rule) and custom-connect (shortest = index 0). Always
+    consumes the one-shot ctx.deferred.gradient_target so a stale fan target can't leak into the
+    next generation.
     """
-    if paths and ctx.deferred.gradient_target is not None:
-        ctx.proposals.selected_idx = _find_closest_gradient_path(
-            paths=paths, target_gradient=ctx.deferred.gradient_target
-        )
-        ctx.deferred.gradient_target = None
-    else:
-        ctx.proposals.selected_idx = 0 if paths else None
+    ctx.proposals.selected_idx = rule(paths) if paths else None
+    ctx.deferred.gradient_target = None
+
+
+def _shortest_rule(paths: "list[ProposedPathSegment]") -> int:
+    """Selection rule: the shortest route (index 0 — custom-connect already orders shortest-first)."""
+    return 0
+
+
+def _closest_gradient_rule(ctx: "PlannerContext") -> "Callable[[list[ProposedPathSegment]], int]":
+    """Fan rule: the proposal whose gradient is closest to the last committed segment's, for grade
+    continuity across segments; falls back to the shortest rule when no target is pending.
+    """
+    target = ctx.deferred.gradient_target
+    if target is None:
+        return _shortest_rule
+    return lambda paths: _find_closest_gradient_path(paths=paths, target_gradient=target)
 
 
 def _find_closest_gradient_path(paths: "list[ProposedPathSegment]", target_gradient: float) -> int:
@@ -660,8 +670,7 @@ def _undo_add_segments(undone: AddSegmentsAction) -> None:
     build.segments = remaining
     ctx.clear_proposals()
     if remaining:
-        last_seg = graph.segments.get(remaining[-1])
-        build.endpoints = [last_seg.end_node_id] if last_seg else []
+        build.endpoints = [graph.segments[remaining[-1]].end_node_id]
         logger.debug(f"[ACTION] {kind.value} undo leaves {len(remaining)} segments, forcing building")
         sm.force_building(kind)
     else:
@@ -691,10 +700,10 @@ def _restore_build_context(
     build_ctx.start_node_id = start_node_id
 
     assert build_ctx.segments, "finish-undo must have ≥1 segment (finish_* never records an empty finish)"
-    first_seg = graph.segments.get(build_ctx.segments[0])
-    last_seg = graph.segments.get(build_ctx.segments[-1])
-    assert first_seg and first_seg.points, f"restored segment {build_ctx.segments[0]} must exist with points"
-    assert last_seg and last_seg.points, f"restored segment {build_ctx.segments[-1]} must exist with points"
+    first_seg = graph.segments[build_ctx.segments[0]]
+    last_seg = graph.segments[build_ctx.segments[-1]]
+    assert first_seg.points, f"restored segment {build_ctx.segments[0]} must have points"
+    assert last_seg.points, f"restored segment {build_ctx.segments[-1]} must have points"
 
     # Carry the origin as a LOCATION too, not only as start_node_id: undoing the segments one by one
     # eventually cleans the origin node. The origin node still exists now, so snapshot the first segment's start point.
@@ -892,7 +901,7 @@ def select_lift_type_action(lift_type: str) -> None:
 
     When viewing a lift, the four lift buttons change THAT lift's type (Lift.update_type recomputes
     the pylons/catenary); otherwise they just set the build mode for the next lift. Either way the
-    global build_mode + ctx.lift.type track the chosen type so a new lift uses it.
+    build_mode.mode tracks the chosen type (the single source of truth) so a new lift uses it.
     The caller (BuilderOperation.on_select) owns the reload, so this does not reload.
     """
     ctx: PlannerContext = st.session_state.context
@@ -900,14 +909,12 @@ def select_lift_type_action(lift_type: str) -> None:
     graph: ResortGraph = st.session_state.graph
 
     ctx.build_mode.mode = lift_type
-    ctx.lift.type = lift_type
 
     if sm.is_idle_viewing_lift and ctx.viewing.lift_id:
-        lift = graph.lifts.get(ctx.viewing.lift_id)
-        if lift is not None and lift.lift_type != lift_type:
-            start_node = graph.nodes.get(lift.start_node_id)
-            end_node = graph.nodes.get(lift.end_node_id)
-            assert start_node and end_node, f"lift {lift.id} references missing nodes (data integrity bug)"
+        lift = graph.lifts[ctx.viewing.lift_id]
+        if lift.lift_type != lift_type:
+            start_node = graph.nodes[lift.start_node_id]
+            end_node = graph.nodes[lift.end_node_id]
             lift.update_type(new_type=lift_type, start_node=start_node, end_node=end_node)
             logger.info(f"UI: Changed viewed lift {lift.id} type to {lift_type}")
 

@@ -403,26 +403,26 @@ class LiftPlacingControlPanel(ControlPanel):
 
     def _start_elevation(self) -> float:
         if self.ctx.lift.start_node_id:
-            node = self.graph.nodes.get(self.ctx.lift.start_node_id)
-            return node.elevation if node else 0.0
+            return self.graph.nodes[self.ctx.lift.start_node_id].elevation
         if self.ctx.lift.start_location:
             return self.ctx.lift.start_location.elevation
         raise RuntimeError("LiftPlacing state requires start_node_id or start_location to be set")
 
     def context_message(self) -> "Message | None":
-        lift_icon = StyleConfig.LIFT_ICONS[self.ctx.lift.type]
+        lift_type = self.ctx.build_mode.mode  # single source of truth for the selected lift type
+        lift_icon = StyleConfig.LIFT_ICONS[lift_type]
         if self.ctx.lift.start_node_id:
-            node = self.graph.nodes.get(self.ctx.lift.start_node_id)
+            node = self.graph.nodes[self.ctx.lift.start_node_id]
             return LiftPlacingContextMessage(
-                lift_type=self.ctx.lift.type,
+                lift_type=lift_type,
                 lift_icon=lift_icon,
                 bottom_node_id=self.ctx.lift.start_node_id,
-                bottom_elevation_m=node.elevation if node else 0.0,
+                bottom_elevation_m=node.elevation,
             )
         if self.ctx.lift.start_location:
             loc = self.ctx.lift.start_location
             return LiftPlacingContextMessage(
-                lift_type=self.ctx.lift.type,
+                lift_type=lift_type,
                 lift_icon=lift_icon,
                 bottom_lat=loc.lat,
                 bottom_lon=loc.lon,
@@ -431,7 +431,7 @@ class LiftPlacingControlPanel(ControlPanel):
         raise RuntimeError("LiftPlacing state requires start_node_id or start_location to be set")
 
     def action_message(self) -> "Message | None":
-        return LiftActionMessage(is_awaiting_top=True, bottom_elevation_m=self._start_elevation())
+        return LiftActionMessage(bottom_elevation_m=self._start_elevation())
 
     def buttons(self) -> None:
         return None
@@ -456,7 +456,7 @@ class ImportPlacingControlPanel(ControlPanel):
 
     def buttons(self) -> None:
         if st.button("✅ Confirm Import", type="primary", width="stretch", help="Fetch and import this area from OSM"):
-            logger.info("UI: Confirm Import clicked")
+            logger.debug("UI: Confirm Import clicked")
             confirm_import_action()
 
 
@@ -490,7 +490,7 @@ class MergePlacingControlPanel(ControlPanel):
             disabled=not enough,
             help=("Select at least 2 nodes to merge" if not enough else "Collapse the selected nodes to their median"),
         ):
-            logger.info(f"UI: Confirm Merge clicked for {count} nodes")
+            logger.debug(f"UI: Confirm Merge clicked for {count} nodes")
             confirm_merge_action()
 
 
@@ -746,44 +746,43 @@ class LiftStatsPanel(StatsPanel):
         st.subheader(f"{lift_icon} {lift.name}")
         st.caption(f"Type: **{lift_type_display}** — *Use sidebar buttons to change*")
 
-        start_node = self.graph.nodes.get(lift.start_node_id)
-        end_node = self.graph.nodes.get(lift.end_node_id)
+        start_node = self.graph.nodes[lift.start_node_id]
+        end_node = self.graph.nodes[lift.end_node_id]
 
-        if start_node and end_node:
-            vertical_rise = end_node.elevation - start_node.elevation
-            horizontal_length = GeoCalculator.haversine_distance_m(
-                lat1=start_node.lat,
-                lon1=start_node.lon,
-                lat2=end_node.lat,
-                lon2=end_node.lon,
+        vertical_rise = end_node.elevation - start_node.elevation
+        horizontal_length = GeoCalculator.haversine_distance_m(
+            lat1=start_node.lat,
+            lon1=start_node.lon,
+            lat2=end_node.lat,
+            lon2=end_node.lon,
+        )
+        inclined_length = (vertical_rise**2 + horizontal_length**2) ** 0.5
+        num_pylons = len(lift.pylons)
+        avg_gradient = (vertical_rise / horizontal_length * 100) if horizontal_length > 0 else 0
+
+        max_cable_gradient = 0.0
+        if len(lift.pylons) >= 2:
+            for i in range(len(lift.pylons) - 1):
+                p1 = lift.pylons[i]
+                p2 = lift.pylons[i + 1]
+                dist = p2.distance_m - p1.distance_m
+                elev_diff = p2.top_elevation_m - p1.top_elevation_m
+                if dist > 0:
+                    gradient = abs(elev_diff / dist * 100)
+                    max_cable_gradient = max(max_cable_gradient, gradient)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Bottom Elevation", f"{start_node.elevation:.0f}m")
+            st.metric("Horizontal Length", f"{horizontal_length:.0f}m")
+            st.metric("Vertical Rise", f"{vertical_rise:.0f}m")
+            st.metric("Overall Gradient", f"{avg_gradient:.0f}%")
+        with col2:
+            st.metric("Top Elevation", f"{end_node.elevation:.0f}m")
+            st.metric("Inclined Length", f"{inclined_length:.0f}m")
+            st.metric("Pylons", f"{num_pylons}")
+            st.metric(
+                "Steepest Section",
+                f"{max_cable_gradient:.0f}%",
+                help="Steepest gradient between any two adjacent pylons",
             )
-            inclined_length = (vertical_rise**2 + horizontal_length**2) ** 0.5
-            num_pylons = len(lift.pylons)
-            avg_gradient = (vertical_rise / horizontal_length * 100) if horizontal_length > 0 else 0
-
-            max_cable_gradient = 0.0
-            if len(lift.pylons) >= 2:
-                for i in range(len(lift.pylons) - 1):
-                    p1 = lift.pylons[i]
-                    p2 = lift.pylons[i + 1]
-                    dist = p2.distance_m - p1.distance_m
-                    elev_diff = p2.top_elevation_m - p1.top_elevation_m
-                    if dist > 0:
-                        gradient = abs(elev_diff / dist * 100)
-                        max_cable_gradient = max(max_cable_gradient, gradient)
-
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Bottom Elevation", f"{start_node.elevation:.0f}m")
-                st.metric("Horizontal Length", f"{horizontal_length:.0f}m")
-                st.metric("Vertical Rise", f"{vertical_rise:.0f}m")
-                st.metric("Overall Gradient", f"{avg_gradient:.0f}%")
-            with col2:
-                st.metric("Top Elevation", f"{end_node.elevation:.0f}m")
-                st.metric("Inclined Length", f"{inclined_length:.0f}m")
-                st.metric("Pylons", f"{num_pylons}")
-                st.metric(
-                    "Steepest Section",
-                    f"{max_cable_gradient:.0f}%",
-                    help="Steepest gradient between any two adjacent pylons",
-                )

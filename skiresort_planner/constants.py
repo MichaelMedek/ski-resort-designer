@@ -97,7 +97,7 @@ class MapConfig:
     Z_OFFSET_2D_LIFTS = 3  # Lift cables above roads
     Z_OFFSET_2D_PYLONS = 4  # Pylons slightly above lift cables
     Z_OFFSET_2D_ICONS = 5  # Slope/road/lift icons above pylons
-    Z_OFFSET_2D_NODE_BIG = 9  # Merge-selected or parking palce (big red or blue) nodes just BELOW plain nodes
+    Z_OFFSET_2D_NODE_BIG = 9  # Merge-selected or parking place (big red or blue) nodes just BELOW plain nodes
     Z_OFFSET_2D_NODES = 10  # Nodes above icons
     Z_OFFSET_2D_MARKERS = 20  # Interactive markers (commit/select) on top
 
@@ -129,6 +129,10 @@ class SlopeConfig:
     # Core slope limits - single source of truth
     MIN_SKIABLE_PCT = 5  # Below this: need to push poles
     MAX_SKIABLE_PCT = 70  # Above this: dangerously steep
+
+    # Safety bias added to a PROPOSAL's steepness before classifying, so its previewed
+    # difficulty rounds toward the harder band.
+    SLOPE_DIFFICULTY_MARGIN_PCT = 2.0
 
     # Side-slope classification thresholds (compute_side_slope)
     FLAT_GRADIENT_EPS_PCT = 0.5  # Terrain gradient below this → no meaningful side slope
@@ -256,13 +260,10 @@ assert set(EarthworkConfig.BELT_WIDTH_LIMITS.keys()) == set(SlopeConfig.DIFFICUL
 
 
 class ConnectionConfig:
-    """Connection path parameters for manual "Connect to Custom Point" feature.
+    """Connection path parameters for manual "Connect to Custom Point".
 
-    User workflow:
-    1. User clicks "Connect to Custom Point" button
-    2. User clicks target on map (node or free point)
-    3. System validates: downhill by MIN_DROP_M + within segment_length
-    4. Connection paths are generated if valid
+    User clicks a target (node/free point); a path is generated if it's downhill by MIN_DROP_M
+    and within segment_length.
     """
 
     # Minimum elevation drop to target (must go meaningfully downhill)
@@ -413,12 +414,9 @@ class LiftConfig:
             "sag_factor": 0.06,
         },
     }
-    # Lift-type strings, in the canonical order. Members are str-Enum so this list of LiftType also
-    # behaves as a list of plain strings for callers that compare/serialize by value.
-    TYPES = [t.value for t in PYLON_CONFIG]
-
-    # Inital selcted lift type
-    DEFAULT_TYPE = LiftType.GONDOLA
+    # Lift-type strings, in canonical order — derived from the authoritative LiftType enum. Members
+    # are str-Enum so this list also behaves as plain strings for callers that compare/serialize.
+    TYPES = [t.value for t in LiftType]
 
     # Every lift type must define the full set of pylon-placement knobs the builder reads.
     assert all(
@@ -428,8 +426,6 @@ class LiftConfig:
     ), "each PYLON_CONFIG entry must define exactly the 6 pylon-placement keys"
     # PYLON_CONFIG must be keyed by every LiftType member (bijection: no type missing, none stray).
     assert set(PYLON_CONFIG) == set(LiftType), "PYLON_CONFIG must have one entry per LiftType member"
-    # DEFAULT_TYPE must exist
-    assert DEFAULT_TYPE in TYPES
 
 
 class StyleConfig:

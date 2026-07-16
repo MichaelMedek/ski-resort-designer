@@ -32,13 +32,47 @@ from skiresort_planner.model.actions import (
 from skiresort_planner.model.path_segment import SegmentKind
 
 if TYPE_CHECKING:
+    from skiresort_planner.model.node import Node
+    from skiresort_planner.model.path_segment import PathSegment
     from skiresort_planner.model.resort_graph import ResortGraph
-    from skiresort_planner.model.road import Road
-    from skiresort_planner.model.slope import Slope
+    from skiresort_planner.model.segment_path import SegmentPath
 
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _ungroup_finished_entity(
+    graph: "ResortGraph", kind: SegmentKind, entity_id: str, segment_ids: tuple[str, ...], entity_name: str
+) -> None:
+    """Undo a finish: drop the grouped entity, rename its segments back to building names.
+
+    Shared by the FINISH_SLOPE / FINISH_ROAD handlers. Segments survive (their own AddSegmentsAction
+    handles per-segment removal on further undo).
+    """
+    del graph.entity_dict_for_kind(kind)[entity_id]
+    for seg_id in segment_ids:
+        graph.segments[seg_id].name = f"Segment {seg_id[1:]}"
+    logger.info(f"Undid FINISH_{kind.value.upper()}: ungrouped {entity_name} to {len(segment_ids)} building segment(s)")
+
+
+def _restore_deleted_path_entity(
+    graph: "ResortGraph",
+    kind: SegmentKind,
+    entity_id: str,
+    entity: "SegmentPath",
+    deleted_nodes: tuple["Node", ...],
+    deleted_segments: tuple["PathSegment", ...],
+) -> None:
+    """Undo a slope/road delete: restore orphaned nodes first, then the entity and its segments."""
+    for node in deleted_nodes:
+        graph.nodes[node.id] = node
+    graph.entity_dict_for_kind(kind)[entity_id] = entity
+    for seg in deleted_segments:
+        graph.segments[seg.id] = seg
+    logger.info(
+        f"Restored {kind.value} {entity_id} with {len(deleted_segments)} segments and {len(deleted_nodes)} nodes"
+    )
 
 
 class UndoHandler(ABC):
@@ -51,6 +85,9 @@ class UndoHandler(ABC):
     #: The ActionType this handler reverses.
     action_type: ActionType
 
+    #: Skip the undo confirmation dialog for this action type. Default False (confirm).
+    skip_confirm: bool = False
+
     @abstractmethod
     def apply_undo(self, graph: "ResortGraph", action: UndoAction) -> None:
         """Mutate the graph to undo ``action``."""
@@ -62,21 +99,17 @@ class UndoHandler(ABC):
 
 class _AddSegmentsHandler(UndoHandler):
     action_type = ActionType.ADD_SEGMENTS
+    skip_confirm = True  # peeling a just-committed segment while building is a normal step
 
     def apply_undo(self, graph: "ResortGraph", action: UndoAction) -> None:
         add_seg = cast(AddSegmentsAction, action)
         for seg_id in add_seg.segment_ids:
-            graph.segments.pop(seg_id, None)
+            del graph.segments[seg_id]
         graph.cleanup_isolated_nodes()  # Remove orphaned nodes from segment removal
         logger.info(f"Undid ADD_SEGMENTS: removed {len(add_seg.segment_ids)} segment(s)")
 
     def describe(self, action: UndoAction, graph: "ResortGraph") -> str:
-        segments_act = cast(AddSegmentsAction, action)
-        n_segments = len(segments_act.segment_ids)
-        # segment_ids is never empty (commit_paths pushes this only for ≥1 new segment)
-        first_seg = graph.segments[segments_act.segment_ids[0]]
-        # SegmentKind is a str-Enum, so .value ("slope"/"road") is reload-safe.
-        return f"Remove {n_segments} segment(s) from current {first_seg.kind.value}"
+        return ""  # skip_confirm handlers show no dialog, so no description text
 
 
 class _FinishSlopeHandler(UndoHandler):
@@ -86,12 +119,7 @@ class _FinishSlopeHandler(UndoHandler):
         # Ungroup the slope but keep its segments; their own AddSegmentsAction
         # entries handle per-segment removal on further undo.
         finish = cast(FinishSlopeAction, action)
-        graph.slopes.pop(finish.slope_id, None)
-        for seg_id in finish.segment_ids:
-            graph.segments[seg_id].name = f"Segment {seg_id[1:]}"
-        logger.info(
-            f"Undid FINISH_SLOPE: ungrouped {finish.slope_name} back to {len(finish.segment_ids)} building segment(s)"
-        )
+        _ungroup_finished_entity(graph, SegmentKind.SLOPE, finish.slope_id, finish.segment_ids, finish.slope_name)
 
     def describe(self, action: UndoAction, graph: "ResortGraph") -> str:
         finish_slope_act = cast(FinishSlopeAction, action)
@@ -103,28 +131,22 @@ class _AddLiftHandler(UndoHandler):
 
     def apply_undo(self, graph: "ResortGraph", action: UndoAction) -> None:
         add_lift = cast(AddLiftAction, action)
-        graph.lifts.pop(add_lift.lift_id, None)
+        del graph.lifts[add_lift.lift_id]
         graph.cleanup_isolated_nodes()  # Remove orphaned station nodes
         logger.info(f"Undid ADD_LIFT: removed lift {add_lift.lift_id}")
 
     def describe(self, action: UndoAction, graph: "ResortGraph") -> str:
         add_lift_act = cast(AddLiftAction, action)
-        lift = graph.lifts.get(add_lift_act.lift_id)
-        name = lift.name if lift else add_lift_act.lift_id
-        return f"Delete lift **{name}**"
+        return f"Delete lift **{graph.lifts[add_lift_act.lift_id].name}**"
 
 
 class _FinishRoadHandler(UndoHandler):
     action_type = ActionType.FINISH_ROAD
 
     def apply_undo(self, graph: "ResortGraph", action: UndoAction) -> None:
-        # Mirror FINISH_SLOPE: ungroup the road, keep its segments.
         finish_road = cast(FinishRoadAction, action)
-        graph.roads.pop(finish_road.road_id, None)
-        for seg_id in finish_road.segment_ids:
-            graph.segments[seg_id].name = f"Segment {seg_id[1:]}"
-        logger.info(
-            f"Undid FINISH_ROAD: ungrouped {finish_road.road_name} back to {len(finish_road.segment_ids)} building segment(s)"
+        _ungroup_finished_entity(
+            graph, SegmentKind.ROAD, finish_road.road_id, finish_road.segment_ids, finish_road.road_name
         )
 
     def describe(self, action: UndoAction, graph: "ResortGraph") -> str:
@@ -137,16 +159,13 @@ class _DeleteSlopeHandler(UndoHandler):
 
     def apply_undo(self, graph: "ResortGraph", action: UndoAction) -> None:
         del_slope = cast(DeleteSlopeAction, action)
-        # Restore orphaned nodes first (they're needed by segments)
-        for node in del_slope.deleted_nodes:
-            graph.nodes[node.id] = node
-        # Restore deleted slope and its segments
-        graph.slopes[del_slope.slope_id] = del_slope.deleted_slope
-        for seg in del_slope.deleted_segments:
-            graph.segments[seg.id] = seg
-        logger.info(
-            f"Restored slope {del_slope.slope_id} with {len(del_slope.deleted_segments)} segments "
-            f"and {len(del_slope.deleted_nodes)} nodes"
+        _restore_deleted_path_entity(
+            graph,
+            SegmentKind.SLOPE,
+            del_slope.slope_id,
+            del_slope.deleted_slope,
+            del_slope.deleted_nodes,
+            del_slope.deleted_segments,
         )
 
     def describe(self, action: UndoAction, graph: "ResortGraph") -> str:
@@ -176,15 +195,13 @@ class _DeleteRoadHandler(UndoHandler):
 
     def apply_undo(self, graph: "ResortGraph", action: UndoAction) -> None:
         del_road = cast(DeleteRoadAction, action)
-        # Restore orphaned nodes first (they're needed by segments)
-        for node in del_road.deleted_nodes:
-            graph.nodes[node.id] = node
-        graph.roads[del_road.road_id] = del_road.deleted_road
-        for seg in del_road.deleted_segments:
-            graph.segments[seg.id] = seg
-        logger.info(
-            f"Restored road {del_road.road_id} with {len(del_road.deleted_segments)} segments "
-            f"and {len(del_road.deleted_nodes)} nodes"
+        _restore_deleted_path_entity(
+            graph,
+            SegmentKind.ROAD,
+            del_road.road_id,
+            del_road.deleted_road,
+            del_road.deleted_nodes,
+            del_road.deleted_segments,
         )
 
     def describe(self, action: UndoAction, graph: "ResortGraph") -> str:
@@ -200,13 +217,13 @@ class _ImportOSMHandler(UndoHandler):
         # segments) and the nodes it newly made; reused/shared nodes are left untouched.
         imp = cast(ImportOSMAction, action)
         for slope_id in imp.slope_ids:
-            graph.slopes.pop(slope_id, None)
+            del graph.slopes[slope_id]
         for lift_id in imp.lift_ids:
-            graph.lifts.pop(lift_id, None)
+            del graph.lifts[lift_id]
         for seg_id in imp.segment_ids:
-            graph.segments.pop(seg_id, None)
+            del graph.segments[seg_id]
         for node_id in imp.node_ids:
-            graph.nodes.pop(node_id, None)
+            del graph.nodes[node_id]
         graph.cleanup_isolated_nodes()
         logger.info(
             f"Reverted OSM import: {len(imp.slope_ids)} slopes, {len(imp.lift_ids)} lifts, "
@@ -234,12 +251,7 @@ class _MergeNodesHandler(UndoHandler):
         for lift_before in merge.lifts_before:
             graph.lifts[lift_before.id] = lift_before
         for path_before in merge.paths_before:
-            if path_before.kind == SegmentKind.SLOPE:
-                graph.slopes[path_before.id] = cast("Slope", path_before)
-            elif path_before.kind == SegmentKind.ROAD:
-                graph.roads[path_before.id] = cast("Road", path_before)
-            else:
-                raise RuntimeError(f"merge undo: unexpected path kind {path_before.kind}")
+            graph.entity_dict_for_kind(path_before.kind)[path_before.id] = path_before
         logger.info(f"Reverted merge into {merge.survivor_id}: restored {len(merge.deleted_nodes)} nodes")
 
     def describe(self, action: UndoAction, graph: "ResortGraph") -> str:

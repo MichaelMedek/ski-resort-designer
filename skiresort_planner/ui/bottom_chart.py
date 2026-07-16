@@ -15,12 +15,20 @@ from skiresort_planner.constants import ChartConfig, LiftConfig, LiftType, Style
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.model.lift import Lift
+from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import PathSegment, SegmentKind
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.model.road import Road
 from skiresort_planner.model.segment_path import SegmentPath, steepest_section_pct
 from skiresort_planner.model.slope import Slope
 from skiresort_planner.ui.context import EntityKind
+
+
+def _elevation_range(elevations: list[float], *, padding_factor: float, padding_min_m: float) -> tuple[float, float]:
+    """Y-axis (min, max) padded around the elevation span so the profile isn't flush to the frame."""
+    min_elev, max_elev = min(elevations), max(elevations)
+    padding = max((max_elev - min_elev) * padding_factor, padding_min_m)
+    return (min_elev - padding, max_elev + padding)
 
 
 class ProfileChart:
@@ -54,24 +62,12 @@ class ProfileChart:
         if not points:
             raise ValueError("Segment must have points to render")
 
-        distances = [0.0]
-        for i in range(1, len(points)):
-            dist = GeoCalculator.haversine_distance_m(
-                lat1=points[i - 1].lat,
-                lon1=points[i - 1].lon,
-                lat2=points[i].lat,
-                lon2=points[i].lon,
-            )
-            distances.append(distances[-1] + dist)
-
+        distances = PathPoint.cumulative_distances(points)
         elevations = [p.elevation for p in points]
-
-        # Calculate Y-axis range (not starting from 0)
-        min_elev = min(elevations)
-        max_elev = max(elevations)
-        padding = max(
-            (max_elev - min_elev) * ChartConfig.ELEVATION_PADDING_FACTOR,
-            ChartConfig.ELEVATION_PADDING_MIN_M,
+        y_range = _elevation_range(
+            elevations,
+            padding_factor=ChartConfig.ELEVATION_PADDING_FACTOR,
+            padding_min_m=ChartConfig.ELEVATION_PADDING_MIN_M,
         )
 
         color = StyleConfig.SLOPE_COLORS[difficulty]
@@ -98,7 +94,7 @@ class ProfileChart:
             yaxis=dict(
                 showgrid=True,
                 gridcolor="rgba(200, 200, 200, 0.3)",
-                range=[min_elev - padding, max_elev + padding],
+                range=list(y_range),
             ),
             showlegend=False,
             height=self.height,
@@ -149,24 +145,12 @@ class ProfileChart:
         if not all_points:
             raise ValueError(f"{path.id} must have points to render")
 
-        distances = [0.0]
-        for i in range(1, len(all_points)):
-            dist = GeoCalculator.haversine_distance_m(
-                lat1=all_points[i - 1].lat,
-                lon1=all_points[i - 1].lon,
-                lat2=all_points[i].lat,
-                lon2=all_points[i].lon,
-            )
-            distances.append(distances[-1] + dist)
-
+        distances = PathPoint.cumulative_distances(all_points)
         elevations = [p.elevation for p in all_points]
-
-        # Calculate Y-axis range (not starting from 0)
-        min_elev = min(elevations)
-        max_elev = max(elevations)
-        padding = max(
-            (max_elev - min_elev) * ChartConfig.ELEVATION_PADDING_FACTOR,
-            ChartConfig.ELEVATION_PADDING_MIN_M,
+        y_range = _elevation_range(
+            elevations,
+            padding_factor=ChartConfig.ELEVATION_PADDING_FACTOR,
+            padding_min_m=ChartConfig.ELEVATION_PADDING_MIN_M,
         )
 
         fig = go.Figure()
@@ -185,11 +169,7 @@ class ProfileChart:
         # Add segment boundaries
         cum_dist = 0.0
         for seg_id in path.segment_ids:
-            seg = graph.segments.get(seg_id)
-            if seg is None:
-                raise ValueError(f"{path.id} references non-existent segment {seg_id}")
-
-            cum_dist += seg.length_m
+            cum_dist += graph.segments[seg_id].length_m
             fig.add_vline(
                 x=cum_dist,
                 line_dash="dot",
@@ -205,7 +185,7 @@ class ProfileChart:
             yaxis=dict(
                 showgrid=True,
                 gridcolor="rgba(200, 200, 200, 0.3)",
-                range=[min_elev - padding, max_elev + padding],
+                range=list(y_range),
             ),
             showlegend=False,
             height=self.height,
@@ -341,7 +321,7 @@ class ProfileChart:
                     mode="lines",
                     line=dict(color="#333333", width=3),
                     name="Cable",
-                    customdata=list(zip(cable_ground_elevs, cable_heights, cable_percentages, strict=False)),
+                    customdata=list(zip(cable_ground_elevs, cable_heights, cable_percentages, strict=True)),
                     hovertemplate=(
                         "<b>Distance:</b> %{x:.0f}m (%{customdata[2]:.0f}%)<br>"
                         "<b>Ground:</b> %{customdata[0]:.0f}m<br>"
@@ -418,17 +398,16 @@ class ProfileChart:
 
         # Layout
         all_elevs = terrain_elevs + (cable_y if cable_y else [])
-        min_elev = min(all_elevs)
-        max_elev = max(all_elevs)
-        padding = max(
-            (max_elev - min_elev) * ChartConfig.LIFT_ELEVATION_PADDING_FACTOR,
-            ChartConfig.LIFT_ELEVATION_PADDING_MIN_M,
+        lift_y_range = _elevation_range(
+            all_elevs,
+            padding_factor=ChartConfig.LIFT_ELEVATION_PADDING_FACTOR,
+            padding_min_m=ChartConfig.LIFT_ELEVATION_PADDING_MIN_M,
         )
 
         fig.update_layout(
             height=self.height,
             margin=ChartConfig.PROFILE_MARGIN,
-            yaxis=dict(range=[min_elev - padding, max_elev + padding]),
+            yaxis=dict(range=list(lift_y_range)),
             xaxis=dict(range=[-length_m * 0.02, length_m * 1.02]),
             showlegend=False,
             plot_bgcolor="rgba(240, 248, 255, 0.5)",
@@ -468,7 +447,7 @@ def render_building_profile(
     if not building_segments:
         raise ValueError("building_segments must not be empty - check before calling")
 
-    segs = [graph.segments[sid] for sid in building_segments if sid in graph.segments and graph.segments[sid].points]
+    segs = [graph.segments[sid] for sid in building_segments]
     all_points = [p for seg in segs for p in seg.points]
 
     if not all_points:
@@ -502,18 +481,9 @@ def render_viewing_profile(kind: EntityKind, entity_id: str, graph: ResortGraph)
     """Render the elevation profile of a finished slope / road / lift being viewed."""
     chart = ProfileChart(height=ChartConfig.PROFILE_HEIGHT_PX)
     if kind == EntityKind.SLOPE:
-        slope = graph.slopes.get(entity_id)
-        if slope is None:
-            raise ValueError(f"Slope {entity_id} must exist when panel shows slope")
-        return chart.render_slope(slope=slope, graph=graph)
+        return chart.render_slope(slope=graph.slopes[entity_id], graph=graph)
     if kind == EntityKind.ROAD:
-        road = graph.roads.get(entity_id)
-        if road is None:
-            raise ValueError(f"Road {entity_id} must exist when panel shows road")
-        return chart.render_road(road=road, graph=graph)
+        return chart.render_road(road=graph.roads[entity_id], graph=graph)
     if kind == EntityKind.LIFT:
-        lift = graph.lifts.get(entity_id)
-        if lift is None:
-            raise ValueError(f"Lift {entity_id} must exist when panel shows lift")
-        return chart.render_lift(lift=lift, graph=graph)
+        return chart.render_lift(lift=graph.lifts[entity_id], graph=graph)
     raise RuntimeError(f"Unknown viewing kind {kind!r}")

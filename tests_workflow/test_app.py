@@ -14,6 +14,7 @@ from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui import infra
+from skiresort_planner.ui.context import BuildMode
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
 M = 111320.0
@@ -245,6 +246,7 @@ class TestRenderLoop:
 
         _stub_deckgl(monkeypatch)
         _graph, sm, ctx = _seed_full_session(fake_st, mock_dem_blue_slope)
+        ctx.build_mode.mode = BuildMode.CHAIRLIFT  # lift type selected before entering LIFT_PLACING
         loc = PathPoint(
             lon=0.0, lat=-1000 / M, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=-1000 / M)
         )

@@ -1,11 +1,7 @@
-"""PathSegment - A committed path section between two nodes.
+"""PathSegment - A committed path section connecting two nodes.
 
-A PathSegment is created when a proposed path is committed.
-It connects two nodes and stores the full path geometry.
-
-Inherits computed metrics from Path. Adds node connections,
-side slope data, and warnings.
-
+Created when a proposed path is committed; stores full geometry and inherits computed
+metrics from Path, adding node connections, side-slope data, and warnings.
 Reference: DETAILS.md
 """
 
@@ -90,7 +86,12 @@ class PathSegment(Path):
         # Excavator warning: side slope exceeds what MIN width can handle (applies to slopes + roads).
         # Formula: H_edge = (side_slope_pct * width) / 200
         # Warning when: (side_slope_pct * MIN_WIDTH) / 200 > threshold
-        min_width, _ = EarthworkConfig.BELT_WIDTH_LIMITS[self.difficulty]
+        if self.kind == SegmentKind.ROAD:
+            min_width = float(EarthworkConfig.ROAD_WIDTH_M)
+        elif self.kind == SegmentKind.SLOPE:
+            min_width, _ = EarthworkConfig.BELT_WIDTH_LIMITS[self.difficulty]
+        else:
+            raise ValueError(f"Unknown {self.kind=}")
         side_slope_limit = (EarthworkConfig.EXCAVATOR_THRESHOLD_M * 200) / min_width
         if abs(self.side_slope_pct) > side_slope_limit:
             result.append(
@@ -164,12 +165,9 @@ class PathSegment(Path):
     def restitch(self, start_node: "Node", end_node: "Node", dem: "DEMService") -> None:
         """Re-anchor this segment's drawn polyline after an endpoint node moved.
 
-        Snaps the first point to `start_node` and the last to `end_node` (the same exact-coordinate
-        snap that commit does), then re-drapes every point's elevation from the DEM so the whole
-        polyline sits on current terrain. Keeps identity + styling (id, name, kind, side slope);
-        derived metrics (length/drop/slope/difficulty/belt) are computed from `points`, so they
-        refresh automatically. Route is preserved — this re-drapes existing geometry, it does not
-        re-plan (mirrors OSM import's re-sample-in-place).
+        Snaps endpoints to start_node/end_node and re-drapes elevation from the DEM. Keeps
+        identity/styling (id, name, kind, side slope); metrics recompute from points. Does not
+        re-plan the route — re-drapes existing geometry in place (mirrors OSM import).
 
         Args:
             start_node: The (possibly moved) node this segment starts at.
@@ -196,9 +194,7 @@ class PathSegment(Path):
     def get_belt_polygon(self) -> list[tuple[float, float]]:
         """Get belt polygon coordinates (buffered ribbon in meters).
 
-        Uses adaptive width based on side slope to stay within excavation
-        threshold. UTM projection used for accurate meter-based widths.
-        Buffer uses round cap/join for smooth turns.
+        Uses adaptive width per side slope, UTM projection for meter accuracy, round joins.
 
         Returns:
             List of (lon, lat) tuples for polygon boundary.

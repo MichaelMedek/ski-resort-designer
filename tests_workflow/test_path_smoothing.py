@@ -12,7 +12,7 @@ from scipy.interpolate import splev, splprep
 from skiresort_planner.constants import GeometricTuningConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.model.path_point import PathPoint
-from skiresort_planner.model.path_smoothing import resample_cubic_spline, smooth_joined_path
+from skiresort_planner.model.path_smoothing import resample_cubic_spline, smooth_joined_path, smooth_proposal_points
 
 M = 111320.0  # metres per degree near the equator
 
@@ -236,3 +236,26 @@ class TestResampleCubicSpline:
         assert len(out) > 2
         # Endpoints stay close to the input extremes (spline is not wildly off).
         assert math.isclose(out[0].lon, pts[0].lon, abs_tol=1e-4)
+
+
+class TestSmoothProposalPoints:
+    """smooth_proposal_points: spline-round then DEM-requery — shared by the fan and grid planner."""
+
+    def test_requeries_elevation_from_the_callable(self) -> None:
+        pts = _leg(0.0, 0.0, 10 / M, 0.0, 40, z0=2200.0, dz=-1.0)
+        # A DEM stub returning a fixed elevation: every output point must take that value.
+        out = smooth_proposal_points(points=pts, smoothing_factor=3.0, step_m=7.0, elevation_fn=lambda lon, lat: 1234.0)
+        assert len(out) > 2
+        assert all(p.elevation == 1234.0 for p in out), "elevations come from the DEM callable, not the spline"
+
+    def test_falls_back_to_point_elevation_when_dem_none(self) -> None:
+        pts = _leg(0.0, 0.0, 10 / M, 0.0, 40, z0=2200.0, dz=-1.0)
+        out = smooth_proposal_points(points=pts, smoothing_factor=3.0, step_m=7.0, elevation_fn=lambda lon, lat: None)
+        assert all(p.elevation is not None for p in out), "None DEM lookup falls back to the spline elevation"
+
+    def test_too_short_returns_input_unchanged(self) -> None:
+        pts = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=1 / M, lat=0.0, elevation=1999.0)]
+        assert (
+            smooth_proposal_points(points=pts, smoothing_factor=3.0, step_m=7.0, elevation_fn=lambda lon, lat: 0.0)
+            is pts
+        )

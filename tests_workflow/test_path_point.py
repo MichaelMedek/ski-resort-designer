@@ -23,3 +23,28 @@ class TestPathPoint:
         """PathPoint with NaN elevation raises ValueError."""
         with pytest.raises(ValueError, match="NaN"):
             PathPoint(lon=10.0, lat=46.0, elevation=math.nan)
+
+
+class TestCumulativeDistances:
+    """PathPoint.cumulative_distances — the single source for polyline arc length."""
+
+    def test_starts_at_zero_and_accumulates(self) -> None:
+        pts = [
+            PathPoint(lon=10.0, lat=46.0, elevation=2000.0),
+            PathPoint(lon=10.001, lat=46.0, elevation=1990.0),
+            PathPoint(lon=10.002, lat=46.0, elevation=1980.0),
+        ]
+        cum = PathPoint.cumulative_distances(pts)
+        assert len(cum) == len(pts)
+        assert cum[0] == 0.0
+        # Monotonic non-decreasing, and each step equals the pairwise distance.
+        assert cum[1] == pytest.approx(pts[0].distance_to(other=pts[1]))
+        assert cum[2] == pytest.approx(cum[1] + pts[1].distance_to(other=pts[2]))
+        assert cum[2] > cum[1] > cum[0]
+
+    def test_single_point_is_zero(self) -> None:
+        assert PathPoint.cumulative_distances([PathPoint(lon=10.0, lat=46.0, elevation=2000.0)]) == [0.0]
+
+    def test_empty_is_zero_seed(self) -> None:
+        # Seeded with [0.0]; no pairs to accumulate.
+        assert PathPoint.cumulative_distances([]) == [0.0]

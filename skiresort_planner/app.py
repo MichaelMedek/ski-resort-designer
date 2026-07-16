@@ -117,13 +117,8 @@ def init_session_state() -> None:
 
 
 def _init_resort_from_url_or_new() -> None:
-    """Resolve the session's resort_id and prime the graph from a backup.
-
-    - If the URL has ?resort=<id> and a backup exists, load it. This is the
-      reload path — F5, brief outage, and reopened bookmarks keep the URL.
-    - Otherwise (bare link) fall back to the biggest existing backup by node
-      count — almost always the user's own work — and adopt its id.
-    - If no backups exist, start a fresh empty resort.
+    """Resolve resort_id and prime the graph: load the ?resort=<id> backup (reload path — F5/
+    bookmarks keep the URL), else the largest existing backup (the user's own work), else fresh.
     """
     param_id = st.query_params.get("resort")
     if not param_id:
@@ -147,17 +142,9 @@ def _init_resort_from_url_or_new() -> None:
 
 
 def reset_ui_state() -> None:
-    """Reset UI state to initial while preserving the resort graph.
+    """Reset state machine + context and remount the map on error recovery.
 
-    Called when an error occurs to recover gracefully. Resets:
-    - State machine to Idle state
-    - Context to fresh instance
-    - Map version (to clear any stale map state)
-
-    Preserves:
-    - Resort graph (all slopes, lifts, nodes, segments)
-    - DEM service and path factory
-    - Map renderer (re-linked to graph)
+    Preserves the resort graph, DEM service, path factory, and map renderer (re-linked to graph).
     """
     logger.info("Resetting UI state due to error recovery")
 
@@ -172,12 +159,26 @@ def reset_ui_state() -> None:
     logger.debug("UI state reset complete - graph preserved")
 
 
+def _handle_error_with_recovery(e: Exception, context_tag: str) -> None:
+    """Log the traceback, show the error + a reset button, and recover UI state (graph preserved).
+
+    Args:
+        e: The caught exception.
+        context_tag: Short tag for the failing region ("RENDER" / "UI"), used in log + message.
+    """
+    error_msg = f"{type(e).__name__}: {e}"
+    logger.error(f"[{context_tag}] error caught: {error_msg}\n{traceback.format_exc()}")
+    st.error(f"⚠️ [{context_tag}] Something went wrong: {error_msg}")
+    reset_ui_state()
+    if st.button("🔄 Reset and Continue", type="primary"):
+        trigger_rerun()
+
+
 def load_dem_data() -> bool:
     """Load DEM data. Returns True when loaded, False while loading.
 
-    Downloads the DEM from Hugging Face if not present locally, then loads
-    into memory. Uses DEMService.is_loaded property to handle Streamlit
-    module reloads that can reset class-level singleton state.
+    Downloads from Hugging Face if not present locally. Uses DEMService.is_loaded to survive
+    Streamlit module reloads that reset class-level singleton state.
     """
     # Check if DEM service exists AND is actually loaded (handles module reimport)
     dem_service = st.session_state.get("dem_service")
@@ -217,36 +218,19 @@ def load_dem_data() -> bool:
 # =============================================================================
 
 
-# NOTE: @st.fragment intentionally NOT used here.
-# Fragments create isolated render contexts that can cause race conditions with
-# session_state updates, preventing proper key-based remounts for deck.gl 2D/3D
-# view transitions. Full app reruns with st.cache_data for heavy computations
-# (DEM loading, path generation) provide equivalent performance without the
-# state synchronization issues. See: Streamlit docs on fragment limitations.
+# NOTE: @st.fragment intentionally NOT used: isolated render contexts race with session_state
+# updates and break key-based deck.gl 2D/3D remounts. Full reruns + st.cache_data give equivalent
+# perf without the state-sync issues.
 def _render_map_fragment() -> None:
     """Render map and handle clicks.
 
-    Despite the name (kept for backwards compatibility), this is NOT a fragment.
-    Full app reruns ensure deterministic 2D/3D view transitions via UUID-based
-    key changes that force deck.gl component remounts.
+    Named for backwards compat but NOT a fragment; full reruns + UUID keys force deterministic
+    2D/3D deck.gl remounts.
     """
     try:
         _render_map_fragment_inner()
     except Exception as e:
-        # Log full traceback for debugging
-        error_msg = f"{type(e).__name__}: {e}"
-        full_traceback = traceback.format_exc()
-        logger.error(f"[RENDER] Map fragment error caught: {error_msg}\n{full_traceback}")
-
-        # Show user-friendly error message
-        st.error(f"⚠️ [RENDER] Something went wrong: {error_msg}")
-
-        # Reset UI state while preserving the graph
-        reset_ui_state()
-
-        # Add a button to manually recover
-        if st.button("🔄 Reset and Continue", type="primary"):
-            trigger_rerun()
+        _handle_error_with_recovery(e, "RENDER")
 
 
 def _render_map_fragment_inner() -> None:
@@ -374,20 +358,7 @@ def main() -> None:
     try:
         _run_app_ui()
     except Exception as e:
-        # Log full traceback for debugging
-        error_msg = f"{type(e).__name__}: {e}"
-        full_traceback = traceback.format_exc()
-        logger.error(f"[UI] UI error caught: {error_msg}\n{full_traceback}")
-
-        # Show user-friendly error message
-        st.error(f"⚠️ [UI] Something went wrong: {error_msg}")
-
-        # Reset UI state while preserving the graph
-        reset_ui_state()
-
-        # Add a button to manually recover
-        if st.button("🔄 Reset and Continue", type="primary"):
-            trigger_rerun()
+        _handle_error_with_recovery(e, "UI")
 
 
 def _run_app_ui() -> None:

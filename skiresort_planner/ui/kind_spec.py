@@ -1,10 +1,7 @@
 """Per-kind behavioural specs — the single source of truth for what differs by SegmentKind.
 
-Every place that used to branch on ``is_road`` instead reads ``KIND_SPECS[kind]``. A slope,
-a road, and any future kind (e.g. a nordic trail) differ ONLY in the data captured here:
-the build-time grade cap, whether the route may climb, the too-steep refusal message, the
-graph-finish method, and the state-machine state ids for its 3-state build flow. Adding a
-kind = adding one KindSpec entry; the assert below guarantees every SegmentKind is covered.
+Every place that used to branch on ``is_road`` reads ``KIND_SPECS[kind]`` instead. Adding a kind
+= adding one KindSpec entry; the import-time assert below guarantees every SegmentKind is covered.
 """
 
 from __future__ import annotations

@@ -337,7 +337,7 @@ class StreamlitUIListener:
         # connect mode before any segment is committed).
 
         # Check if rerun should be deferred (used during compound operations)
-        if st.session_state.get("_defer_rerun"):
+        if st.session_state.get("_defer_rerun", False):
             logger.debug(f'[STATE] Deferring st.rerun() after {event} transition (compound operation)"')
             return
 
@@ -1312,7 +1312,7 @@ class PlannerStateMachine(StateMachine):
         Used after undo operations when no building context remains. Clears ALL build
         kinds, custom, and viewing state. Does NOT trigger st.rerun().
         """
-        logger.info(f"[STATE] Forcing state from {self.get_state_name()} to IdleReady")
+        logger.debug(f"[STATE] Forcing state from {self.get_state_name()} to IdleReady")
         self.context.clear_builds()
         self.context.clear_custom_connect()
         self.context.clear_proposals()
@@ -1345,7 +1345,7 @@ class PlannerStateMachine(StateMachine):
         kind's enter_*_starting/building arms the fan (Single Point of Truth) — so the next deferred
         pass regenerates proposals. Both undo callers rely on that enter-hook arming.
         """
-        logger.info(f"[STATE] Forcing state from {self.get_state_name()} to {kind.value} {state_id}")
+        logger.debug(f"[STATE] Forcing state from {self.get_state_name()} to {kind.value} {state_id}")
         self.context.clear_custom_connect()
         self.context.viewing.clear()
         state: State = getattr(self, state_id)
@@ -1374,7 +1374,7 @@ class PlannerStateMachine(StateMachine):
         # Only states with real exit cleanup are in EXIT_HOOKS; the rest have no teardown.
         exit_hook = EXIT_HOOKS.get(current_state_value)
         if exit_hook is not None:
-            logger.info(f"[STATE] Calling exit_{current_state_value} before force")
+            logger.debug(f"[STATE] Calling exit_{current_state_value} before force")
             exit_hook(self.context)
         setattr(self.model, self.state_field, state.value)
 

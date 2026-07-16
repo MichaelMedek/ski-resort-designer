@@ -26,6 +26,7 @@ Sub-contexts:
 
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -164,17 +165,14 @@ class SegmentBuildContext(BaseContext):
 
 @dataclass
 class LiftContext(BaseContext):
-    """Lift placement state."""
+    """Lift placement state (start endpoint only)."""
 
     start_node_id: str | None = None
     start_location: PathPoint | None = None  # For new node creation
-    type: str = LiftConfig.DEFAULT_TYPE
 
     def clear(self) -> None:
         self.start_node_id = None
         self.start_location = None
-        # Reset the selected type to the default too — clear() means "back to initial state"
-        self.type = LiftConfig.DEFAULT_TYPE
 
 
 class BuildMode:
@@ -284,7 +282,7 @@ class BuildModeContext(BaseContext):
 
     def is_slope(self) -> bool:
         """Check if mode is slope building."""
-        return self.mode == BuildMode.SLOPE
+        return BuildMode.is_slope(self.mode)
 
     def is_lift(self) -> bool:
         """Check if mode is any lift type."""
@@ -292,15 +290,15 @@ class BuildModeContext(BaseContext):
 
     def is_road(self) -> bool:
         """Check if mode is road building."""
-        return self.mode == BuildMode.ROAD
+        return BuildMode.is_road(self.mode)
 
     def is_import(self) -> bool:
         """Check if mode is OSM import."""
-        return self.mode == BuildMode.IMPORT
+        return BuildMode.is_import(self.mode)
 
     def is_merge(self) -> bool:
         """Check if mode is node merge."""
-        return self.mode == BuildMode.MERGE
+        return BuildMode.is_merge(self.mode)
 
 
 @dataclass
@@ -381,9 +379,6 @@ class ViewingContext(BaseContext):
 
     def set_viewed(self, kind: SegmentKind, entity_id: str) -> None:
         """Set the viewed entity by its SegmentKind (slope or road) — one kind-generic setter."""
-        assert kind in ViewingContext._SET_VIEWED_SETTERS, (
-            f"kind {kind} must be in _SET_VIEWED_SETTERS (module-level assert should have caught this at import)"
-        )
         getattr(self, ViewingContext._SET_VIEWED_SETTERS[kind])(entity_id)
 
     # =========================================================================
@@ -581,8 +576,6 @@ class ClickDeduplicationContext(BaseContext):
         Returns:
             True if this is a new click that should be processed
         """
-        import time
-
         # No click data at all
         if coord is None and obj_id is None:
             return False

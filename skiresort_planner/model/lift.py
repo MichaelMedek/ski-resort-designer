@@ -352,6 +352,10 @@ class Lift(NodeConnected):
             cable_points=cable_points,
         )
 
+    def _resolve_nodes(self, nodes: dict[str, "Node"]) -> tuple["Node", "Node"]:
+        """The two station nodes; raises if either id is absent from the graph."""
+        return nodes[self.start_node_id], nodes[self.end_node_id]
+
     def get_vertical_rise(self, nodes: dict[str, "Node"]) -> float:
         """Calculate elevation gain from start to end node.
 
@@ -361,10 +365,7 @@ class Lift(NodeConnected):
         Returns:
             Vertical rise in meters.
         """
-        start = nodes.get(self.start_node_id)
-        end = nodes.get(self.end_node_id)
-        if not start or not end:
-            raise ValueError(f"Start or end node not found for lift {self.id}")
+        start, end = self._resolve_nodes(nodes)
         return end.elevation - start.elevation
 
     def get_length_m(self, nodes: dict[str, "Node"]) -> float:
@@ -376,10 +377,7 @@ class Lift(NodeConnected):
         Returns:
             Length in meters.
         """
-        start = nodes.get(self.start_node_id)
-        end = nodes.get(self.end_node_id)
-        if not start or not end:
-            raise ValueError(f"Start or end node not found for lift {self.id}")
+        start, end = self._resolve_nodes(nodes)
         return GeoCalculator.haversine_distance_m(
             lat1=start.lat,
             lon1=start.lon,
@@ -396,10 +394,7 @@ class Lift(NodeConnected):
         Returns:
             (lon, lat) midpoint.
         """
-        start = nodes.get(self.start_node_id)
-        end = nodes.get(self.end_node_id)
-        if not start or not end:
-            raise ValueError(f"Start or end node not found for lift {self.id}")
+        start, end = self._resolve_nodes(nodes)
         return ((start.lon + end.lon) / 2, (start.lat + end.lat) / 2)
 
     def update_type(self, new_type: str, start_node: "Node", end_node: "Node") -> None:
@@ -466,13 +461,8 @@ class Lift(NodeConnected):
     ) -> list[Pylon]:
         """Calculate pylon positions using 3-phase catenary simulation.
 
-        All lift types use catenary simulation for realistic cable sag and pylon placement:
-            Phase 1: Place pylons where cable clearance < min_clearance_m
-            Phase 2: Enforce max_spacing_m by adding midpoint pylons where spans are too long
-            Phase 3: Re-check clearance violations (spacing pylons may pull cable down)
-
-        Cable sag formula: z(t) = (1-t)*z₀ + t*z₁ - 4*s*t*(1-t)
-        where t=x/L and s=sag_factor*L
+        Phases: place pylons where clearance < min, enforce max_spacing with midpoints, re-check
+        clearance. Cable sag z(t) = (1-t)·z₀ + t·z₁ − 4·s·t·(1-t), t=x/L, s=sag_factor·L.
 
         Args:
             terrain_points: List of PathPoint sampled along lift path

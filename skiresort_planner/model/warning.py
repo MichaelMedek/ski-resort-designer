@@ -18,9 +18,7 @@ from skiresort_planner.core.terrain_analyzer import SideDirection
 class Warning(ABC):
     """Abstract base class for slope warnings.
 
-    Subclasses store specific parameters and compute message as property.
-    Use isinstance() to check warning type.
-    Each subclass has a warning_type field for serialization.
+    Subclasses store specific parameters and compute their message as a property.
     """
 
     @property
@@ -40,13 +38,11 @@ class ExcavatorWarning(Warning):
         side_slope_pct: Absolute side slope percentage
         belt_width_m: Width of the piste in meters
         side_slope_dir: Direction terrain leans (SideDirection)
-        warning_type: Type identifier for serialization
     """
 
     side_slope_pct: float
     belt_width_m: float
     side_slope_dir: SideDirection
-    warning_type: str = "ExcavatorWarning"
 
     @property
     def vertical_cut_m(self) -> float:
@@ -69,12 +65,10 @@ class TooSteepWarning(Warning):
     Attributes:
         slope_pct: Actual slope percentage
         max_threshold_pct: Maximum safe threshold
-        warning_type: Type identifier for serialization
     """
 
     slope_pct: float
     max_threshold_pct: float
-    warning_type: str = "TooSteepWarning"
 
     @property
     def message(self) -> str:
@@ -91,12 +85,10 @@ class TooFlatWarning(Warning):
     Attributes:
         slope_pct: Actual slope percentage
         min_threshold_pct: Minimum skiable threshold
-        warning_type: Type identifier for serialization
     """
 
     slope_pct: float
     min_threshold_pct: float
-    warning_type: str = "TooFlatWarning"
 
     @property
     def message(self) -> str:

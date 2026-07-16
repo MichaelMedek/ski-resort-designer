@@ -1,15 +1,8 @@
 """Slope - A complete ski run composed of multiple segments.
 
-A Slope is created when the user clicks "Finish Slope".
-It groups multiple PathSegments into a single named run.
-
-Difficulty is derived from maximum segment gradient.
-Creative naming generates memorable descriptive names.
-
-Shared segment-chain geometry lives in SegmentPath; this class adds
-only the slope-specific difficulty classification and naming.
-
-Reference: DETAILS.md
+Created on "Finish Slope"; groups PathSegments into a named run. Difficulty derives from the
+steepest section; naming is creative. Shared chain geometry lives in SegmentPath; this class
+adds only slope-specific difficulty classification and naming. Reference: DETAILS.md
 """
 
 import logging
