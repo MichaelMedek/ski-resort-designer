@@ -3,8 +3,9 @@ title: Ski Resort Planner
 emoji: ⛷️
 colorFrom: blue
 colorTo: green
-sdk: docker
-app_port: 7860
+sdk: streamlit
+sdk_version: 1.54.0
+app_file: skiresort_planner/app.py
 pinned: false
 ---
 
