@@ -45,8 +45,10 @@ def _describe_undo_action(action: UndoAction, graph: ResortGraph) -> str:
     return UNDO_HANDLERS[action.action_type.name].describe(action=action, graph=graph)
 
 
-def _describe_next_undo(sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph) -> str:
-    """Description of what the NEXT undo will do."""
+def _describe_next_undo(graph: ResortGraph) -> str:
+    """Confirmation text for the next undo. Only reached when the undo actually shows a dialog —
+    routine steps (segment peel, build cancel) skip confirmation, so they never land here.
+    """
     return _describe_undo_action(action=graph.undo_stack[-1], graph=graph)
 
 
@@ -68,10 +70,10 @@ def _request_pending_undo() -> None:
 
 
 @st.dialog("Confirm Undo")
-def _confirm_undo_dialog(sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph) -> None:
+def _confirm_undo_dialog(graph: ResortGraph) -> None:
     """Show confirmation dialog before undoing an action."""
     st.write("**Action to undo:**")
-    st.write(_describe_next_undo(sm=sm, ctx=ctx, graph=graph))
+    st.write(_describe_next_undo(graph=graph))
 
     col_yes, col_no = st.columns(2)
     with col_yes:
@@ -257,7 +259,7 @@ class SidebarRenderer:
                 _request_pending_undo()
                 trigger_rerun()
             else:
-                _confirm_undo_dialog(sm=self.sm, ctx=self.ctx, graph=self.graph)
+                _confirm_undo_dialog(graph=self.graph)
 
     def _render_reset_view_button(self) -> None:
         """Render the reset-view button (recenters camera to defaults, cleans orphan nodes)."""

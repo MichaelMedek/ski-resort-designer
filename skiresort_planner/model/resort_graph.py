@@ -873,8 +873,13 @@ class ResortGraph:
         Ids are uniquely prefixed (SL/L/R), so no kind is needed. Slopes and roads also rename their
         segments — finish_slope/finish_road set segment names, and the elevation profile shows them.
         """
-        # Look up among the finished SegmentPath entities (slopes + roads, kind-generic) by id.
-        segment_path = next((e for e in self.segment_path_entities if e.id == entity_id), None)
+        # Find the segment-path entity by id across every SegmentKind.
+        segment_path: SegmentPath | None = None
+        for kind in SegmentKind:
+            found = self.entity_dict_for_kind(kind).get(entity_id)
+            if found is not None:
+                segment_path = found
+                break
         entity = segment_path or self.lifts.get(entity_id)
         if entity is None:
             raise KeyError(f"No slope/lift/road with id {entity_id}")

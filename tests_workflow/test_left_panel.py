@@ -267,13 +267,14 @@ class TestDescribeUndoAction:
         empty_graph.merge_nodes(node_ids=[a.id, b.id], dem=dem)
         assert self._describe_top(empty_graph) == "Un-merge 2 nodes"
 
-    def test_next_undo_describes_build_cancel_not_stale_stack_entry(
+    def test_build_cancel_undo_skips_dialog_instead_of_describing(
         self, empty_graph, path_points_blue, mock_dem_blue_slope
     ) -> None:
-        """In a build state with no committed segments, the next undo CANCELS the build — the dialog
-        must say so, not describe the unrelated previous stack action (the off-by-one bug).
+        """In a build state with no committed segments, the next undo CANCELS the build — a routine
+        one-tap step that skips the confirmation dialog, so it is never described (no off-by-one
+        describe of the stale stack entry either).
         """
-        from skiresort_planner.ui.left_panel import _describe_next_undo
+        from skiresort_planner.ui.left_panel import _next_undo_skips_confirm
 
         # A prior committed slope sits on the undo stack (the stale entry the old code would describe).
         _build_slope(empty_graph, path_points_blue)
@@ -282,9 +283,9 @@ class TestDescribeUndoAction:
         sm.start_building(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
         assert sm.is_slope_starting
 
-        label = _describe_next_undo(sm=sm, ctx=ctx, graph=empty_graph)
-        assert "Cancel building" in label and "slope" in label.lower()
-        assert "segment" not in label.lower(), "must not describe the stale committed-slope stack entry"
+        assert _next_undo_skips_confirm(sm=sm, ctx=ctx, graph=empty_graph), (
+            "cancelling a just-started build is a routine step → no confirmation dialog"
+        )
 
 
 class TestNextUndoSkipsConfirm:
