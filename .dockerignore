@@ -1,0 +1,32 @@
+# Keep the Docker build context small.
+
+.venv-skiresort/
+.venv/
+venv/
+
+# DEM is baked from the HF dataset via ADD, not copied from local
+data/alps_dem.tif
+
+backups/
+output/
+*.log
+
+tests_workflow/
+docs/images/
+scripts/
+
+.git/
+.gitignore
+.github/
+.claude/
+.pre-commit-config.yaml
+
+*.egg-info/
+.coverage
+.coverage.*
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store

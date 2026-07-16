@@ -1,3 +1,13 @@
+---
+title: Ski Resort Planner
+emoji: ⛷️
+colorFrom: blue
+colorTo: green
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # Ski Resort Planner
 
 Design ski resorts on real terrain with an addictive, game-like interface.

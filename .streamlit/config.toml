@@ -1,0 +1,12 @@
+# Streamlit server config — how the app runs on HF Spaces.
+
+[server]
+headless = true
+address = "0.0.0.0"
+port = 7860
+# HF serves the app inside an *.hf.space iframe; XSRF/CORS must be relaxed.
+enableCORS = false
+enableXsrfProtection = false
+
+[browser]
+gatherUsageStats = false
