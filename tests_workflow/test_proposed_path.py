@@ -1,10 +1,21 @@
 """Unit tests for ProposedPathSegment computed metrics (model/proposed_path.py)."""
 
 from skiresort_planner.constants import SlopeConfig
-from skiresort_planner.enum_utils import enum_eq
+from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.model.path_point import PathPoint
-from skiresort_planner.model.path_segment import SegmentKind
+from skiresort_planner.model.path_segment import PathSegment, SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
+
+M = 111320.0  # metres per degree near the equator
+
+
+def _segment_of_grade(grade_pct: float, length_m: float = 350.0) -> list[PathPoint]:
+    """A 2-point south-running descent whose slope == grade_pct (longer than ROLLING_WINDOW_M)."""
+    dlat = length_m / M
+    return [
+        PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
+        PathPoint(lon=0.0, lat=-dlat, elevation=2000.0 - length_m * grade_pct / 100.0),
+    ]
 
 
 class TestProposedSegmentComputedProperties:
@@ -33,7 +44,7 @@ class TestProposedSegmentComputedProperties:
         assert segment.is_connector is False
         assert segment.target_node_id == ""
         assert segment.start_node_id == ""
-        assert enum_eq(a=segment.kind, b=SegmentKind.SLOPE)
+        assert segment.kind == SegmentKind.SLOPE
 
 
 class TestMaxSlopeRollingWindow:
@@ -93,3 +104,30 @@ class TestMaxSlopeRollingWindow:
         assert seg.avg_slope_pct < 0  # signed average is negative for a climb
         assert seg.max_slope_pct > 0  # magnitude seed survives the abs()
         assert seg.max_slope_pct == abs(seg.avg_slope_pct)
+
+
+class TestProposalDifficultyMargin:
+    """A proposal biases difficulty toward the harder band (SLOPE_DIFFICULTY_MARGIN_PCT), so the
+    previewed grade never reads softer than the finished slope. Committed segments stay margin-free.
+    """
+
+    def test_proposal_near_band_edge_rounds_harder(self) -> None:
+        # 24% is blue by the raw thresholds (15–25); the +2% margin pushes the PROPOSAL to red.
+        grade = SlopeConfig.DIFFICULTY_THRESHOLDS["blue"][1] - 1.0  # 24%
+        proposal = ProposedPathSegment(points=_segment_of_grade(grade), kind=SegmentKind.SLOPE)
+        assert proposal.max_slope_pct == __import__("pytest").approx(grade, abs=0.5)
+        assert proposal.difficulty == "red", "proposal within margin of the edge rounds to the harder band"
+
+    def test_committed_segment_same_grade_stays_blue(self) -> None:
+        # The same 24% geometry, committed, classifies WITHOUT the margin — the honest value.
+        grade = SlopeConfig.DIFFICULTY_THRESHOLDS["blue"][1] - 1.0
+        seg = PathSegment(id="S1", start_node_id="N1", end_node_id="N2", points=_segment_of_grade(grade))
+        assert seg.difficulty == "blue", "committed segment classifies margin-free (honest)"
+        # And classify_difficulty itself is margin-free by default.
+        assert TerrainAnalyzer.classify_difficulty(slope_pct=grade) == "blue"
+
+    def test_margin_does_not_touch_max_slope_pct(self) -> None:
+        # The road ±cap filters on max_slope_pct; the margin must not inflate it.
+        grade = 14.0
+        proposal = ProposedPathSegment(points=_segment_of_grade(grade), kind=SegmentKind.SLOPE)
+        assert proposal.max_slope_pct == __import__("pytest").approx(grade, abs=0.5)

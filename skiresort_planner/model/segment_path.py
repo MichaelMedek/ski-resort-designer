@@ -13,8 +13,9 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, TypeVar, cast
 
-from skiresort_planner.constants import SlopeConfig
+from skiresort_planner.constants import PathConfig
 from skiresort_planner.model.node_connected import NodeConnected
+from skiresort_planner.model.path_segment import SegmentKind
 
 if TYPE_CHECKING:
     from skiresort_planner.model.path_point import PathPoint
@@ -28,11 +29,12 @@ T = TypeVar("T", bound="SegmentPath")
 def steepest_section_pct(segments: list["PathSegment"]) -> float:
     """Steepest-section gradient magnitude across a chain of segments.
 
-    Max of each segment's own rolling-window steepest section (`max_slope_pct`).
-    Only segments at least ROLLING_WINDOW_M long are counted; if none rech that,
+    Max of each segment's own rolling-window steepest section (`max_slope_pct`). Counts every
+    segment at least SEGMENT_LENGTH_MIN_M long (the builder's minimum) — a short-but-steep pitch
+    (e.g. a 260m 55% wall) is a real black section and must drive the rating. If none reach that,
     fall back to all so the value is never empty.
     """
-    long_enough = [s for s in segments if s.length_m >= SlopeConfig.ROLLING_WINDOW_M]
+    long_enough = [s for s in segments if s.length_m >= PathConfig.SEGMENT_LENGTH_MIN_M]
     counted = long_enough or segments
     return max((s.max_slope_pct for s in counted), default=0.0)
 
@@ -57,6 +59,8 @@ class SegmentPath(NodeConnected):
 
     # Subclasses set their entity id prefix (e.g. "SL", "R").
     ID_PREFIX: ClassVar[str] = ""
+    # Reload-safe entity discriminator (StrEnum): concrete subclasses set it (Slope→SLOPE, Road→ROAD).
+    kind: ClassVar[SegmentKind]
 
     @property
     def number(self) -> int:
@@ -70,11 +74,11 @@ class SegmentPath(NodeConnected):
 
     def get_total_length(self, segments: dict[str, "PathSegment"]) -> float:
         """Total horizontal length in meters across all segments."""
-        return sum(segments[sid].length_m for sid in self.segment_ids if sid in segments)
+        return sum(segments[sid].length_m for sid in self.segment_ids)
 
     def get_total_drop(self, segments: dict[str, "PathSegment"]) -> float:
         """Total vertical drop in meters (sum of signed segment drops)."""
-        return sum(segments[sid].total_drop_m for sid in self.segment_ids if sid in segments)
+        return sum(segments[sid].total_drop_m for sid in self.segment_ids)
 
     def get_max_gradient(self, segments: dict[str, "PathSegment"]) -> float:
         """Steepest-section gradient magnitude, measured PER SEGMENT.
@@ -86,31 +90,42 @@ class SegmentPath(NodeConnected):
         segment is legal and the junctions are continuous — deliberately avoided here to
         keep the metric simple and consistent with how segments are validated at commit.
 
-        Only segments at least ROLLING_WINDOW_M long are counted: a shorter segment has
-        no full window, so its `max_slope_pct` degrades to its average and would report a
-        misleadingly local figure. If NO segment is that long (a short road/slope), fall
-        back to the max over all segments so the value is never empty.
+        Only segments at least SEGMENT_LENGTH_MIN_M long are counted (a sub-minimum sliver has
+        no meaningful section); a real 260m 55% wall counts and rightly makes the slope black. If
+        NO segment reaches that length, fall back to the max over all segments so it's never empty.
         """
-        present = [segments[sid] for sid in self.segment_ids if sid in segments]
+        present = [segments[sid] for sid in self.segment_ids]
         return steepest_section_pct(segments=present)
 
     def get_all_points(self, segments: dict[str, "PathSegment"]) -> list["PathPoint"]:
         """All points across segments, deduplicated at shared junction nodes."""
         all_points: list[PathPoint] = []
         for seg_id in self.segment_ids:
-            seg = segments.get(seg_id)
-            if seg:
-                if all_points and seg.points:
-                    all_points.extend(seg.points[1:])  # Skip duplicate junction
-                else:
-                    all_points.extend(seg.points)
+            seg = segments[seg_id]
+            if all_points and seg.points:
+                all_points.extend(seg.points[1:])  # Skip duplicate junction
+            else:
+                all_points.extend(seg.points)
         if len(all_points) == 0:
             raise ValueError(f"{type(self).__name__} must have at least one point")
         return all_points
 
     def has_warnings(self, segments: dict[str, "PathSegment"]) -> bool:
         """True if any segment carries a warning."""
-        return any(segments[sid].has_warnings for sid in self.segment_ids if sid in segments)
+        return any(segments[sid].has_warnings for sid in self.segment_ids)
+
+    def center(self, segments: dict[str, "PathSegment"]) -> tuple[float, float]:
+        """(lon, lat) midpoint of the group's first-start → last-end point.
+
+        Args:
+            segments: Dict of segment_id -> PathSegment.
+
+        Returns:
+            (lon, lat) midpoint.
+        """
+        first, last = segments[self.segment_ids[0]], segments[self.segment_ids[-1]]
+        start_pt, end_pt = first.points[0], last.points[-1]
+        return ((start_pt.lon + end_pt.lon) / 2, (start_pt.lat + end_pt.lat) / 2)
 
     @classmethod
     def from_dict(cls: type[T], data: dict[str, object]) -> T:

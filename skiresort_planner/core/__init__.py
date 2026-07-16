@@ -31,7 +31,4 @@ __all__ = [
     "TerrainGradient",
     "TerrainOrientation",
     "SideSlope",
-    # Path tracer
-    "PathTracer",
-    "TracedPath",
 ]

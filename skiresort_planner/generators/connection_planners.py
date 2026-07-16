@@ -25,9 +25,8 @@ from skiresort_planner.constants import GeometricTuningConfig, PlannerConfig
 from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
-from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.path_point import PathPoint
-from skiresort_planner.model.path_smoothing import resample_cubic_spline
+from skiresort_planner.model.path_smoothing import smooth_proposal_points
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 
 logger = logging.getLogger(__name__)
@@ -96,6 +95,7 @@ class LeastCostPathPlanner:
         target_lat: float,
         target_elevation: float,
         target_grade_pct: float,
+        smoothing_factor: float,
         gradient_mode: GradientMode = GradientMode.DOWNHILL,
     ) -> ProposedPathSegment | None:
         """Plan a least-cost path that holds a target grade from start to target.
@@ -103,6 +103,8 @@ class LeastCostPathPlanner:
         Args:
             start_lon/lat/elevation, target_lon/lat/elevation: the two endpoints.
             target_grade_pct: signed grade the path aims to hold (+ = descending).
+            smoothing_factor: spline smoothing budget — the caller passes the kind's finish factor
+                (slope/road) so the proposal previews the finished shape.
             gradient_mode: DOWNHILL (default) forces net-descent and penalizes climbing
                 (skiable pistes); UPHILL forces net-ascent and penalizes descending. The
                 monotonicity is what prevents the path from looping.
@@ -112,13 +114,13 @@ class LeastCostPathPlanner:
         """
         # The segment must actually run in its mode's direction (net drop / net climb).
         net_drop = start_elevation - target_elevation
-        if enum_eq(a=gradient_mode, b=GradientMode.DOWNHILL) and net_drop <= 0:
+        if gradient_mode == GradientMode.DOWNHILL and net_drop <= 0:
             logger.debug(
                 f"plan: no path — DOWNHILL mode but net_drop={net_drop:.1f}m <= 0 "
                 f"(start_elev={start_elevation:.0f}m, target_elev={target_elevation:.0f}m)"
             )
             return None
-        if enum_eq(a=gradient_mode, b=GradientMode.UPHILL) and net_drop >= 0:
+        if gradient_mode == GradientMode.UPHILL and net_drop >= 0:
             logger.debug(
                 f"plan: no path — UPHILL mode but net_drop={net_drop:.1f}m >= 0 "
                 f"(start_elev={start_elevation:.0f}m, target_elev={target_elevation:.0f}m)"
@@ -145,13 +147,6 @@ class LeastCostPathPlanner:
             target_lat=target_lat,
             direct_distance=direct_distance_m,
         )
-
-        if grid_data is None:
-            logger.debug(
-                f"plan: no path — grid build failed (no nearest node) from "
-                f"({start_lon:.5f}, {start_lat:.5f}) to ({target_lon:.5f}, {target_lat:.5f})"
-            )
-            return None
 
         elevations, lons, lats, start_node, target_node = grid_data
 
@@ -181,10 +176,13 @@ class LeastCostPathPlanner:
             lats=lats,
         )
 
-        # Smooth the grid path using spline interpolation
-        points = self._smooth_path_spline(
+        # Smooth the grid staircase and DEM-requery elevations — the SAME call the fan uses,
+        # at the kind's finish factor, so the proposal previews the finished shape.
+        points = smooth_proposal_points(
             points=raw_points,
-            target_grade_pct=target_grade_pct,
+            smoothing_factor=smoothing_factor,
+            step_m=GeometricTuningConfig.RESAMPLE_STEP_M,
+            elevation_fn=self.dem.get_elevation,
         )
 
         return ProposedPathSegment(
@@ -200,7 +198,7 @@ class LeastCostPathPlanner:
         target_lon: float,
         target_lat: float,
         direct_distance: float,
-    ) -> tuple[list[list[float]], list[list[float]], list[list[float]], GridNode, GridNode] | None:
+    ) -> tuple[list[list[float]], list[list[float]], list[list[float]], GridNode, GridNode]:
         """Build elevation grid covering the search area."""
         # Calculate grid bounds with buffer
         # TODO(serpentine): this buffer (0.5×direct) is too tight for switchbacks — a
@@ -279,9 +277,6 @@ class LeastCostPathPlanner:
         start_node = self._find_nearest_node(target_lon=start_lon, target_lat=start_lat, lons=lons, lats=lats)
         target_node = self._find_nearest_node(target_lon=target_lon, target_lat=target_lat, lons=lons, lats=lats)
 
-        if start_node is None or target_node is None:
-            return None
-
         return elevations, lons, lats, start_node, target_node
 
     def _find_nearest_node(
@@ -290,7 +285,7 @@ class LeastCostPathPlanner:
         target_lat: float,
         lons: list[list[float]],
         lats: list[list[float]],
-    ) -> GridNode | None:
+    ) -> GridNode:
         """Find grid node nearest to target coordinates."""
         best_dist = float("inf")
         best_node = None
@@ -307,6 +302,10 @@ class LeastCostPathPlanner:
                     best_dist = dist
                     best_node = GridNode(row=row, col=col)
 
+        assert best_node is not None, (
+            f"_find_nearest_node: grid {len(lons)}×{len(lons[0]) if lons else 0} has no cells for "
+            f"target ({target_lon}, {target_lat}) — grid must be non-empty by construction"
+        )
         return best_node
 
     def _graph_dijkstra(
@@ -452,7 +451,7 @@ class LeastCostPathPlanner:
         # (actual_grade < 0), UPHILL penalizes descending (actual_grade > 0). This
         # one-way monotonicity is what makes loops impossible.
         against_penalty = 1.0
-        wrong_way = actual_grade < 0 if enum_eq(a=gradient_mode, b=GradientMode.DOWNHILL) else actual_grade > 0
+        wrong_way = actual_grade < 0 if gradient_mode == GradientMode.DOWNHILL else actual_grade > 0
         if wrong_way:
             against_penalty = exp(abs(actual_grade) / GeometricTuningConfig.COST_SIGMA)
 
@@ -476,34 +475,3 @@ class LeastCostPathPlanner:
                 )
             )
         return points
-
-    def _smooth_path_spline(
-        self,
-        points: list[PathPoint],
-        target_grade_pct: float,
-        step_m: float = 7.0,
-    ) -> list[PathPoint]:
-        """Smooth a grid path with a cubic spline, then re-query the DEM for elevations.
-
-        The grid-based Dijkstra produces staircase paths (8-directional movement). This
-        fits a smoothing spline and resamples at step_m, then replaces each point's
-        elevation with the DEM value (the planner path must follow the ground).
-
-        Args:
-            points: Raw grid path points
-            target_grade_pct: Target grade — gentler targets get more aggressive smoothing
-            step_m: Output point spacing in meters (default 7m)
-        """
-        # Gentler difficulties smooth more aggressively (green 4.0 → red/black 2.0).
-        difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=target_grade_pct)
-        smoothing_factor = {"green": 4.0, "blue": 3.0}.get(difficulty, 2.0)
-
-        smoothed = resample_cubic_spline(points=points, smoothing_factor=smoothing_factor, step_m=step_m)
-        if smoothed is points:
-            return points
-
-        # Planner paths follow the ground: re-query the DEM at each smoothed position.
-        return [
-            PathPoint(lon=p.lon, lat=p.lat, elevation=self.dem.get_elevation(lon=p.lon, lat=p.lat) or p.elevation)
-            for p in smoothed
-        ]

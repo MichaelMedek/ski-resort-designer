@@ -6,8 +6,6 @@ Tests that resort graphs can be saved and loaded without data loss.
 import json
 import xml.etree.ElementTree as ET
 
-from skiresort_planner.enum_utils import enum_eq
-
 
 def _child_text(element: ET.Element, tag: str) -> str:
     """Return the text of a required child element, asserting it exists and is non-empty."""
@@ -347,7 +345,7 @@ class TestRoadSerialization:
         assert restored.roads[road.id].name == road.name
         assert restored._road_counter == empty_graph._road_counter
         # The segment's road kind survives the round-trip (persisted, not recomputed).
-        assert enum_eq(a=restored.segments[road_seg_id].kind, b=SegmentKind.ROAD)
+        assert restored.segments[road_seg_id].kind == SegmentKind.ROAD
 
     def test_road_owned_slope_kind_segment_raises(self, empty_graph, path_points_blue) -> None:
         """A road owning a kind=SLOPE segment (corrupt/stale save) fails loudly on load."""

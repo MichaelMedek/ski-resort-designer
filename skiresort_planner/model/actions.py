@@ -10,7 +10,7 @@ SegmentPath); they import no graph or UI code, so they can live in the model lay
 """
 
 from dataclasses import dataclass
-from enum import Enum, auto
+from enum import StrEnum
 
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.node import Node
@@ -20,18 +20,21 @@ from skiresort_planner.model.segment_path import SegmentPath
 from skiresort_planner.model.slope import Slope
 
 
-class ActionType(Enum):
-    """Enum identifying the type of (undo) action for reliable dispatch."""
+class ActionType(StrEnum):
+    """Enum identifying the type of (undo) action for reliable dispatch.
 
-    ADD_SEGMENTS = auto()
-    FINISH_SLOPE = auto()
-    ADD_LIFT = auto()
-    FINISH_ROAD = auto()
-    DELETE_SLOPE = auto()
-    DELETE_LIFT = auto()
-    DELETE_ROAD = auto()
-    IMPORT_OSM = auto()
-    MERGE_NODES = auto()
+    StrEnum (value == lowercased name) so comparisons/dispatch survive Streamlit module reloads.
+    """
+
+    ADD_SEGMENTS = "add_segments"
+    FINISH_SLOPE = "finish_slope"
+    ADD_LIFT = "add_lift"
+    FINISH_ROAD = "finish_road"
+    DELETE_SLOPE = "delete_slope"
+    DELETE_LIFT = "delete_lift"
+    DELETE_ROAD = "delete_road"
+    IMPORT_OSM = "import_osm"
+    MERGE_NODES = "merge_nodes"
 
 
 @dataclass(frozen=True)

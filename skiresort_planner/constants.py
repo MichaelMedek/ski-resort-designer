@@ -70,7 +70,6 @@ class MapConfig:
     # Zoom levels for different modes
     # Higher number = more zoomed in, lower = more zoomed out
     # Reduced zoom levels to prevent camera going underground with 3D terrain
-    BUILDING_ZOOM = 14  # Working zoom for building slopes/lifts
     VIEWING_ZOOM = 13  # Overview after finishing slope/lift (zoomed out)
     VIEW_3D_ZOOM = 14  # 3D side view - balanced zoom
     VIEW_3D_MIN_ZOOM = 12  # Minimum zoom for high elevation (prevents camera under terrain)
@@ -78,7 +77,6 @@ class MapConfig:
 
     # Pitch angles for different modes
     # Use 0 (top-down) for all modes to ensure accurate terrain clicks
-    BUILDING_PITCH = 0  # Top-down view for precise placement during building
     VIEWING_PITCH = 0  # Top-down view for viewing (tilted views cause terrain click issues)
     VIEW_3D_PITCH = 25  # 25° angle for 3D - more from above to avoid mountains blocking view
     DEFAULT_PITCH = 0  # Always start top-down
@@ -99,7 +97,7 @@ class MapConfig:
     Z_OFFSET_2D_LIFTS = 3  # Lift cables above roads
     Z_OFFSET_2D_PYLONS = 4  # Pylons slightly above lift cables
     Z_OFFSET_2D_ICONS = 5  # Slope/road/lift icons above pylons
-    Z_OFFSET_2D_NODE_BIG = 9  # Merge-selected or parking palce (big red or blue) nodes just BELOW plain nodes
+    Z_OFFSET_2D_NODE_BIG = 9  # Merge-selected or parking place (big red or blue) nodes just BELOW plain nodes
     Z_OFFSET_2D_NODES = 10  # Nodes above icons
     Z_OFFSET_2D_MARKERS = 20  # Interactive markers (commit/select) on top
 
@@ -131,6 +129,10 @@ class SlopeConfig:
     # Core slope limits - single source of truth
     MIN_SKIABLE_PCT = 5  # Below this: need to push poles
     MAX_SKIABLE_PCT = 70  # Above this: dangerously steep
+
+    # Safety bias added to a PROPOSAL's steepness before classifying, so its previewed
+    # difficulty rounds toward the harder band.
+    SLOPE_DIFFICULTY_MARGIN_PCT = 2.0
 
     # Side-slope classification thresholds (compute_side_slope)
     FLAT_GRADIENT_EPS_PCT = 0.5  # Terrain gradient below this → no meaningful side slope
@@ -214,8 +216,7 @@ class GeometricTuningConfig:
 
     # --- Fan tracer (path_tracer.py) + fan breadth (path_factory.py) ---
     STEP_SIZE_M = 30  # Path trace / terrain-sample / node-snap step (smaller = smoother, slower)
-    MIN_TRAVERSE_ANGLE_DEG = 2  # Ensures left/right paths diverge on gentle terrain
-    MAX_TRAVERSE_ANGLE_DEG = 89  # Physical limit (near-horizontal traverse)
+    MIN_TRAVERSE_ANGLE_DEG = 2  # Keeps left/right paths diverging and the traverse off straight up/down
     MAX_TURN_PER_STEP_DEG = 40.0  # Max angular change per step to prevent self-intersection
     BEARING_SMOOTHING_WINDOW = 4  # Number of recent bearings to average when smoothing
     FLAT_TERRAIN_THRESHOLD_PCT = 15.0  # Below this slope %, use bearing smoothing (no clear fall line)
@@ -259,13 +260,10 @@ assert set(EarthworkConfig.BELT_WIDTH_LIMITS.keys()) == set(SlopeConfig.DIFFICUL
 
 
 class ConnectionConfig:
-    """Connection path parameters for manual "Connect to Custom Point" feature.
+    """Connection path parameters for manual "Connect to Custom Point".
 
-    User workflow:
-    1. User clicks "Connect to Custom Point" button
-    2. User clicks target on map (node or free point)
-    3. System validates: downhill by MIN_DROP_M + within segment_length
-    4. Connection paths are generated if valid
+    User clicks a target (node/free point); a path is generated if it's downhill by MIN_DROP_M
+    and within segment_length.
     """
 
     # Minimum elevation drop to target (must go meaningfully downhill)
@@ -416,12 +414,9 @@ class LiftConfig:
             "sag_factor": 0.06,
         },
     }
-    # Lift-type strings, in the canonical order. Members are str-Enum so this list of LiftType also
-    # behaves as a list of plain strings for callers that compare/serialize by value.
-    TYPES = [t.value for t in PYLON_CONFIG]
-
-    # Inital selcted lift type
-    DEFAULT_TYPE = LiftType.GONDOLA
+    # Lift-type strings, in canonical order — derived from the authoritative LiftType enum. Members
+    # are str-Enum so this list also behaves as plain strings for callers that compare/serialize.
+    TYPES = [t.value for t in LiftType]
 
     # Every lift type must define the full set of pylon-placement knobs the builder reads.
     assert all(
@@ -431,8 +426,6 @@ class LiftConfig:
     ), "each PYLON_CONFIG entry must define exactly the 6 pylon-placement keys"
     # PYLON_CONFIG must be keyed by every LiftType member (bijection: no type missing, none stray).
     assert set(PYLON_CONFIG) == set(LiftType), "PYLON_CONFIG must have one entry per LiftType member"
-    # DEFAULT_TYPE must exist
-    assert DEFAULT_TYPE in TYPES
 
 
 class StyleConfig:

@@ -4,7 +4,6 @@ Renders elevation profiles showing:
 - Terrain elevation along path
 - Slope gradient coloring
 - Distance markers
-- Warning annotations
 - Lift profiles with pylons and cable
 
 Reference: DETAILS_UI.md for profile display
@@ -15,14 +14,21 @@ import plotly.graph_objects as go
 from skiresort_planner.constants import ChartConfig, LiftConfig, LiftType, StyleConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
-from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.lift import Lift
+from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import PathSegment, SegmentKind
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.model.road import Road
 from skiresort_planner.model.segment_path import SegmentPath, steepest_section_pct
 from skiresort_planner.model.slope import Slope
 from skiresort_planner.ui.context import EntityKind
+
+
+def _elevation_range(elevations: list[float], *, padding_factor: float, padding_min_m: float) -> tuple[float, float]:
+    """Y-axis (min, max) padded around the elevation span so the profile isn't flush to the frame."""
+    min_elev, max_elev = min(elevations), max(elevations)
+    padding = max((max_elev - min_elev) * padding_factor, padding_min_m)
+    return (min_elev - padding, max_elev + padding)
 
 
 class ProfileChart:
@@ -42,14 +48,12 @@ class ProfileChart:
         self,
         segment: PathSegment,
         difficulty: str,
-        title: str | None = None,
     ) -> go.Figure:
         """Render elevation profile for a committed segment.
 
         Args:
             segment: Slope segment to visualize
             difficulty: Difficulty level for coloring (caller determines the correct value)
-            title: Optional chart title
 
         Returns:
             Plotly Figure object.
@@ -58,24 +62,12 @@ class ProfileChart:
         if not points:
             raise ValueError("Segment must have points to render")
 
-        distances = [0.0]
-        for i in range(1, len(points)):
-            dist = GeoCalculator.haversine_distance_m(
-                lat1=points[i - 1].lat,
-                lon1=points[i - 1].lon,
-                lat2=points[i].lat,
-                lon2=points[i].lon,
-            )
-            distances.append(distances[-1] + dist)
-
+        distances = PathPoint.cumulative_distances(points)
         elevations = [p.elevation for p in points]
-
-        # Calculate Y-axis range (not starting from 0)
-        min_elev = min(elevations)
-        max_elev = max(elevations)
-        padding = max(
-            (max_elev - min_elev) * ChartConfig.ELEVATION_PADDING_FACTOR,
-            ChartConfig.ELEVATION_PADDING_MIN_M,
+        y_range = _elevation_range(
+            elevations,
+            padding_factor=ChartConfig.ELEVATION_PADDING_FACTOR,
+            padding_min_m=ChartConfig.ELEVATION_PADDING_MIN_M,
         )
 
         color = StyleConfig.SLOPE_COLORS[difficulty]
@@ -94,19 +86,15 @@ class ProfileChart:
             )
         )
 
-        title = title or segment.name
         fig.update_layout(
-            title=dict(text=title, x=0.5),
             xaxis=dict(
-                title="Distance (m)",
                 showgrid=True,
                 gridcolor="rgba(200, 200, 200, 0.3)",
             ),
             yaxis=dict(
-                title="Elevation (m)",
                 showgrid=True,
                 gridcolor="rgba(200, 200, 200, 0.3)",
-                range=[min_elev - padding, max_elev + padding],
+                range=list(y_range),
             ),
             showlegend=False,
             height=self.height,
@@ -114,58 +102,31 @@ class ProfileChart:
             plot_bgcolor="white",
         )
 
-        # Add warnings if present
-        if segment.warnings:
-            fig.add_annotation(
-                xref="paper",
-                yref="paper",
-                x=0.5,
-                y=1.05,
-                text=" | ".join(str(w) for w in segment.warnings),
-                showarrow=False,
-                font=dict(size=10, color="red"),
-            )
-
         return fig
 
     def render_slope(
         self,
         slope: Slope,
         graph: ResortGraph,
-        title: str | None = None,
     ) -> go.Figure:
         """Render elevation profile for a complete slope (colored by difficulty)."""
         difficulty = slope.get_difficulty(segments=graph.segments)
-        total_length = slope.get_total_length(segments=graph.segments)
-        total_drop = slope.get_total_drop(segments=graph.segments)
-        stats_text = f"Length: {total_length:.0f}m | Drop: {total_drop:.0f}m | Segments: {len(slope.segment_ids)}"
         return self._render_path_profile(
             path=slope,
             graph=graph,
             fill_color=StyleConfig.SLOPE_COLORS[difficulty],
-            title=title or slope.name,
-            stats_text=stats_text,
         )
 
     def render_road(
         self,
         road: Road,
         graph: ResortGraph,
-        title: str | None = None,
     ) -> go.Figure:
         """Render elevation profile for a road (brown, shows climb/descent)."""
-        total_length = road.get_total_length(segments=graph.segments)
-        total_drop = road.get_total_drop(segments=graph.segments)
-        max_gradient = road.get_max_gradient(segments=graph.segments)
-        stats_text = (
-            f"Length: {total_length:.0f}m | Elevation change: {abs(total_drop):.0f}m | Steepest: {max_gradient:.0f}%"
-        )
         return self._render_path_profile(
             path=road,
             graph=graph,
             fill_color=StyleConfig.ROAD_COLOR,
-            title=title or road.name,
-            stats_text=stats_text,
         )
 
     def _render_path_profile(
@@ -173,37 +134,23 @@ class ProfileChart:
         path: SegmentPath,
         graph: ResortGraph,
         fill_color: str,
-        title: str,
-        stats_text: str,
     ) -> go.Figure:
         """Shared elevation-profile figure for any segment group (slope or road).
 
-        Plots elevation vs. cumulative distance with segment-boundary markers.
-        Caller supplies the fill color and the stats caption so slope-specific
-        (difficulty) and road-specific (climb) framing stay with their owners.
+        Plots elevation vs. cumulative distance with segment-boundary markers. No title or stats
+        caption — the right-side info panel already shows the name + numeric stats; the plot is
+        purely the shape (the whole point of moving it into the panel).
         """
         all_points = path.get_all_points(segments=graph.segments)
         if not all_points:
             raise ValueError(f"{path.id} must have points to render")
 
-        distances = [0.0]
-        for i in range(1, len(all_points)):
-            dist = GeoCalculator.haversine_distance_m(
-                lat1=all_points[i - 1].lat,
-                lon1=all_points[i - 1].lon,
-                lat2=all_points[i].lat,
-                lon2=all_points[i].lon,
-            )
-            distances.append(distances[-1] + dist)
-
+        distances = PathPoint.cumulative_distances(all_points)
         elevations = [p.elevation for p in all_points]
-
-        # Calculate Y-axis range (not starting from 0)
-        min_elev = min(elevations)
-        max_elev = max(elevations)
-        padding = max(
-            (max_elev - min_elev) * ChartConfig.ELEVATION_PADDING_FACTOR,
-            ChartConfig.ELEVATION_PADDING_MIN_M,
+        y_range = _elevation_range(
+            elevations,
+            padding_factor=ChartConfig.ELEVATION_PADDING_FACTOR,
+            padding_min_m=ChartConfig.ELEVATION_PADDING_MIN_M,
         )
 
         fig = go.Figure()
@@ -215,7 +162,6 @@ class ProfileChart:
                 fill="tozeroy",
                 fillcolor=f"rgba{self._hex_to_rgba(hex_color=fill_color, alpha=0.3)}",
                 line=dict(color=fill_color, width=2),
-                name=title,
                 hovertemplate="Distance: %{x:.0f}m<br>Elevation: %{y:.0f}m<extra></extra>",
             )
         )
@@ -223,11 +169,7 @@ class ProfileChart:
         # Add segment boundaries
         cum_dist = 0.0
         for seg_id in path.segment_ids:
-            seg = graph.segments.get(seg_id)
-            if seg is None:
-                raise ValueError(f"{path.id} references non-existent segment {seg_id}")
-
-            cum_dist += seg.length_m
+            cum_dist += graph.segments[seg_id].length_m
             fig.add_vline(
                 x=cum_dist,
                 line_dash="dot",
@@ -236,32 +178,19 @@ class ProfileChart:
             )
 
         fig.update_layout(
-            title=dict(text=title, x=0.5),
             xaxis=dict(
-                title="Distance (m)",
                 showgrid=True,
                 gridcolor="rgba(200, 200, 200, 0.3)",
             ),
             yaxis=dict(
-                title="Elevation (m)",
                 showgrid=True,
                 gridcolor="rgba(200, 200, 200, 0.3)",
-                range=[min_elev - padding, max_elev + padding],
+                range=list(y_range),
             ),
             showlegend=False,
             height=self.height,
             margin=ChartConfig.PROFILE_MARGIN,
             plot_bgcolor="white",
-        )
-
-        fig.add_annotation(
-            xref="paper",
-            yref="paper",
-            x=0.5,
-            y=-0.15,
-            text=stats_text,
-            showarrow=False,
-            font=dict(size=11),
         )
 
         return fig
@@ -327,7 +256,6 @@ class ProfileChart:
             lat2=end_node.lat,
             lon2=end_node.lon,
         )
-        vertical_rise = end_node.elevation - start_node.elevation
 
         # Use stored terrain_points, pylons, and cable_points
         n_terrain = len(lift.terrain_points)
@@ -393,7 +321,7 @@ class ProfileChart:
                     mode="lines",
                     line=dict(color="#333333", width=3),
                     name="Cable",
-                    customdata=list(zip(cable_ground_elevs, cable_heights, cable_percentages, strict=False)),
+                    customdata=list(zip(cable_ground_elevs, cable_heights, cable_percentages, strict=True)),
                     hovertemplate=(
                         "<b>Distance:</b> %{x:.0f}m (%{customdata[2]:.0f}%)<br>"
                         "<b>Ground:</b> %{customdata[0]:.0f}m<br>"
@@ -470,25 +398,18 @@ class ProfileChart:
 
         # Layout
         all_elevs = terrain_elevs + (cable_y if cable_y else [])
-        min_elev = min(all_elevs)
-        max_elev = max(all_elevs)
-        padding = max(
-            (max_elev - min_elev) * ChartConfig.LIFT_ELEVATION_PADDING_FACTOR,
-            ChartConfig.LIFT_ELEVATION_PADDING_MIN_M,
+        lift_y_range = _elevation_range(
+            all_elevs,
+            padding_factor=ChartConfig.LIFT_ELEVATION_PADDING_FACTOR,
+            padding_min_m=ChartConfig.LIFT_ELEVATION_PADDING_MIN_M,
         )
 
         fig.update_layout(
             height=self.height,
             margin=ChartConfig.PROFILE_MARGIN,
-            xaxis_title="Distance (m)",
-            yaxis_title="Elevation (m)",
-            yaxis=dict(range=[min_elev - padding, max_elev + padding]),
+            yaxis=dict(range=list(lift_y_range)),
             xaxis=dict(range=[-length_m * 0.02, length_m * 1.02]),
             showlegend=False,
-            title=dict(
-                text=f"🚡 {lift.name}: {vertical_rise:.0f}m rise | {length_m:.0f}m | {len(lift.pylons)} pylons",
-                font=dict(size=12),
-            ),
             plot_bgcolor="rgba(240, 248, 255, 0.5)",
         )
 
@@ -526,7 +447,7 @@ def render_building_profile(
     if not building_segments:
         raise ValueError("building_segments must not be empty - check before calling")
 
-    segs = [graph.segments[sid] for sid in building_segments if sid in graph.segments and graph.segments[sid].points]
+    segs = [graph.segments[sid] for sid in building_segments]
     all_points = [p for seg in segs for p in seg.points]
 
     if not all_points:
@@ -535,9 +456,9 @@ def render_building_profile(
     chart = ProfileChart(height=ChartConfig.PROFILE_HEIGHT_PX)
 
     first_seg = graph.segments[building_segments[0]]
-    # enum_eq (reload-safe str compare): Streamlit reloads create a fresh SegmentKind class,
-    # so `is` fails on segments built under the old class.
-    if enum_eq(a=first_seg.kind, b=SegmentKind.ROAD):
+    # SegmentKind is a StrEnum, so `==` compares by value and is reload-safe (Streamlit reloads make
+    # a fresh class; identity `is` would fail on segments built under the old one).
+    if first_seg.kind == SegmentKind.ROAD:
         combined_road = Road(
             id="combined",
             name=building_name or "Current Road",
@@ -545,15 +466,13 @@ def render_building_profile(
             start_node_id="",
             end_node_id="",
         )
-        return chart.render_road(road=combined_road, graph=graph, title="Current committed Road Progress")
-    elif enum_eq(a=first_seg.kind, b=SegmentKind.SLOPE):
+        return chart.render_road(road=combined_road, graph=graph)
+    elif first_seg.kind == SegmentKind.SLOPE:
         # Color by the steepest section — the SAME metric as the map marker and the
         # finished slope, so the progress color never disagrees with them.
         max_difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=steepest_section_pct(segments=segs))
         combined = PathSegment(id="combined", name=building_name or "Current Slope", points=all_points)
-        return chart.render_segment(
-            segment=combined, difficulty=max_difficulty, title="Current committed Slope Progress"
-        )
+        return chart.render_segment(segment=combined, difficulty=max_difficulty)
     else:
         raise RuntimeError(f"Unknown segment kind {first_seg.kind} for {first_seg.id}")
 
@@ -561,19 +480,10 @@ def render_building_profile(
 def render_viewing_profile(kind: EntityKind, entity_id: str, graph: ResortGraph) -> go.Figure:
     """Render the elevation profile of a finished slope / road / lift being viewed."""
     chart = ProfileChart(height=ChartConfig.PROFILE_HEIGHT_PX)
-    if enum_eq(a=kind, b=EntityKind.SLOPE):
-        slope = graph.slopes.get(entity_id)
-        if slope is None:
-            raise ValueError(f"Slope {entity_id} must exist when panel shows slope")
-        return chart.render_slope(slope=slope, graph=graph)
-    if enum_eq(a=kind, b=EntityKind.ROAD):
-        road = graph.roads.get(entity_id)
-        if road is None:
-            raise ValueError(f"Road {entity_id} must exist when panel shows road")
-        return chart.render_road(road=road, graph=graph)
-    if enum_eq(a=kind, b=EntityKind.LIFT):
-        lift = graph.lifts.get(entity_id)
-        if lift is None:
-            raise ValueError(f"Lift {entity_id} must exist when panel shows lift")
-        return chart.render_lift(lift=lift, graph=graph)
+    if kind == EntityKind.SLOPE:
+        return chart.render_slope(slope=graph.slopes[entity_id], graph=graph)
+    if kind == EntityKind.ROAD:
+        return chart.render_road(road=graph.roads[entity_id], graph=graph)
+    if kind == EntityKind.LIFT:
+        return chart.render_lift(lift=graph.lifts[entity_id], graph=graph)
     raise RuntimeError(f"Unknown viewing kind {kind!r}")

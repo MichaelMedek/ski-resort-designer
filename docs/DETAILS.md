@@ -108,12 +108,15 @@ $$S_{\text{eff}}^2 + S_{\text{side}}^2 = S_{\text{terrain}}^2$$
 **Intuition:**
 - $\theta = 0°$: Skiing straight down the fall line → $S_{\text{eff}} = S_{\text{terrain}}$, $S_{\text{side}} = 0$
 - $\theta = 90°$: Skiing perpendicular (contouring) → $S_{\text{eff}} = 0$, $S_{\text{side}} = S_{\text{terrain}}$
+- $\theta > 90°$: Tilting back **against** the fall line → $S_{\text{eff}} < 0$ (a climb)
 
 ### 3.3 Calculating Traverse Angle from Target
 
-The designer sets a **target effective slope** ($S_{\text{target}}$) for each path. The algorithm calculates the required traverse angle:
+The designer sets a **signed target effective slope** ($S_{\text{target}}$) for each path. The algorithm calculates the required traverse angle from the **signed** ratio, so one formula spans descend/contour/climb:
 
 $$\theta = \arccos\left(\frac{S_{\text{target}}}{S_{\text{terrain}}}\right)$$
+
+Because $\arccos$ ranges over $[0°, 180°]$: a positive target gives $\theta < 90°$ (tilt toward the fall line, descend), zero gives $\theta = 90°$ (contour), and a negative target gives $\theta > 90°$ (tilt against the fall line, climb). The reference bearing is **always** the fall line — direction is carried entirely by $\theta$.
 
 ### 3.4 Difficulty Thresholds
 
@@ -207,10 +210,10 @@ $$S_{\text{avg}} < 5\% \implies \text{Too Flat Warning}$$
 ### 5.1 Core Principle
 
 The tracer holds a **signed target grade** and follows the terrain:
-1. **Fixes the target grade** (what the traveller experiences) — its **sign** sets the direction along the path's length: positive **descends** the fall line, negative **climbs** against it (fall line + 180°), zero **contours** across it.
-2. **Dynamically calculates the traverse angle** at each step from grade **magnitudes**, so the trig is identical whether climbing or descending.
+1. **Fixes the target grade** (what the traveller experiences) — its **sign** sets the direction along the path's length: positive **descends** the fall line, negative **climbs** against it, zero **contours** across it.
+2. **Dynamically calculates the traverse angle** at each step from the **signed** grade ratio (§3.3), so a single $\arccos$ over $[0°, 180°]$ covers descending, contouring, and climbing off one fixed reference (the fall line).
 
-This allows routes to **naturally curve around terrain features**. Ski **slopes** always descend, so they use positive targets (§5.2). **Roads** may descend, climb, or run flat, so they use the signed green targets (§7.3). A contour (zero target) drives the traverse angle to ~89°, tracing across the slope at near-constant elevation.
+This allows routes to **naturally curve around terrain features**. Ski **slopes** always descend, so they use positive targets (§5.2). **Roads** may descend, climb, or run flat, so they use the signed green targets (§7.3). A contour (zero target) drives the traverse angle to ~90°, tracing across the slope at near-constant elevation.
 
 ### 5.2 Target Effective Slopes
 
@@ -262,39 +265,40 @@ $$\text{targetTotalDrop} = \frac{S_{\text{target}}}{100} \times L_{\text{target}
 2. $\text{remainingDistance} = L_{\text{target}} - d_{\text{total}}$
 3. $S_{\text{step}} = \frac{\text{remainingDrop}}{\text{remainingDistance}} \times 100$
 
-$S_{\text{step}}$ carries the **sign** of the target. It is clamped to a band that keeps the step running the target's way — a descent step never climbs, a climb step never descends, a contour stays near level: magnitude in $[\,$`MIN_SKIABLE`$, |S_{\text{target}}|\cdot$`CLAMP_FACTOR`$\,]$ with the target's sign (contour: $[-$`MIN_SKIABLE`$, +$`MIN_SKIABLE`$]$). For a descent this reduces exactly to the historical $[\,$`MIN_SKIABLE`$, S_{\text{target}}\cdot$`CLAMP_FACTOR`$\,]$ rule.
+$S_{\text{step}}$ carries the **sign** of the target. It is clamped to a band that keeps the step running the target's way — a descent step never climbs, a climb step never descends, a contour stays near level: a descent to $[\,0, S_{\text{target}}\cdot$`CLAMP_FACTOR`$\,]$, a climb to $[\,S_{\text{target}}\cdot$`CLAMP_FACTOR`$, 0\,]$, a contour to $[-$`MIN_SKIABLE`$, +$`MIN_SKIABLE`$]$. The band is floored at **0** (not `MIN_SKIABLE`), so a run that has drifted too steep can ask for a gentle — even flat — step and pull its average back toward the target.
 
-**Why this works:** The path self-corrects toward the target average without retries.
+**Why this works:** The path self-corrects toward the target average without retries. Flooring at 0 (rather than `MIN_SKIABLE`) is what lets an over-steep run recover; a `MIN_SKIABLE` floor would trap every step at ≥ 5% and ratchet the average upward.
 
 ### 5.6 Step-by-Step Tracing
 
-**Step 1: Sample Local Terrain (Midpoint Sampling)**
+**Step 1: Sample Local Terrain**
 
-Sample at the midpoint of each step to prevent "lag":
-$$S_{\text{terrain}}, \theta_{\text{fall}} = \textrm{getTerrainGradient}(\text{midpoint})$$
+Sample the gradient at the **current point** (the step's start); the cumulative-drop feedback (§5.5) corrects any per-step lag, so no midpoint sampling is needed:
+$$S_{\text{terrain}}, \theta_{\text{fall}} = \textrm{getTerrainGradient}(\text{current point})$$
 
-**Step 2: Calculate Traverse Angle** (from grade magnitudes — sign-independent)
+**Step 2: Calculate Traverse Angle** (from the **signed** grade ratio)
 
-$$\theta_{\text{traverse}} = \arccos\left(\frac{|S_{\text{step}}|}{S_{\text{terrain}}}\right)$$
+$$\theta_{\text{traverse}} = \arccos\left(\frac{S_{\text{step}}}{S_{\text{terrain}}}\right)$$
 
-Cases:
-- If $|S_{\text{step}}| \geq S_{\text{terrain}}$: $\theta = 0°$ (straight along the reference bearing)
-- If $|S_{\text{step}}| < S_{\text{terrain}}$: Calculate traverse angle
-- If $S_{\text{step}} = 0$ (contour): $\arccos(0) = 90°$, clamped to 89° — a traverse across the slope
-- Clamp to $[2°, 89°]$
+Cases (with $S_{\text{step}}$ **signed**, §3.3):
+- $S_{\text{step}} \geq S_{\text{terrain}}$: $\theta = 0°$ (straight down the fall line — a descent at/above terrain steepness)
+- $0 < S_{\text{step}} < S_{\text{terrain}}$: $0° < \theta < 90°$ (descending traverse)
+- $S_{\text{step}} = 0$ (contour): $\arccos(0) = 90°$ — a traverse across the slope
+- $S_{\text{step}} < 0$ (climb): $\theta > 90°$ (tilts against the fall line)
+- Clamp to $[2°, 178°]$ (keeps left/right diverging and off exactly straight up/down); $S_{\text{terrain}} = 0$ (flat DEM cell) → $\theta = 90°$
 
 **Step 3: Calculate Step Bearing**
 
-$$\theta_{\text{step}} = \theta_{\text{ref}} + \text{sign} \cdot \theta_{\text{traverse}} + \epsilon$$
+$$\theta_{\text{step}} = \theta_{\text{fall}} + \text{sign} \cdot \theta_{\text{traverse}} + \epsilon$$
 
 Where:
-- $\theta_{\text{ref}} = \theta_{\text{fall}}$ for a descent or contour, $\theta_{\text{fall}} + 180°$ for a climb (the direction we progress along the path)
+- $\theta_{\text{fall}}$ is the fall line — **always** the reference; direction (descend/climb) is carried by $\theta_{\text{traverse}}$ crossing 90°, never by flipping the reference
 - $\text{sign} = -1$ for Left, $+1$ for Right
 - $\epsilon \sim \mathcal{N}(0, \sigma^2)$ is adaptive Gaussian noise
 
-**Adaptive Noise:** Scale noise inversely with traverse angle to prevent Green paths on steep terrain from drifting to Blue:
+**Adaptive Noise:** Scale noise inversely with traverse angle to prevent Green paths on steep terrain from drifting to Blue (floored at 0, so a climbing step $\theta > 90°$ gets no noise):
 
-$$\sigma_{\text{adaptive}} = \sigma_{\text{base}} \cdot \frac{90° - \theta_{\text{traverse}}}{90°}$$
+$$\sigma_{\text{adaptive}} = \sigma_{\text{base}} \cdot \max\left(0, \frac{90° - \theta_{\text{traverse}}}{90°}\right)$$
 
 **Step 4: Take Step**
 
@@ -327,7 +331,7 @@ This creates **natural curving**:
 Each segment is spline-smoothed independently at trace time, so two segments meet at a shared junction node with different tangents — a visible **kink**. When a slope or road is **finished**, the whole path is smoothed in one pass by a single cubic smoothing spline fitted over the full polyline (parametrised by cumulative distance, resampled every `RESAMPLE_STEP_M` ≈ 7 m), then re-sliced back to the original segments so the ribbon is continuous across junctions.
 
 - The fit is a **weighted least-squares spline**: the boundary **nodes** get a moderately higher weight (`NODE_WEIGHT`) than the raw planner **corridor points** (`CORRIDOR_WEIGHT`), with a smoothing budget scaled by the point count. The planner's grid path is a staircase; at a switchback it reverses across sub-metre jitter. A *smoothing* spline averages that jitter into a real turn **radius**. The node weight is deliberately **moderate** (≈10, not huge): an extreme node weight makes the fit near-singular at the pinned point and manufactures a cusp there.
-- **Roads and slopes smooth differently.** Roads use `ROAD_SMOOTHING_FACTOR` (≈50) — cars need broad, smooth curves and roads accept the earthwork. Slopes use the lower `SLOPE_SMOOTHING_FACTOR` (≈15) so the ribbon **hugs the terrain** more: skiers are flexible, and a slope should follow the ground rather than build up large cut/fill.
+- **Roads and slopes smooth differently.** Roads use `ROAD_SMOOTHING_FACTOR` (≈50) — cars need broad, smooth curves and roads accept the earthwork. Slopes use the lower `SLOPE_SMOOTHING_FACTOR` (≈30) so the ribbon **hugs the terrain** more: skiers are flexible, and a slope should follow the ground rather than build up large cut/fill.
 - **Outer endpoints are pinned exactly** (the entity termini, shared with other slopes/lifts/roads). **Internal junctions** are left where the weighted spline places them — about half a metre from the node, shared by value between the two adjacent segments — so the node marker still sits on the ribbon and any node can be a branch point, without snapping a switchback back into a kink.
 - Elevation is **smoothed along the spline, not re-sampled from the DEM**. A finished deck may therefore float slightly off the ground between nodes — treat it as a bridge / cut / fill.
 - Finish smoothing **never rejects** a path and does **not** re-apply the ±15% road cap (§7.3). Rounding a corner can nudge a road's steepest 300 m section; a finished road is allowed to exceed the build cap (bridge/cut/fill).
@@ -351,7 +355,7 @@ $$S_{\text{max}} = \max_{\text{window}} \left( \frac{\Delta h_{\text{window}}}{L
 
 ### 6.2 Slope Classification (Multi-Segment)
 
-The final slope classification is determined by the **steepest section among all segments**. A short steep section will make the entire slope not skiable for beginners, even if the overall average is low.
+The final slope classification is the **steepest section among all segments** at least 100 m long. A short steep section makes the whole slope unskiable for beginners even if the overall average is low.
 
 ---
 
@@ -384,7 +388,7 @@ Each path variant uses **Dijkstra's algorithm** (via SciPy's C-optimized impleme
 
 3. **Dijkstra Search:** SciPy's `shortest_path()` finds the minimum-cost path through the sparse graph.
 
-4. **Spline Smoothing:** The raw grid path has staircase artifacts (only 8 movement directions). A cubic smoothing spline is fitted through the points and resampled at 7m intervals. Elevations are re-queried from the DEM for accuracy.
+4. **Spline Smoothing:** The raw grid path has staircase artifacts (only 8 movement directions). A cubic smoothing spline is fitted through the points at the kind's finish factor (`SLOPE_SMOOTHING_FACTOR` / `ROAD_SMOOTHING_FACTOR`) — the SAME factor the whole-path finish (§5.8) uses, so the proposal previews the finished shape — resampled at 7m, with elevations re-queried from the DEM.
 
 **Cost Function:**
 

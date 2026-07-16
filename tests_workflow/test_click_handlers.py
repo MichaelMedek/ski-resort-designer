@@ -15,7 +15,6 @@ mode's click flow is exercised the same way:
 import pytest
 
 from skiresort_planner.constants import PathConfig, SlopeConfig
-from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.click_info import ClickInfo, MapClickType, MarkerType
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
@@ -35,7 +34,8 @@ def _session(fake_st, graph, factory, dem):
     fake_st.session_state["graph"] = graph
     fake_st.session_state["path_factory"] = factory
     fake_st.session_state["dem_service"] = dem
-    fake_st.session_state["map_version"] = 0
+    fake_st.session_state["camera_epoch"] = 0
+    fake_st.session_state["dedup_epoch"] = 0
     return sm, ctx
 
 
@@ -268,8 +268,8 @@ class TestIdleClickRouting:
 
     def test_click_segment_opens_parent_road_panel(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         # Parity with the slope case: a SEGMENT marker whose parent is a ROAD (one-frame race before
-        # the map re-tags it) must open the ROAD panel, not fall through to a slope panel. This is
-        # the asymmetry fix — get_entity_by_segment_id + isinstance dispatch resolves either kind.
+        # the map re-tags it) must open the ROAD panel, not fall through to a slope panel. Resolved by
+        # get_entity_by_segment_id + reload-safe `.kind` dispatch (never isinstance).
         from skiresort_planner.ui.click_handlers import handle_idle_click
 
         graph = ResortGraph()
@@ -283,6 +283,44 @@ class TestIdleClickRouting:
         )
         assert sm.is_idle_viewing_road, "a road segment resolves to the ROAD panel (not slope)"
         assert ctx.viewing.road_id == road.id
+
+    def test_click_segment_on_reloaded_slope_class_does_not_crash(
+        self, fake_st, path_factory, mock_dem_red_slope_diagonal, path_points_blue
+    ) -> None:
+        """Regression for the `unhandled parent entity Slope` crash.
+
+        A Streamlit module reload redefines both the Slope class AND the SegmentKind enum, so the old
+        `isinstance(parent, Slope)` dispatch failed for a slope built under the pre-reload class and
+        raised. The fix branches on the reload-safe `.kind` StrEnum (value-compared). Simulate the
+        reload with a fresh SegmentKind class (same values) as the entity's kind; dispatch must still
+        open the slope panel — identity differs, value matches.
+        """
+        from enum import StrEnum
+        from typing import Any
+
+        from skiresort_planner.ui.click_handlers import handle_idle_click
+
+        graph = ResortGraph()
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        assert slope is not None
+        seg_id = slope.segment_ids[0]
+
+        # A distinct SegmentKind class (as after a reload): a different object, equal by value. Go
+        # through Any so mypy doesn't fold slope.kind to its ClassVar literal (this is a runtime reload
+        # simulation, not a statically-knowable value).
+        reloaded_kind: Any = StrEnum("SegmentKind", {"SLOPE": "slope", "ROAD": "road"})  # type: ignore[misc]  # functional enum name mirrors the reloaded class
+        reloaded_slope_kind: Any = reloaded_kind.SLOPE
+        object.__setattr__(slope, "kind", reloaded_slope_kind)
+        assert reloaded_slope_kind is not SegmentKind.SLOPE, "must be a different class instance (reload)"
+        assert reloaded_slope_kind == SegmentKind.SLOPE, "StrEnum compares equal by value across the reload"
+
+        sm, ctx = _session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
+        handle_idle_click(
+            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SEGMENT, segment_id=seg_id), elevation=None
+        )
+        assert sm.is_idle_viewing_slope, "reload-safe .kind dispatch opens the slope panel without crashing"
+        assert ctx.viewing.slope_id == slope.id
 
     def test_click_lift_opens_panel_and_syncs_mode(self, fake_st, path_factory, mock_dem_blue_slope) -> None:
         from skiresort_planner.ui.click_handlers import handle_idle_click
@@ -776,6 +814,7 @@ class TestLiftPlacingClick:
     def _placing(self, fake_st, dem, factory):
         graph = ResortGraph()
         sm, ctx = _session(fake_st, graph, factory, dem)
+        ctx.build_mode.mode = BuildMode.CHAIRLIFT  # lift type is selected before entering LIFT_PLACING
         loc = PathPoint(lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M))
         sm.start_lift(node_id=None, location=loc)
         return sm, ctx, graph
@@ -831,6 +870,27 @@ class TestLiftPlacingClick:
         assert len(graph.lifts) == 1
         assert sm.is_idle_viewing_lift
 
+    def test_built_lift_type_matches_selected_button(self, fake_st, path_factory, mock_dem_blue_slope) -> None:
+        # Regression: the built lift's type MUST equal the selected build mode, not a stale default.
+        # Bug was a duplicated ctx.lift.type that reset to GONDOLA on exit while build_mode kept the
+        # selected type — so a freshly-selected chairlift silently built a gondola.
+        from skiresort_planner.ui.click_handlers import handle_lift_placing_click
+
+        dem = mock_dem_blue_slope
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st, graph, path_factory, dem)
+        ctx.build_mode.mode = BuildMode.CHAIRLIFT  # user clicked the Chairlift button
+        loc = PathPoint(lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M))
+        sm.start_lift(node_id=None, location=loc)
+
+        handle_lift_placing_click(
+            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0),
+        )
+        assert len(graph.lifts) == 1
+        built = next(iter(graph.lifts.values()))
+        assert built.lift_type == "chairlift", "the built lift must match the selected button, not a stale default"
+
 
 class TestLiftPlacingEdgeCases:
     """Reject, validation, and node-reuse branches of handle_lift_placing_click.
@@ -844,6 +904,7 @@ class TestLiftPlacingEdgeCases:
         """Enter lift_placing with the bottom station being an EXISTING node (start_node_id set)."""
         graph = ResortGraph()
         sm, ctx = _session(fake_st, graph, factory, dem)
+        ctx.build_mode.mode = BuildMode.CHAIRLIFT  # lift type is selected before entering LIFT_PLACING
         bottom, _ = graph.get_or_create_node(
             lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M)
         )
@@ -899,6 +960,7 @@ class TestLiftPlacingEdgeCases:
         dem = mock_dem_blue_slope
         graph = ResortGraph()
         sm, ctx = _session(fake_st, graph, path_factory, dem)
+        ctx.build_mode.mode = BuildMode.CHAIRLIFT  # lift type selected before entering LIFT_PLACING
         loc = PathPoint(lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M))
         sm.start_lift(node_id=None, location=loc)  # pending-location start: no start node materialised yet
 
@@ -993,7 +1055,8 @@ class TestRoadBuildingClick:
     ) -> None:
         dem = mock_dem_red_slope_diagonal
         sm, ctx, graph = self._building(fake_st, path_factory, dem)
-        version_before = fake_st.session_state["map_version"]
+        dedup_before = fake_st.session_state["dedup_epoch"]
+        camera_before = fake_st.session_state["camera_epoch"]
 
         # A target click enters ROAD_CUSTOM_PATH and arms deferred generation; the
         # deferred pass produces the proposal(s) to browse. It commits NOTHING until a
@@ -1007,11 +1070,12 @@ class TestRoadBuildingClick:
         assert ctx.proposals.selected_idx == 0
         assert ctx.build(SegmentKind.ROAD).segments == [], "a target click proposes, it does not commit"
         assert sm.is_road_custom_path, "still targeting until a proposal is committed"
-        # The deferred pass MUST bump the map version so the fragment reruns and redraws
-        # WITH the new proposals. Regression for invisible road proposals.
-        assert fake_st.session_state["map_version"] > version_before, (
-            "generating road proposals must bump map_version to force a redraw"
+        # The deferred pass bumps dedup_epoch so the new proposals are clickable — but must NOT
+        # recenter (camera_epoch unchanged). Regression for invisible road proposals + no-jump.
+        assert fake_st.session_state["dedup_epoch"] > dedup_before, (
+            "generating road proposals must bump dedup_epoch so they are clickable"
         )
+        assert fake_st.session_state["camera_epoch"] == camera_before, "generating proposals must NOT recenter the map"
 
     def test_clicking_already_selected_proposal_commits(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
@@ -1083,7 +1147,7 @@ class TestRoadBuildingClick:
         assert len(ctx.build(SegmentKind.ROAD).segments) == 1
         assert len(graph.roads) == 0, "no Road entity until Finish Road"
         # The committed segment's kind IS road — identity lives on the segment, not a UI list.
-        assert enum_eq(a=graph.segments[ctx.build(SegmentKind.ROAD).segments[-1]].kind, b=SegmentKind.ROAD)
+        assert graph.segments[ctx.build(SegmentKind.ROAD).segments[-1]].kind == SegmentKind.ROAD
         # Per-segment undo: the commit pushed an AddSegmentsAction.
         assert graph.undo_stack, "committing a road segment records an undo entry"
         assert graph.undo_stack[-1].action_type.name == "ADD_SEGMENTS"
@@ -1325,7 +1389,7 @@ class TestRoadBuildingEdgeCases:
 
         assert len(ctx.proposals.paths) == 1, "only the in-cap straight line survives"
         straight = ctx.proposals.paths[0]
-        assert enum_eq(a=straight.kind, b=SegmentKind.ROAD)
+        assert straight.kind == SegmentKind.ROAD
         assert straight.max_slope_pct <= float(PathConfig.ROAD_MAX_GRADIENT_PCT)
         assert "straight line" in straight.sector_name.lower()
         assert not toasts, "an in-band straight line must NOT raise a too-steep toast"
@@ -1426,7 +1490,7 @@ class TestRoadBuildingEdgeCases:
         assert all(p.max_slope_pct <= float(PathConfig.ROAD_MAX_GRADIENT_PCT) for p in ctx.proposals.paths), (
             "every road-fan proposal is within the ±15% band"
         )
-        assert all(enum_eq(a=p.kind, b=SegmentKind.ROAD) for p in ctx.proposals.paths)
+        assert all(p.kind == SegmentKind.ROAD for p in ctx.proposals.paths)
 
     def test_road_fan_filter_drops_over_cap_routes_on_steep_terrain(self, fake_st, mock_dem_black_slope) -> None:
         """On 45% terrain the ±15% filter drops the steep-green routes but keeps the gentle ones.

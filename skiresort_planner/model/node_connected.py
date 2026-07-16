@@ -32,8 +32,4 @@ class NodeConnected(ABC):
 
     def endpoints(self, nodes: dict[str, "Node"]) -> tuple["PathPoint", "PathPoint"]:
         """The start and end node locations, for geometric duplicate matching (see endpoints_match)."""
-        start = nodes.get(self.start_node_id)
-        end = nodes.get(self.end_node_id)
-        if not start or not end:
-            raise ValueError(f"Start or end node not found for {type(self).__name__} {self.id}")
-        return start.location, end.location
+        return nodes[self.start_node_id].location, nodes[self.end_node_id].location

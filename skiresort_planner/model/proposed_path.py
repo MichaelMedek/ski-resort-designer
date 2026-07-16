@@ -11,6 +11,8 @@ Reference: DETAILS.md
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from skiresort_planner.constants import SlopeConfig
+from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.model.path_geometry import Path
 from skiresort_planner.model.path_segment import SegmentKind
 
@@ -43,3 +45,13 @@ class ProposedPathSegment(Path):
     target_node_id: str = ""
     start_node_id: str = ""
     kind: SegmentKind = SegmentKind.SLOPE
+
+    @property
+    def difficulty(self) -> str:
+        """Difficulty with a safety margin, so the preview never reads softer than the finished
+        slope: finish-time smoothing may nudge the steepest section a hair. Committed entities
+        classify margin-free (the honest value); only proposals bias toward the harder band.
+        """
+        return TerrainAnalyzer.classify_difficulty(
+            slope_pct=self.max_slope_pct, margin_pct=SlopeConfig.SLOPE_DIFFICULTY_MARGIN_PCT
+        )

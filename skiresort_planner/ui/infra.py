@@ -8,17 +8,16 @@ mocking 10+ places where st.rerun might be called directly.
 
 IMPORTANT: Only infrastructure belongs here (rerun, map version).
 - Session state object access (sm, ctx, graph) stays in actions.py
-- UI presentation (st.spinner) stays in app.py caller around process_*_deferred calls
+- UI presentation (st.toast progress cues) stays in app.py around process_*_deferred calls
 """
 
 import logging
-from collections.abc import Callable
 from typing import Literal
 
 import streamlit as st
 from streamlit_js_eval import streamlit_js_eval  # type: ignore[import-untyped]
 
-from skiresort_planner.constants import ChartConfig
+from skiresort_planner.constants import ChartConfig, MapConfig
 from skiresort_planner.persistence import backup_store
 
 logger = logging.getLogger(__name__)
@@ -68,66 +67,52 @@ def trigger_rerun(scope: Literal["app", "fragment"] = "app") -> None:
     st.rerun(scope=scope)
 
 
-def bump_map_version() -> None:
-    """Increment map_version to create fresh Pydeck component.
+def bump_camera_epoch() -> None:
+    """Increment camera_epoch → remount the Pydeck component so it re-reads initial_view_state.
 
-    This eliminates ghost clicks by creating a new component instance
-    with no memory of previous click events. Call this when completing
-    actions that should clear stale click state.
+    This is the ONLY way the camera intentionally re-frames (finish/show-view/reset/3D/search). It
+    also gives the fresh component clean click state. Do NOT call it for in-place interactions
+    (commit/cancel/undo/start/toggle) — those must keep the user's live pan.
     """
-    old_version = st.session_state.get("map_version", 0)
-    new_version = old_version + 1
-    st.session_state.map_version = new_version
-    logger.debug(f"[MAP] Bumped map_version: {old_version} -> {new_version}")
+    old = st.session_state.get("camera_epoch", 0)
+    st.session_state.camera_epoch = old + 1
+    logger.debug(f"[MAP] Bumped camera_epoch: {old} -> {old + 1}")
 
 
-def reload_map(before: Callable[[], None] | None = None) -> None:
-    """Reload map with optional pre-reload callback.
+def bump_dedup_epoch() -> None:
+    """Increment dedup_epoch → make regenerated proposals/markers clickable again.
 
-    This is the canonical way to reload the map. It provides a single point
-    for all map reloads, making the pattern explicit and consistent.
-
-    The flow is:
-    1. Execute before callback (if provided) - runs BEFORE st.rerun()
-    2. Bump map version to clear stale click state
-    3. Call trigger_rerun() which raises StopExecution
-
-    For actions that need to run AFTER the reload, use the deferred action
-    pattern (set ctx.deferred.* flags before calling this).
-
-    Args:
-        before: Optional callback to execute before rerun.
-                Use for state updates that must happen before reload.
-
-    Example:
-        # Simple reload
-        reload_map()
-
-        # Reload with pre-action
-        def setup_for_reload():
-            ctx.set_selection(lon=x, lat=y, elevation=e)
-            ctx.deferred.fan_generation.add(SegmentKind.SLOPE)
-        reload_map(before=setup_for_reload)
+    Embedded in click ids only (NOT the component key), so bumping it does NOT remount or move the
+    camera. Bump it whenever the proposal/marker set is regenerated so that re-clicking the same
+    proposal index (or re-toggling the same node) after regeneration counts as a fresh click.
     """
-    if before is not None:
-        before()
-    bump_map_version()
+    old = st.session_state.get("dedup_epoch", 0)
+    st.session_state.dedup_epoch = old + 1
+    logger.debug(f"[MAP] Bumped dedup_epoch: {old} -> {old + 1}")
+
+
+def reload_map(*, center: tuple[float, float], zoom: int, pitch: float = MapConfig.VIEWING_PITCH) -> None:
+    """Recenter + remount the map on an EXPLICIT frame (center=(lon,lat)), north-up, then rerun.
+
+    The only way to intentionally move the camera; mandatory args so no caller can remount on a stale
+    view. Keep-current-view remounts use bump_camera_epoch(); in-place redraws use trigger_rerun().
+    """
+    ctx = st.session_state.context
+    ctx.map.set_view(lon=center[0], lat=center[1], zoom=zoom, pitch=pitch)
+    bump_camera_epoch()
     trigger_rerun()
 
 
-def viewport_map_height(reserved_below_px: int = 0) -> int | None:
+def viewport_map_height() -> int | None:
     """Map height in px that fills the browser window, or None only on first load.
 
-    The  JS component reports parent.innerHeight (the real browser window), and only on
-    the render its round-trip resolved — every other rerun returns None. We cache the
-    last real value so the map never blanks on the constant reruns a stateful app makes.
-
-    Args:
-        reserved_below_px: Height to leave free below the map (e.g. an elevation
-            profile chart) so it stays visible without scrolling. 0 = map fills all.
+    The JS component reports parent.innerHeight (the real browser window), and only on the render its
+    round-trip resolved — every other rerun returns None. We cache the last real value so the map
+    never blanks on the constant reruns a stateful app makes. Height is state-independent (the profile
+    lives in the right column, not below the map) so it stays constant and never remounts the deck.
 
     Returns None only before the very first successful read (caller shows a placeholder);
-    thereafter the cached viewport height minus reserved space, floored at a minimum.
+    thereafter the cached viewport height, floored at a minimum.
     """
     value = streamlit_js_eval(js_expressions="parent.innerHeight", key="window_inner_height")
     if isinstance(value, int | float):
@@ -135,5 +120,7 @@ def viewport_map_height(reserved_below_px: int = 0) -> int | None:
     window_height = st.session_state.get("window_height_px")
     if window_height is None:
         return None
-    available: int = int(window_height) - ChartConfig.MAP_TOP_OFFSET_PX - reserved_below_px
-    return max(available, ChartConfig.MAP_MIN_HEIGHT_PX)
+    available: int = int(window_height) - ChartConfig.MAP_TOP_OFFSET_PX
+    result = max(available, ChartConfig.MAP_MIN_HEIGHT_PX)
+    logger.debug(f"[MAP] viewport_map_height: js_eval={value!r} cached_window={window_height} -> height={result}")
+    return result

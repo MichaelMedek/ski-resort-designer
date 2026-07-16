@@ -22,7 +22,7 @@ import logging
 import math
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from skiresort_planner.constants import (
     GeometricTuningConfig,
@@ -33,16 +33,16 @@ from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.path_tracer import PathTracer
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
-from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.generators.connection_planners import GradientMode, LeastCostPathPlanner
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
+from skiresort_planner.model.path_smoothing import smooth_proposal_points
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 
 logger = logging.getLogger(__name__)
 
 
-class Side(Enum):
+class Side(StrEnum):
     """Traverse direction relative to fall line."""
 
     LEFT = "left"
@@ -98,7 +98,9 @@ class GradeConfig:
 
 # Per-kind fan label builders. Each is symmetric — it reads the raw config fields and formats its own label.
 _SECTOR_NAME_BUILDERS: dict[SegmentKind, Callable[[GradeConfig], str]] = {
-    SegmentKind.SLOPE: lambda cfg: f"{cfg.difficulty.capitalize()} {cfg.side.value.capitalize()} ({cfg.grade.capitalize()})",
+    SegmentKind.SLOPE: lambda cfg: (
+        f"{cfg.difficulty.capitalize()} {cfg.side.value.capitalize()} ({cfg.grade.capitalize()})"
+    ),
     SegmentKind.ROAD: lambda cfg: f"Road {cfg.side.value.capitalize()} ({cfg.grade.capitalize()})",
 }
 assert set(_SECTOR_NAME_BUILDERS) == set(SegmentKind), "every SegmentKind must have a fan sector-name builder"
@@ -286,9 +288,6 @@ class PathFactory:
                 if path is None:
                     continue
                 if target.difficulty:
-                    assert target.difficulty in count_by_diff, (
-                        f"difficulty {target.difficulty!r} not in count_by_diff (predefined from DIFFICULTIES)"
-                    )
                     count_by_diff[target.difficulty] += 1
                 paths_generated += 1
                 yield path
@@ -319,8 +318,17 @@ class PathFactory:
             )
             return None
 
-        return ProposedPathSegment(
+        # Pre-smooth like the grid planner so the previewed grade/difficulty reflect near-final
+        # geometry (finish re-smooths the whole path; a raw fan point set would drift a band).
+        smoothed = smooth_proposal_points(
             points=traced.points,
+            smoothing_factor=GeometricTuningConfig.SLOPE_SMOOTHING_FACTOR,
+            step_m=GeometricTuningConfig.RESAMPLE_STEP_M,
+            elevation_fn=self.dem_service.get_elevation,
+        )
+
+        return ProposedPathSegment(
+            points=smoothed,
             target_slope_pct=config.target_slope_pct,
             target_difficulty=config.difficulty,
             sector_name=config.sector_name(kind),
@@ -359,13 +367,9 @@ class PathFactory:
         Returns:
             True if average distance across percentiles is below threshold.
         """
-        # If either path has too few points, consider them not similar (can't compare)
-        if not path1.points or not path2.points:
-            return False
-
+        # Percentile sampling needs interior points; a proposal always has ≥3 (traced multi-point).
         len1, len2 = len(path1.points), len(path2.points)
-        if len1 < 3 or len2 < 3:
-            return False
+        assert len1 >= 3 and len2 >= 3, f"_are_paths_similar needs ≥3 points per path, got {len1} and {len2}"
 
         # Compare at 10%, 20%, ..., 90% positions (skip 0% and 100% - same start/end)
         percentiles = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
@@ -467,18 +471,21 @@ class PathFactory:
 
         # The grid planner ignores `side` (grade-only cost), so every config leaves
         # GradeConfig.side at its CENTER default — no dead LEFT/RIGHT duplication here.
-        if enum_eq(a=kind, b=SegmentKind.ROAD):
+        # smoothing_factor is the kind's finish factor, so the proposal previews the finished shape.
+        if kind == SegmentKind.ROAD:
             # A road holds a GREEN grade, signed by the endpoints' direction (climb or
             # descend). Same routing as a green slope; sign is the only difference. On
             # steep ground the planner serpentines to hold it (§7.3).
             signed_drop = start_elevation - target_elevation
             gradient_mode = GradientMode.DOWNHILL if signed_drop >= 0 else GradientMode.UPHILL
+            smoothing_factor = GeometricTuningConfig.ROAD_SMOOTHING_FACTOR
             configs: list[GradeConfig] = [
                 GradeConfig(difficulty="", grade="road", target_slope_pct=grade)
                 for grade in self._road_target_grades(signed_drop=signed_drop)
             ]
-        elif enum_eq(a=kind, b=SegmentKind.SLOPE):
+        elif kind == SegmentKind.SLOPE:
             gradient_mode = GradientMode.DOWNHILL  # slopes always descend
+            smoothing_factor = GeometricTuningConfig.SLOPE_SMOOTHING_FACTOR
             configs = [
                 GradeConfig(difficulty=difficulty, grade=grade_name, target_slope_pct=target_slope)
                 for difficulty in SlopeConfig.DIFFICULTIES
@@ -497,6 +504,7 @@ class PathFactory:
                 target_lat=target_lat,
                 target_elevation=target_elevation,
                 target_grade_pct=config.target_slope_pct,
+                smoothing_factor=smoothing_factor,
                 gradient_mode=gradient_mode,
             )
             if path is None:

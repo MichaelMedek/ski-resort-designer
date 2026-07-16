@@ -1,10 +1,7 @@
 """Per-kind behavioural specs — the single source of truth for what differs by SegmentKind.
 
-Every place that used to branch on ``is_road`` instead reads ``KIND_SPECS[kind]``. A slope,
-a road, and any future kind (e.g. a nordic trail) differ ONLY in the data captured here:
-the build-time grade cap, whether the route may climb, the too-steep refusal message, the
-graph-finish method, and the state-machine state ids for its 3-state build flow. Adding a
-kind = adding one KindSpec entry; the assert below guarantees every SegmentKind is covered.
+Every place that used to branch on ``is_road`` reads ``KIND_SPECS[kind]`` instead. Adding a kind
+= adding one KindSpec entry; the import-time assert below guarantees every SegmentKind is covered.
 """
 
 from __future__ import annotations
@@ -47,6 +44,8 @@ class KindSpec:
     starting_state: str
     building_state: str
     custom_path_state: str
+    # Stats-panel wording. A slope shows its ski difficulty; a road doesn't.
+    shows_difficulty: bool  # slope: True (ski difficulty + emoji); road: False
     # State-machine transition names for this kind's commit/finish flow. Called by name
     # (getattr) so the action layer never branches on kind.
     fan_commit_event: str  # non-connector commit from a fan state (extend the build)
@@ -73,6 +72,7 @@ KIND_SPECS: dict[SegmentKind, KindSpec] = {
         starting_state="slope_starting",
         building_state="slope_building",
         custom_path_state="slope_custom_path",
+        shows_difficulty=True,
         fan_commit_event="commit_path",
         custom_continue_event="commit_custom_continue",
         connector_finish_event="commit_custom_finish",
@@ -90,6 +90,7 @@ KIND_SPECS: dict[SegmentKind, KindSpec] = {
         starting_state="road_starting",
         building_state="road_building",
         custom_path_state="road_custom_path",
+        shows_difficulty=False,
         fan_commit_event="commit_road",
         custom_continue_event="commit_road_custom_continue",
         connector_finish_event="commit_road_custom_finish",

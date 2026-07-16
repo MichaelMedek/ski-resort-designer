@@ -90,21 +90,12 @@ class TestViewingContextSetters:
 
 
 class TestMapContextViews:
-    def test_building_view_sets_zoom_and_pitch(self) -> None:
-        from skiresort_planner.constants import MapConfig
-
-        mc = MapContext()
-        mc.pitch = 60.0  # non-default so the pitch assertion is not vacuous
-        mc.set_building_view(lon=10.0, lat=46.0)
-        assert (mc.lon, mc.lat) == (10.0, 46.0)
-        assert mc.zoom == MapConfig.BUILDING_ZOOM
-        assert mc.pitch == MapConfig.BUILDING_PITCH
-
     def test_reset_and_clear_restore_defaults(self) -> None:
         from skiresort_planner.constants import MapConfig
 
         mc = MapContext()
-        mc.set_building_view(lon=1.0, lat=2.0)
+        mc.set_center(lon=1.0, lat=2.0)
+        mc.pitch = 60.0  # non-default so reset_view is not vacuous
         mc.reset_view()
         assert mc.pitch == MapConfig.DEFAULT_PITCH and mc.bearing == MapConfig.DEFAULT_BEARING
 
@@ -146,21 +137,17 @@ class TestClickDeduplicationContext:
 
 
 class TestLiftContextClear:
-    """LiftContext.clear() must reset EVERY field to its default, not just the placement scratch.
+    """LiftContext.clear() resets the placement scratch (start node/location) to a fresh state.
 
-    The clear() contract (BaseContext) is "reset to initial state". Leaving `type` at its last value
-    after clear() is an incomplete reset that could leak the previously-selected lift type into a
-    fresh placement flow.
+    The selected lift TYPE is deliberately NOT stored here — it lives in BuildModeContext.mode (the
+    single source of truth), so clear() must restore only the start endpoint fields.
     """
 
-    def test_clear_resets_type_to_default(self) -> None:
-        # clear() means "back to initial state" — so a cleared context must equal a fresh one on
-        # EVERY field (dataclass __eq__), which pins the type reset without relying on a literal.
+    def test_clear_resets_placement_fields(self) -> None:
         ctx = LiftContext()
-        ctx.type = "gondola"
         ctx.start_node_id = "N1"
         ctx.clear()
-        assert ctx == LiftContext(), "clear() must restore every field to a fresh context's state (incl. type)"
+        assert ctx == LiftContext(), "clear() must restore a fresh context (start_node_id/start_location cleared)"
 
 
 class TestCustomConnectForceModeIsDerived:

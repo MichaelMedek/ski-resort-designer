@@ -69,6 +69,22 @@ class PathPoint:
             lon2=other.lon,
         )
 
+    @staticmethod
+    def cumulative_distances(points: list["PathPoint"]) -> list[float]:
+        """Cumulative along-path distance (m) at each point, starting at 0.
+
+        Single source for polyline arc length (was duplicated in path_smoothing + bottom_chart).
+        """
+        cum = [0.0]
+        for i in range(1, len(points)):
+            cum.append(cum[-1] + points[i - 1].distance_to(other=points[i]))
+        return cum
+
+    @staticmethod
+    def total_length_m(points: list["PathPoint"]) -> float:
+        """Total polyline length (m) — 0 for fewer than two points. Single source for path length."""
+        return PathPoint.cumulative_distances(points)[-1] if len(points) >= 2 else 0.0
+
     def __repr__(self) -> str:
         return f"PathPoint(lon={self.lon:.5f}, lat={self.lat:.5f}, elev={self.elevation:.1f}m)"
 

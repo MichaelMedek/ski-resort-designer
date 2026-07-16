@@ -22,11 +22,13 @@ not suggestions.
    correct emitter beats N defensive readers.
 
 4. **No duplicated logic — extract and share.** If the same block appears in 2+ places, factor it into
-   one function and call it. Duplicated logic drifts and gets fixed in only some copies.
+   one function and call it. Duplicated logic drifts and gets fixed in only some copies. You are respnsible for
+   all drifts, across the full code base, even if pre-existing.
 
 5. **Prefer the existing pattern.** Before adding a new approach, find how the codebase already solves
-   the same problem and follow it (e.g. reload-safe enum handling via `enum_eq`/`.name`, commit-time
-   node materialisation, import-time bijection asserts). Consistency over novelty.
+   the same problem and follow it (e.g. reload-safe enums — every domain enum is a `StrEnum` compared
+   with plain `==`, NEVER a bare `Enum`; entity dispatch on a `.kind` StrEnum, never `isinstance` on a
+   model class; commit-time node materialisation; import-time bijection asserts). Consistency over novelty.
 
 ## Style
 

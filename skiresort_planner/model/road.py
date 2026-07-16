@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 from skiresort_planner.constants import EntityPrefixes, NameConfig
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.segment_path import SegmentPath
 
 logger = logging.getLogger(__name__)
@@ -39,14 +40,14 @@ class Road(SegmentPath):
     """
 
     ID_PREFIX: ClassVar[str] = EntityPrefixes.ROAD
+    kind: ClassVar[SegmentKind] = SegmentKind.ROAD
 
     @staticmethod
     def generate_name(road_id: str, avg_bearing: float) -> str:
         """Generate a creative road name like '1 (North Serpentine Pass)'.
 
-        Mirrors Slope.generate_name: compass direction + a random creative
-        prefix/suffix. Roads have no difficulty, so the words are geographic
-        rather than difficulty-themed.
+        Mirrors Slope.generate_name (compass + random prefix/suffix). Roads have no
+        difficulty, so the words are geographic rather than difficulty-themed.
 
         Args:
             road_id: Road ID (e.g., "R1").

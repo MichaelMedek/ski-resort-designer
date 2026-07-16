@@ -68,8 +68,7 @@ def bbox_around(center_lon: float, center_lat: float, half_width_m: float) -> BB
 def _is_transient(exc: BaseException) -> bool:
     """True for errors worth retrying: rate limit (429), gateway timeout (504), or a network error.
 
-    A response-bearing error is transient only for 429/504; a bad request (4xx like 406) is not.
-    A connection/timeout error has no response and is always worth a retry.
+    Response-bearing errors are transient only for 429/504; connection/timeout errors always are.
     """
     if not isinstance(exc, requests.RequestException):
         return False
@@ -89,7 +88,7 @@ class PisteImport:
     @property
     def length_m(self) -> float:
         """Ground length of the run (sum of legs between consecutive DEM-sampled points)."""
-        return sum(self.points[i].distance_to(other=self.points[i + 1]) for i in range(len(self.points) - 1))
+        return PathPoint.total_length_m(self.points)
 
 
 @dataclass(frozen=True)
@@ -129,9 +128,7 @@ class OSMImporter:
     def fetch(self, bbox: BBox) -> list[OverpassElement]:
         """Fetch all OSM lift/piste ways in the box with ONE Overpass query.
 
-        A lift/piste-only query is light enough that even a full-size box returns in a few seconds,
-        so no tiling is needed. On a transient 429 (no slot) / 504 (busy) we wait for a free slot
-        and retry once, then give up (the caller shows an error toast).
+        On a transient 429/504 we wait for a free slot and retry once, then give up.
         """
         try:
             return self._query(bbox)
@@ -146,8 +143,7 @@ class OSMImporter:
     def _query(self, bbox: BBox) -> list[OverpassElement]:
         """POST one Overpass query for the box and return its ways (with inline geometry).
 
-        Uses Overpass's native bbox filter. Raises on any non-200 (the caller decides whether the
-        error is transient and worth a retry).
+        Uses Overpass's native bbox filter. Raises on any non-200 (caller decides if transient).
         """
         min_lon, min_lat, max_lon, max_lat = bbox
         # Overpass bbox filter order is (south, west, north, east).
@@ -172,9 +168,8 @@ class OSMImporter:
     def convert(self, bbox: BBox, elements: list[OverpassElement]) -> ImportSummary:
         """Turn raw Overpass elements into import-ready pistes + lifts for the given box.
 
-        `bbox` is the region the user chose; only ways fully inside the box are kept. Every element
-        that is NOT imported is logged with its reason, so a missing lift/piste can be traced
-        (unnamed, too short, reaching outside the box, over nodata, or an unmapped aerialway value).
+        Only ways fully inside `bbox` are kept; every skipped element is logged with its reason
+        (unnamed, too short, out-of-bounds, over nodata, or unmapped aerialway).
         """
         summary = ImportSummary()
         for el in elements:
@@ -273,12 +268,10 @@ class OSMImporter:
     # -- geometry helpers -----------------------------------------------------
 
     def _resample(self, vertices: list[Vertex]) -> list[PathPoint] | None:
-        """Linearly resample the polyline every RESAMPLE_STEP_M, DEM-sampling Z at each output
-        point. Returns None if any sample falls on a DEM nodata cell.
+        """Linearly resample the polyline every RESAMPLE_STEP_M, DEM-sampling Z. Returns None if any
+        sample is nodata.
 
-        Linear (not the planner's cubic spline): real OSM pistes are already smooth and must not
-        be over-smoothed. Whole-path finish smoothing still runs later via finish_slope.
-        A polyline shorter than one step resamples to just its two endpoints.
+        Linear (not cubic): OSM pistes are already smooth; finish_slope adds whole-path smoothing.
         """
         step = OSMConfig.RESAMPLE_STEP_M
         # Cumulative distance along the raw polyline.
@@ -320,11 +313,10 @@ def _fully_inside(vertices: list[Vertex], bbox: BBox) -> bool:
 
 
 def _seconds_until_free_slot() -> float:
-    """Seconds to wait for a free Overpass slot, read from /api/status (clamped to SLOT_WAIT_MAX_S).
+    """Seconds to wait for a free Overpass slot from /api/status, clamped to SLOT_WAIT_MAX_S.
 
-    /api/status reports either "N slots available now." (wait 0) or one "…in X seconds." line per
-    busy slot (wait the soonest). On any parse/network failure, fall back to a short fixed wait so a
-    retry still happens — status only tunes how long to sleep, it is not required for correctness.
+    On any parse/network failure, falls back to a short fixed wait (status only tunes sleep length,
+    it is not required for correctness).
     """
     try:
         text = requests.get(
@@ -382,12 +374,9 @@ def _drop_none(points: list[PathPoint | None]) -> list[PathPoint] | None:
 def _longest_descending_run(points: list[PathPoint]) -> list[PathPoint]:
     """Trim a DEM-draped polyline to its longest DESCENDING run, oriented top→bottom.
 
-    OSM mappers sometimes draw a piste as an out-and-back (up then down), which drapes to an
-    up-and-down elevation profile — a 0 m net drop, 0% "slope". A ski run only goes down, so we keep
-    the longest stretch that descends. To ignore point-level DEM noise we judge "descending" on
-    elevations SMOOTHED over the rolling window (SlopeConfig.ROLLING_WINDOW_M): a real run with minor
-    rolls survives, only a genuine sustained climb breaks a run. Both orientations are considered and
-    the result is returned top→bottom (reversed if the descent runs end→start).
+    OSM out-and-back paths drape to up-and-down profiles (0 m net drop); we keep the longest
+    descending stretch, judged on elevations smoothed over SlopeConfig.ROLLING_WINDOW_M (ignores
+    DEM noise), and orient it top→bottom.
     """
     if len(points) < 2:
         return points

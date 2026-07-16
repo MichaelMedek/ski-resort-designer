@@ -4,6 +4,7 @@ These tests use the actual EuroDEM file and are skipped if unavailable.
 They validate that algorithms work correctly with real terrain data.
 """
 
+from skiresort_planner.constants import GeometricTuningConfig
 from skiresort_planner.core.path_tracer import PathTracer
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.model.path_segment import SegmentKind
@@ -141,6 +142,7 @@ class TestPathGenerationOnRealTerrain:
             target_lat=target_lat,
             target_elevation=target_elev,
             target_grade_pct=20.0,
+            smoothing_factor=GeometricTuningConfig.SLOPE_SMOOTHING_FACTOR,
         )
 
         # With guaranteed descent over 500m of real terrain, a path must exist and

@@ -3,7 +3,7 @@
 Centralizes all right-side control panel rendering:
 - State dispatch to appropriate renderers
 - PathSelectionPanel: Path browsing, selection, and commit
-- SlopeStatsPanel: Slope statistics in viewing mode
+- PathStatsPanel: Slope/road statistics in viewing mode (kind-parameterized)
 - LiftStatsPanel: Lift statistics in viewing mode
 
 Design Principles:
@@ -14,14 +14,14 @@ Design Principles:
 
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Literal
 
 import streamlit as st
 
 from skiresort_planner.constants import MapConfig, SlopeConfig, StyleConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
-from skiresort_planner.enum_utils import enum_eq
+from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.model.message import (
     ImportActionMessage,
     ImportPlacingContextMessage,
@@ -41,7 +41,7 @@ from skiresort_planner.ui.actions import (
     rename_entity_action,
 )
 from skiresort_planner.ui.context import EntityKind, PlannerContext
-from skiresort_planner.ui.infra import bump_map_version, reload_map, trigger_rerun
+from skiresort_planner.ui.infra import bump_camera_epoch, bump_dedup_epoch, reload_map, trigger_rerun
 from skiresort_planner.ui.kind_spec import KIND_SPECS
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
@@ -50,6 +50,7 @@ if TYPE_CHECKING:
     from skiresort_planner.model.message import Message
     from skiresort_planner.model.proposed_path import ProposedPathSegment
     from skiresort_planner.model.road import Road
+    from skiresort_planner.model.segment_path import SegmentPath
     from skiresort_planner.model.slope import Slope
     from skiresort_planner.ui.mode_registry import EntityKindSpec
 
@@ -131,38 +132,21 @@ def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, kind: Enti
         if _action_button("🗺️ Return to 2D View", key=f"{noun}_2d_view", help="Return to the top-down 2D map"):
             logger.debug(f"Switching to 2D view from {noun} {entity_id}")
             ctx.viewing.disable_3d()
-            # Reset pitch, bearing, and zoom to top-down 2D view
-            ctx.map.pitch = MapConfig.DEFAULT_PITCH
-            ctx.map.bearing = MapConfig.DEFAULT_BEARING
-            ctx.map.zoom = MapConfig.DEFAULT_ZOOM
-            # Update map center to entity center so we don't jump to stale position.
-            # The viewed entity is guaranteed to exist (caller validated it). enum_eq is
-            # reload-safe: EntityKind survives Streamlit reloads while the class is redefined.
-            if enum_eq(a=kind, b=EntityKind.SLOPE) or enum_eq(a=kind, b=EntityKind.ROAD):
-                # Both are segment groups → center on their segment endpoints.
-                owner = graph.slopes[entity_id] if enum_eq(a=kind, b=EntityKind.SLOPE) else graph.roads[entity_id]
-                lats, lons = [], []
-                for seg_id in owner.segment_ids:
-                    seg = graph.segments[seg_id]
-                    lats.append(seg.points[0].lat)
-                    lons.append(seg.points[0].lon)
-                    lats.append(seg.points[-1].lat)
-                    lons.append(seg.points[-1].lon)
-                ctx.map.lat = sum(lats) / len(lats)
-                ctx.map.lon = sum(lons) / len(lons)
-            elif enum_eq(a=kind, b=EntityKind.LIFT):
-                lift = graph.lifts[entity_id]
-                start_node = graph.nodes[lift.start_node_id]
-                end_node = graph.nodes[lift.end_node_id]
-                ctx.map.lat = (start_node.lat + end_node.lat) / 2
-                ctx.map.lon = (start_node.lon + end_node.lon) / 2
+            # Reframe top-down on the viewed entity (not a stale position). EntityKind is a StrEnum,
+            # so `==` is reload-safe.
+            if kind in (EntityKind.SLOPE, EntityKind.ROAD):
+                owner = graph.slopes[entity_id] if kind == EntityKind.SLOPE else graph.roads[entity_id]
+                center = owner.center(segments=graph.segments)
+            elif kind == EntityKind.LIFT:
+                center = graph.lifts[entity_id].center(nodes=graph.nodes)
             else:
                 raise ValueError(f"Unknown {kind=}")
-            reload_map()  # Never returns - raises StopExecution
+            reload_map(center=center, zoom=MapConfig.DEFAULT_ZOOM)  # Never returns - raises StopExecution
     elif _action_button("🏔️ View in 3D", key=f"{noun}_3d_view", help=f"View {noun} from the side with terrain"):
         logger.debug(f"Switching to 3D view for {noun} {entity_id}")
         ctx.viewing.enable_3d()
-        reload_map()  # Never returns - raises StopExecution
+        bump_camera_epoch()  # 3D fit is computed in view_state; bare remount re-reads it
+        trigger_rerun()  # Never returns - raises StopExecution
 
 
 def _render_entity_actions(
@@ -199,7 +183,7 @@ def _render_entity_actions(
             # Reset pitch and bearing to top-down view (preserve zoom level)
             ctx.map.pitch = MapConfig.DEFAULT_PITCH
             ctx.map.bearing = MapConfig.DEFAULT_BEARING
-            bump_map_version()
+            bump_dedup_epoch()  # keep the user's pan (no recenter); a 3D→2D close re-frames via the view detector
             # Uses close_panel event - SM resolves to appropriate transition
             # State transition triggers st.rerun() via listener - never returns
             sm.hide_info_panel()
@@ -367,9 +351,7 @@ class PathBuildingControlPanel(ControlPanel):
 
         if segs > 0:
             stats = self.graph.get_segment_stats(segment_ids=build.segments)
-            emoji = (
-                StyleConfig.DIFFICULTY_EMOJIS[stats["difficulty"]] if enum_eq(a=self.kind, b=SegmentKind.SLOPE) else ""
-            )
+            emoji = StyleConfig.DIFFICULTY_EMOJIS[stats["difficulty"]] if self.kind == SegmentKind.SLOPE else ""
             return PathBuildingContextMessage(
                 icon=spec.icon,
                 kind=self.kind,
@@ -421,26 +403,26 @@ class LiftPlacingControlPanel(ControlPanel):
 
     def _start_elevation(self) -> float:
         if self.ctx.lift.start_node_id:
-            node = self.graph.nodes.get(self.ctx.lift.start_node_id)
-            return node.elevation if node else 0.0
+            return self.graph.nodes[self.ctx.lift.start_node_id].elevation
         if self.ctx.lift.start_location:
             return self.ctx.lift.start_location.elevation
         raise RuntimeError("LiftPlacing state requires start_node_id or start_location to be set")
 
     def context_message(self) -> "Message | None":
-        lift_icon = StyleConfig.LIFT_ICONS[self.ctx.lift.type]
+        lift_type = self.ctx.build_mode.mode  # single source of truth for the selected lift type
+        lift_icon = StyleConfig.LIFT_ICONS[lift_type]
         if self.ctx.lift.start_node_id:
-            node = self.graph.nodes.get(self.ctx.lift.start_node_id)
+            node = self.graph.nodes[self.ctx.lift.start_node_id]
             return LiftPlacingContextMessage(
-                lift_type=self.ctx.lift.type,
+                lift_type=lift_type,
                 lift_icon=lift_icon,
                 bottom_node_id=self.ctx.lift.start_node_id,
-                bottom_elevation_m=node.elevation if node else 0.0,
+                bottom_elevation_m=node.elevation,
             )
         if self.ctx.lift.start_location:
             loc = self.ctx.lift.start_location
             return LiftPlacingContextMessage(
-                lift_type=self.ctx.lift.type,
+                lift_type=lift_type,
                 lift_icon=lift_icon,
                 bottom_lat=loc.lat,
                 bottom_lon=loc.lon,
@@ -449,7 +431,7 @@ class LiftPlacingControlPanel(ControlPanel):
         raise RuntimeError("LiftPlacing state requires start_node_id or start_location to be set")
 
     def action_message(self) -> "Message | None":
-        return LiftActionMessage(is_awaiting_top=True, bottom_elevation_m=self._start_elevation())
+        return LiftActionMessage(bottom_elevation_m=self._start_elevation())
 
     def buttons(self) -> None:
         return None
@@ -474,7 +456,7 @@ class ImportPlacingControlPanel(ControlPanel):
 
     def buttons(self) -> None:
         if st.button("✅ Confirm Import", type="primary", width="stretch", help="Fetch and import this area from OSM"):
-            logger.info("UI: Confirm Import clicked")
+            logger.debug("UI: Confirm Import clicked")
             confirm_import_action()
 
 
@@ -508,7 +490,7 @@ class MergePlacingControlPanel(ControlPanel):
             disabled=not enough,
             help=("Select at least 2 nodes to merge" if not enough else "Collapse the selected nodes to their median"),
         ):
-            logger.info(f"UI: Confirm Merge clicked for {count} nodes")
+            logger.debug(f"UI: Confirm Merge clicked for {count} nodes")
             confirm_merge_action()
 
 
@@ -529,13 +511,13 @@ def _render_proposal_browser(ctx: PlannerContext, *, key_prefix: str, noun: str)
     with col_prev:
         if st.button("◀", key=f"prev_{key_prefix}", width="stretch", help="Previous"):
             ctx.proposals.selected_idx = (selected_idx - 1) % num_paths
-            reload_map()
+            trigger_rerun()  # browsing only changes the highlight — redraw in place, no recenter
     with col_nav_label:
         st.markdown(f"**◀ ▶ Browse {num_paths} {noun}**")
     with col_next:
         if st.button("▶", key=f"next_{key_prefix}", width="stretch", help="Next"):
             ctx.proposals.selected_idx = (selected_idx + 1) % num_paths
-            reload_map()
+            trigger_rerun()  # browsing only changes the highlight — redraw in place, no recenter
 
 
 # =============================================================================
@@ -568,6 +550,8 @@ class PathSelectionPanel:
     def render(self) -> None:
         """Render the path selection panel."""
         noun = KIND_SPECS[self.kind].display_noun  # "Slope" / "Road"
+        # Committed-segment warnings surface here regardless of proposal state.
+        self._render_committed_warnings()
         if not self.ctx.proposals.paths:
             # No proposals (e.g. a too-steep custom target). Show the message, but if we are
             # routing a custom target (force_mode) still offer the escape back to the fan.
@@ -639,6 +623,13 @@ class PathSelectionPanel:
             # also aim anywhere. Make that discoverable now that there is no button.
             st.caption("🎯 Or click any point or node on the map to route a path there.")
 
+    def _render_committed_warnings(self) -> None:
+        """Surface any warnings on already-committed segments as ⚠️ messages (not on the plot)."""
+        for seg_id in self.ctx.build(self.kind).segments:
+            seg = self.graph.segments[seg_id]  # a committed build segment must exist — let it crash if not
+            for warning in seg.warnings:
+                SegmentWarningMessage(warning_text=str(warning)).display()
+
     def _render_cancel_connection(self, *, is_connector: bool) -> None:
         """The escape back to fan-out during custom-connect. Label adapts: a connector routes to a
         node ("Cancel Connection"), a plain custom target ("Cancel Custom Path").
@@ -654,162 +645,61 @@ class PathSelectionPanel:
 # =============================================================================
 
 
-class SlopeStatsPanel:
-    """Renders statistics panel for a finalized slope."""
+class StatsPanel(ABC):
+    """Base for a viewed-entity statistics panel (slope/road via PathStatsPanel, lift via LiftStatsPanel).
+
+    Mirrors ControlPanel: one abstract `render(entity_id)` the dispatcher calls; the entity lookup +
+    "deleted mid-view" guard live in each subclass. Constructed with just the graph.
+    """
 
     def __init__(self, graph: ResortGraph) -> None:
         self.graph = graph
 
-    def render(self, slope_id: str) -> None:
-        """Render statistics panel for the given slope."""
-        slope = self.graph.slopes.get(slope_id)
+    @abstractmethod
+    def render(self, entity_id: str) -> None:
+        """Render this kind's stats panel for the given entity id."""
 
-        if not slope:
+
+class PathStatsPanel(StatsPanel):
+    """Stats panel for a finished SegmentPath entity — one class for slope AND road (kind-parameterized).
+
+    The kinds differ only in wording, all captured on the KindSpec (icon, shows_difficulty).
+    Same single-source pattern as PathSelectionPanel, so kinds cannot drift.
+    """
+
+    def __init__(self, graph: ResortGraph, kind: SegmentKind) -> None:
+        super().__init__(graph=graph)
+        self.kind = kind
+
+    def render(self, entity_id: str) -> None:
+        spec = KIND_SPECS[self.kind]
+        # Kind → its entity dict (data-driven, no if/else); a new kind adds one entry here.
+        # Mapping (not dict) so the covariant value type accepts dict[str, Slope] / dict[str, Road].
+        by_kind: Mapping[SegmentKind, Mapping[str, SegmentPath]] = {
+            SegmentKind.SLOPE: self.graph.slopes,
+            SegmentKind.ROAD: self.graph.roads,
+        }
+        owner = by_kind[self.kind].get(entity_id)
+        if owner is None:
             raise RuntimeError(
-                f"Slope '{slope_id}' not found in graph.slopes - "
-                "state machine transitioned to viewing but slope was deleted"
+                f"{self.kind.value} '{entity_id}' not found - state machine transitioned to viewing but it was deleted"
             )
 
-        st.subheader(f"📊 {slope.name}")
-
-        total_length = slope.get_total_length(segments=self.graph.segments)
-        total_drop = slope.get_total_drop(segments=self.graph.segments)
-        difficulty = slope.get_difficulty(segments=self.graph.segments)
-        avg_gradient = (total_drop / total_length * 100) if total_length > 0 else 0
-        max_segment_gradient = slope.get_max_gradient(segments=self.graph.segments)
-
-        first_seg = self.graph.segments.get(slope.segment_ids[0]) if slope.segment_ids else None
-        last_seg = self.graph.segments.get(slope.segment_ids[-1]) if slope.segment_ids else None
-        top_elev = first_seg.points[0].elevation if first_seg and first_seg.points else 0.0
-        bottom_elev = last_seg.points[-1].elevation if last_seg and last_seg.points else 0.0
-
-        diff_emoji = StyleConfig.DIFFICULTY_EMOJIS[difficulty]
-
-        st.markdown(f"**Difficulty:** {diff_emoji} {difficulty.capitalize()}")
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Top Elevation", f"{top_elev:.0f}m")
-            st.metric("Length", f"{total_length:.0f}m")
-            st.metric("Overall Gradient", f"{avg_gradient:.0f}%")
-        with col2:
-            st.metric("Bottom Elevation", f"{bottom_elev:.0f}m")
-            st.metric("Drop", f"{total_drop:.0f}m")
-            st.metric(
-                "Steepest Section",
-                f"{max_segment_gradient:.0f}%",
-                help=f"Steepest {SlopeConfig.ROLLING_WINDOW_M}m section within any single segment - determines difficulty rating",
-            )
-
-        with st.expander("📋 Segment Details", expanded=False):
-            for i, seg_id in enumerate(slope.segment_ids, 1):
-                seg = self.graph.segments.get(seg_id)
-                if not seg:
-                    continue
-
-                seg_emoji = StyleConfig.DIFFICULTY_EMOJIS[seg.difficulty]
-                seg_line = f"{i}. {seg_emoji} **{seg.difficulty.capitalize()}** — {seg.length_m:.0f}m, {seg.max_slope_pct:.0f}% steepest, {seg.width_m:.0f}m wide"
-
-                if seg.warnings:
-                    st.markdown(f"{seg_line}")
-                    for warning in seg.warnings:
-                        SegmentWarningMessage(warning_text=str(warning)).display()
-                else:
-                    st.markdown(seg_line)
-
-
-class LiftStatsPanel:
-    """Renders statistics panel for a lift."""
-
-    def __init__(self, graph: ResortGraph) -> None:
-        self.graph = graph
-
-    def render(self, lift_id: str) -> None:
-        """Render statistics panel for the given lift."""
-        lift = self.graph.lifts.get(lift_id)
-
-        if not lift:
-            raise RuntimeError(
-                f"Lift '{lift_id}' not found in graph.lifts - "
-                "state machine transitioned to viewing but lift was deleted"
-            )
-
-        lift_icon = StyleConfig.LIFT_ICONS[lift.lift_type]
-        lift_type_display = lift.lift_type.replace("_", " ").title()
-        st.subheader(f"{lift_icon} {lift.name}")
-        st.caption(f"Type: **{lift_type_display}** — *Use sidebar buttons to change*")
-
-        start_node = self.graph.nodes.get(lift.start_node_id)
-        end_node = self.graph.nodes.get(lift.end_node_id)
-
-        if start_node and end_node:
-            vertical_rise = end_node.elevation - start_node.elevation
-            horizontal_length = GeoCalculator.haversine_distance_m(
-                lat1=start_node.lat,
-                lon1=start_node.lon,
-                lat2=end_node.lat,
-                lon2=end_node.lon,
-            )
-            inclined_length = (vertical_rise**2 + horizontal_length**2) ** 0.5
-            num_pylons = len(lift.pylons)
-            avg_gradient = (vertical_rise / horizontal_length * 100) if horizontal_length > 0 else 0
-
-            max_cable_gradient = 0.0
-            if len(lift.pylons) >= 2:
-                for i in range(len(lift.pylons) - 1):
-                    p1 = lift.pylons[i]
-                    p2 = lift.pylons[i + 1]
-                    dist = p2.distance_m - p1.distance_m
-                    elev_diff = p2.top_elevation_m - p1.top_elevation_m
-                    if dist > 0:
-                        gradient = abs(elev_diff / dist * 100)
-                        max_cable_gradient = max(max_cable_gradient, gradient)
-
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Bottom Elevation", f"{start_node.elevation:.0f}m")
-                st.metric("Horizontal Length", f"{horizontal_length:.0f}m")
-                st.metric("Vertical Rise", f"{vertical_rise:.0f}m")
-                st.metric("Overall Gradient", f"{avg_gradient:.0f}%")
-            with col2:
-                st.metric("Top Elevation", f"{end_node.elevation:.0f}m")
-                st.metric("Inclined Length", f"{inclined_length:.0f}m")
-                st.metric("Pylons", f"{num_pylons}")
-                st.metric(
-                    "Steepest Section",
-                    f"{max_cable_gradient:.0f}%",
-                    help="Steepest gradient between any two adjacent pylons",
-                )
-
-
-class RoadStatsPanel:
-    """Renders statistics panel for a vehicle road."""
-
-    def __init__(self, graph: ResortGraph) -> None:
-        self.graph = graph
-
-    def render(self, road_id: str) -> None:
-        """Render statistics panel for the given road."""
-        road = self.graph.roads.get(road_id)
-
-        if not road:
-            raise RuntimeError(
-                f"Road '{road_id}' not found in graph.roads - "
-                "state machine transitioned to viewing but road was deleted"
-            )
-
-        st.subheader(f"{StyleConfig.ROAD_ICON} {road.name}")
-
-        total_length = road.get_total_length(segments=self.graph.segments)
-        total_drop = road.get_total_drop(segments=self.graph.segments)
-        max_gradient = road.get_max_gradient(segments=self.graph.segments)
+        total_length = owner.get_total_length(segments=self.graph.segments)
+        total_drop = owner.get_total_drop(segments=self.graph.segments)
+        max_gradient = owner.get_max_gradient(segments=self.graph.segments)
         avg_gradient = (abs(total_drop) / total_length * 100) if total_length > 0 else 0
 
-        # Road always has segments (validated on creation); index directly.
-        first_seg = self.graph.segments[road.segment_ids[0]]
-        last_seg = self.graph.segments[road.segment_ids[-1]]
+        # Committed entities always have segments-with-points; index directly (fail loud otherwise).
+        first_seg = self.graph.segments[owner.segment_ids[0]]
+        last_seg = self.graph.segments[owner.segment_ids[-1]]
         start_elev = first_seg.points[0].elevation
         end_elev = last_seg.points[-1].elevation
+
+        st.subheader(f"{spec.icon} {owner.name}")
+        if spec.shows_difficulty:
+            difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=max_gradient)
+            st.markdown(f"**Difficulty:** {StyleConfig.DIFFICULTY_EMOJIS[difficulty]} {difficulty.capitalize()}")
 
         col1, col2 = st.columns(2)
         with col1:
@@ -822,5 +712,77 @@ class RoadStatsPanel:
             st.metric(
                 "Steepest Section",
                 f"{max_gradient:.0f}%",
-                help=f"Steepest {SlopeConfig.ROLLING_WINDOW_M}m section within any single segment of the road",
+                help=f"Steepest {SlopeConfig.ROLLING_WINDOW_M}m section within any single segment",
+            )
+
+        with st.expander("📋 Segment Details", expanded=False):
+            for i, seg_id in enumerate(owner.segment_ids, 1):
+                seg = self.graph.segments[seg_id]
+                if spec.shows_difficulty:
+                    emoji = StyleConfig.DIFFICULTY_EMOJIS[seg.difficulty]
+                    line = f"{i}. {emoji} **{seg.difficulty.capitalize()}** — {seg.length_m:.0f}m, {seg.max_slope_pct:.0f}% steepest, {seg.width_m:.0f}m wide"
+                else:
+                    line = f"{i}. {spec.icon} {seg.length_m:.0f}m, {seg.max_slope_pct:.0f}% steepest, {seg.width_m:.0f}m wide"
+                st.markdown(line)
+                for warning in seg.warnings:
+                    SegmentWarningMessage(warning_text=str(warning)).display()
+
+
+class LiftStatsPanel(StatsPanel):
+    """Renders statistics panel for a lift."""
+
+    def render(self, entity_id: str) -> None:
+        """Render statistics panel for the given lift."""
+        lift = self.graph.lifts.get(entity_id)
+
+        if not lift:
+            raise RuntimeError(
+                f"Lift '{entity_id}' not found in graph.lifts - "
+                "state machine transitioned to viewing but lift was deleted"
+            )
+
+        lift_icon = StyleConfig.LIFT_ICONS[lift.lift_type]
+        lift_type_display = lift.lift_type.replace("_", " ").title()
+        st.subheader(f"{lift_icon} {lift.name}")
+        st.caption(f"Type: **{lift_type_display}** — *Use sidebar buttons to change*")
+
+        start_node = self.graph.nodes[lift.start_node_id]
+        end_node = self.graph.nodes[lift.end_node_id]
+
+        vertical_rise = end_node.elevation - start_node.elevation
+        horizontal_length = GeoCalculator.haversine_distance_m(
+            lat1=start_node.lat,
+            lon1=start_node.lon,
+            lat2=end_node.lat,
+            lon2=end_node.lon,
+        )
+        inclined_length = (vertical_rise**2 + horizontal_length**2) ** 0.5
+        num_pylons = len(lift.pylons)
+        avg_gradient = (vertical_rise / horizontal_length * 100) if horizontal_length > 0 else 0
+
+        max_cable_gradient = 0.0
+        if len(lift.pylons) >= 2:
+            for i in range(len(lift.pylons) - 1):
+                p1 = lift.pylons[i]
+                p2 = lift.pylons[i + 1]
+                dist = p2.distance_m - p1.distance_m
+                elev_diff = p2.top_elevation_m - p1.top_elevation_m
+                if dist > 0:
+                    gradient = abs(elev_diff / dist * 100)
+                    max_cable_gradient = max(max_cable_gradient, gradient)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Bottom Elevation", f"{start_node.elevation:.0f}m")
+            st.metric("Horizontal Length", f"{horizontal_length:.0f}m")
+            st.metric("Vertical Rise", f"{vertical_rise:.0f}m")
+            st.metric("Overall Gradient", f"{avg_gradient:.0f}%")
+        with col2:
+            st.metric("Top Elevation", f"{end_node.elevation:.0f}m")
+            st.metric("Inclined Length", f"{inclined_length:.0f}m")
+            st.metric("Pylons", f"{num_pylons}")
+            st.metric(
+                "Steepest Section",
+                f"{max_cable_gradient:.0f}%",
+                help="Steepest gradient between any two adjacent pylons",
             )

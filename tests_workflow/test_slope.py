@@ -1,6 +1,24 @@
 """Unit tests for the Slope model (model/slope.py)."""
 
+from skiresort_planner.model.path_point import PathPoint
+from skiresort_planner.model.path_segment import PathSegment
 from skiresort_planner.model.proposed_path import ProposedPathSegment
+
+M = 111320.0  # metres per degree near the equator
+
+
+def _segment(id: str, length_m: float, grade_pct: float) -> PathSegment:
+    """A 2-point south-running segment of the given length and (descending) grade."""
+    dlat = length_m / M
+    return PathSegment(
+        id=id,
+        start_node_id=f"{id}a",
+        end_node_id=f"{id}b",
+        points=[
+            PathPoint(lon=0.0, lat=0.0, elevation=3000.0),
+            PathPoint(lon=0.0, lat=-dlat, elevation=3000.0 - length_m * grade_pct / 100.0),
+        ],
+    )
 
 
 class TestSlopeNaming:
@@ -62,3 +80,30 @@ class TestSlopeGetDifficulty:
         expected = TerrainAnalyzer.classify_difficulty(slope_pct=slope.get_max_gradient(segments=empty_graph.segments))
         assert slope.get_difficulty(segments=empty_graph.segments) == expected
         assert slope.get_difficulty(segments=empty_graph.segments) in {"green", "blue", "red", "black"}
+
+    def test_short_but_steep_segment_drives_rating(self) -> None:
+        """A steep pitch shorter than ROLLING_WINDOW_M (but ≥ SEGMENT_LENGTH_MIN_M) must count.
+
+        Regression: slope 167 had two ~260m black pitches (52%/56%) yet read blue, because the
+        steepest-section filter dropped every segment under 300m. Segments down to the builder's
+        minimum length are real and rate the slope.
+        """
+        from skiresort_planner.model.segment_path import steepest_section_pct
+
+        # A 260m 55% black wall plus longer blue segments — the wall must win.
+        segs = [
+            _segment("S1", length_m=260.0, grade_pct=55.0),  # black, < 300m
+            _segment("S2", length_m=345.0, grade_pct=17.0),  # blue, > 300m
+            _segment("S3", length_m=259.0, grade_pct=24.0),  # blue, < 300m
+        ]
+        assert steepest_section_pct(segments=segs) >= 50.0, "the short 55% wall must set the steepest section"
+
+    def test_sub_minimum_sliver_ignored_when_a_real_segment_exists(self) -> None:
+        """A segment below SEGMENT_LENGTH_MIN_M is a sliver — a longer real segment takes precedence."""
+        from skiresort_planner.model.segment_path import steepest_section_pct
+
+        segs = [
+            _segment("S1", length_m=50.0, grade_pct=60.0),  # 50m sliver, below the 100m floor
+            _segment("S2", length_m=345.0, grade_pct=17.0),  # real blue segment
+        ]
+        assert steepest_section_pct(segments=segs) < 25.0, "sub-minimum sliver excluded; blue segment rules"

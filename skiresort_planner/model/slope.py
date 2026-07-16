@@ -1,28 +1,19 @@
 """Slope - A complete ski run composed of multiple segments.
 
-A Slope is created when the user clicks "Finish Slope".
-It groups multiple PathSegments into a single named run.
-
-Difficulty is derived from maximum segment gradient.
-Creative naming generates memorable descriptive names.
-
-Shared segment-chain geometry lives in SegmentPath; this class adds
-only the slope-specific difficulty classification and naming.
-
-Reference: DETAILS.md
+Created on "Finish Slope"; groups PathSegments into a named run. Difficulty derives from the
+steepest section; naming is creative. Shared chain geometry lives in SegmentPath; this class
+adds only slope-specific difficulty classification and naming. Reference: DETAILS.md
 """
 
 import logging
 import random
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar
+from typing import ClassVar
 
 from skiresort_planner.constants import EntityPrefixes, NameConfig
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
+from skiresort_planner.model.path_segment import PathSegment, SegmentKind
 from skiresort_planner.model.segment_path import SegmentPath
-
-if TYPE_CHECKING:
-    from skiresort_planner.model.path_segment import PathSegment
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +36,7 @@ class Slope(SegmentPath):
     """
 
     ID_PREFIX: ClassVar[str] = EntityPrefixes.SLOPE
+    kind: ClassVar[SegmentKind] = SegmentKind.SLOPE
 
     @staticmethod
     def generate_name(

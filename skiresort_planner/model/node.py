@@ -1,12 +1,7 @@
 """Node - Junction point in the resort graph.
 
-A Node represents a connection point where slope segments can meet.
-It wraps a PathPoint for its location (single source of truth).
-
-Nodes are created automatically when paths are committed.
-Multiple segments can share the same node, creating junctions.
-
-Reference: DETAILS.md
+Wraps a PathPoint for its location (single source of truth). Created automatically when paths
+are committed; multiple segments can share one node, creating junctions. Reference: DETAILS.md
 """
 
 from dataclasses import dataclass
@@ -76,7 +71,7 @@ class Node:
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> "Node":
-        """Create Node from dictionary."""
+        """Create Node from dictionary. Required fields; raises KeyError if any is missing."""
         return cls(
             id=cast(str, data["id"]),
             location=PathPoint(**cast(dict[str, float], data["location"])),

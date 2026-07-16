@@ -22,11 +22,8 @@ logger = logging.getLogger(__name__)
 class PydeckClickResult:
     """Result from Pydeck click detection.
 
-    Attributes:
-        clicked_object: The picked deck.gl object data (dict) or None if terrain click
-        clicked_coordinate: [lon, lat] of click location (always available for clicks)
-        is_object_click: True if a pickable object was clicked
-        is_terrain_click: True if terrain (no object) was clicked
+    Holds the picked object (or None) and click coordinate; inspect via the
+    is_object_click / is_terrain_click properties.
     """
 
     clicked_object: dict[str, object] | None
@@ -48,6 +45,13 @@ class PydeckClickResult:
         return PydeckClickResult(clicked_object=None, clicked_coordinate=None)
 
 
+def _parse_coord_pair(val: object) -> tuple[float, float] | None:
+    """(x, y) floats from a deck.gl 2+ element list/tuple, or None if it isn't one."""
+    if isinstance(val, list | tuple) and len(val) >= 2:
+        return float(val[0]), float(val[1])
+    return None
+
+
 def render_pydeck_map(
     deck: pdk.Deck,
     key: str,
@@ -55,9 +59,8 @@ def render_pydeck_map(
 ) -> PydeckClickResult:
     """Render Pydeck map with full click support including terrain clicks.
 
-    Uses st_deckgl from streamlit-deckgl to capture ALL click events:
-    - Object clicks: event contains 'object' with picked layer data
-    - Terrain clicks: event contains 'coordinate' [lon, lat]
+    Uses st_deckgl to capture ALL click events (object clicks carry layer data; terrain
+    clicks carry only a coordinate), unlike st.pydeck_chart which returns object picks only.
 
     Args:
         deck: Configured pydeck.Deck object
@@ -93,10 +96,10 @@ def render_pydeck_map(
     clicked_coordinate: list[float] | None = None
 
     # Check for coordinate (always present for clicks)
-    coord = event.get("coordinate")
-    if isinstance(coord, list | tuple) and len(coord) >= 2:
+    coord_pair = _parse_coord_pair(event.get("coordinate"))
+    if coord_pair is not None:
         # st_deckgl returns [lon, lat] from deck.gl
-        clicked_coordinate = [float(coord[0]), float(coord[1])]
+        clicked_coordinate = [coord_pair[0], coord_pair[1]]
 
     # Check for picked object by presence of "type" field (set by our layers)
     # Object properties are SPREAD into event, not under "object" key!
@@ -127,7 +130,7 @@ def render_pydeck_map(
 
 
 def _get_click_id(obj: dict[str, object] | None, coord: list[float] | None) -> str:
-    """Generate unique ID for click deduplication."""
+    """Generate a unique ID for click deduplication (the per-component ghost gate)."""
     parts = []
 
     if obj:
@@ -137,9 +140,9 @@ def _get_click_id(obj: dict[str, object] | None, coord: list[float] | None) -> s
             parts.append(f"{obj_type}_{obj_id}")
         else:
             # Use position as fallback
-            pos = obj.get("position")
-            if isinstance(pos, list | tuple) and len(pos) >= 2:
-                parts.append(f"pos_{float(pos[0]):.6f}_{float(pos[1]):.6f}")
+            pos_pair = _parse_coord_pair(obj.get("position"))
+            if pos_pair is not None:
+                parts.append(f"pos_{pos_pair[0]:.6f}_{pos_pair[1]:.6f}")
 
     if coord:
         # Round coordinates for dedup tolerance

@@ -15,7 +15,6 @@ import streamlit as st
 
 from skiresort_planner.constants import (
     AppConfig,
-    ChartConfig,
     DEMConfig,
     MapConfig,
 )
@@ -31,7 +30,7 @@ from skiresort_planner.ui import (
     PlannerContext,
     PlannerStateMachine,
     SidebarRenderer,
-    bump_map_version,
+    bump_camera_epoch,
     cancel_custom_path,
     commit_selected_path,
     dispatch_click,
@@ -109,18 +108,17 @@ def init_session_state() -> None:
     if "_upload_counter" not in st.session_state:
         st.session_state._upload_counter = 0
 
-    if "map_version" not in st.session_state:
-        st.session_state.map_version = 0
+    # Two independent counters (see infra.py): camera_epoch keys the map component (remount → recenter),
+    # dedup_epoch keys click ids (proposal/marker regeneration) without moving the camera.
+    if "camera_epoch" not in st.session_state:
+        st.session_state.camera_epoch = 0
+    if "dedup_epoch" not in st.session_state:
+        st.session_state.dedup_epoch = 0
 
 
 def _init_resort_from_url_or_new() -> None:
-    """Resolve the session's resort_id and prime the graph from a backup.
-
-    - If the URL has ?resort=<id> and a backup exists, load it. This is the
-      reload path — F5, brief outage, and reopened bookmarks keep the URL.
-    - Otherwise (bare link) fall back to the biggest existing backup by node
-      count — almost always the user's own work — and adopt its id.
-    - If no backups exist, start a fresh empty resort.
+    """Resolve resort_id and prime the graph: load the ?resort=<id> backup (reload path — F5/
+    bookmarks keep the URL), else the largest existing backup (the user's own work), else fresh.
     """
     param_id = st.query_params.get("resort")
     if not param_id:
@@ -144,17 +142,9 @@ def _init_resort_from_url_or_new() -> None:
 
 
 def reset_ui_state() -> None:
-    """Reset UI state to initial while preserving the resort graph.
+    """Reset state machine + context and remount the map on error recovery.
 
-    Called when an error occurs to recover gracefully. Resets:
-    - State machine to Idle state
-    - Context to fresh instance
-    - Map version (to clear any stale map state)
-
-    Preserves:
-    - Resort graph (all slopes, lifts, nodes, segments)
-    - DEM service and path factory
-    - Map renderer (re-linked to graph)
+    Preserves the resort graph, DEM service, path factory, and map renderer (re-linked to graph).
     """
     logger.info("Resetting UI state due to error recovery")
 
@@ -163,18 +153,32 @@ def reset_ui_state() -> None:
     st.session_state.state_machine = sm
     st.session_state.context = ctx
 
-    # Increment map version to force fresh map component
-    bump_map_version()
+    # Remount the map component for a clean slate after error recovery.
+    bump_camera_epoch()
 
     logger.debug("UI state reset complete - graph preserved")
+
+
+def _handle_error_with_recovery(e: Exception, context_tag: str) -> None:
+    """Log the traceback, show the error + a reset button, and recover UI state (graph preserved).
+
+    Args:
+        e: The caught exception.
+        context_tag: Short tag for the failing region ("RENDER" / "UI"), used in log + message.
+    """
+    error_msg = f"{type(e).__name__}: {e}"
+    logger.error(f"[{context_tag}] error caught: {error_msg}\n{traceback.format_exc()}")
+    st.error(f"⚠️ [{context_tag}] Something went wrong: {error_msg}")
+    reset_ui_state()
+    if st.button("🔄 Reset and Continue", type="primary"):
+        trigger_rerun()
 
 
 def load_dem_data() -> bool:
     """Load DEM data. Returns True when loaded, False while loading.
 
-    Downloads the DEM from Hugging Face if not present locally, then loads
-    into memory. Uses DEMService.is_loaded property to handle Streamlit
-    module reloads that can reset class-level singleton state.
+    Downloads from Hugging Face if not present locally. Uses DEMService.is_loaded to survive
+    Streamlit module reloads that reset class-level singleton state.
     """
     # Check if DEM service exists AND is actually loaded (handles module reimport)
     dem_service = st.session_state.get("dem_service")
@@ -214,36 +218,19 @@ def load_dem_data() -> bool:
 # =============================================================================
 
 
-# NOTE: @st.fragment intentionally NOT used here.
-# Fragments create isolated render contexts that can cause race conditions with
-# session_state updates, preventing proper key-based remounts for deck.gl 2D/3D
-# view transitions. Full app reruns with st.cache_data for heavy computations
-# (DEM loading, path generation) provide equivalent performance without the
-# state synchronization issues. See: Streamlit docs on fragment limitations.
+# NOTE: @st.fragment intentionally NOT used: isolated render contexts race with session_state
+# updates and break key-based deck.gl 2D/3D remounts. Full reruns + st.cache_data give equivalent
+# perf without the state-sync issues.
 def _render_map_fragment() -> None:
     """Render map and handle clicks.
 
-    Despite the name (kept for backwards compatibility), this is NOT a fragment.
-    Full app reruns ensure deterministic 2D/3D view transitions via UUID-based
-    key changes that force deck.gl component remounts.
+    Named for backwards compat but NOT a fragment; full reruns + UUID keys force deterministic
+    2D/3D deck.gl remounts.
     """
     try:
         _render_map_fragment_inner()
     except Exception as e:
-        # Log full traceback for debugging
-        error_msg = f"{type(e).__name__}: {e}"
-        full_traceback = traceback.format_exc()
-        logger.error(f"[RENDER] Map fragment error caught: {error_msg}\n{full_traceback}")
-
-        # Show user-friendly error message
-        st.error(f"⚠️ [RENDER] Something went wrong: {error_msg}")
-
-        # Reset UI state while preserving the graph
-        reset_ui_state()
-
-        # Add a button to manually recover
-        if st.button("🔄 Reset and Continue", type="primary"):
-            trigger_rerun()
+        _handle_error_with_recovery(e, "RENDER")
 
 
 def _render_map_fragment_inner() -> None:
@@ -256,8 +243,8 @@ def _render_map_fragment_inner() -> None:
     dem: DEMService = st.session_state.dem_service
     build_state = BUILD_STATES[sm.get_current_state_id()]
 
-    map_version = st.session_state.get("map_version", 0)
-    logger.debug(f"[RENDER] Map fragment: state={sm.get_state_name()}, map_version={map_version}")
+    camera_epoch = st.session_state.get("camera_epoch", 0)
+    logger.debug(f"[RENDER] Map fragment: state={sm.get_state_name()}, camera_epoch={camera_epoch}")
 
     # Determine 2D/3D mode early so all layers use consistent z-handling
     use_3d = ctx.viewing.view_3d
@@ -312,21 +299,12 @@ def _render_map_fragment_inner() -> None:
             merge_node_ids=build_state.merge_highlight_node_ids(ctx),
         )
 
-    # Spinner only during a view change (2D/3D toggle, Reset View).
-    if is_view_change:
-        with st.spinner("🔄 Switching view..."):
-            deck = _build_deck()
-    else:
-        deck = _build_deck()
+    deck = _build_deck()
 
-    # One elevation profile renders below the map, chosen by the current state (in-build slope/road,
-    # viewed entity, or none). Reserve room only when there is one; else the map fills the viewport.
-    profile = build_state.bottom_profile(ctx=ctx, graph=graph)
-    reserved = ChartConfig.PROFILE_HEIGHT_PX if profile is not None else 0
-
-    # Map height that fills the browser window. None only on first load, before the js-eval
-    # round-trip resolves (cached thereafter, so reruns keep the size).
-    height = viewport_map_height(reserved_below_px=reserved)
+    # Map height fills the browser window — CONSTANT across every lifecycle state so the pydeck
+    # component key never changes from a height shift. The elevation profile renders in the RIGHT column.
+    # None only on first load, before the js-eval round-trip resolves (cached thereafter, so reruns keep the size).
+    height = viewport_map_height()
     if height is None:
         st.info("📐 Sizing map to your window…")
         return
@@ -334,11 +312,16 @@ def _render_map_fragment_inner() -> None:
     # force_remount_key AND height are in the key: st_deckgl only applies height on first mount, so
     # height must change the key to force a remount when it changes.
     force_key = st.session_state.get("force_remount_key", "init")
-    map_key = f"main_map_{st.session_state.map_version}_{force_key}_{'3d' if use_3d else '2d'}_h{height}"
+    map_key = f"main_map_{st.session_state.camera_epoch}_{force_key}_{'3d' if use_3d else '2d'}_h{height}"
+    # Diagnostic: a CHANGED map_key remounts the deck.gl iframe (camera snaps to initial_view_state).
+    last_map_key = st.session_state.get("_last_map_key")
+    logger.debug(
+        f"[MAP] key={map_key} (changed={last_map_key != map_key}) height={height} "
+        f"camera_epoch={st.session_state.camera_epoch} force_key={force_key} "
+        f"view=({view_lat:.5f},{view_lon:.5f},z{view_zoom},p{view_pitch:.1f},b{view_bearing:.1f})"
+    )
+    st.session_state._last_map_key = map_key
     click_result = render_pydeck_map(deck=deck, height=height, key=map_key)
-
-    if profile is not None:
-        st.plotly_chart(profile.fig, width="stretch", key=profile.key)
 
     # Clicks are disabled in 3D (deck.gl picking is unreliable under pitch); warn instead.
     if use_3d:
@@ -375,20 +358,7 @@ def main() -> None:
     try:
         _run_app_ui()
     except Exception as e:
-        # Log full traceback for debugging
-        error_msg = f"{type(e).__name__}: {e}"
-        full_traceback = traceback.format_exc()
-        logger.error(f"[UI] UI error caught: {error_msg}\n{full_traceback}")
-
-        # Show user-friendly error message
-        st.error(f"⚠️ [UI] Something went wrong: {error_msg}")
-
-        # Reset UI state while preserving the graph
-        reset_ui_state()
-
-        # Add a button to manually recover
-        if st.button("🔄 Reset and Continue", type="primary"):
-            trigger_rerun()
+        _handle_error_with_recovery(e, "UI")
 
 
 def _run_app_ui() -> None:
@@ -399,20 +369,25 @@ def _run_app_ui() -> None:
     renderer: MapRenderer = st.session_state.map_renderer
     renderer.graph = graph
 
-    map_version = st.session_state.get("map_version", 0)
-    logger.debug(f"[MAIN] Render cycle starting: state={sm.get_state_name()}, map_version={map_version}")
+    camera_epoch = st.session_state.get("camera_epoch", 0)
+    logger.debug(
+        f"[MAIN] ===== rerun ===== state={sm.get_state_name()} camera_epoch={camera_epoch} "
+        f"dedup_epoch={st.session_state.get('dedup_epoch', 0)} "
+        f"deferred(osm={ctx.deferred.osm_import},custom={ctx.deferred.custom_connect},"
+        f"fan={bool(ctx.deferred.fan_generation)})"
+    )
 
-    # Handle deferred actions from previous transitions.
-    # Slow ops get spinners; each is dispatched at most once per render (single-dispatch chain).
+    # Deferred actions (once per render). Progress uses st.toast, NOT st.spinner: a body spinner
+    # shifts the body element order between reruns, re-creating the map iframe (flash + camera reset);
+    # a toast is a transient overlay that never touches the layout. Fan is fast (no cue).
     if ctx.deferred.osm_import:
-        with st.spinner("🗺️ Importing lifts & pistes from OpenStreetMap..."):
-            process_osm_import_deferred()
+        st.toast("🗺️ Importing lifts & pistes from OpenStreetMap…")
+        process_osm_import_deferred()
     elif ctx.deferred.custom_connect:
-        with st.spinner("🎯 Computing custom path options..."):
-            process_custom_connect_deferred()
+        st.toast("🎯 Computing custom path options…")
+        process_custom_connect_deferred()
     elif ctx.deferred.fan_generation:
-        with st.spinner("🗺️ Generating path options..."):
-            process_path_generation_deferred()
+        process_path_generation_deferred()  # fast — no cue needed
 
     # Sidebar (fire-and-forget: its panels call actions directly on button clicks)
     sidebar = SidebarRenderer(state_machine=sm, context=ctx, graph=graph)

@@ -14,6 +14,7 @@ from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui import infra
+from skiresort_planner.ui.context import BuildMode
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
 M = 111320.0
@@ -34,7 +35,8 @@ def _seed_full_session(fake_st, dem):
     ss["dem_service"] = dem
     ss["path_factory"] = PathFactory(dem_service=dem)
     ss["map_renderer"] = MapRenderer(graph=graph)
-    ss["map_version"] = 0
+    ss["camera_epoch"] = 0
+    ss["dedup_epoch"] = 0
     ss["_upload_counter"] = 0
     return graph, sm, ctx
 
@@ -59,21 +61,23 @@ class TestSessionHelpers:
         assert isinstance(ss["graph"], ResortGraph)
         assert ss["state_machine"] is not None
         assert ss["map_renderer"] is not None
-        assert ss["map_version"] == 0
+        assert ss["camera_epoch"] == 0
+        assert ss["dedup_epoch"] == 0
 
     def test_reset_ui_state_preserves_graph(self, fake_st, path_points_blue) -> None:
         graph = ResortGraph()
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         graph.finish_slope(segment_ids=list(graph.segments.keys()))
         fake_st.session_state["graph"] = graph
-        fake_st.session_state["map_version"] = 0
+        fake_st.session_state["camera_epoch"] = 0
 
         app.reset_ui_state()
 
-        # Graph preserved; a fresh state machine + context installed.
+        # Graph preserved; a fresh state machine + context installed; camera remounts (recovery).
         assert fake_st.session_state["graph"] is graph
         assert len(graph.slopes) == 1
         assert fake_st.session_state["state_machine"] is not None
+        assert fake_st.session_state["camera_epoch"] == 1
 
     def test_load_dem_data_returns_true_when_loaded(self, fake_st, mock_dem_blue_slope) -> None:
         fake_st.session_state["dem_service"] = mock_dem_blue_slope  # already loaded
@@ -112,6 +116,36 @@ class TestSessionHelpers:
         assert rerun_calls == [1]  # a rerun was requested once the services were installed
 
 
+class TestReloadMapSignature:
+    """reload_map must require an EXPLICIT frame so no caller can remount on a stale view.
+
+    Guards the design rule: `center` and `zoom` are keyword-only with NO defaults — a bare
+    keep-current-view remount uses bump_camera_epoch() instead.
+    """
+
+    def test_center_and_zoom_are_required(self) -> None:
+        import inspect
+
+        params = inspect.signature(infra.reload_map).parameters
+        assert params["center"].default is inspect.Parameter.empty, "center must be required"
+        assert params["zoom"].default is inspect.Parameter.empty, "zoom must be required"
+
+    def test_reload_map_frames_and_bumps(self, fake_st, monkeypatch) -> None:
+        # Seed a context so reload_map can write ctx.map, and stub the rerun (raises in prod).
+        from skiresort_planner.ui.state_machine import PlannerStateMachine
+
+        _sm, ctx = PlannerStateMachine.create(graph=ResortGraph(), add_ui_listener=False)
+        fake_st.session_state["context"] = ctx
+        fake_st.session_state["camera_epoch"] = 0
+        monkeypatch.setattr(infra, "trigger_rerun", lambda *a, **k: None)
+
+        infra.reload_map(center=(10.5, 46.5), zoom=13)
+
+        assert (ctx.map.lon, ctx.map.lat) == (10.5, 46.5)
+        assert ctx.map.zoom == 13
+        assert fake_st.session_state["camera_epoch"] == 1  # remount so deck re-reads the frame
+
+
 class TestMapHeight:
     """viewport_map_height: js-eval read + session_state cache + reserve/floor math."""
 
@@ -134,14 +168,6 @@ class TestMapHeight:
     def test_short_window_clamped_to_min(self, fake_st, monkeypatch) -> None:
         monkeypatch.setattr(infra, "streamlit_js_eval", lambda *a, **k: 300)
         assert infra.viewport_map_height() == ChartConfig.MAP_MIN_HEIGHT_PX
-
-    def test_reserved_space_shrinks_map(self, fake_st, monkeypatch) -> None:
-        # Reserving room for a profile below the map subtracts from its height.
-        monkeypatch.setattr(infra, "streamlit_js_eval", lambda *a, **k: 1080.0)
-        full = infra.viewport_map_height(reserved_below_px=0)
-        reserved = infra.viewport_map_height(reserved_below_px=ChartConfig.PROFILE_HEIGHT_PX)
-        assert full is not None
-        assert reserved == full - ChartConfig.PROFILE_HEIGHT_PX
 
     def test_first_render_shows_message_and_skips_map(self, fake_st, monkeypatch, mock_dem_blue_slope) -> None:
         # window height None and nothing cached → return early, never call st_deckgl.
@@ -182,7 +208,7 @@ class TestRenderLoop:
         assert len(calls) == 1  # map rendered exactly once
         assert calls[0]["deck"] is not None  # a real pdk.Deck was built and handed to the component
         assert isinstance(calls[0]["key"], str) and calls[0]["key"].startswith("main_map_0_")
-        # idle_ready has no bottom_profile, so the profile slot below the map stays empty.
+        # idle_ready has no bottom_profile, so no profile chart renders in the right column.
         assert profile_keys == []
 
     def test_run_app_ui_viewing_slope(self, fake_st, monkeypatch, mock_dem_blue_slope, path_points_blue) -> None:
@@ -196,7 +222,7 @@ class TestRenderLoop:
 
         app._run_app_ui()
 
-        # The viewing profile renders below the map (same slot as the in-build profile).
+        # The viewing profile renders in the right column (render_control_panel), not below the map.
         assert "viewing_profile" in keys
 
     def test_run_app_ui_viewing_road(self, fake_st, monkeypatch, mock_dem_blue_slope, path_points_blue) -> None:
@@ -220,6 +246,7 @@ class TestRenderLoop:
 
         _stub_deckgl(monkeypatch)
         _graph, sm, ctx = _seed_full_session(fake_st, mock_dem_blue_slope)
+        ctx.build_mode.mode = BuildMode.CHAIRLIFT  # lift type selected before entering LIFT_PLACING
         loc = PathPoint(
             lon=0.0, lat=-1000 / M, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=-1000 / M)
         )

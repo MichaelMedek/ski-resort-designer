@@ -72,11 +72,12 @@ class TestLiftPostInitValidation:
 
 class TestLiftNodeLookups:
     def test_get_vertical_rise_missing_node_raises(self) -> None:
-        with pytest.raises(ValueError, match="Start or end node not found"):
+        # Missing station node is an internal invariant violation → fail loud with KeyError.
+        with pytest.raises(KeyError):
             _valid_lift().get_vertical_rise(nodes={})
 
     def test_get_length_m_missing_node_raises(self) -> None:
-        with pytest.raises(ValueError, match="Start or end node not found"):
+        with pytest.raises(KeyError):
             _valid_lift().get_length_m(nodes={})
 
     def test_get_vertical_rise_computes_when_nodes_present(self) -> None:

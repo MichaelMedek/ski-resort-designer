@@ -26,7 +26,7 @@ from skiresort_planner.ui.actions import (
     recompute_paths,
 )
 from skiresort_planner.ui.context import PlannerContext
-from skiresort_planner.ui.infra import bump_map_version, reload_map
+from skiresort_planner.ui.infra import bump_dedup_epoch, trigger_rerun
 from skiresort_planner.ui.kind_spec import KIND_SPECS
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
@@ -41,7 +41,7 @@ def _cancel_button(label: str, on_cancel: Callable[[], None], help: str) -> None
     SM listener.
     """
     if st.button(label, width="stretch", help=help):
-        bump_map_version()  # clear stale click state before the transition
+        bump_dedup_epoch()  # canceled build's markers gone → refresh dedup (no recenter)
         on_cancel()
 
 
@@ -87,7 +87,7 @@ class ViewingSidebarPanel(SidebarPanel):
             help="Close the right panel to start building",
             key="close_panel_btn",
         ):
-            bump_map_version()
+            bump_dedup_epoch()  # closing the panel keeps the user's pan (no recenter)
             # Uses close_panel event - SM resolves to appropriate transition.
             # State transition triggers st.rerun() via listener.
             self.sm.hide_info_panel()
@@ -197,7 +197,7 @@ class ImportSidebarPanel(SidebarPanel):
         )
         if half_width_km != self.ctx.deferred.osm_import_half_width_km:
             self.ctx.deferred.osm_import_half_width_km = half_width_km
-            reload_map()  # redraw the box at the new size
+            trigger_rerun()  # redraw the box at the new size (no recenter)
         _cancel_button(
             label="✖️ Cancel Import",
             on_cancel=self.sm.cancel_import,

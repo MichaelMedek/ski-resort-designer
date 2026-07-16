@@ -110,17 +110,21 @@ class TerrainAnalyzer:
         return self._dem
 
     @staticmethod
-    def classify_difficulty(slope_pct: float) -> str:
+    def classify_difficulty(slope_pct: float, margin_pct: float = 0.0) -> str:
         """Classify slope percentage into difficulty level.
 
         Args:
             slope_pct: Terrain slope as percentage (rise/run * 100)
+            margin_pct: Safety bias added before classifying, so a value near a band edge rounds
+                to the HARDER band. Used for proposals (pessimistic preview); 0 for committed
+                entities (the honest, final value).
 
         Returns:
             Difficulty string: "green", "blue", "red", or "black"
             Extreme slopes (>MAX_SKIABLE_PCT) are classified as "black"
             with a TooSteep warning expected separately.
         """
+        slope_pct += margin_pct
         for difficulty, (low, high) in SlopeConfig.DIFFICULTY_THRESHOLDS.items():
             if low <= slope_pct < high:
                 return difficulty
@@ -218,7 +222,7 @@ class TerrainAnalyzer:
         """
         center_elev = self._dem.get_elevation(lon=lon, lat=lat)
         if center_elev is None:
-            logger.warning(f"Elevation query returned None at ({lon:.6f}, {lat:.6f}) - outside DEM bounds")
+            logger.debug(f"Elevation query returned None at ({lon:.6f}, {lat:.6f}) - outside DEM bounds")
             return TerrainGradient(slope_pct=0.0, bearing_deg=0.0)
 
         bounds = self._dem.bounds

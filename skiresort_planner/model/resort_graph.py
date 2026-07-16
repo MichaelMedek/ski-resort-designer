@@ -22,7 +22,6 @@ from typing import TYPE_CHECKING, NamedTuple, TypedDict, cast
 from skiresort_planner.constants import EntityPrefixes, GeometricTuningConfig, MergeConfig, UndoConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
-from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.actions import (
     AddLiftAction,
     AddSegmentsAction,
@@ -441,7 +440,7 @@ class ResortGraph:
 
         slope_id = self._next_slope_id()
         # Difficulty from the steepest section (max_slope_pct over rolling windows).
-        max_slope = max(self.segments[sid].max_slope_pct for sid in segment_ids if sid in self.segments)
+        max_slope = max(self.segments[sid].max_slope_pct for sid in segment_ids)
         difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=max_slope)
         if name is None:
             name = Slope.generate_name(
@@ -543,7 +542,7 @@ class ResortGraph:
         if not road:
             return False
 
-        deleted_segments = [self.segments[seg_id] for seg_id in road.segment_ids if seg_id in self.segments]
+        deleted_segments = [self.segments[seg_id] for seg_id in road.segment_ids]
         for seg_id in road.segment_ids:
             self.segments.pop(seg_id, None)
         del self.roads[road_id]
@@ -834,12 +833,7 @@ class ResortGraph:
         """
         for seg_id in path.segment_ids:
             self.segments.pop(seg_id, None)
-        if isinstance(path, Slope):
-            self.slopes.pop(path.id, None)
-        elif isinstance(path, Road):
-            self.roads.pop(path.id, None)
-        else:
-            raise RuntimeError(f"merge collapse: unexpected path type {type(path).__name__}")
+        self.entity_dict_for_kind(path.kind).pop(path.id, None)
         logger.info(f"Merge collapsed {path.name} to zero length — deleted it and its {len(path.segment_ids)} segments")
         return path.segment_ids
 
@@ -879,12 +873,20 @@ class ResortGraph:
         Ids are uniquely prefixed (SL/L/R), so no kind is needed. Slopes and roads also rename their
         segments — finish_slope/finish_road set segment names, and the elevation profile shows them.
         """
-        entity = self.slopes.get(entity_id) or self.roads.get(entity_id) or self.lifts.get(entity_id)
+        # Find the segment-path entity by id across every SegmentKind.
+        segment_path: SegmentPath | None = None
+        for kind in SegmentKind:
+            found = self.entity_dict_for_kind(kind).get(entity_id)
+            if found is not None:
+                segment_path = found
+                break
+        entity = segment_path or self.lifts.get(entity_id)
         if entity is None:
             raise KeyError(f"No slope/lift/road with id {entity_id}")
         entity.name = new_name
-        if isinstance(entity, SegmentPath):
-            for seg_id in entity.segment_ids:
+        # A SegmentPath (slope/road) also renames its segments; a Lift has none.
+        if segment_path is not None:
+            for seg_id in segment_path.segment_ids:
                 self.segments[seg_id].name = new_name
         logger.info(f"Renamed {entity_id} to '{new_name}'")
 
@@ -902,7 +904,7 @@ class ResortGraph:
             logger.debug(f"delete_slope: slope {slope_id} not found, nothing to delete")
             return False
 
-        deleted_segments = [self.segments[seg_id] for seg_id in slope.segment_ids if seg_id in self.segments]
+        deleted_segments = [self.segments[seg_id] for seg_id in slope.segment_ids]
         for seg_id in slope.segment_ids:
             self.segments.pop(seg_id, None)
         del self.slopes[slope_id]
@@ -970,6 +972,18 @@ class ResortGraph:
         """
         return [*self.slopes.values(), *self.roads.values()]
 
+    def entity_dict_for_kind(self, kind: SegmentKind) -> dict[str, SegmentPath]:
+        """The storage dict (slopes or roads) that owns entities of the given kind.
+
+        Single source for kind→container dispatch so a new SegmentKind is wired HERE once, not
+        re-branched at each merge/collapse/undo site. Guarded by test_completeness_guards.
+        """
+        by_kind: dict[SegmentKind, dict[str, SegmentPath]] = {
+            SegmentKind.SLOPE: cast("dict[str, SegmentPath]", self.slopes),
+            SegmentKind.ROAD: cast("dict[str, SegmentPath]", self.roads),
+        }
+        return by_kind[kind]
+
     def get_entity_by_segment_id(self, segment_id: str) -> SegmentPath | None:
         """Find the finished entity (slope OR road) that owns a segment, or None.
 
@@ -991,7 +1005,8 @@ class ResortGraph:
 
         Returns:
             Dict with: total_drop, total_length, avg_gradient, max_gradient, difficulty, start_elev, current_elev
-            All numeric values are guaranteed non-None (defaults to 0.0 if segments not found).
+            All numeric values are guaranteed non-None. Empty segment_ids returns zeroed defaults;
+            every id in a non-empty list must exist (raises KeyError otherwise).
         """
         default_stats: SegmentStats = {
             "total_drop": 0.0,
@@ -1006,28 +1021,21 @@ class ResortGraph:
         if not segment_ids:
             return default_stats
 
-        first_seg = self.segments.get(segment_ids[0])
-        last_seg = self.segments.get(segment_ids[-1])
-
-        if not first_seg or not last_seg:
-            logger.warning(
-                f"get_segment_stats: missing segments - first={segment_ids[0]} exists={first_seg is not None}, "
-                f"last={segment_ids[-1]} exists={last_seg is not None}"
-            )
-            return default_stats
+        first_seg = self.segments[segment_ids[0]]
+        last_seg = self.segments[segment_ids[-1]]
 
         assert first_seg.start is not None  # Segments always have points
         assert last_seg.end is not None  # Segments always have points
         start_elev = first_seg.start.elevation
         current_elev = last_seg.end.elevation
 
-        total_length = sum(seg.length_m for seg_id in segment_ids if (seg := self.segments.get(seg_id)))
+        total_length = sum(self.segments[seg_id].length_m for seg_id in segment_ids)
 
         total_drop = start_elev - current_elev
         avg_gradient = (total_drop / total_length * 100) if total_length > 0 else 0.0
 
         # Difficulty based on steepest section in any segment (max_slope_pct uses rolling window)
-        max_slope = max(self.segments[sid].max_slope_pct for sid in segment_ids if sid in self.segments)
+        max_slope = max(self.segments[sid].max_slope_pct for sid in segment_ids)
         difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=max_slope)
 
         return {
@@ -1085,12 +1093,12 @@ class ResortGraph:
         return min(elevations), max(elevations)
 
     def get_center(self) -> tuple[float, float] | None:
-        """Return (lon, lat) mean of all node coordinates, or None if empty."""
+        """Return (lon, lat) per-coordinate median of all nodes, or None if empty."""
         if not self.nodes:
             return None
         lons = [n.lon for n in self.nodes.values()]
         lats = [n.lat for n in self.nodes.values()]
-        return sum(lons) / len(lons), sum(lats) / len(lats)
+        return statistics.median(lons), statistics.median(lats)
 
     def get_parking_nodes(self) -> list[Node]:
         """Nodes where a road meets a slope or lift — computed parking places.
@@ -1107,25 +1115,23 @@ class ResortGraph:
         # Nodes touched by road segments.
         road_nodes: set[str] = set()
         for sid in road_segment_ids:
-            seg = self.segments.get(sid)
-            if seg:
-                road_nodes.add(seg.start_node_id)
-                road_nodes.add(seg.end_node_id)
+            seg = self.segments[sid]
+            road_nodes.add(seg.start_node_id)
+            road_nodes.add(seg.end_node_id)
 
         # Nodes touched by slopes (their segments) or lift stations.
         slope_segment_ids = {sid for slope in self.slopes.values() for sid in slope.segment_ids}
         ski_nodes: set[str] = set()
         for sid in slope_segment_ids:
-            seg = self.segments.get(sid)
-            if seg:
-                ski_nodes.add(seg.start_node_id)
-                ski_nodes.add(seg.end_node_id)
+            seg = self.segments[sid]
+            ski_nodes.add(seg.start_node_id)
+            ski_nodes.add(seg.end_node_id)
         for lift in self.lifts.values():
             ski_nodes.add(lift.start_node_id)
             ski_nodes.add(lift.end_node_id)
 
         shared = road_nodes & ski_nodes
-        return [self.nodes[nid] for nid in shared if nid in self.nodes]
+        return [self.nodes[nid] for nid in shared]
 
     def change_token(self) -> tuple[int, int, int, int, int, int]:
         """Return a cheap snapshot that changes on any graph mutation.
@@ -1196,7 +1202,7 @@ class ResortGraph:
         for road in graph.roads.values():
             for seg_id in road.segment_ids:
                 seg = graph.segments.get(seg_id)
-                assert seg is not None and enum_eq(a=seg.kind, b=SegmentKind.ROAD), (
+                assert seg is not None and seg.kind == SegmentKind.ROAD, (
                     f"road {road.id} owns segment {seg_id} with kind "
                     f"{seg.kind if seg else 'MISSING'} — expected ROAD (corrupt/stale save)"
                 )

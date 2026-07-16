@@ -342,3 +342,32 @@ class TestBuildStateMapSurface:
         ctx.build(kind).segments = list(empty_graph.segments.keys())
         spec = BUILD_STATES[state_key].bottom_profile(ctx=ctx, graph=empty_graph)
         assert spec is not None and spec.key == expected_key
+
+
+class TestBottomProfileRendersInRightColumn:
+    """The elevation profile must render in the RIGHT column, not below the map.
+
+    Map height stays constant across every lifecycle state (the profile no longer shifts it), so the
+    pydeck component key never changes from a height shift — which would remount the deck.gl component
+    and reset the camera. This pins that render_control_panel is the single site that draws the
+    profile, and that viewport_map_height is state-independent (takes no reserved-space argument).
+    """
+
+    def test_viewport_map_height_is_state_independent(self) -> None:
+        import inspect
+
+        from skiresort_planner.ui.infra import viewport_map_height
+
+        # No parameters → height cannot depend on state/profile (a reserved-space arg is what used to
+        # shrink the map when a profile appeared, remounting the deck).
+        assert list(inspect.signature(viewport_map_height).parameters) == []
+
+    def test_render_control_panel_draws_the_profile(self) -> None:
+        import inspect
+
+        from skiresort_planner.ui import mode_registry
+
+        src = inspect.getsource(mode_registry.render_control_panel)
+        assert "bottom_profile" in src and "plotly_chart" in src, (
+            "the profile must render inside render_control_panel (right column), not below the map"
+        )

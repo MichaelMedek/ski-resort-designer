@@ -7,7 +7,6 @@ Focus on _are_paths_similar and _deduplicate_paths which are mathematical compar
 import pytest
 
 from skiresort_planner.constants import GeometricTuningConfig, SlopeConfig
-from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.generators.path_factory import GradeConfig, PathFactory, Side
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
@@ -91,8 +90,8 @@ class TestPathSimilarity:
 
         assert not factory._are_paths_similar(path1=path1, path2=path2)
 
-    def test_empty_path_not_similar(self, factory: PathFactory) -> None:
-        """Empty path is not similar to any path."""
+    def test_empty_path_raises(self, factory: PathFactory) -> None:
+        """A proposal always has ≥3 traced points; an empty one is a bug → fail fast (not False)."""
         path1 = make_path([])
         path2 = make_path(
             [
@@ -102,15 +101,16 @@ class TestPathSimilarity:
             ]
         )
 
-        assert not factory._are_paths_similar(path1=path1, path2=path2)
+        with pytest.raises(AssertionError, match="needs ≥3 points"):
+            factory._are_paths_similar(path1=path1, path2=path2)
 
-    def test_short_paths_not_similar(self, factory: PathFactory) -> None:
-        """Paths with fewer than 3 points are not similar."""
+    def test_short_paths_raise(self, factory: PathFactory) -> None:
+        """Fewer than 3 points can't be percentile-sampled — a programming error, so it raises."""
         path1 = make_path([(10.0, 47.0, 2000.0), (10.001, 47.001, 1990.0)])
         path2 = make_path([(10.0, 47.0, 2000.0), (10.001, 47.001, 1990.0)])
 
-        # Even identical 2-point paths are not similar (can't interpolate)
-        assert not factory._are_paths_similar(path1=path1, path2=path2)
+        with pytest.raises(AssertionError, match="needs ≥3 points"):
+            factory._are_paths_similar(path1=path1, path2=path2)
 
 
 class TestPathDeduplication:
@@ -299,7 +299,7 @@ class TestRoadModeNoStraightLineFallback:
             "road mode must never emit the straight-line fallback"
         )
         # Road-mode proposals carry the ROAD kind so the committed segment is a road.
-        assert all(enum_eq(a=p.kind, b=SegmentKind.ROAD) for p in paths)
+        assert all(p.kind == SegmentKind.ROAD for p in paths)
 
     def test_slope_mode_yields_no_fabricated_fallback(self, path_factory) -> None:
         # Slope mode no longer fabricates a straight-line fallback: it yields only real
@@ -317,7 +317,7 @@ class TestRoadModeNoStraightLineFallback:
                 kind=SegmentKind.SLOPE,
             )
         )
-        assert all(enum_eq(a=p.kind, b=SegmentKind.SLOPE) for p in paths), "slope-mode proposals are SLOPE kind"
+        assert all(p.kind == SegmentKind.SLOPE for p in paths), "slope-mode proposals are SLOPE kind"
         assert all("fallback" not in (p.sector_name or "").lower() for p in paths), (
             "slope mode no longer fabricates a straight-line fallback"
         )
@@ -380,7 +380,7 @@ class TestGenerateRoadFan:
         """Every road-fan proposal is a ROAD-kind, non-connector segment."""
         paths = list(path_factory.generate_fan(kind=SegmentKind.ROAD, lon=0.0, lat=0.0, elevation=2500.0))
         assert paths
-        assert all(enum_eq(a=p.kind, b=SegmentKind.ROAD) for p in paths), "road fan yields ROAD kind"
+        assert all(p.kind == SegmentKind.ROAD for p in paths), "road fan yields ROAD kind"
         assert all(p.is_connector is False for p in paths), "fan proposals are not connectors"
 
     def test_road_fan_grades_are_single_sourced_green(self, path_factory: PathFactory) -> None:
@@ -444,7 +444,7 @@ class TestStraightLine:
             assert pt.lat == pytest.approx(s_lat + (t_lat - s_lat) * frac, abs=1e-12)
             assert pt.elevation == pytest.approx(s_elev + (t_elev - s_elev) * frac, abs=1e-9)
         assert road.is_connector
-        assert enum_eq(a=road.kind, b=SegmentKind.ROAD)
+        assert road.kind == SegmentKind.ROAD
         assert road.target_difficulty == "", "a road carries no ski difficulty"
 
 
@@ -498,3 +498,114 @@ class TestFilterByMaxGrade:
     def test_no_paths_reports_none(self) -> None:
         kept, gentlest = PathFactory.filter_by_max_grade(paths=[], cap_pct=15.0)
         assert kept == [] and gentlest is None, "no route at all → gentlest None (message renders 'no route')"
+
+
+class TestFinishHonoursProposalDifficulty:
+    """A finished slope must never read HARDER than the proposals the user committed.
+
+    Regression for the blue→red-on-finish bug: fan proposals used to be shown RAW, then finish
+    re-smoothed the geometry and the steepest-300m window crept up a band. Now proposals are
+    pre-smoothed AND classified with a safety margin, so what you pick is what you keep. Uses the
+    bumpy DEM (knolls) — planar/cone mocks are too smooth to shift the window on smoothing.
+    """
+
+    _DIFF_ORDER = {"green": 0, "blue": 1, "red": 2, "black": 3}
+
+    def _build_and_finish(self, dem, factory, target_pct: float) -> tuple[str, str]:
+        """Commit 3 fan segments holding target_pct (gentlest matching spoke) then finish.
+
+        Returns (hardest committed proposal difficulty, finished slope difficulty).
+        """
+        from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
+        from skiresort_planner.model.resort_graph import ResortGraph
+
+        graph = ResortGraph()
+        lon, lat, worst = 0.0, 0.0, "green"
+        for _ in range(3):
+            elev = dem.get_elevation(lon=lon, lat=lat)
+            fan = [
+                p
+                for p in factory.generate_fan(
+                    kind=SegmentKind.SLOPE, lon=lon, lat=lat, elevation=elev, target_length_m=400
+                )
+                if abs(p.target_slope_pct - target_pct) < 0.1
+            ]
+            assert fan, f"expected a fan spoke at target {target_pct}%"
+            pick = min(fan, key=lambda p: p.max_slope_pct)
+            worst = max(worst, pick.difficulty, key=lambda d: self._DIFF_ORDER[d])
+            graph.commit_paths(paths=[pick])
+            last = graph.segments[list(graph.segments.keys())[-1]]
+            lon, lat = last.points[-1].lon, last.points[-1].lat
+
+        seg_ids = list(graph.segments.keys())
+        graph.finish_slope(segment_ids=seg_ids)
+        finished = TerrainAnalyzer.classify_difficulty(slope_pct=max(graph.segments[s].max_slope_pct for s in seg_ids))
+        return worst, finished
+
+    @pytest.mark.parametrize("target_pct", [17.0, 22.0])
+    def test_finished_not_harder_than_committed(self, rough_dem_bumpy, target_pct: float) -> None:
+        import random
+
+        from skiresort_planner.core.path_tracer import PathTracer
+        from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
+
+        random.seed(3)
+        an = TerrainAnalyzer(dem=rough_dem_bumpy)
+        factory = PathFactory(
+            dem_service=rough_dem_bumpy,
+            path_tracer=PathTracer(dem=rough_dem_bumpy, analyzer=an),
+            terrain_analyzer=an,
+        )
+        worst, finished = self._build_and_finish(rough_dem_bumpy, factory, target_pct)
+        assert self._DIFF_ORDER[finished] <= self._DIFF_ORDER[worst], (
+            f"finished slope ({finished}) must not be harder than the committed proposals ({worst})"
+        )
+
+    def test_custom_proposal_previews_finished_shape(self, rough_dem_bumpy) -> None:
+        """A grid/custom proposal now smooths at the finish factor, so its steepest section barely
+        moves through finish. Regression for the custom-path-reshapes-at-finish bug (was smoothed at
+        the weaker CONNECTION factors 2–4 vs finish's 30).
+        """
+        import random
+
+        from skiresort_planner.constants import GeometricTuningConfig
+        from skiresort_planner.core.path_tracer import PathTracer
+        from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
+        from skiresort_planner.model.path_segment import PathSegment
+        from skiresort_planner.model.path_smoothing import smooth_joined_path
+
+        random.seed(3)
+        an = TerrainAnalyzer(dem=rough_dem_bumpy)
+        factory = PathFactory(
+            dem_service=rough_dem_bumpy, path_tracer=PathTracer(dem=rough_dem_bumpy, analyzer=an), terrain_analyzer=an
+        )
+        M = 111320.0
+        s_lat, t_lat = 0.0, -1200 / M  # ~1.2km south descent on the bumpy DEM
+        se = rough_dem_bumpy.get_elevation(lon=0.0, lat=s_lat)
+        te = rough_dem_bumpy.get_elevation(lon=0.0, lat=t_lat)
+        proposals = list(
+            factory.generate_manual_paths(
+                kind=SegmentKind.SLOPE,
+                start_lon=0.0,
+                start_lat=s_lat,
+                start_elevation=se,
+                target_lon=0.0,
+                target_lat=t_lat,
+                target_elevation=te,
+            )
+        )
+        assert proposals, "expected at least one custom proposal on the bumpy descent"
+        p = proposals[0]
+        # Finish-style whole-path smooth of the committed geometry (single segment).
+        fin = smooth_joined_path(
+            segment_point_lists=[p.points],
+            node_anchors=[p.points[0], p.points[-1]],
+            step_m=GeometricTuningConfig.RESAMPLE_STEP_M,
+            smoothing_factor=GeometricTuningConfig.SLOPE_SMOOTHING_FACTOR,
+            node_weight=GeometricTuningConfig.NODE_WEIGHT,
+            corridor_weight=GeometricTuningConfig.CORRIDOR_WEIGHT,
+        )[0]
+        fin_seg = PathSegment(id="S1", start_node_id="N1", end_node_id="N2", points=fin)
+        assert abs(p.max_slope_pct - fin_seg.max_slope_pct) < 3.0, (
+            "custom proposal's steepest section should preview the finished shape (pre-smoothed at finish factor)"
+        )

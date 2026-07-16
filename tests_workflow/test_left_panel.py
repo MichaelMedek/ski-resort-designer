@@ -208,17 +208,10 @@ class TestDescribeUndoAction:
 
         return _describe_undo_action(action=graph.undo_stack[-1], graph=graph)
 
-    def test_add_segments_label(self, empty_graph, path_points_blue) -> None:
+    def test_add_segments_has_no_describe_text(self, empty_graph, path_points_blue) -> None:
+        # AddSegments is skip_confirm (peeling a segment shows no dialog), so its describe is empty.
         empty_graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
-        label = self._describe_top(empty_graph)
-        assert "segment" in label.lower() and "slope" in label.lower()
-
-    def test_add_segments_label_says_road_for_road_kind(self, empty_graph, path_points_blue) -> None:
-        # Roads commit via the same AddSegmentsAction — the label must say "road", not "slope".
-        empty_graph.commit_paths(
-            paths=[ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)]
-        )
-        assert "road" in self._describe_top(empty_graph).lower()
+        assert self._describe_top(empty_graph) == ""
 
     def test_finish_slope_label(self, empty_graph, path_points_blue) -> None:
         slope_id = _build_slope(empty_graph, path_points_blue)
@@ -273,6 +266,55 @@ class TestDescribeUndoAction:
         )
         empty_graph.merge_nodes(node_ids=[a.id, b.id], dem=dem)
         assert self._describe_top(empty_graph) == "Un-merge 2 nodes"
+
+    def test_build_cancel_undo_skips_dialog_instead_of_describing(
+        self, empty_graph, path_points_blue, mock_dem_blue_slope
+    ) -> None:
+        """In a build state with no committed segments, the next undo CANCELS the build — a routine
+        one-tap step that skips the confirmation dialog, so it is never described (no off-by-one
+        describe of the stale stack entry either).
+        """
+        from skiresort_planner.ui.left_panel import _next_undo_skips_confirm
+
+        # A prior committed slope sits on the undo stack (the stale entry the old code would describe).
+        _build_slope(empty_graph, path_points_blue)
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        # Now START a new slope build with no committed segments yet.
+        sm.start_building(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
+        assert sm.is_slope_starting
+
+        assert _next_undo_skips_confirm(sm=sm, ctx=ctx, graph=empty_graph), (
+            "cancelling a just-started build is a routine step → no confirmation dialog"
+        )
+
+
+class TestNextUndoSkipsConfirm:
+    """The undo dialog is skipped only for routine builder steps: peeling a just-committed segment
+    or cancelling a not-yet-committed build. Destructive actions (finish/delete/merge/import) confirm.
+    """
+
+    def test_add_segments_skips_confirm(self, empty_graph, path_points_blue) -> None:
+        from skiresort_planner.ui.left_panel import _next_undo_skips_confirm
+
+        empty_graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        assert _next_undo_skips_confirm(sm=sm, ctx=ctx, graph=empty_graph), "peeling a segment is a normal step"
+
+    def test_finish_slope_requires_confirm(self, empty_graph, path_points_blue) -> None:
+        from skiresort_planner.ui.left_panel import _next_undo_skips_confirm
+
+        _build_slope(empty_graph, path_points_blue)  # top of stack is now FinishSlopeAction
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        assert not _next_undo_skips_confirm(sm=sm, ctx=ctx, graph=empty_graph), "finishing a slope must confirm"
+
+    def test_build_cancel_skips_confirm(self, empty_graph, path_points_blue, mock_dem_blue_slope) -> None:
+        from skiresort_planner.ui.left_panel import _next_undo_skips_confirm
+
+        _build_slope(empty_graph, path_points_blue)  # a stale FinishSlopeAction sits on the stack
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        sm.start_building(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
+        # No committed segments yet → undo cancels the build, a routine one-tap step.
+        assert _next_undo_skips_confirm(sm=sm, ctx=ctx, graph=empty_graph)
 
 
 # =============================================================================

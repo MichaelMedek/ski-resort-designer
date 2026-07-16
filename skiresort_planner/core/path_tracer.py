@@ -10,9 +10,9 @@ Implements the Cumulative Drop Tracking algorithm:
 - Tracks accumulated drop as the path is traced
 - Dynamically adjusts the step target to converge on the final average
 
-This self-correcting approach eliminates DEM grid artifacts. Sign handling lives
-in exactly two places: the reference bearing (fall line for descent, +180° for a
-climb) and the step-target clamp; all traverse-angle trig runs on magnitudes.
+This self-correcting approach eliminates DEM grid artifacts. Sign flows from one source:
+the signed step_target feeds a signed grade-ratio cosine, so the traverse angle spans
+0..180° (descend <90°, contour ~90°, climb >90°) off a reference that is always the fall line.
 
 Reference: DETAILS.md Sections 5, 6
 """
@@ -158,19 +158,18 @@ class PathTracer:
             remaining_drop = target_total_drop - accumulated_drop
             remaining_distance = target_length_m - total_dist
 
-            # Dynamic step target for self-correction, clamped to a band that keeps
-            # the step running in the target's direction (a descent step never climbs,
-            # a climb step never descends, a contour step stays near level).
+            # Dynamic step target for self-correction, clamped to a band that runs the
+            # target's way (descent never climbs, climb never descends, contour ±MIN).
+            # Floored at 0 (not MIN_SKIABLE) so an over-steep run can correct toward target.
             if remaining_distance > step_size:
                 step_target = (remaining_drop / remaining_distance) * 100.0
-                floor = SlopeConfig.MIN_SKIABLE_PCT
                 span = abs(target_grade_pct) * GeometricTuningConfig.STEP_TARGET_CLAMP_FACTOR
-                if target_grade_pct > 0:  # descend: never gentler than floor, never past span
-                    step_target = max(floor, min(span, step_target))
-                elif target_grade_pct < 0:  # climb: mirror of the descend band
-                    step_target = max(-span, min(-floor, step_target))
-                else:  # contour: hold within ±floor of level
-                    step_target = max(-floor, min(floor, step_target))
+                if target_grade_pct > 0:  # descend: flat..span, never climb
+                    step_target = max(0.0, min(span, step_target))
+                elif target_grade_pct < 0:  # climb: −span..flat, never descend
+                    step_target = max(-span, min(0.0, step_target))
+                else:  # contour: hold within ±MIN_SKIABLE of level
+                    step_target = max(-SlopeConfig.MIN_SKIABLE_PCT, min(SlopeConfig.MIN_SKIABLE_PCT, step_target))
             else:
                 step_target = target_grade_pct
 
@@ -182,25 +181,18 @@ class PathTracer:
             terrain_slope = gradient.slope_pct
             fall_line = gradient.bearing_deg
 
-            # Reference bearing = the direction we progress ALONG the path's length:
-            # descend along the fall line, climb against it, contour along either
-            # (the ~90° traverse below makes it a contour regardless).
-            reference_bearing = (fall_line + 180.0) % 360.0 if target_grade_pct < 0 else fall_line
-
-            # Traverse angle from grade MAGNITUDES (sign-independent): how far off the
-            # reference bearing to hold the target grade on this terrain steepness.
-            # A zero target → cos_theta 0 → ~90° traverse → a contour.
-            step_target_mag = abs(step_target)
-            if terrain_slope > 0 and step_target_mag < terrain_slope:
-                cos_theta = step_target_mag / terrain_slope
-                cos_theta = max(-1.0, min(1.0, cos_theta))
+            # Traverse angle from the SIGNED grade ratio off the fall line: acos
+            # spans 0..180°, so descend tilts <90°, contour ~90°, climb >90°. The ±MIN
+            # clamp keeps left/right diverging; terrain_slope==0 → pure contour.
+            if terrain_slope > 0:
+                cos_theta = max(-1.0, min(1.0, step_target / terrain_slope))
                 traverse_angle = degrees(acos(cos_theta))
                 traverse_angle = min(
                     max(traverse_angle, GeometricTuningConfig.MIN_TRAVERSE_ANGLE_DEG),
-                    GeometricTuningConfig.MAX_TRAVERSE_ANGLE_DEG,
+                    180.0 - GeometricTuningConfig.MIN_TRAVERSE_ANGLE_DEG,
                 )
             else:
-                traverse_angle = GeometricTuningConfig.MIN_TRAVERSE_ANGLE_DEG
+                traverse_angle = 90.0
 
             # Add noise scaled by traverse angle
             noise_factor = (90.0 - traverse_angle) / 90.0
@@ -208,7 +200,7 @@ class PathTracer:
             noise = random.gauss(0, GeometricTuningConfig.TRACER_NOISE_BASE * noise_factor)
 
             # Calculate terrain-derived bearing
-            terrain_bearing = (reference_bearing + side_sign * traverse_angle + noise) % 360
+            terrain_bearing = (fall_line + side_sign * traverse_angle + noise) % 360
 
             # Bearing smoothing for flat terrain
             if terrain_slope < flat_terrain_threshold and len(recent_bearings) >= 2:
@@ -218,22 +210,14 @@ class PathTracer:
                 smoothing_weight = GeometricTuningConfig.BEARING_SMOOTHING_WEIGHT * (
                     1.0 - terrain_slope / flat_terrain_threshold
                 )
-                diff = terrain_bearing - smoothed_bearing
-                if diff > 180:
-                    diff -= 360
-                elif diff < -180:
-                    diff += 360
+                diff = GeoCalculator.normalize_bearing_diff(terrain_bearing - smoothed_bearing)
                 target_bearing = (smoothed_bearing + (1.0 - smoothing_weight) * diff) % 360
             else:
                 target_bearing = terrain_bearing
 
             # Self-intersection prevention
             if previous_bearing is not None:
-                turn_angle = target_bearing - previous_bearing
-                while turn_angle > 180:
-                    turn_angle -= 360
-                while turn_angle < -180:
-                    turn_angle += 360
+                turn_angle = GeoCalculator.normalize_bearing_diff(target_bearing - previous_bearing)
                 if abs(turn_angle) > max_turn_per_step:
                     clamped_turn = max_turn_per_step if turn_angle > 0 else -max_turn_per_step
                     target_bearing = (previous_bearing + clamped_turn) % 360

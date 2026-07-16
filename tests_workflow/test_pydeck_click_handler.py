@@ -40,6 +40,15 @@ class TestGetClickId:
         cid = _get_click_id(obj={"type": "lift", "id": "L1"}, coord=[1.0, 2.0])
         assert cid == "lift_L1_coord_1.00000_2.00000"
 
+    def test_id_is_stable_across_dedup_epoch_bumps(self, fake_st) -> None:
+        # The ghost gate MUST be epoch-free: the same click re-returned after a commit (which bumps
+        # dedup_epoch) must produce the SAME id so it is suppressed — else the commit loops forever.
+        fake_st.session_state["dedup_epoch"] = 3
+        before = _get_click_id(obj={"type": "proposal_endpoint", "id": "endpoint_1"}, coord=[1.0, 2.0])
+        fake_st.session_state["dedup_epoch"] = 4
+        after = _get_click_id(obj={"type": "proposal_endpoint", "id": "endpoint_1"}, coord=[1.0, 2.0])
+        assert before == after, "ghost re-return must stay suppressed across a dedup_epoch bump"
+
     def test_no_data_is_empty(self) -> None:
         assert _get_click_id(obj=None, coord=None) == ""
 

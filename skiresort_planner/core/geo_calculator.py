@@ -70,6 +70,11 @@ class GeoCalculator:
         return (degrees(atan2(y, x)) + 360) % 360
 
     @staticmethod
+    def normalize_bearing_diff(diff_deg: float) -> float:
+        """Wrap a bearing difference into (-180, 180] so ±350° reads as the short ∓10° turn."""
+        return (diff_deg + 180) % 360 - 180
+
+    @staticmethod
     def destination(
         lon: float,
         lat: float,

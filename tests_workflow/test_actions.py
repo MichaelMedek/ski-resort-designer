@@ -9,7 +9,6 @@ delete actions for slope/lift/road uniformly.
 import pytest
 
 from skiresort_planner.constants import MapConfig
-from skiresort_planner.enum_utils import enum_eq
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
@@ -26,7 +25,8 @@ def _session(fake_st, graph, factory=None, dem=None):
     fake_st.session_state["state_machine"] = sm
     fake_st.session_state["context"] = ctx
     fake_st.session_state["graph"] = graph
-    fake_st.session_state["map_version"] = 0
+    fake_st.session_state["camera_epoch"] = 0
+    fake_st.session_state["dedup_epoch"] = 0
     if factory is not None:
         fake_st.session_state["path_factory"] = factory
     if dem is not None:
@@ -81,12 +81,14 @@ class TestRenameEntityAction:
 
         slope = _make_slope(empty_graph, path_points_blue)
         _session(fake_st, empty_graph)
-        version_before = fake_st.session_state["map_version"]
+        epoch_before = fake_st.session_state["dedup_epoch"]
+        camera_before = fake_st.session_state["camera_epoch"]
 
         rename_entity_action(entity_id=slope.id, new_name="  Renamed  ")
 
         assert empty_graph.slopes[slope.id].name == "Renamed", "name is trimmed and applied"
-        assert fake_st.session_state["map_version"] > version_before
+        assert fake_st.session_state["dedup_epoch"] > epoch_before, "rename refreshes the label redraw"
+        assert fake_st.session_state["camera_epoch"] == camera_before, "rename must NOT recenter"
 
     def test_empty_name_is_noop(self, fake_st, empty_graph, path_points_blue) -> None:
         from skiresort_planner.ui.actions import rename_entity_action
@@ -363,7 +365,6 @@ class TestSelectLiftTypeAction:
         select_lift_type_action(lift_type="gondola")
 
         assert ctx.build_mode.mode == "gondola", "the next lift will be built as a gondola"
-        assert ctx.lift.type == "gondola"
 
     def test_retypes_the_viewed_lift(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         from skiresort_planner.ui.actions import select_lift_type_action
@@ -382,7 +383,7 @@ class TestSelectLiftTypeAction:
         select_lift_type_action(lift_type="gondola")
 
         assert empty_graph.lifts[lift.id].lift_type == "gondola", "update_type re-typed the viewed lift"
-        assert ctx.build_mode.mode == "gondola" and ctx.lift.type == "gondola"
+        assert ctx.build_mode.mode == "gondola"
 
 
 class TestSlopeBuildingActionFlow:
@@ -479,7 +480,7 @@ class TestRoadBuildingActionFlow:
         assert sm.is_road_building_only, "road commit stays in road_building"
         assert len(ctx.build(SegmentKind.ROAD).segments) == 1
         assert len(graph.roads) == 0, "no Road entity until Finish Road"
-        assert enum_eq(a=graph.segments[ctx.build(SegmentKind.ROAD).segments[-1]].kind, b=SegmentKind.ROAD)
+        assert graph.segments[ctx.build(SegmentKind.ROAD).segments[-1]].kind == SegmentKind.ROAD
         assert graph.undo_stack[-1].action_type.name == "ADD_SEGMENTS", "per-segment undo recorded"
 
     def test_finish_then_undo_restores_road_building(
@@ -584,6 +585,92 @@ class TestDeferredProcessing:
         ctx.deferred.custom_connect = False
         assert process_custom_connect_deferred() is False
 
+    def test_custom_connect_orders_shortest_first_straight_last(
+        self, fake_st, monkeypatch, path_factory, mock_dem_red_slope_diagonal
+    ) -> None:
+        # Custom-connect sorts serpentine proposals SHORTEST→longest, appends the straight line LAST,
+        # and pre-selects the shortest (index 0) — NOT the gradient-closest (that's the fan's rule).
+        from skiresort_planner.ui import actions
+
+        dem = mock_dem_red_slope_diagonal
+        sm, ctx = _session(fake_st, ResortGraph(), factory=path_factory, dem=dem)
+        start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
+        sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
+        ctx.selection.set(lon=0.0, lat=0.0, elevation=start_elev)
+
+        # A run of N points stepping south by `step` metres each — length scales with (N-1)*step.
+        def _seg(n: int, step: float) -> ProposedPathSegment:
+            pts = [PathPoint(lon=0.0, lat=-(i * step) / M, elevation=start_elev - i * step * 0.1) for i in range(n)]
+            return ProposedPathSegment(points=pts, is_connector=False)
+
+        long_route, short_route = _seg(6, 100.0), _seg(3, 100.0)  # ~500m vs ~200m, out of order
+        straight = _seg(2, 150.0)  # the straight line, appended last regardless of length
+        monkeypatch.setattr(path_factory, "generate_manual_paths", lambda **_: [long_route, short_route])
+        monkeypatch.setattr(path_factory, "straight_line", lambda **_: straight)
+
+        ctx.custom_connect.target_location = (0.0, -500 / M, dem.get_elevation_or_raise(lon=0.0, lat=-500 / M))
+        ctx.deferred.gradient_target = 99.0  # a stale fan target must be IGNORED by custom-connect
+        ctx.deferred.custom_connect = True
+        assert actions.process_custom_connect_deferred() is True
+
+        paths = ctx.proposals.paths
+        lengths = [p.length_m for p in paths]
+        assert lengths[:2] == sorted(lengths[:2]), "serpentine proposals ordered shortest-first"
+        assert paths[0] is short_route, "shortest route is first"
+        assert paths[-1] is straight, "straight line appended last"
+        assert ctx.proposals.selected_idx == 0, "shortest route pre-selected (not gradient-closest)"
+        assert ctx.deferred.gradient_target is None, "stale fan gradient target consumed/ignored"
+
+
+class TestGradientPreselection:
+    """_preselect_by_rule — the fan passes the closest-gradient rule (grade continuity across
+    committed segments); custom-connect passes a shortest-first (index 0) rule. Both always
+    consume the one-shot gradient_target.
+    """
+
+    def _paths(self, *slopes: float) -> "list[ProposedPathSegment]":
+        # Two-point segments whose avg_slope_pct is the given grade (100m run).
+        out = []
+        for s in slopes:
+            pts = [PathPoint(lon=0.0, lat=0.0, elevation=1000.0), PathPoint(lon=0.001, lat=0.0, elevation=1000.0 - s)]
+            out.append(ProposedPathSegment(points=pts, kind=SegmentKind.SLOPE))
+        return out
+
+    def test_gradient_rule_preselects_closest_and_consumes_target(self, fake_st, mock_dem_blue_slope) -> None:
+        from skiresort_planner.ui.actions import _closest_gradient_rule, _preselect_by_rule
+
+        _sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
+        paths = self._paths(5.0, 18.0, 30.0)
+        ctx.deferred.gradient_target = 17.0  # closest to the 18% path (index 1)
+        _preselect_by_rule(ctx=ctx, paths=paths, rule=_closest_gradient_rule(ctx))
+        assert ctx.proposals.selected_idx == 1, "pre-selects the proposal nearest the last committed grade"
+        assert ctx.deferred.gradient_target is None, "one-shot: the target is consumed"
+
+    def test_gradient_rule_defaults_to_first_without_target(self, fake_st, mock_dem_blue_slope) -> None:
+        from skiresort_planner.ui.actions import _closest_gradient_rule, _preselect_by_rule
+
+        _sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
+        ctx.deferred.gradient_target = None
+        _preselect_by_rule(ctx=ctx, paths=self._paths(5.0, 18.0), rule=_closest_gradient_rule(ctx))
+        assert ctx.proposals.selected_idx == 0, "no target → first proposal"
+
+    def test_shortest_rule_selects_index_zero(self, fake_st, mock_dem_blue_slope) -> None:
+        from skiresort_planner.ui.actions import _preselect_by_rule, _shortest_rule
+
+        _sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
+        ctx.deferred.gradient_target = 17.0  # a stale fan target must still be consumed
+        _preselect_by_rule(ctx=ctx, paths=self._paths(5.0, 18.0), rule=_shortest_rule)
+        assert ctx.proposals.selected_idx == 0, "custom-connect shortest-first → index 0"
+        assert ctx.deferred.gradient_target is None, "stale fan target consumed even for the shortest rule"
+
+    def test_none_when_no_paths(self, fake_st, mock_dem_blue_slope) -> None:
+        from skiresort_planner.ui.actions import _closest_gradient_rule, _preselect_by_rule
+
+        _sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
+        ctx.deferred.gradient_target = 17.0
+        _preselect_by_rule(ctx=ctx, paths=[], rule=_closest_gradient_rule(ctx))
+        assert ctx.proposals.selected_idx is None, "empty proposals → no selection"
+
 
 class TestOSMImport:
     """Click-to-place import: start_import stores the box center; confirm_import_action flags the
@@ -673,14 +760,14 @@ class TestOSMImport:
             "skiresort_planner.ui.actions.OSMImporter.convert",
             lambda self, bbox, elements: ImportSummary(pistes=[piste], lifts=[lift]),
         )
-        version_before = fake_st.session_state["map_version"]
+        epoch_before = fake_st.session_state["dedup_epoch"]
 
         handled = actions.process_osm_import_deferred()
 
         assert handled is True
         assert len(graph.slopes) == 1 and len(graph.lifts) == 1
         assert len(graph.undo_stack) == 1, "import is one undoable batch"
-        assert fake_st.session_state["map_version"] > version_before
+        assert fake_st.session_state["dedup_epoch"] > epoch_before, "import redraws new geometry (no recenter)"
         assert ctx.deferred.osm_import is False, "flag consumed"
         assert ctx.deferred.osm_import_center_lon is None, "placed center consumed"
 
@@ -906,3 +993,58 @@ class TestUndoToZeroAfterFinish:
         if build.segments or build.start_location or build.start_node_id:
             resolve_build_origin(build=build, graph=empty_graph)  # must not raise
         process_path_generation_deferred()  # the deferred fan pass must not raise either
+
+
+class TestMapEpochs:
+    """camera_epoch (remount → recenter) moves ONLY on finish; dedup_epoch (click-id) moves on
+    proposal regeneration. Neither commit nor cancel nor start recenters (keeps the user's pan).
+    """
+
+    def _road_building(self, fake_st, empty_graph, path_factory, dem):
+        sm, ctx = _session(fake_st, empty_graph, path_factory, dem)
+        ctx.build_mode.mode = SegmentKind.ROAD.value
+        sm.start_road(node_id=None, location=PathPoint(lon=0.0, lat=0.0, elevation=2000.0))
+        return sm, ctx
+
+    def test_commit_does_not_recenter(self, fake_st, empty_graph, path_factory, mock_dem_red_slope_diagonal) -> None:
+        from skiresort_planner.ui.actions import commit_selected_path
+
+        dem = mock_dem_red_slope_diagonal
+        sm, ctx = self._road_building(fake_st, empty_graph, path_factory, dem)
+        pts = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=300 / M, lat=0.0, elevation=1990.0)]
+        ctx.proposals.paths = [ProposedPathSegment(points=pts, kind=SegmentKind.ROAD)]
+        ctx.proposals.selected_idx = 0
+        camera_before = fake_st.session_state["camera_epoch"]
+
+        commit_selected_path(path_idx=0)
+
+        assert fake_st.session_state["camera_epoch"] == camera_before, "commit must NOT recenter"
+
+    def test_finish_recenters(self, fake_st, empty_graph, path_factory, mock_dem_red_slope_diagonal) -> None:
+        from skiresort_planner.ui.actions import finish_current_build
+
+        dem = mock_dem_red_slope_diagonal
+        sm, ctx = self._road_building(fake_st, empty_graph, path_factory, dem)
+        pts = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=300 / M, lat=0.0, elevation=1990.0)]
+        endpoint_ids = empty_graph.commit_paths(paths=[ProposedPathSegment(points=pts, kind=SegmentKind.ROAD)])
+        sm.commit_road(segment_id=list(empty_graph.segments.keys())[-1], endpoint_node_id=endpoint_ids[0])
+        camera_before = fake_st.session_state["camera_epoch"]
+
+        finish_current_build(kind=SegmentKind.ROAD)
+
+        assert sm.is_idle_viewing_road
+        assert fake_st.session_state["camera_epoch"] > camera_before, "finish recenters on the entity"
+
+    def test_cancel_does_not_recenter(self, fake_st, empty_graph, path_factory, mock_dem_red_slope_diagonal) -> None:
+        from skiresort_planner.ui.actions import cancel_current_build
+
+        dem = mock_dem_red_slope_diagonal
+        sm, ctx = self._road_building(fake_st, empty_graph, path_factory, dem)
+        pts = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=300 / M, lat=0.0, elevation=1990.0)]
+        endpoint_ids = empty_graph.commit_paths(paths=[ProposedPathSegment(points=pts, kind=SegmentKind.ROAD)])
+        sm.commit_road(segment_id=list(empty_graph.segments.keys())[-1], endpoint_node_id=endpoint_ids[0])
+        camera_before = fake_st.session_state["camera_epoch"]
+
+        cancel_current_build(kind=SegmentKind.ROAD)
+
+        assert fake_st.session_state["camera_epoch"] == camera_before, "cancel must NOT recenter"

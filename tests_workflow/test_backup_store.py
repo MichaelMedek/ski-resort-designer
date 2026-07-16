@@ -173,14 +173,28 @@ class TestGetCenter:
     def test_empty_graph_returns_none(self, empty_graph: ResortGraph) -> None:
         assert empty_graph.get_center() is None
 
-    def test_populated_graph_returns_mean_lon_lat(self, empty_graph: ResortGraph, path_points_blue) -> None:
+    def test_populated_graph_returns_median_lon_lat(self, empty_graph: ResortGraph, path_points_blue) -> None:
+        import statistics
+
         _populate(empty_graph, path_points_blue)
         result = empty_graph.get_center()
         assert result is not None
         lon, lat = result
         nodes = empty_graph.nodes.values()
-        assert lon == sum(n.lon for n in nodes) / len(nodes)
-        assert lat == sum(n.lat for n in nodes) / len(nodes)
+        assert lon == statistics.median(n.lon for n in nodes)
+        assert lat == statistics.median(n.lat for n in nodes)
+
+    def test_center_uses_median_not_mean_for_two_clusters(self, empty_graph: ResortGraph) -> None:
+        # Two clusters: 3 nodes near lon 0 (spaced >30m snap threshold so they stay distinct), one
+        # far outlier at lon 100. Mean would drift toward the outlier (~25); median stays near 0.
+        for i in range(3):
+            empty_graph.get_or_create_node(lon=i * 5e-4, lat=0.0, elevation=2000.0)
+        empty_graph.get_or_create_node(lon=100.0, lat=0.0, elevation=2000.0)
+        assert len(empty_graph.nodes) == 4, "cluster nodes must not have snap-merged"
+        result = empty_graph.get_center()
+        assert result is not None
+        lon, _lat = result
+        assert lon < 1.0, f"median must stay in the dense cluster, not drift to the outlier: {lon}"
 
 
 class TestChangeToken:

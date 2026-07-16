@@ -126,18 +126,14 @@ class TestUndoStackIntegrityForMissingSegments:
     on a violation rather than masking it.
     """
 
-    def test_describe_raises_on_missing_segment_invariant_violation(self, empty_graph) -> None:
-        import pytest
-
+    def test_add_segments_describe_is_empty_and_graph_independent(self, empty_graph) -> None:
         from skiresort_planner.model.actions import AddSegmentsAction
         from skiresort_planner.model.undo_handlers import UNDO_HANDLERS
 
-        # A live AddSegmentsAction always has its segments present (the scrub guarantees it), so a
-        # missing segment is an invariant violation — describe() indexes directly and raises loud
-        # rather than masking a stack/graph desync with a fallback label.
+        # AddSegments is skip_confirm (peeling a segment shows no dialog), so its describe is the
+        # empty base — it never indexes the graph, hence never crashes on a stale/missing segment.
         action = AddSegmentsAction(segment_ids=("S172",), node_ids=("N1", "N2"))
-        with pytest.raises(KeyError):
-            UNDO_HANDLERS[action.action_type.name].describe(action=action, graph=empty_graph)
+        assert UNDO_HANDLERS[action.action_type.name].describe(action=action, graph=empty_graph) == ""
 
     @staticmethod
     def _chained_entries_are_live(graph) -> None:
@@ -193,6 +189,20 @@ class TestUndoStackIntegrityForMissingSegments:
             top = graph.undo_stack[-1]
             UNDO_HANDLERS[top.action_type.name].describe(action=top, graph=graph)
             graph.undo_last()
+
+
+class TestUndoActionUnionCompleteness:
+    """The UndoAction union must stay 1:1 with ActionType — no member added without the other."""
+
+    def test_union_member_count_matches_action_type(self) -> None:
+        import typing
+
+        from skiresort_planner.model.actions import ActionType, UndoAction
+
+        assert len(typing.get_args(UndoAction)) == len(list(ActionType)), (
+            "UndoAction union must have exactly one member class per ActionType — a new action "
+            "type or class was added without updating the other."
+        )
 
 
 class TestNodeReuse:
@@ -641,7 +651,7 @@ class TestLiftMetricsInvariants:
         # A committed lift's endpoint nodes are a graph invariant; a missing one is a real bug,
         # so get_vertical_rise must raise (not silently return 0.0) — matches get_length_m.
         lift = _add_lift(empty_graph, mock_dem_blue_slope)
-        with pytest.raises(ValueError):
+        with pytest.raises(KeyError):
             lift.get_vertical_rise(nodes={})
 
 
@@ -1405,11 +1415,11 @@ class TestSegmentStats:
             "current_elev": 0.0,
         }
 
-    def test_missing_segment_id_returns_default_stats(self, empty_graph) -> None:
-        stats = empty_graph.get_segment_stats(segment_ids=["S_missing"])
-        assert stats["difficulty"] == "green"
-        assert stats["total_drop"] == 0.0 and stats["total_length"] == 0.0
-        assert stats["avg_gradient"] == 0.0 and stats["max_gradient"] == 0.0
+    def test_missing_segment_id_raises(self, empty_graph) -> None:
+        # A non-empty segment_ids list must reference real segments (internal build state);
+        # a missing id is a bug and must fail loud, not silently return default stats.
+        with pytest.raises(KeyError):
+            empty_graph.get_segment_stats(segment_ids=["S_missing"])
 
 
 class TestResortStats:
