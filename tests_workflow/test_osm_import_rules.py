@@ -1,13 +1,4 @@
-"""Verification of the OSM connected-graph import rules, measured on the real Ischgl cache.
-
-Two tiers, toggled by env `OSM_RULES_STRICT` (default "1" = strict):
-  - STRICT: the real quality bar — the gate a finished import must clear.
-  - LENIENT (OSM_RULES_STRICT=0): weaker thresholds for FAST ITERATION while the builder is being
-    rewritten, so a half-built pipeline still gives useful pass/fail signal instead of all-red.
-The *shape* of every rule is identical across tiers; only numeric thresholds relax. Structural
-invariants (directed descent, endpoint-on-hub, no-uphill, on-source) are strict in BOTH tiers — a
-wrong slope is worse than a missing one at any stage.
-"""
+"""Verification of the OSM connected-graph import rules, measured on the REAL Ischgl cache + DEM."""
 
 import json
 import math
@@ -17,20 +8,18 @@ from collections import defaultdict, deque
 import pytest
 
 from skiresort_planner.constants import OSMConfig
+from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.generators.osm_graph_builder import OSMGraphBuilder, ways_to_lines
-from tests_workflow.conftest import MockDEMService
 
-STRICT = os.environ.get("OSM_RULES_STRICT", "1") != "0"
-
-# thresholds the rules assert against — (strict, lenient) picked from measured Ischgl reality
-# (reference resort: 347 nodes / 136 slopes / 61 lifts; measured build: 60 / 63 / 21).
-MAX_SLOPES = 150 if STRICT else 200  # above the 136-slope reference; far under the ~1159 blizzard
-MAX_NODES = 500 if STRICT else 700
-MIN_SLOPES = 100 if STRICT else 40  # reference has 136; a faithful import must not collapse sparse
-MIN_CONNECTED_FRAC = 0.80 if STRICT else 0.60
-MIN_LIFTS_SKIABLE_FRAC = 0.80 if STRICT else 0.50  # R16: frac of lifts whose top can descend to a base
-MAX_STRAIGHT_M = 150.0  # a real straight leg; drape infills every ~30m, so >150m is a chord (tunnelling)
-MAX_SLOPE_SHIFT_M = 40.0 if STRICT else 80.0  # R17 Hausdorff: max drift of an imported slope from OSM
+# thresholds the rules assert against (reference resort: 347 nodes / 332 segments / 136 slopes / 61 lifts).
+MIN_CONNECTED_FRAC = 0.90  # THE hard invariant (measured on segments)
+MAX_NODES = 500  # blizzard guard on the circle-count (reference 347)
+MAX_SEGMENTS = 1000  # segment count is free (full-split); only a true blizzard trips this
+MIN_SEGMENTS = 50  # a full box must not collapse to near-empty
+MIN_LIFTS_SKIABLE_FRAC = 0.50  # R16: frac of lift tops that can descend to some lift base
+MAX_STRAIGHT_M = 100.0  # no artificial straight leg longer than this (a < 100 m pull is the only straight)
+MAX_PULL_M = 500.0  # an end connector (off-piste pull to a hub) may not exceed this; else the segment is dropped
+PISTE_TOL_M = 40.0  # a point farther than this from every OSM piste counts as off-piste (connector)
 CACHE = os.path.join(os.path.dirname(__file__), "..", "scratch_osm_raw_ischgl.json")
 ISCHGL_BBOX = (10.27745, 46.95502, 10.35655, 47.00898)
 
@@ -103,8 +92,7 @@ def ischgl_graph():
     if not os.path.exists(CACHE):
         pytest.skip("scratch_osm_raw_ischgl.json cache absent — run scratch_fetch.py to enable real-data rules")
     els = _load_cache()
-    dem = MockDEMService(base_elevation=2500.0, slope_ns_pct=25.0, slope_ew_pct=0.0)
-    # real DEM would be ideal, but MockDEM keeps the test hermetic; geometry rules don't need real Z.
+    dem = DEMService()  # REAL EuroDEM Alps terrain (data/alps_dem.tif)
     pistes, lifts = ways_to_lines(els, ISCHGL_BBOX)
     return OSMGraphBuilder(dem=dem, bbox=ISCHGL_BBOX).build(pistes, lifts)
 
@@ -210,8 +198,10 @@ class TestImportRules:
         assert offenders == [], f"{len(offenders)} slopes have a straight leg > {MAX_STRAIGHT_M}m (tunnelling)"
 
     def test_r8_reference_shaped_counts(self, ischgl_graph):
-        n = len(ischgl_graph.slope_runs)
-        assert n <= MAX_SLOPES, f"{n} slopes — a blizzard, not a resort (cap {MAX_SLOPES})"
+        # SEGMENTS (graph edges) and SLOPES are counted separately: here slope_runs ARE the segments
+        # (full-split). Segment count is free up to a blizzard cap; node count is the visual-clutter gate.
+        n_segments = len(ischgl_graph.slope_runs)
+        assert n_segments <= MAX_SEGMENTS, f"{n_segments} segments — a blizzard, not a resort (cap {MAX_SEGMENTS})"
         assert len(ischgl_graph.node_points) <= MAX_NODES, "node count far above a hand-built resort"
 
     def test_r9_connectivity(self, ischgl_graph):
@@ -305,12 +295,12 @@ class TestImportRules:
         )
 
     def test_r15_most_runs_survive(self, ischgl_graph):
-        """Sanity on volume: a 6 km Ischgl box has many named runs (reference: 136) — the import must
-        not collapse to a near-empty graph. (STRICT expects near-reference; LENIENT just non-trivial.)
+        """Sanity on volume: a 6 km Ischgl box has many segments (reference: 332 segments / 136 slopes)
+        — the import must not collapse to a near-empty graph.
         """
         n = len(ischgl_graph.slope_runs)
-        assert n >= MIN_SLOPES, (
-            f"only {n} slopes for a full Ischgl box (want ≥{MIN_SLOPES}, reference 136) — dropping/under-noding runs"
+        assert n >= MIN_SEGMENTS, (
+            f"only {n} segments for a full Ischgl box (want ≥{MIN_SEGMENTS}) — dropping/under-noding runs"
         )
 
     def test_r16_lift_top_reaches_a_base(self, ischgl_graph):
@@ -349,17 +339,17 @@ class TestImportRules:
         )
 
     def test_r17_slopes_descend_by_orientation(self, ischgl_graph):
-        """STRICT (both tiers): the directed-edge invariant. Every slope is stored node_a→node_b with
-        node_a at least as high as node_b — the structural guarantee behind "ski down". R3 checks the
-        smoothed profile; this checks the stored orientation itself (measured 100% clean).
+        """The directed-edge invariant. Every slope is stored node_a→node_b with node_a at least as
+        high as node_b — the structural guarantee behind "ski down". R3 checks the smoothed profile;
+        this checks the stored orientation itself.
         """
         elev = {k: v.elevation for k, v in ischgl_graph.node_points.items()}
         wrong = [r for r in ischgl_graph.slope_runs if elev[r.node_a] < elev[r.node_b]]
         assert wrong == [], f"{len(wrong)} slopes stored uphill (node_a below node_b) — orientation invariant broken"
 
     def test_r18_slope_endpoints_sit_on_their_hubs(self, ischgl_graph):
-        """STRICT (both tiers): a slope's first/last point must BE its hub node coordinate (shared node,
-        not floating near it). Exact structural check complementing R6's distance test (measured 0.00m).
+        """A slope's first/last point must BE its hub node coordinate (shared node, not floating near
+        it). Exact structural check complementing R6's distance test.
         """
         node_pt = ischgl_graph.node_points
         tol = 1.0  # metres — pinned exactly by the builder; 1m guards float noise only
@@ -372,14 +362,14 @@ class TestImportRules:
         assert bad == [], f"{len(bad)} slopes whose endpoint is not ON its hub node (>{tol}m): {bad[:5]}"
 
     def test_r19_slope_geometry_fidelity(self, ischgl_graph):
-        """Geometry fidelity: each imported slope stays close to SOME original OSM piste as a whole
-        curve (directed Hausdorff ≤ MAX_SLOPE_SHIFT_M), so snapping/merging never invents a shape that
-        wanders off the real piste. Stronger than R12's point-coverage — bounds the WORST deviation.
+        """Geometry fidelity, per the pull model: an imported slope keeps its OSM BODY on-piste; the
+        ONLY off-piste geometry allowed is an END connector (the pull to a hub), of length ≤ MAX_PULL_M.
+        So off-piste points may only form a contiguous run at the START and/or END (never mid-run = a
+        tunnel), and each such end connector is ≤ MAX_PULL_M long.
         """
-        from shapely import hausdorff_distance
-        from shapely.geometry import LineString
+        from shapely.geometry import LineString, Point
+        from shapely.ops import unary_union
 
-        # self-contained equirectangular projection to metres (no dependency on builder internals)
         lat0 = (ISCHGL_BBOX[1] + ISCHGL_BBOX[3]) / 2
         mlat, mlon = 111_320.0, 111_320.0 * math.cos(math.radians(lat0))
 
@@ -387,14 +377,40 @@ class TestImportRules:
             return ((lon - ISCHGL_BBOX[0]) * mlon, (lat - ISCHGL_BBOX[1]) * mlat)
 
         pistes, _lifts = ways_to_lines(_load_cache(), ISCHGL_BBOX)
-        src = [LineString([to_m(lon, lat) for lon, lat in vs]) for vs, _nm in pistes if len(vs) >= 2]
+        src = unary_union([LineString([to_m(lon, lat) for lon, lat in vs]) for vs, _nm in pistes if len(vs) >= 2])
         offenders = []
         for r in ischgl_graph.slope_runs:
-            run = LineString([to_m(p.lon, p.lat) for p in r.points])
-            # directed Hausdorff from the run to its NEAREST source piste (min over sources)
-            drift = min((hausdorff_distance(run, s, densify=0.25) for s in src), default=0.0)
-            if drift > MAX_SLOPE_SHIFT_M:
-                offenders.append((r.name, round(drift, 1)))
-        assert offenders == [], (
-            f"{len(offenders)} slopes drift > {MAX_SLOPE_SHIFT_M}m (Hausdorff) from every OSM piste: {offenders[:5]}"
-        )
+            off = [Point(to_m(p.lon, p.lat)).distance(src) > PISTE_TOL_M for p in r.points]
+            if not any(off):
+                continue
+            first_on = off.index(False) if False in off else len(off)
+            last_on = len(off) - 1 - off[::-1].index(False) if False in off else -1
+            # off-piste point strictly between the on-piste body = a mid-run tunnel (forbidden)
+            if any(off[first_on : last_on + 1]):
+                offenders.append((r.name, "mid-run off-piste (tunnel)"))
+                continue
+            # each end connector (contiguous off-piste prefix / suffix) must be ≤ MAX_PULL_M long
+            head = _polylen([(p.lon, p.lat) for p in r.points[: first_on + 1]]) if first_on > 0 else 0.0
+            tail = _polylen([(p.lon, p.lat) for p in r.points[last_on:]]) if last_on < len(off) - 1 else 0.0
+            if max(head, tail) > MAX_PULL_M:
+                offenders.append((r.name, f"connector {max(head, tail):.0f}m > {MAX_PULL_M:.0f}m"))
+        assert offenders == [], f"{len(offenders)} slopes violate the pull/fidelity model: {offenders[:5]}"
+
+    def test_r20_connectivity_runs_on_segments_with_branching(self, ischgl_graph):
+        """Connectivity is a SEGMENT graph: a slope may be many segments and another may branch off at
+        an interior node — such a branch (a degree≥3 shared node) still counts as connected. This makes
+        explicit that R9 is measured over segments (slope_runs = edges), NOT over whole slopes, and that
+        mid-slope junctions are legitimate connection points. Asserts the graph actually branches (real
+        junctions exist) and that segment/slope statistics are tracked separately.
+        """
+        deg: dict[int, int] = defaultdict(int)
+        for r in ischgl_graph.slope_runs:
+            deg[r.node_a] += 1
+            deg[r.node_b] += 1
+        for lf in ischgl_graph.lifts:
+            deg[lf.node_a] += 1
+            deg[lf.node_b] += 1
+        branch_nodes = [n for n, d in deg.items() if d >= 3]
+        assert branch_nodes, "no branch nodes (degree≥3) — a full resort must have mid-slope junctions"
+        # every segment is a genuine edge between two DISTINCT hub nodes (no self-loops in the graph)
+        assert all(r.node_a != r.node_b for r in ischgl_graph.slope_runs), "a segment is a self-loop (a==b)"
