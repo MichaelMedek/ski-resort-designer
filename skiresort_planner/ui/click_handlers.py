@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 
 import streamlit as st
 
-from skiresort_planner.constants import MapConfig, OSMImportMode
+from skiresort_planner.constants import MapConfig
 from skiresort_planner.model.click_info import ClickInfo, MapClickType, MarkerType
 from skiresort_planner.model.message import InvalidClickMessage, OutsideTerrainMessage
 from skiresort_planner.model.node import Node
@@ -30,7 +30,6 @@ from skiresort_planner.ui.actions import (
     center_on_segment_path,
     center_on_slope,
     commit_selected_path,
-    confirm_import_action,
     resolve_build_origin,
 )
 from skiresort_planner.ui.infra import bump_camera_epoch, bump_dedup_epoch, trigger_rerun
@@ -628,22 +627,15 @@ def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) ->
 def handle_import_placing_click(click_info: ClickInfo, elevation: float | None) -> None:
     """Handle a click while placing an OSM import box (IMPORT_PLACING).
 
-    Mirrors the road proposal re-click pattern (_select_or_commit_proposal): clicking the
-    center dot confirms the import; clicking terrain elsewhere re-places the box center.
+    Clicking terrain re-places the box center. Confirming the import is done ONLY by the right-panel
+    buttons ("Import lifts + slopes" / "Import lifts only"). The center-dot marker is inert here.
 
     Valid clicks:
-        IMPORT_CENTER marker → confirm (run the deferred fetch)
-        TERRAIN              → move the box center and redraw
-    Anything else is ignored (the box is only a center + rectangle).
+        TERRAIN → move the box center and redraw
+    Anything else (including the center dot) is ignored — confirm via the buttons.
     """
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
-
-    # Center-dot re-click → confirm the full lifts + slopes import (the primary action).
-    if click_info.click_type == MapClickType.MARKER and click_info.marker_type == MarkerType.IMPORT_CENTER:
-        logger.debug("[IMPORT] Center-dot click: confirming lifts + slopes import")
-        confirm_import_action(OSMImportMode.LIFTS_AND_SLOPES)
-        return
 
     # Terrain click → re-place the box center (keep placing, redraw the box).
     if click_info.click_type == MapClickType.TERRAIN:
@@ -655,7 +647,7 @@ def handle_import_placing_click(click_info: ClickInfo, elevation: float | None) 
         trigger_rerun()  # redraw the box at the clicked point (already on-screen — no recenter)
         return
 
-    logger.debug(f"[IMPORT] Ignoring {click_info.display_name} — click the center dot or terrain to re-place")
+    logger.debug(f"[IMPORT] Ignoring {click_info.display_name} — click terrain to re-place, or a button to import")
 
 
 def handle_merge_placing_click(click_info: ClickInfo, elevation: float | None) -> None:

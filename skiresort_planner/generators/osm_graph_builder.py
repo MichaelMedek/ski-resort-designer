@@ -23,6 +23,7 @@ Output is an ImportGraph the ResortGraph materializes with shared nodes as one u
 import heapq
 import logging
 import math
+import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -215,6 +216,7 @@ class OSMGraphBuilder:
         lifts: list[tuple[list[Vertex], str, str | None]],
     ) -> ImportGraph:
         """Build the connected graph from piste (verts,name) + lift (verts,type,name) inputs."""
+        t0 = time.perf_counter()
         piste_lines = [LineString([self._to_m(lon, lat) for lon, lat in vs]) for vs, _nm in pistes if len(vs) >= 2]
         piste_lines = [ls for ls in piste_lines if ls.length >= OSMConfig.MIN_PISTE_LENGTH_M]
         # Named source pistes (metres) — used to re-attach the ORIGINAL OSM slope name to each final run.
@@ -235,7 +237,9 @@ class OSMGraphBuilder:
         segments = self._full_split(kept)
         segments = self._split_at_lift_stations(segments, lift_lines)
         logger.debug(f"[IMPORT] split: {len(segments)} segments from {len(kept)} pistes + {len(lift_lines)} lifts")
+        t_assemble = time.perf_counter()
         graph = self._assemble(segments, lift_lines, source=kept)
+        assemble_ms = (time.perf_counter() - t_assemble) * 1000
         self._name_runs(graph)
         self._group_slopes(graph)
         graph.deduped = deduped
@@ -244,7 +248,8 @@ class OSMGraphBuilder:
         logger.info(
             f"[IMPORT] OSM graph: {len(graph.node_points)} nodes, {len(graph.slope_runs)} slopes, "
             f"{len(graph.lifts)} lifts (deduped {graph.deduped}, dropped uphill {graph.dropped_uphill}, "
-            f"isolated {graph.dropped_isolated})"
+            f"isolated {graph.dropped_isolated}) — build {(time.perf_counter() - t0) * 1000:.0f}ms "
+            f"(assemble/DEM {assemble_ms:.0f}ms)"
         )
         return graph
 

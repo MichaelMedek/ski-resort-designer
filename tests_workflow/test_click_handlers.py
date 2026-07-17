@@ -1742,18 +1742,16 @@ class TestImportPlacingClick:
         sm.start_import(lon=0.0, lat=0.0)
         return sm, ctx
 
-    def test_center_dot_click_confirms_import(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
+    def test_center_dot_click_is_inert(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
+        # The center dot no longer confirms — it can't say WHICH import. Only the buttons confirm.
         from skiresort_planner.ui.click_handlers import handle_import_placing_click
 
         sm, ctx = self._placing(fake_st, path_factory, mock_dem_red_slope_diagonal)
         handle_import_placing_click(
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.IMPORT_CENTER), elevation=None
         )
-        # confirm_import_action flags the deferred fetch (lifts + slopes) and returns to idle
-        from skiresort_planner.constants import OSMImportMode
-
-        assert ctx.deferred.osm_import_mode == OSMImportMode.LIFTS_AND_SLOPES
-        assert sm.is_idle_ready
+        assert ctx.deferred.osm_import_mode is None, "a center-dot click must NOT confirm any import"
+        assert sm.is_import_placing, "still placing — confirm is done by the panel buttons"
 
     def test_terrain_click_replaces_center_and_keeps_placing(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
@@ -1766,23 +1764,18 @@ class TestImportPlacingClick:
         assert ctx.deferred.osm_import_center_lon == 0.06 and ctx.deferred.osm_import_center_lat == 0.05
         assert ctx.deferred.osm_import_mode is None, "re-placing does not confirm"
 
-    def test_replace_then_confirm_targets_the_replaced_center(
+    def test_repeated_terrain_clicks_track_the_last_center(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
     ) -> None:
-        # The two-click flow: re-place the box, THEN confirm. The confirmed fetch must target the
-        # LAST-placed center (0.06, 0.05), not the original (0, 0) — otherwise a user who nudges the
-        # box would silently import the wrong area.
+        # Nudging the box must leave the LAST-placed center staged for whichever button confirms it.
         from skiresort_planner.ui.click_handlers import handle_import_placing_click
 
         sm, ctx = self._placing(fake_st, path_factory, mock_dem_red_slope_diagonal)
+        handle_import_placing_click(ClickInfo(click_type=MapClickType.TERRAIN, lat=0.01, lon=0.02), elevation=2000.0)
         handle_import_placing_click(ClickInfo(click_type=MapClickType.TERRAIN, lat=0.05, lon=0.06), elevation=2000.0)
-        handle_import_placing_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.IMPORT_CENTER), elevation=None
-        )
-        assert ctx.deferred.osm_import_mode is not None, "the center dot confirms the fetch"
-        assert sm.is_idle_ready
+        assert sm.is_import_placing
         assert ctx.deferred.osm_import_center_lon == 0.06 and ctx.deferred.osm_import_center_lat == 0.05, (
-            "confirm imports the re-placed center, not the original"
+            "the last-placed center wins"
         )
 
 

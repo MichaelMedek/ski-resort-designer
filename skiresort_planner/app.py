@@ -17,6 +17,7 @@ from skiresort_planner.constants import (
     AppConfig,
     DEMConfig,
     MapConfig,
+    OSMImportMode,
 )
 from skiresort_planner.core.dem_service import DEMService, download_dem_from_huggingface
 from skiresort_planner.generators.path_factory import PathFactory
@@ -381,7 +382,13 @@ def _run_app_ui() -> None:
     # shifts the body element order between reruns, re-creating the map iframe (flash + camera reset);
     # a toast is a transient overlay that never touches the layout. Fan is fast (no cue).
     if ctx.deferred.osm_import_mode is not None:
-        st.toast("🗺️ Importing lifts & pistes from OpenStreetMap…")
+        mode = ctx.deferred.osm_import_mode
+        if mode == OSMImportMode.LIFTS_ONLY:
+            st.toast("🚡 Importing lifts from OpenStreetMap…")
+        elif mode == OSMImportMode.LIFTS_AND_SLOPES:
+            st.toast("🗺️ Importing lifts & slopes from OpenStreetMap…")
+        else:
+            raise ValueError(f"Unknown {mode=}")
         process_osm_import_deferred()
     elif ctx.deferred.custom_connect:
         st.toast("🎯 Computing custom path options…")
