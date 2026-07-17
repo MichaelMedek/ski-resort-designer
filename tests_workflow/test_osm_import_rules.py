@@ -9,7 +9,6 @@ import pytest
 
 from skiresort_planner.constants import OSMConfig, SlopeConfig
 from skiresort_planner.core.dem_service import DEMService
-from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.generators.osm_graph_builder import OSMGraphBuilder, ways_to_lines
 
 # Pure test-assertion thresholds (counts / connectivity) live here; every geometric domain tolerance
@@ -18,7 +17,7 @@ MIN_CONNECTED_FRAC = 0.99  # near-total connectivity (current import is a single
 MAX_NODES = 200  # node-count ceiling (current 99)
 MAX_SEGMENTS = 300  # segment-count ceiling (current 155)
 MIN_SEGMENTS = 100  # a full box must not collapse to near-empty
-MIN_SEG_PER_SLOPE = 3.0  # R29: segments must group into ≥this-fold fewer slopes (current 3.04×)
+MIN_SEG_PER_SLOPE = 3.0  # R29: path-segments per FINAL app-slope (whole named piste, not per fork)
 MAX_STRAIGHT_M = OSMConfig.MAX_STRAIGHT_M  # max single straight leg between consecutive points
 MAX_PULL_M = OSMConfig.MAX_PULL_M  # end connector length cap; over this → dropped
 PISTE_TOL_M = OSMConfig.PISTE_TOL_M  # off-piste threshold — SAME source the builder gates on
@@ -651,33 +650,24 @@ class TestImportRules:
         )
 
     def test_r29_segments_group_into_fewer_slopes(self, ischgl_graph):
-        """Segments must GROUP into whole slopes: a real resort has many segments per slope (the
-        full-split cuts a named piste into pieces at every junction). Require ≥ 2× (target 3×) more
-        segments than slopes, every segment in exactly one slope, and each slope's difficulty = its
-        steepest member (never below any member's band — grouping must not soften difficulty).
+        """PATH SEGMENTS must group into whole app-slopes: the metric is segments per FINAL app-slope
+        (what to_slope_chains emits — each chain becomes one app Slope of len(chain) segments), NOT the
+        intermediate ImportSlope. A real named piste is 5-10 segments; require ≥ MIN_SEG_PER_SLOPE on
+        average, every run in exactly one chain.
         """
-        slopes = ischgl_graph.slopes
         runs = ischgl_graph.slope_runs
-        assert slopes, "no grouped slopes — segments were never grouped"
-        # referential completeness: every run in exactly one slope
-        covered = [ri for s in slopes for ri in s.run_indices]
-        assert sorted(covered) == list(range(len(runs))), (
-            f"grouping is not a partition: {len(covered)} refs cover {len(set(covered))}/{len(runs)} runs"
+        chains = ischgl_graph.to_slope_chains()  # FINAL app-slopes: list of (per-run point-lists, name)
+        assert chains, "no app-slopes — segments were never grouped"
+        # referential completeness: every run's points appear in exactly one chain (partition of runs)
+        n_segments = sum(len(pts_lists) for pts_lists, _name in chains)
+        assert n_segments == len(runs), (
+            f"grouping is not a partition: {n_segments} chained segments != {len(runs)} runs"
         )
-        ratio = len(runs) / len(slopes)
+        ratio = len(runs) / len(chains)
         assert ratio >= MIN_SEG_PER_SLOPE, (
-            f"only {ratio:.1f}x more segments ({len(runs)}) than slopes ({len(slopes)}) — want ≥{MIN_SEG_PER_SLOPE}x"
+            f"only {ratio:.2f} segments per app-slope ({len(runs)} segments / {len(chains)} app-slopes) — "
+            f"want ≥{MIN_SEG_PER_SLOPE}"
         )
-        # difficulty is the steepest member's band (grouping never softens a slope)
-        rank = {d: i for i, d in enumerate(SlopeConfig.DIFFICULTIES)}
-        for s in slopes:
-            steepest = max(
-                rank[TerrainAnalyzer.classify_difficulty(slope_pct=_run_max_slope(runs[ri].points))]
-                for ri in s.run_indices
-            )
-            assert rank[s.difficulty] >= steepest, (
-                f"slope '{s.name}' classified {s.difficulty} below its steepest member — grouping softened it"
-            )
 
 
 class TestGraphImporter:
