@@ -43,7 +43,13 @@ def _polylen(coords):
 
 
 def _backclimb(pts):
-    """Sustained back-climb (m), smoothed ~90 m, of a downhill-oriented point list."""
+    """Uphill (m) of a run after smoothing elevations over ROLLING_WINDOW_M (300 m) — the same
+    rolling-window idea used for segment difficulty. After that smoothing a real piste MUST be monotonic
+    descending; the metric is the total upward movement in the smoothed profile (0 for a clean descent).
+    The window removes small DEM/geometry noise; a genuine sustained climb survives.
+    """
+    from skiresort_planner.constants import SlopeConfig
+
     es = [p.elevation for p in pts]
     if len(es) < 3:
         return 0.0
@@ -51,7 +57,7 @@ def _backclimb(pts):
         es = es[::-1]
     seg = [pts[i].distance_to(other=pts[i + 1]) for i in range(len(pts) - 1)]
     avg = (sum(seg) / len(seg)) if seg else 30.0
-    win = max(1, round(90.0 / max(avg, 1.0)))
+    win = max(1, round(SlopeConfig.ROLLING_WINDOW_M / max(avg, 1.0)))
     half = win // 2
     sm = [
         sum(es[max(0, i - half) : min(len(es), i + half + 1)]) / len(es[max(0, i - half) : min(len(es), i + half + 1)])
@@ -414,3 +420,72 @@ class TestImportRules:
         assert branch_nodes, "no branch nodes (degree≥3) — a full resort must have mid-slope junctions"
         # every segment is a genuine edge between two DISTINCT hub nodes (no self-loops in the graph)
         assert all(r.node_a != r.node_b for r in ischgl_graph.slope_runs), "a segment is a self-loop (a==b)"
+
+    def test_r21_every_lift_is_skiable_top_to_bottom(self, ischgl_graph):
+        """SLOPE-COMPLETENESS (not a lift check): from EVERY lift's top you can ski DOWN to its own
+        bottom via a chain of descending segments. A lift is NEVER dropped, but if this fails it signals
+        MISSING/wrong slopes (the real defect) — so the test must raise. OSM has the slopes; the import
+        must not filter them out.
+        """
+        elev = {k: v.elevation for k, v in ischgl_graph.node_points.items()}
+        down: dict[int, set[int]] = defaultdict(set)
+        for r in ischgl_graph.slope_runs:
+            hi, lo = (r.node_a, r.node_b) if elev[r.node_a] >= elev[r.node_b] else (r.node_b, r.node_a)
+            down[hi].add(lo)
+
+        def can_ski(top: int, bottom: int) -> bool:
+            seen, q = {top}, deque([top])
+            while q:
+                x = q.popleft()
+                if x == bottom:
+                    return True
+                for y in down[x]:
+                    if y not in seen:
+                        seen.add(y)
+                        q.append(y)
+            return False
+
+        unskiable = []
+        for lf in ischgl_graph.lifts:
+            top = lf.node_a if elev[lf.node_a] >= elev[lf.node_b] else lf.node_b
+            bottom = lf.node_b if top == lf.node_a else lf.node_a
+            if not can_ski(top, bottom):
+                unskiable.append(lf.name or f"{top}->{bottom}")
+        assert unskiable == [], (
+            f"{len(unskiable)}/{len(ischgl_graph.lifts)} lifts have NO descending slope-chain top→bottom "
+            f"(missing slopes, not a lift fault): {unskiable[:5]}"
+        )
+
+    def test_r22_no_slope_dead_ends_except_at_bbox_edge(self, ischgl_graph):
+        """No slope may end in EMPTY SPACE: every slope endpoint node must either connect onward (be a
+        vertex of another segment or a lift) OR sit on the import bbox edge (a run genuinely cut off by
+        the box — nothing we can do). A dead-end in the interior signals a dropped/truncated slope.
+        """
+        node_pt = ischgl_graph.node_points
+        deg: dict[int, int] = defaultdict(int)
+        for r in ischgl_graph.slope_runs:
+            deg[r.node_a] += 1
+            deg[r.node_b] += 1
+        lift_nodes = {n for lf in ischgl_graph.lifts for n in (lf.node_a, lf.node_b)}
+        min_lon, min_lat, max_lon, max_lat = ISCHGL_BBOX
+        edge_tol_deg = 150.0 / 111_320.0  # within ~150 m of the box edge counts as a genuine cut-off
+
+        def on_bbox_edge(n: int) -> bool:
+            p = node_pt[n]
+            return (
+                abs(p.lon - min_lon) < edge_tol_deg
+                or abs(p.lon - max_lon) < edge_tol_deg
+                or abs(p.lat - min_lat) < edge_tol_deg
+                or abs(p.lat - max_lat) < edge_tol_deg
+            )
+
+        dead_ends = []
+        for r in ischgl_graph.slope_runs:
+            for n in (r.node_a, r.node_b):
+                # degree 1 among slopes AND not a lift station AND not at the box edge → floating end
+                if deg[n] == 1 and n not in lift_nodes and not on_bbox_edge(n):
+                    dead_ends.append(n)
+        assert dead_ends == [], (
+            f"{len(set(dead_ends))} slope nodes dead-end in empty space (interior, no lift, no onward "
+            f"segment): {sorted(set(dead_ends))[:8]} — a dropped/truncated slope"
+        )
