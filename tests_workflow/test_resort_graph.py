@@ -831,16 +831,23 @@ class TestImportOSMBatch:
         top = PathPoint(lon=0.05, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.05, lat=0.0))
         return (bottom, top, "chairlift", "Gipfelbahn")
 
+    def _result(self, dem, *, piste_count=0, lifts=()):
+        """An ImportResult wrapping `piste_count` single-segment slope chains + the given lifts."""
+        from skiresort_planner.generators.osm_importer import ImportResult
+
+        chains = [([pts], name) for pts, name in self._pistes(dem, piste_count)]
+        return ImportResult(lifts=list(lifts), slope_chains=chains)
+
     def test_import_adds_entities_as_single_undo(self, empty_graph, mock_dem_blue_slope) -> None:
         graph, dem = empty_graph, mock_dem_blue_slope
-        slopes, lifts, duplicates = graph.import_osm(pistes=self._pistes(dem, 3), lifts=[self._lift(dem)], dem=dem)
+        slopes, lifts, duplicates = graph.import_osm(self._result(dem, piste_count=3, lifts=[self._lift(dem)]), dem=dem)
         assert (slopes, lifts, duplicates) == (3, 1, 0)
         assert len(graph.slopes) == 3 and len(graph.lifts) == 1
         assert len(graph.undo_stack) == 1, "the whole import is ONE undo entry"
 
     def test_one_undo_reverts_the_whole_import(self, empty_graph, mock_dem_blue_slope) -> None:
         graph, dem = empty_graph, mock_dem_blue_slope
-        graph.import_osm(pistes=self._pistes(dem, 3), lifts=[self._lift(dem)], dem=dem)
+        graph.import_osm(self._result(dem, piste_count=3, lifts=[self._lift(dem)]), dem=dem)
 
         graph.undo_last()
 
@@ -855,7 +862,7 @@ class TestImportOSMBatch:
         pre_slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
         nodes_before = set(graph.nodes)
 
-        graph.import_osm(pistes=self._pistes(dem, 2), lifts=[], dem=dem)
+        graph.import_osm(self._result(dem, piste_count=2), dem=dem)
         graph.undo_last()  # undo ONLY the import
 
         assert pre_slope.id in graph.slopes, "the pre-existing slope survives the import-undo"
@@ -864,9 +871,9 @@ class TestImportOSMBatch:
     def test_reimport_same_area_adds_nothing(self, empty_graph, mock_dem_blue_slope) -> None:
         """Re-importing identical pistes+lifts is idempotent: the second import adds zero."""
         graph, dem = empty_graph, mock_dem_blue_slope
-        graph.import_osm(pistes=self._pistes(dem, 3), lifts=[self._lift(dem)], dem=dem)
+        graph.import_osm(self._result(dem, piste_count=3, lifts=[self._lift(dem)]), dem=dem)
 
-        slopes, lifts, duplicates = graph.import_osm(pistes=self._pistes(dem, 3), lifts=[self._lift(dem)], dem=dem)
+        slopes, lifts, duplicates = graph.import_osm(self._result(dem, piste_count=3, lifts=[self._lift(dem)]), dem=dem)
 
         assert (slopes, lifts, duplicates) == (0, 0, 4), "all 3 pistes + 1 lift recognised as already imported"
         assert len(graph.slopes) == 3 and len(graph.lifts) == 1, "no duplicates created"
@@ -874,17 +881,17 @@ class TestImportOSMBatch:
     def test_reimport_adds_only_new_entities(self, empty_graph, mock_dem_blue_slope) -> None:
         """A second import over an overlapping area adds only the genuinely-new runs."""
         graph, dem = empty_graph, mock_dem_blue_slope
-        graph.import_osm(pistes=self._pistes(dem, 2), lifts=[], dem=dem)
+        graph.import_osm(self._result(dem, piste_count=2), dem=dem)
 
         # 3 pistes: the first 2 overlap the previous import, the 3rd is new.
-        slopes, lifts, duplicates = graph.import_osm(pistes=self._pistes(dem, 3), lifts=[], dem=dem)
+        slopes, lifts, duplicates = graph.import_osm(self._result(dem, piste_count=3), dem=dem)
 
         assert (slopes, duplicates) == (1, 2)
         assert len(graph.slopes) == 3
 
     def test_imported_entities_expose_endpoints(self, empty_graph, mock_dem_blue_slope) -> None:
         graph, dem = empty_graph, mock_dem_blue_slope
-        graph.import_osm(pistes=self._pistes(dem, 1), lifts=[self._lift(dem)], dem=dem)
+        graph.import_osm(self._result(dem, piste_count=1, lifts=[self._lift(dem)]), dem=dem)
         # endpoints() returns the two node locations, computed on demand (never stored).
         assert all(len(s.endpoints(nodes=graph.nodes)) == 2 for s in graph.slopes.values())
         assert all(len(lift.endpoints(nodes=graph.nodes)) == 2 for lift in graph.lifts.values())
@@ -892,9 +899,37 @@ class TestImportOSMBatch:
     def test_imported_slope_and_lift_take_osm_name(self, empty_graph, mock_dem_blue_slope) -> None:
         graph, dem = empty_graph, mock_dem_blue_slope
         # piste index 1 is named "Run 1"; the lift is named "Gipfelbahn".
-        graph.import_osm(pistes=self._pistes(dem, 2), lifts=[self._lift(dem)], dem=dem)
+        graph.import_osm(self._result(dem, piste_count=2, lifts=[self._lift(dem)]), dem=dem)
         assert any(s.name == "Run 1" for s in graph.slopes.values()), "OSM piste name kept verbatim"
         assert any(lift.name == "Gipfelbahn" for lift in graph.lifts.values()), "OSM lift name kept verbatim"
+
+    def test_imported_entities_tagged_with_source(self, empty_graph, mock_dem_blue_slope) -> None:
+        """Every imported slope, its segments, and each lift carry source='OSM' (hidden provenance)."""
+        from skiresort_planner.constants import EntitySource
+
+        graph, dem = empty_graph, mock_dem_blue_slope
+        graph.import_osm(self._result(dem, piste_count=2, lifts=[self._lift(dem)]), dem=dem)
+        assert all(s.source == EntitySource.OSM for s in graph.slopes.values())
+        assert all(seg.source == EntitySource.OSM for seg in graph.segments.values())
+        assert all(lift.source == EntitySource.OSM for lift in graph.lifts.values())
+
+    def test_same_name_source_blocks_reimport_even_if_moved(self, empty_graph, mock_dem_blue_slope) -> None:
+        """A named OSM entity already imported is skipped on re-import even if its geometry shifted
+        (the connected-graph build is not bit-exact) — dedup keys on same source + non-empty name.
+        """
+        graph, dem = empty_graph, mock_dem_blue_slope
+        graph.import_osm(self._result(dem, piste_count=2, lifts=[self._lift(dem)]), dem=dem)  # names Run 1, Gipfelbahn
+
+        # Re-import the named run far away: endpoint match fails, but the source+name match holds.
+        far = [
+            PathPoint(lon=0.5, lat=0.5, elevation=dem.get_elevation_or_raise(lon=0.5, lat=0.5)),
+            PathPoint(lon=0.5, lat=0.4, elevation=dem.get_elevation_or_raise(lon=0.5, lat=0.4)),
+        ]
+        from skiresort_planner.generators.osm_importer import ImportResult
+
+        result = ImportResult(slope_chains=[([far], "Run 1")])
+        slopes, _lifts, duplicates = graph.import_osm(result, dem=dem)
+        assert (slopes, duplicates) == (0, 1), "same source+name is recognised, not re-added"
 
     def test_hand_built_slope_blocks_matching_import(self, empty_graph, mock_dem_blue_slope) -> None:
         """Dedup is source-agnostic: a run the user built by hand skips the matching OSM import."""
@@ -905,7 +940,9 @@ class TestImportOSMBatch:
         graph.finish_slope(segment_ids=list(graph.segments.keys()))
         assert len(graph.slopes) == 1
 
-        slopes, _lifts, duplicates = graph.import_osm(pistes=[(points, name)], lifts=[], dem=dem)
+        from skiresort_planner.generators.osm_importer import ImportResult
+
+        slopes, _lifts, duplicates = graph.import_osm(ImportResult(slope_chains=[([points], name)]), dem=dem)
 
         assert (slopes, duplicates) == (0, 1), "the hand-built run is recognised, not duplicated"
         assert len(graph.slopes) == 1
@@ -923,6 +960,8 @@ class TestImportOSMBatch:
         key differently from their stored (snapped) form and are wrongly re-added. Build two pistes
         that meet at a shared top within snap range, import, then re-import the SAME two → 0 added.
         """
+        from skiresort_planner.generators.osm_importer import ImportResult
+
         graph, dem = empty_graph, mock_dem_blue_slope
         m = 111320.0
 
@@ -932,12 +971,12 @@ class TestImportOSMBatch:
         # Two runs whose TOP endpoints are ~5 m apart (< STEP_SIZE_M=30 m) → they snap to one node.
         shared_a = [pt(0.0, 0.0), pt(0.0, -600 / m)]
         shared_b = [pt(5 / m, 0.0), pt(0.02, -600 / m)]  # top ~5 m east of run A's top
-        pistes = [(shared_a, "A"), (shared_b, "B")]
+        result = ImportResult(slope_chains=[([shared_a], "A"), ([shared_b], "B")])
 
-        r1 = graph.import_osm(pistes=pistes, lifts=[], dem=dem)
+        r1 = graph.import_osm(result, dem=dem)
         assert r1.slopes_added == 2 and r1.duplicates_skipped == 0
 
-        r2 = graph.import_osm(pistes=pistes, lifts=[], dem=dem)
+        r2 = graph.import_osm(result, dem=dem)
         assert (r2.slopes_added, r2.duplicates_skipped) == (0, 2), "snapped re-import must be idempotent"
         assert len(graph.slopes) == 2, "no duplicate slopes created"
 

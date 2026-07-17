@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, ClassVar
 
-from skiresort_planner.constants import ClickConfig, LiftConfig, MapConfig, OSMConfig, PathConfig
+from skiresort_planner.constants import ClickConfig, LiftConfig, MapConfig, OSMConfig, OSMImportMode, PathConfig
 from skiresort_planner.model.path_segment import SegmentKind
 
 if TYPE_CHECKING:
@@ -633,7 +633,8 @@ class DeferredContext(BaseContext):
     fan_generation: set[SegmentKind] = field(default_factory=set)
     gradient_target: float | None = None  # For smart path recommendation
     custom_connect: bool = False  # Generate paths to custom target location
-    osm_import: bool = False  # Fetch + import OSM lifts/pistes for the chosen area (slow network)
+    # Which OSM import to run on the next render (None = nothing pending). Slow network + graph build.
+    osm_import_mode: OSMImportMode | None = None
     osm_import_half_width_km: float = OSMConfig.HALF_WIDTH_DEFAULT_KM  # Square half-width from the import slider
     # Center of the placed import box (click-to-place). Set by start_import, consumed on confirm.
     osm_import_center_lon: float | None = None
@@ -647,7 +648,7 @@ class DeferredContext(BaseContext):
         self.fan_generation = set()
         self.gradient_target = None
         self.custom_connect = False
-        self.osm_import = False
+        self.osm_import_mode = None
         self.osm_import_half_width_km = OSMConfig.HALF_WIDTH_DEFAULT_KM
         self.osm_import_center_lon = None
         self.osm_import_center_lat = None

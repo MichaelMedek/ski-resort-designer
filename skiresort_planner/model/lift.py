@@ -64,6 +64,7 @@ class Lift(NodeConnected):
     terrain_points: list[PathPoint]
     pylons: list[Pylon]
     cable_points: list[PathPoint]
+    source: str | None = None  # provenance tag (e.g. EntitySource.OSM)
 
     @property
     def number(self) -> int:
@@ -756,6 +757,7 @@ class Lift(NodeConnected):
                 for p in cast(list[dict[str, float]], data["pylons"])
             ],
             cable_points=[PathPoint(**p) for p in cast(list[dict[str, float]], data["cable_points"])],
+            source=cast("str | None", data.get("source")),
         )
 
     def __repr__(self) -> str:

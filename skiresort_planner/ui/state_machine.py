@@ -1138,8 +1138,8 @@ class PlannerStateMachine(StateMachine):
         self.context.lift.clear()
 
     def before_cancel_import(self) -> None:
-        """Discard a placed-but-unconfirmed import: clear the box center and the pending flag."""
-        self.context.deferred.osm_import = False
+        """Discard a placed-but-unconfirmed import: clear the box center and the pending mode."""
+        self.context.deferred.osm_import_mode = None
         self.context.deferred.osm_import_center_lon = None
         self.context.deferred.osm_import_center_lat = None
 

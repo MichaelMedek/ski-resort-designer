@@ -25,15 +25,22 @@ import logging
 import math
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from shapely import set_precision
 from shapely.geometry import LineString, MultiLineString, Point
 from shapely.ops import substring, unary_union
 
-from skiresort_planner.constants import OSMConfig, SlopeConfig
+from skiresort_planner.constants import OUTPUT_DIR, OSMConfig, SlopeConfig
 from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
-from skiresort_planner.generators.osm_importer import OverpassElement, OverpassVertex
+from skiresort_planner.generators.osm_graph_plot import render_png
+from skiresort_planner.generators.osm_importer import (
+    BaseOSMImporter,
+    ImportResult,
+    OverpassElement,
+    OverpassVertex,
+)
 from skiresort_planner.model.path_point import PathPoint
 
 logger = logging.getLogger(__name__)
@@ -51,6 +58,7 @@ class SlopeRun:
     node_b: int
     name: str | None = None
     witness: bool = False  # part of a lift's raw pre-merge top→base descent (protected from dedup eviction)
+    fabricated: list[bool] = field(default_factory=list)  # per-point: True where the point off source OSM piste
 
 
 @dataclass
@@ -92,17 +100,59 @@ class ImportGraph:
         """Render this graph to a PNG (slopes blue, lifts red, nodes black) and return the file path.
 
         The extent is computed from the graph's own points, so no bbox is needed. Writes to `path` if
-        given, else OUTPUT_DIR/osm_import.png. Import is local to keep ImportGraph dependency-light.
+        given, else OUTPUT_DIR/osm_import.png.
         """
-        from pathlib import Path
-
-        from skiresort_planner.constants import OUTPUT_DIR
-        from skiresort_planner.generators.osm_graph_export import render_png
-
         out = Path(path) if path is not None else OUTPUT_DIR / "osm_import.png"
         out.parent.mkdir(parents=True, exist_ok=True)
         render_png(self, out)
         return str(out)
+
+    def to_slope_chains(self) -> list[tuple[list[list[PathPoint]], str | None]]:
+        """Decompose each whole slope into materialisation-ready chains: (segment point-lists, name).
+
+        An app Slope is a LINEAR chain, but a named OSM piste can BRANCH (tributaries merge). Each
+        ImportSlope is split into maximal linear chains (top→bottom, cut at branch/merge nodes); each
+        chain becomes one (list-of-per-run-point-lists, name) — the shape ResortGraph.import_osm commits.
+        """
+        elev = {k: v.elevation for k, v in self.node_points.items()}
+        out: list[tuple[list[list[PathPoint]], str | None]] = []
+        for sl in self.slopes:
+            for chain in _linear_chains([self.slope_runs[ri] for ri in sl.run_indices], elev):
+                out.append(([r.points for r in chain], sl.name))
+        return out
+
+
+def _linear_chains(group: list[SlopeRun], elev: dict[int, float]) -> list[list[SlopeRun]]:
+    """Decompose a group of runs into maximal LINEAR chains, each ordered top→bottom.
+
+    A named OSM piste can branch (tributaries merge); an app Slope is a single chain. We orient each run
+    downhill (higher node first), then greedily walk chains: from each unused run, extend downhill while
+    the next node has exactly one outgoing run and this is its only incoming — i.e. break the chain at any
+    branch/merge node so no chain crosses a junction. Every run lands in exactly one chain.
+    """
+    # orient downhill: (hi, lo, run)
+    oriented = [(r.node_a, r.node_b, r) if elev[r.node_a] >= elev[r.node_b] else (r.node_b, r.node_a, r) for r in group]
+    out_edges: dict[int, list[int]] = {}  # hi node -> indices of runs leaving it
+    in_count: dict[int, int] = {}  # lo node -> how many runs arrive
+    for i, (hi, lo, _r) in enumerate(oriented):
+        out_edges.setdefault(hi, []).append(i)
+        in_count[lo] = in_count.get(lo, 0) + 1
+    used = [False] * len(oriented)
+    chains: list[list[SlopeRun]] = []
+    for start in range(len(oriented)):
+        if used[start]:
+            continue
+        chain: list[SlopeRun] = []
+        cur: int | None = start
+        while cur is not None and not used[cur]:
+            used[cur] = True
+            _hi, lo, r = oriented[cur]
+            chain.append(r)
+            # extend only if `lo` has exactly ONE outgoing run and ONE incoming (no branch/merge)
+            nxt = out_edges.get(lo, [])
+            cur = nxt[0] if len(nxt) == 1 and in_count.get(lo, 0) == 1 and not used[nxt[0]] else None
+        chains.append(chain)
+    return chains
 
 
 def ways_to_lines(
@@ -720,7 +770,20 @@ class OSMGraphBuilder:
         self._carve_descents(graph)  # re-carve any reconnected chain to strict monotone
         self._prune_dead_end_slopes(graph)  # final: a drop/carve above can leave a fresh dead-end
         self._drop_isolated_slopes(graph)
+        self._mark_fabricated(graph, source_union)  # tag off-piste points for the red reference overlay
         return graph
+
+    def _mark_fabricated(self, graph: ImportGraph, source_union: MultiLineString | None) -> None:
+        """Flag each run point that lies > PISTE_TOL_M from every source OSM piste — invented geometry
+        (a pull/connector), the same off-piste test the pull-shape gate uses. Drives the plot's red
+        overlay so a reader sees clean OSM (blue) vs fabricated-by-us (red). No source → nothing marked.
+        """
+        tol = OSMConfig.PISTE_TOL_M
+        for r in graph.slope_runs:
+            if source_union is None:
+                r.fabricated = [False] * len(r.points)
+            else:
+                r.fabricated = [source_union.distance(Point(self._to_m(p.lon, p.lat))) > tol for p in r.points]
 
     def _name_runs(self, graph: ImportGraph) -> None:
         """Attach the ORIGINAL OSM piste name to each run: the name of the named source piste that best
@@ -1490,3 +1553,35 @@ class OSMGraphBuilder:
             for i in range(len(es))
         ]
         return sum(max(0.0, sm[i + 1] - sm[i]) for i in range(len(sm) - 1))
+
+
+class GraphImporter(BaseOSMImporter):
+    """Imports lifts + slopes via the connected-graph algorithm: the lifts and slopes are reported
+    as OSMGraphBuilder preprocessed them (hub-merged, descent-carved, grouped). The graph's own
+    hub-aligned lifts are used (not raw OSM), so slopes and lift stations share nodes.
+    """
+
+    def _assemble(self, elements: list[OverpassElement]) -> ImportResult:
+        pistes, lifts = ways_to_lines(elements, self.bbox)
+        self._graph = OSMGraphBuilder(dem=self.dem, bbox=self.bbox).build(pistes, lifts)
+        logger.info(
+            f"OSM graph import: {len(self._graph.slope_runs)} runs, {len(self._graph.lifts)} lifts, "
+            f"{len(self._graph.slopes)} slopes"
+        )
+        return ImportResult(
+            lifts=[(lf.bottom, lf.top, lf.lift_type, lf.name) for lf in self._graph.lifts],
+            slope_chains=self._graph.to_slope_chains(),
+            source=self.SOURCE,
+        )
+
+    def _dump(self, elements: list[OverpassElement], dump_dir: Path) -> None:
+        """Raw fetch (base) + the built-graph PNG for reference (never read back). Writes directly;
+        skips the PNG only for an empty graph (nothing to plot — render_png would raise on it).
+        """
+        super()._dump(elements, dump_dir)
+        if not self._graph.node_points:
+            logger.debug("OSM graph import: empty graph, no reference PNG")
+            return
+        out = dump_dir / "osm_import.png"
+        render_png(self._graph, out)
+        logger.debug(f"OSM graph import: wrote reference PNG to {out}")

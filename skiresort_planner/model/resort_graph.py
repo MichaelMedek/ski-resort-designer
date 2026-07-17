@@ -20,7 +20,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, NamedTuple, TypedDict, cast
 
-from skiresort_planner.constants import EntityPrefixes, GeometricTuningConfig, MergeConfig, UndoConfig
+from skiresort_planner.constants import EntityPrefixes, GeometricTuningConfig, MergeConfig, OSMConfig, UndoConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import SideDirection, TerrainAnalyzer
 from skiresort_planner.model.actions import (
@@ -50,6 +50,7 @@ from skiresort_planner.model.undo_handlers import UNDO_HANDLERS
 
 if TYPE_CHECKING:
     from skiresort_planner.core.dem_service import DEMService
+    from skiresort_planner.generators.osm_importer import ImportResult
 
 logger = logging.getLogger(__name__)
 
@@ -734,56 +735,62 @@ class ResortGraph:
 
         return lift
 
-    def import_osm(
-        self,
-        pistes: list[tuple[list[PathPoint], str | None]],
-        lifts: list[tuple[PathPoint, PathPoint, str, str | None]],
-        dem: "DEMService",
-    ) -> OSMImportResult:
-        """Add a batch of OSM-derived pistes and lifts as ONE undoable unit.
+    def import_osm(self, result: "ImportResult", *, dem: "DEMService") -> OSMImportResult:
+        """Add an OSM import (lifts + slope chains) as ONE undoable unit, tagging every entity.
 
-        Each piste (its DEM-sampled points + optional name) is committed and finished as a slope;
-        each lift (bottom station, top station, lift type, optional name) becomes a lift with
-        regenerated pylons. All individual undo entries are suppressed and replaced by a single
-        ImportOSMAction, so one undo removes the entire import. Nodes the import newly creates are
-        tracked and removed on undo; nodes it reuses (shared with pre-existing entities) are left alone.
+        Each slope chain (its ordered segment point-lists + optional name) is committed segment by
+        segment and finished as one slope; each lift (bottom, top, type, name) becomes a lift with
+        regenerated pylons. Every created slope, segment, and lift is stamped with `result.source`
+        (e.g. EntitySource.OSM). All individual undo entries are suppressed and replaced by a single
+        ImportOSMAction, so one undo removes the whole import; newly-created nodes are tracked and
+        removed on undo, reused (shared) nodes are left alone.
 
-        Re-import is idempotent AND source-agnostic: an incoming piste/lift is skipped (counted as
-        a duplicate) if the graph ALREADY contains an entity with the same endpoint fingerprint.
+        Re-import is conservative: an incoming slope/lift is skipped (counted as a duplicate) if the
+        graph already holds an entity with a matching endpoint fingerprint (within OSM_DEDUP_TOL_M)
+        OR the same source and a matching non-empty name — we err toward NOT re-importing.
 
         Args:
-            pistes: (points, name) per downhill run — points already DEM-sampled by the importer.
-            lifts: (bottom, top, lift_type, name) per lift — stations already DEM-sampled.
+            result: The importer output — lifts, slope_chains, and the provenance source.
             dem: DEM service for lift terrain sampling / pylon placement.
 
         Returns:
             OSMImportResult(slopes_added, lifts_added, duplicates_skipped).
         """
+        source = result.source
         nodes_before = set(self.nodes)
         slope_ids: list[str] = []
         lift_ids: list[str] = []
         segment_ids: list[str] = []
         duplicates = 0
 
-        for points, name in pistes:
-            if self.has_endpoint_duplicate(a=points[0], b=points[-1]):
-                logger.debug(f"import_osm: skipping duplicate piste '{name}' at endpoints {points[0]} -> {points[-1]}")
+        for chain, name in result.slope_chains:
+            head, tail = chain[0][0], chain[-1][-1]
+            if self.has_endpoint_duplicate(a=head, b=tail, tol_m=OSMConfig.OSM_DEDUP_TOL_M) or self._has_source_name(
+                name=name, source=source
+            ):
+                logger.debug(f"import_osm: skipping duplicate slope '{name}' at endpoints {head} -> {tail}")
                 duplicates += 1
                 continue
-            proposal = ProposedPathSegment(points=points, kind=SegmentKind.SLOPE)
-            segments_before = set(self.segments)
-            self.commit_paths(paths=[proposal], record_undo=False)
-            # commit_paths returns endpoint node ids, not segment ids; a single proposal
-            # creates exactly one segment, so the tuple-unpack both finds and asserts it.
-            (seg_id,) = (sid for sid in self.segments if sid not in segments_before)
-            segment_ids.append(seg_id)
-            slope = self.finish_slope(segment_ids=[seg_id], name=name, record_undo=False)
+            chain_seg_ids: list[str] = []
+            for points in chain:  # commit each segment top→bottom so finish_slope's chain stitch is valid
+                segments_before = set(self.segments)
+                self.commit_paths(paths=[ProposedPathSegment(points=points, kind=SegmentKind.SLOPE)], record_undo=False)
+                (seg_id,) = (sid for sid in self.segments if sid not in segments_before)
+                chain_seg_ids.append(seg_id)
+            slope = self.finish_slope(segment_ids=chain_seg_ids, name=name, record_undo=False)
+            slope.source = source
+            for seg_id in chain_seg_ids:  # stamp AFTER finish_slope (it rewrites name, never source)
+                self.segments[seg_id].source = source
+            segment_ids.extend(chain_seg_ids)
             slope_ids.append(slope.id)
 
-        for bottom, top, lift_type, lift_name in lifts:
-            if self.has_endpoint_duplicate(a=bottom, b=top):
+        for bottom, top, lift_type, lift_name in result.lifts:
+            if self.has_endpoint_duplicate(a=bottom, b=top, tol_m=OSMConfig.OSM_DEDUP_TOL_M) or self._has_source_name(
+                name=lift_name, source=source
+            ):
                 logger.debug(
-                    f"import_osm: skipping duplicate lift '{lift_name}' (type={lift_type}) at endpoints {bottom} -> {top}"
+                    f"import_osm: skipping duplicate lift '{lift_name}' (type={lift_type}) at endpoints "
+                    f"{bottom} -> {top}"
                 )
                 duplicates += 1
                 continue
@@ -797,6 +804,7 @@ class ResortGraph:
                 name=lift_name,
                 record_undo=False,
             )
+            lift.source = source
             lift_ids.append(lift.id)
 
         created_node_ids = tuple(nid for nid in self.nodes if nid not in nodes_before)
@@ -814,22 +822,33 @@ class ResortGraph:
         )
         return OSMImportResult(slopes_added=len(slope_ids), lifts_added=len(lift_ids), duplicates_skipped=duplicates)
 
-    def has_endpoint_duplicate(self, a: PathPoint, b: PathPoint) -> bool:
-        """True if an existing slope or lift already spans endpoints `a` and `b`.
-
-        Direct geometric comparison against each stored entity's endpoints (endpoints_match, within
-        STEP_SIZE_M — the import snap distance). No coordinate rounding or shared-node lookup, so it
-        stays correct where many runs cluster around one junction. Used to skip re-importing a run
-        the graph already has (whether imported earlier or built by hand).
+    def _has_source_name(self, name: str | None, source: str) -> bool:
+        """True if a slope or lift with this same `source` and a matching non-empty `name` exists —
+        a named entity already imported from that source (skip re-importing). Empty/None never matches.
         """
-        tol = GeometricTuningConfig.STEP_SIZE_M
+        if not name:
+            return False
+        slope_hit = any(s.source == source and s.name == name for s in self.slopes.values())
+        lift_hit = any(lf.source == source and lf.name == name for lf in self.lifts.values())
+        return slope_hit or lift_hit
+
+    def has_endpoint_duplicate(
+        self, a: PathPoint, b: PathPoint, *, tol_m: float = GeometricTuningConfig.STEP_SIZE_M
+    ) -> bool:
+        """True if an existing slope or lift already spans endpoints `a` and `b` (within `tol_m`).
+
+        Direct geometric comparison against each stored entity's endpoints (endpoints_match, either
+        orientation). Default `tol_m` is the import snap distance; the OSM re-import passes a coarser
+        OSM_DEDUP_TOL_M. No coordinate rounding or shared-node lookup, so it stays correct where many
+        runs cluster around one junction.
+        """
         pair = (a, b)
         slope_match = any(
-            endpoints_match(pair_a=pair, pair_b=slope.endpoints(nodes=self.nodes), tol_m=tol)
+            endpoints_match(pair_a=pair, pair_b=slope.endpoints(nodes=self.nodes), tol_m=tol_m)
             for slope in self.slopes.values()
         )
         lift_match = any(
-            endpoints_match(pair_a=pair, pair_b=lift.endpoints(nodes=self.nodes), tol_m=tol)
+            endpoints_match(pair_a=pair, pair_b=lift.endpoints(nodes=self.nodes), tol_m=tol_m)
             for lift in self.lifts.values()
         )
         return slope_match or lift_match

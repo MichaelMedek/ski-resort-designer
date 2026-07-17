@@ -225,7 +225,7 @@ class TestImportSidebarPanel:
         sm.start_import(lon=0.0, lat=0.0)
 
         ImportSidebarPanel(sm=sm, ctx=ctx, graph=ResortGraph()).controls()  # no button fired
-        assert sm.is_import_placing and ctx.deferred.osm_import is False, "rendering does not confirm the import"
+        assert sm.is_import_placing and ctx.deferred.osm_import_mode is None, "rendering does not confirm the import"
 
 
 class TestMergeSidebarPanel:

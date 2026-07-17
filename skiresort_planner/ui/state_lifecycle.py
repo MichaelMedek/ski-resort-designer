@@ -184,7 +184,7 @@ def exit_lift_placing(ctx: PlannerContext) -> None:
 def exit_import_placing(ctx: PlannerContext) -> None:
     """Exit IMPORT_PLACING: clear the placed import-box center so no stale box survives.
 
-    Leaves the osm_import fetch flag alone — a confirmed import sets it just before this runs.
+    Leaves the osm_import_mode fetch flag alone — a confirmed import sets it just before this runs.
     """
     logger.debug("[LIFECYCLE] EXIT: import_placing - clearing placed import-box center")
     ctx.deferred.osm_import_center_lon = None

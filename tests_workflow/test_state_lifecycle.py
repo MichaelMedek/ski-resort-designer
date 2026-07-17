@@ -171,12 +171,16 @@ class TestExitHandlersCleanUpScratch:
         assert ctx.deferred.osm_import_center_lat is None
 
     def test_exit_import_placing_leaves_fetch_flag_alone(self) -> None:
-        # A confirmed import sets osm_import just before exit; exit must NOT clear it (the deferred
+        # A confirmed import sets osm_import_mode just before exit; exit must NOT clear it (the deferred
         # handler consumes it). Only the center coordinates are cleared here.
+        from skiresort_planner.constants import OSMImportMode
+
         ctx = _dirty_ctx()
-        ctx.deferred.osm_import = True
+        ctx.deferred.osm_import_mode = OSMImportMode.LIFTS_AND_SLOPES
         sl.exit_import_placing(ctx)
-        assert ctx.deferred.osm_import is True, "exit_import_placing must not consume the pending fetch flag"
+        assert ctx.deferred.osm_import_mode is OSMImportMode.LIFTS_AND_SLOPES, (
+            "exit_import_placing must not consume the pending fetch mode"
+        )
 
     def test_exit_merge_placing_clears_selection(self) -> None:
         ctx = _dirty_ctx()

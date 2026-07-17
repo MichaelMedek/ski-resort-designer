@@ -1,32 +1,35 @@
-"""Import existing lifts & pistes from OpenStreetMap.
+"""Import existing lifts from OpenStreetMap.
 
-We take GEOMETRY ONLY from OSM — where the pistes and lifts are (raw lon/lat polylines and the
-two lift stations). Everything else is recomputed through our own pipeline: elevation from the
-DEM, difficulty from the DEM-derived max_slope_pct, and lift pylons/catenary from the terrain.
-OSM's difficulty / pylon / elevation / WIDTH tags are deliberately ignored — belt width comes
-entirely from our own PathSegment.width_m (adaptive to side slope).
+We take GEOMETRY ONLY from OSM — where the lifts are (the two stations of each aerialway).
+Everything else is recomputed through our own pipeline: elevation from the DEM and pylons/catenary
+from the terrain. OSM's difficulty / pylon / elevation tags are deliberately ignored.
 
 The import region is a SQUARE bounding box the user picks, fetched in ONE Overpass query (a
 lift/piste-only query is light — even a full-size box returns in a few seconds). Overpass gives a
 few slots per IP; on a transient 429 (no slot) / 504 (busy) we wait for a free slot (from
 /api/status) and retry once. Only FULL entities are imported — a way with any vertex outside the
-box, or crossing a DEM nodata hole, is skipped entirely (counted in the summary), never
-half-imported. Pistes are trimmed to their descending run (a ski run only goes down). Only NAMED
-lifts and pistes import: unnamed OSM ways are frequently outdated or duplicate, so we skip them
-(logged with the reason).
+box, or crossing a DEM nodata hole, is skipped entirely (counted), never half-imported. Only NAMED
+lifts import: unnamed OSM ways are frequently outdated or duplicate, so we skip them (logged).
+
+This module holds the SHARED importer base (`BaseOSMImporter`): the Overpass fetch and the lift
+extraction both children reuse. Slope geometry is the connected-graph builder's job — see the
+`LiftOnlyImporter` (lifts only, raw OSM) and `GraphImporter` (lifts + slopes) children.
 """
 
+import json
 import logging
 import math
 import re
 import time
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TypedDict, TypeVar, cast
+from pathlib import Path
+from typing import ClassVar, TypedDict, cast
 from urllib.parse import urlencode
 
 import requests
 
-from skiresort_planner.constants import OSMConfig, SlopeConfig
+from skiresort_planner.constants import EntitySource, OSMConfig
 from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.model.path_point import PathPoint
@@ -79,19 +82,6 @@ def _is_transient(exc: BaseException) -> bool:
 
 
 @dataclass(frozen=True)
-class PisteImport:
-    """One downhill piste ready to commit: DEM-sampled points + optional OSM name."""
-
-    points: list[PathPoint]
-    name: str | None
-
-    @property
-    def length_m(self) -> float:
-        """Ground length of the run (sum of legs between consecutive DEM-sampled points)."""
-        return PathPoint.total_length_m(self.points)
-
-
-@dataclass(frozen=True)
 class LiftImport:
     """One lift ready to add: its two stations (DEM-sampled), lift-type, + optional OSM name."""
 
@@ -107,38 +97,75 @@ class LiftImport:
 
 
 @dataclass
-class ImportSummary:
-    """What an import produced, so the UI can report full vs skipped counts."""
+class ImportResult:
+    """What an OSM import produced, in the ONE shape every importer returns and the graph consumes.
 
-    pistes: list[PisteImport] = field(default_factory=list)
-    lifts: list[LiftImport] = field(default_factory=list)
+    `lifts` are (bottom, top, lift_type, name) tuples; `slope_chains` is empty for a lift-only import
+    and otherwise carries, per whole slope, a list of its segment point-lists plus the slope name.
+    `source` tags every materialised entity (provenance + re-import dedup).
+    """
+
+    lifts: list[tuple[PathPoint, PathPoint, str, str | None]] = field(default_factory=list)
+    slope_chains: list[tuple[list[list[PathPoint]], str | None]] = field(default_factory=list)
+    source: str = EntitySource.OSM
     skipped: int = 0  # ways dropped because they reach outside the box / over nodata / too short
 
 
-class OSMImporter:
-    """Fetches OSM lifts & pistes within a bounding box and converts them to import-ready geometry.
+class BaseOSMImporter(ABC):
+    """Shared OSM importer: fetches lifts & pistes in a bbox and extracts lifts. Never used alone —
+    a concrete subclass supplies `_assemble` (lift-only vs the connected slope graph).
 
-    Pure fetch + parse + DEM-drape; it does NOT mutate the resort graph (the caller does, so
-    the whole import can be one undoable batch).
+    Pure fetch + parse + DEM-drape; it does NOT mutate the resort graph (the caller does, so the
+    whole import is one undoable batch).
     """
 
-    def __init__(self, dem: DEMService) -> None:
-        self.dem = dem
+    SOURCE: ClassVar[str] = EntitySource.OSM
 
-    def fetch(self, bbox: BBox) -> list[OverpassElement]:
+    def __init__(self, dem: DEMService, bbox: BBox) -> None:
+        self.dem = dem
+        self.bbox = bbox
+
+    # -- public entry point ---------------------------------------------------
+
+    def run(self, *, dump_dir: Path | None = None) -> ImportResult:
+        """Fetch the box and assemble the import. If `dump_dir` is given, write reference artifacts
+        (raw fetch, and — for the graph importer — a PNG) there; those are never read back.
+        """
+        elements = self.fetch()
+        result = self._assemble(elements)
+        if dump_dir is not None:
+            self._dump(elements, dump_dir)
+        return result
+
+    @abstractmethod
+    def _assemble(self, elements: list[OverpassElement]) -> ImportResult:
+        """Turn raw Overpass elements into an ImportResult (lifts, and slopes for the graph child)."""
+
+    def _dump(self, elements: list[OverpassElement], dump_dir: Path) -> None:
+        """Write the raw fetch to `dump_dir/osm_raw.json` for reference (never read back). Writes
+        directly (like persistence.backup_store.save) — a failing OUTPUT_DIR write is a real problem.
+        """
+        dump_dir.mkdir(parents=True, exist_ok=True)
+        out = dump_dir / "osm_raw.json"
+        out.write_text(json.dumps(elements), encoding="utf-8")
+        logger.debug(f"OSM import: wrote raw fetch ({len(elements)} elements) to {out}")
+
+    # -- fetch ----------------------------------------------------------------
+
+    def fetch(self) -> list[OverpassElement]:
         """Fetch all OSM lift/piste ways in the box with ONE Overpass query.
 
         On a transient 429/504 we wait for a free slot and retry once, then give up.
         """
         try:
-            return self._query(bbox)
+            return self._query(self.bbox)
         except requests.RequestException as exc:
             if not _is_transient(exc):
                 raise
             wait_s = _seconds_until_free_slot()
-            logger.info(f"[IMPORT] Overpass busy ({exc}); waiting {wait_s:.0f}s for a free slot, then retrying once")
+            logger.info(f"Overpass busy ({exc}); waiting {wait_s:.0f}s for a free slot, then retrying once")
             time.sleep(wait_s)
-            return self._query(bbox)
+            return self._query(self.bbox)
 
     def _query(self, bbox: BBox) -> list[OverpassElement]:
         """POST one Overpass query for the box and return its ways (with inline geometry).
@@ -162,143 +189,69 @@ class OSMImporter:
         )
         response.raise_for_status()
         elements = cast(list[OverpassElement], response.json()["elements"])
-        logger.info(f"[IMPORT] Overpass returned {len(elements)} elements for bbox {bbox}")
+        logger.info(f"Overpass returned {len(elements)} elements for bbox {bbox}")
         return elements
 
-    def convert(self, bbox: BBox, elements: list[OverpassElement]) -> ImportSummary:
-        """Turn raw Overpass elements into import-ready pistes + lifts for the given box.
+    # -- lift extraction (shared by every child) ------------------------------
 
-        Only ways fully inside `bbox` are kept; every skipped element is logged with its reason
-        (unnamed, too short, out-of-bounds, over nodata, or unmapped aerialway).
+    def extract_lifts(self, elements: list[OverpassElement]) -> tuple[list[LiftImport], int]:
+        """Extract skiable lifts from raw Overpass elements: (lifts, skipped count).
+
+        Keeps named aerialways of a mapped type, fully in-box, ≥ MIN_LIFT_LENGTH_M, with both
+        stations on DEM data; dedupes the longest per name. Every skip is logged with its reason.
         """
-        summary = ImportSummary()
+        lifts: list[LiftImport] = []
+        skipped = 0
         for el in elements:
             tags = el.get("tags", {})
-            vertices = [(v["lon"], v["lat"]) for v in el.get("geometry", [])]
+            if "aerialway" not in tags:
+                continue
+            aerialway = tags["aerialway"]
+            lift_type = OSMConfig.AERIALWAY_TO_LIFT_TYPE.get(aerialway)
             osm_id = el.get("id", 0)
-            if "aerialway" in tags:
-                self._add_lift(tags=tags, vertices=vertices, bbox=bbox, summary=summary, osm_id=osm_id)
-            elif "piste:type" in tags:
-                self._add_piste(tags=tags, vertices=vertices, bbox=bbox, summary=summary, osm_id=osm_id)
-        # OSM often maps the same run/lift twice (an old + a re-drawn way share a name). Keep the
-        # LONGEST per name within each kind — pistes and lifts dedupe separately.
-        summary.pistes, dropped_pistes = _dedupe_longest_per_name(items=summary.pistes, kind="piste")
-        summary.lifts, dropped_lifts = _dedupe_longest_per_name(items=summary.lifts, kind="lift")
-        summary.skipped += dropped_pistes + dropped_lifts
-        logger.info(
-            f"[IMPORT] Converted: {len(summary.pistes)} pistes, {len(summary.lifts)} lifts, {summary.skipped} skipped"
-        )
-        return summary
+            if lift_type is None:
+                # station/pylon/zip_line/magic_carpet/rope_tow/yes/… are not skiable lifts — not counted.
+                logger.debug(f"Ignored lift way/{osm_id}: unmapped aerialway='{aerialway}' (not a skiable lift)")
+                continue
+            vertices = [(v["lon"], v["lat"]) for v in el.get("geometry", [])]
+            lift = self._lift_import(lift_type=str(lift_type), tags=tags, vertices=vertices, osm_id=osm_id)
+            if lift is None:
+                skipped += 1
+            else:
+                lifts.append(lift)
+        lifts, dropped = _dedupe_longest_per_name(lifts)
+        return lifts, skipped + dropped
 
-    # -- pistes ---------------------------------------------------------------
-
-    def _add_piste(
-        self, tags: dict[str, str], vertices: list[Vertex], bbox: BBox, summary: ImportSummary, osm_id: int
-    ) -> None:
-        if tags.get("piste:type") != OSMConfig.PISTE_TYPE_DOWNHILL:
-            return  # only alpine downhill runs; ignore connection/snow_park/playground/sled/yes
-        name = _piste_name(tags)
-        if name is None:
-            logger.debug(
-                f"Skipped piste way/{osm_id}: unnamed (potentially outdated/duplicate — only named runs import)"
-            )
-            summary.skipped += 1
-            return
-        if len(vertices) < 2 or not _fully_inside(vertices=vertices, bbox=bbox):
-            logger.debug(f"Skipped piste '{name}' (way/{osm_id}): reaches outside the import area")
-            summary.skipped += 1
-            return
-        resampled = self._resample(vertices)
-        if resampled is None:
-            logger.debug(f"Skipped piste '{name}' (way/{osm_id}): over a DEM nodata hole")
-            summary.skipped += 1
-            return
-        # A ski run only goes down; trim an OSM out-and-back to its longest descending stretch
-        # BEFORE the length gate, so the up-arm doesn't inflate a run that's really too short.
-        points = _longest_descending_run(resampled)
-        length = _polyline_length_m([(p.lon, p.lat) for p in points])
-        if length < OSMConfig.MIN_PISTE_LENGTH_M:
-            logger.debug(
-                f"Skipped piste '{name}' (way/{osm_id}): descending run {length:.0f}m "
-                f"< {OSMConfig.MIN_PISTE_LENGTH_M:.0f}m min"
-            )
-            summary.skipped += 1
-            return
-        summary.pistes.append(PisteImport(points=points, name=name))
-
-    # -- lifts ----------------------------------------------------------------
-
-    def _add_lift(
-        self, tags: dict[str, str], vertices: list[Vertex], bbox: BBox, summary: ImportSummary, osm_id: int
-    ) -> None:
-        aerialway = tags["aerialway"]
-        lift_type = OSMConfig.AERIALWAY_TO_LIFT_TYPE.get(aerialway)
-        if lift_type is None:
-            # station/pylon/zip_line/magic_carpet/rope_tow/yes/… are not skiable lifts — not counted.
-            logger.debug(f"Ignored lift way/{osm_id}: unmapped aerialway='{aerialway}' (not a skiable lift)")
-            return
+    def _lift_import(
+        self, lift_type: str, tags: dict[str, str], vertices: list[Vertex], osm_id: int
+    ) -> LiftImport | None:
+        """One lift → LiftImport, or None (with a logged reason) if it must be skipped."""
         name = _lift_name(tags)
         if name is None:
             logger.debug(
-                f"Skipped {aerialway} way/{osm_id}: unnamed (potentially outdated/duplicate — only named lifts import)"
+                f"Skipped {tags['aerialway']} way/{osm_id}: unnamed "
+                f"(potentially outdated/duplicate — only named lifts import)"
             )
-            summary.skipped += 1
-            return
-        if len(vertices) < 2 or not _fully_inside(vertices=vertices, bbox=bbox):
+            return None
+        if len(vertices) < 2 or not _fully_inside(vertices=vertices, bbox=self.bbox):
             logger.debug(f"Skipped lift '{name}' (way/{osm_id}): reaches outside the import area")
-            summary.skipped += 1
-            return
+            return None
         length = _polyline_length_m(vertices)
         if length < OSMConfig.MIN_LIFT_LENGTH_M:
             logger.debug(
                 f"Skipped lift '{name}' (way/{osm_id}): {length:.0f}m < {OSMConfig.MIN_LIFT_LENGTH_M:.0f}m min"
             )
-            summary.skipped += 1
-            return
+            return None
         # Only the two stations matter; OSM intermediate pylons are dropped (we regenerate them).
         bottom = self._point(vertices[0])
         top = self._point(vertices[-1])
         if bottom is None or top is None:
             logger.debug(f"Skipped lift '{name}' (way/{osm_id}): a station is over a DEM nodata hole")
-            summary.skipped += 1
-            return
+            return None
         # A lift runs valley→mountain; orient bottom = lower station.
         if bottom.elevation > top.elevation:
             bottom, top = top, bottom
-        summary.lifts.append(LiftImport(bottom=bottom, top=top, lift_type=lift_type, name=name))
-
-    # -- geometry helpers -----------------------------------------------------
-
-    def _resample(self, vertices: list[Vertex]) -> list[PathPoint] | None:
-        """Linearly resample the polyline every RESAMPLE_STEP_M, DEM-sampling Z. Returns None if any
-        sample is nodata.
-
-        Linear (not cubic): OSM pistes are already smooth; finish_slope adds whole-path smoothing.
-        """
-        step = OSMConfig.RESAMPLE_STEP_M
-        # Cumulative distance along the raw polyline.
-        seg_len = [
-            GeoCalculator.haversine_distance_m(
-                lat1=vertices[i][1], lon1=vertices[i][0], lat2=vertices[i + 1][1], lon2=vertices[i + 1][0]
-            )
-            for i in range(len(vertices) - 1)
-        ]
-
-        out_lonlat: list[Vertex] = [vertices[0]]
-        target = step
-        walked = 0.0
-        for i, length in enumerate(seg_len):
-            (x0, y0), (x1, y1) = vertices[i], vertices[i + 1]
-            while target <= walked + length and length > 0:
-                bearing = GeoCalculator.initial_bearing_deg(lon1=x0, lat1=y0, lon2=x1, lat2=y1)
-                out_lonlat.append(
-                    GeoCalculator.destination(lon=x0, lat=y0, bearing_deg=bearing, distance_m=target - walked)
-                )
-                target += step
-            walked += length
-        out_lonlat.append(vertices[-1])
-
-        return _drop_none([self._point(v) for v in out_lonlat])
+        return LiftImport(bottom=bottom, top=top, lift_type=lift_type, name=name)
 
     def _point(self, vertex: Vertex) -> PathPoint | None:
         lon, lat = vertex
@@ -343,12 +296,11 @@ def _polyline_length_m(vertices: list[Vertex]) -> float:
     )
 
 
-_Named = TypeVar("_Named", PisteImport, LiftImport)
-
-
-def _dedupe_longest_per_name(items: list[_Named], kind: str) -> tuple[list[_Named], int]:
-    """Keep only the LONGEST item per name, dropping shorter same-name duplicates."""
-    longest: dict[str | None, _Named] = {}
+def _dedupe_longest_per_name(items: list[LiftImport]) -> tuple[list[LiftImport], int]:
+    """Keep only the LONGEST lift per name, dropping shorter same-name duplicates (an old + a
+    re-drawn OSM way often share a name). Returns (kept, dropped count).
+    """
+    longest: dict[str | None, LiftImport] = {}
     for item in items:
         best = longest.get(item.name)
         if best is None or item.length_m > best.length_m:
@@ -360,62 +312,10 @@ def _dedupe_longest_per_name(items: list[_Named], kind: str) -> tuple[list[_Name
         else:
             dropped += 1
             logger.debug(
-                f"Skipped {kind} '{item.name}': duplicate name, {item.length_m:.0f}m "
+                f"Skipped lift '{item.name}': duplicate name, {item.length_m:.0f}m "
                 f"< kept {longest[item.name].length_m:.0f}m"
             )
     return kept, dropped
-
-
-def _drop_none(points: list[PathPoint | None]) -> list[PathPoint] | None:
-    """Return the points if all are present; None if ANY is a nodata miss (all-or-nothing)."""
-    if any(p is None for p in points):
-        return None
-    return [p for p in points if p is not None]  # narrowed: no None remains
-
-
-def _longest_descending_run(points: list[PathPoint]) -> list[PathPoint]:
-    """Trim a DEM-draped polyline to its longest DESCENDING run, oriented top→bottom.
-
-    OSM out-and-back paths drape to up-and-down profiles (0 m net drop); we keep the longest
-    descending stretch, judged on elevations smoothed over SlopeConfig.ROLLING_WINDOW_M (ignores
-    DEM noise), and orient it top→bottom.
-    """
-    if len(points) < 2:
-        return points
-
-    elevs = [p.elevation for p in points]
-    window_pts = max(1, round(SlopeConfig.ROLLING_WINDOW_M / OSMConfig.RESAMPLE_STEP_M))
-    half = window_pts // 2
-    smoothed: list[float] = []
-    for i in range(len(elevs)):
-        window = elevs[max(0, i - half) : min(len(elevs), i + half + 1)]
-        smoothed.append(sum(window) / len(window))
-
-    def longest_non_increasing(series: list[float]) -> tuple[int, int]:
-        """(start, end) inclusive of the longest run where series never rises step-to-step."""
-        best_start, best_end, start = 0, 0, 0
-        for i in range(1, len(series)):
-            if series[i] > series[i - 1] + 1e-9:  # a rise ends the current run
-                start = i
-            if i - start > best_end - best_start:
-                best_start, best_end = start, i
-        return best_start, best_end
-
-    f0, f1 = longest_non_increasing(smoothed)
-    r0, r1 = longest_non_increasing(smoothed[::-1])
-    if (f1 - f0) >= (r1 - r0):
-        return points[f0 : f1 + 1]
-    n = len(points)
-    return points[n - 1 - r1 : n - r0][::-1]  # map reversed indices back, orient top→bottom
-
-
-def _piste_name(tags: dict[str, str]) -> str | None:
-    """OSM name resolution order; None if the run is unnamed (unnamed runs are skipped on import)."""
-    for key in ("name", "piste:name", "piste:ref", "ref"):
-        value = tags.get(key)
-        if value:
-            return str(value)
-    return None
 
 
 def _lift_name(tags: dict[str, str]) -> str | None:

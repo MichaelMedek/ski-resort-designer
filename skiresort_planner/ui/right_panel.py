@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Literal
 
 import streamlit as st
 
-from skiresort_planner.constants import MapConfig, SlopeConfig, StyleConfig
+from skiresort_planner.constants import LiftType, MapConfig, OSMImportMode, SlopeConfig, StyleConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.model.message import (
@@ -456,9 +456,21 @@ class ImportPlacingControlPanel(ControlPanel):
         return ImportActionMessage()
 
     def buttons(self) -> None:
-        if st.button("✅ Confirm Import", type="primary", width="stretch", help="Fetch and import this area from OSM"):
-            logger.debug("UI: Confirm Import clicked")
-            confirm_import_action()
+        if st.button(
+            f"{StyleConfig.LIFT_ICONS[LiftType.GONDOLA]}{StyleConfig.SLOPE_ICON} Import lifts + slopes",
+            type="primary",
+            width="stretch",
+            help="Fetch this area from OSM and build a connected graph of lifts AND slopes",
+        ):
+            logger.debug("UI: Import lifts + slopes clicked")
+            confirm_import_action(OSMImportMode.LIFTS_AND_SLOPES)
+        if st.button(
+            f"{StyleConfig.LIFT_ICONS[LiftType.GONDOLA]} Import lifts only",
+            width="stretch",
+            help="Fetch this area from OSM and import ONLY the lifts, exactly as mapped (fast)",
+        ):
+            logger.debug("UI: Import lifts only clicked")
+            confirm_import_action(OSMImportMode.LIFTS_ONLY)
 
 
 class MergePlacingControlPanel(ControlPanel):

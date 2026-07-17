@@ -374,6 +374,22 @@ class LiftType(StrEnum):
     AERIAL_TRAM = "aerial_tram"
 
 
+class EntitySource(StrEnum):
+    """Provenance tag for an imported entity. A StrEnum, so a member IS its string value — it stores
+    directly on Lift/Slope/PathSegment.source and JSON round-trips transparently. Hidden from the
+    user; used to recognise (and skip re-importing) OSM-sourced lifts/slopes.
+    """
+
+    OSM = "OSM"
+
+
+class OSMImportMode(StrEnum):
+    """Which OSM import the user requested: lifts only (raw, fast) or the full connected graph."""
+
+    LIFTS_ONLY = "lifts_only"
+    LIFTS_AND_SLOPES = "lifts_and_slopes"
+
+
 class LiftConfig:
     """Lift types and catenary/pylon parameters."""
 
@@ -733,6 +749,9 @@ class OSMConfig:
 
     # piste:type value marking an alpine downhill run — the only kind we import.
     PISTE_TYPE_DOWNHILL = "downhill"
+
+    # Re-import dedup radius: an incoming entity whose endpoints match an existing one within this is skipped.
+    OSM_DEDUP_TOL_M = 100.0
 
     # --- Connected-graph build (generators/osm_graph_builder.py). Distances in metres. ---
     DEDUP_TOL_M = 18.0  # near-coincidence band for the duplicate-piste test

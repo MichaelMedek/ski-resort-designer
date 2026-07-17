@@ -1723,7 +1723,7 @@ class TestBuildStateMarkerCompleteness:
             sm.start_import(lon=0.02, lat=0.03)  # a distinctive placed center, so a stray re-place shows
             handle_import_placing_click(click_info=ci, elevation=None)
             assert sm.is_import_placing, f"{marker_type.name} must not leave import placing"
-            assert ctx.deferred.osm_import is False, f"{marker_type.name} must not confirm the import"
+            assert ctx.deferred.osm_import_mode is None, f"{marker_type.name} must not confirm the import"
             assert (ctx.deferred.osm_import_center_lon, ctx.deferred.osm_import_center_lat) == (0.02, 0.03), (
                 f"{marker_type.name} must not move the placed box center"
             )
@@ -1749,8 +1749,10 @@ class TestImportPlacingClick:
         handle_import_placing_click(
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.IMPORT_CENTER), elevation=None
         )
-        # confirm_import_action flags the deferred fetch and returns to idle
-        assert ctx.deferred.osm_import is True
+        # confirm_import_action flags the deferred fetch (lifts + slopes) and returns to idle
+        from skiresort_planner.constants import OSMImportMode
+
+        assert ctx.deferred.osm_import_mode == OSMImportMode.LIFTS_AND_SLOPES
         assert sm.is_idle_ready
 
     def test_terrain_click_replaces_center_and_keeps_placing(
@@ -1762,7 +1764,7 @@ class TestImportPlacingClick:
         handle_import_placing_click(ClickInfo(click_type=MapClickType.TERRAIN, lat=0.05, lon=0.06), elevation=2000.0)
         assert sm.is_import_placing, "re-placing keeps us in import mode"
         assert ctx.deferred.osm_import_center_lon == 0.06 and ctx.deferred.osm_import_center_lat == 0.05
-        assert ctx.deferred.osm_import is False, "re-placing does not confirm"
+        assert ctx.deferred.osm_import_mode is None, "re-placing does not confirm"
 
     def test_replace_then_confirm_targets_the_replaced_center(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
@@ -1777,7 +1779,7 @@ class TestImportPlacingClick:
         handle_import_placing_click(
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.IMPORT_CENTER), elevation=None
         )
-        assert ctx.deferred.osm_import is True, "the center dot confirms the fetch"
+        assert ctx.deferred.osm_import_mode is not None, "the center dot confirms the fetch"
         assert sm.is_idle_ready
         assert ctx.deferred.osm_import_center_lon == 0.06 and ctx.deferred.osm_import_center_lat == 0.05, (
             "confirm imports the re-placed center, not the original"

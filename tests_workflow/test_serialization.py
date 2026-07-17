@@ -98,25 +98,24 @@ class TestResortGraphSerialization:
         """Endpoints are derived from nodes (which serialize), so duplicate detection still works
         after save/load — a re-import into the reloaded graph adds nothing.
         """
+        from skiresort_planner.generators.osm_importer import ImportResult
         from skiresort_planner.model.path_point import PathPoint, endpoints_match
         from skiresort_planner.model.resort_graph import ResortGraph
 
         m = 111320.0
         dem = mock_dem_blue_slope
-        piste = (
-            [
-                PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
-                PathPoint(lon=0.0, lat=-500 / m, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / m)),
-            ],
-            "Run",
-        )
+        slope_points = [
+            PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
+            PathPoint(lon=0.0, lat=-500 / m, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / m)),
+        ]
         lift = (
             PathPoint(lon=0.02, lat=-500 / m, elevation=dem.get_elevation_or_raise(lon=0.02, lat=-500 / m)),
             PathPoint(lon=0.02, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.02, lat=0.0)),
             "chairlift",
             None,
         )
-        empty_graph.import_osm(pistes=[piste], lifts=[lift], dem=dem)
+        result = ImportResult(lifts=[lift], slope_chains=[([slope_points], "Run")])
+        empty_graph.import_osm(result, dem=dem)
         orig_slope_ends = list(empty_graph.slopes.values())[0].endpoints(nodes=empty_graph.nodes)
 
         restored = ResortGraph.from_dict(data=json.loads(json.dumps(empty_graph.to_dict())))
@@ -124,7 +123,7 @@ class TestResortGraphSerialization:
         restored_slope_ends = list(restored.slopes.values())[0].endpoints(nodes=restored.nodes)
         assert endpoints_match(pair_a=orig_slope_ends, pair_b=restored_slope_ends, tol_m=0.001)
         # A re-import into the reloaded graph is still fully deduped.
-        _s, _l, duplicates = restored.import_osm(pistes=[piste], lifts=[lift], dem=dem)
+        _s, _l, duplicates = restored.import_osm(result, dem=dem)
         assert duplicates == 2
 
     def test_custom_name_survives_roundtrip(self, empty_graph, path_points_blue) -> None:

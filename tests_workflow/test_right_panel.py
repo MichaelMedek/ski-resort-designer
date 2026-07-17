@@ -669,14 +669,18 @@ class TestMergeAndImportPanels:
         assert fired == [True], "clicking Delete Node(s) must invoke delete_nodes_action"
 
     def test_confirm_import_fires_action(self, fake_st, empty_graph, monkeypatch) -> None:
+        from skiresort_planner.constants import OSMImportMode
         from skiresort_planner.ui import right_panel
 
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        fired: list[bool] = []
-        monkeypatch.setattr(right_panel, "confirm_import_action", lambda: fired.append(True))
+        fired: list[OSMImportMode] = []
+        monkeypatch.setattr(right_panel, "confirm_import_action", lambda mode: fired.append(mode))
         monkeypatch.setattr("skiresort_planner.ui.right_panel.st.button", lambda label, **k: True)
         self._import_panel(sm, ctx, empty_graph).buttons()
-        assert fired == [True], "clicking Confirm Import must invoke confirm_import_action"
+        # Both buttons render True here, so both modes fire — proving each is wired to its mode.
+        assert fired == [OSMImportMode.LIFTS_AND_SLOPES, OSMImportMode.LIFTS_ONLY], (
+            "the two import buttons must invoke confirm_import_action with their modes"
+        )
 
     def test_import_context_message_requires_placed_center(self, fake_st, empty_graph) -> None:
         # A fresh context has no osm_import_center_* → context_message() raises the guard.

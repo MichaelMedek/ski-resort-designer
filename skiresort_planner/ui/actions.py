@@ -11,8 +11,10 @@ from typing import TYPE_CHECKING, cast
 
 import streamlit as st
 
-from skiresort_planner.constants import MapConfig, MergeConfig
-from skiresort_planner.generators.osm_importer import OSMImporter, bbox_around
+from skiresort_planner.constants import OUTPUT_DIR, MapConfig, MergeConfig, OSMImportMode
+from skiresort_planner.generators.osm_graph_builder import GraphImporter
+from skiresort_planner.generators.osm_importer import BaseOSMImporter, bbox_around
+from skiresort_planner.generators.osm_lift_importer import LiftOnlyImporter
 from skiresort_planner.generators.path_factory import PathFactory
 from skiresort_planner.model.actions import (
     ActionType,
@@ -126,17 +128,17 @@ def process_custom_connect_deferred() -> bool:
     return True
 
 
-def confirm_import_action() -> None:
-    """Confirm the placed OSM import box: flag the deferred fetch and return to idle.
+def confirm_import_action(mode: OSMImportMode) -> None:
+    """Confirm the placed OSM import box: flag the deferred fetch (with its mode) and return to idle.
 
-    Called by both the right-panel "Confirm Import" button and the center-dot click. The box
-    center is already stored in ctx.deferred.osm_import_center_lon/lat (set when the box was
-    placed/retargeted). The slow network fetch + graph mutation happen in
+    Called by both the right-panel import buttons and the center-dot click. `mode` selects which
+    importer runs (lifts only vs lifts + slopes). The box center is already stored in
+    ctx.deferred.osm_import_center_lon/lat. The slow network fetch + graph mutation happen in
     process_osm_import_deferred() under a spinner after we return to idle.
     """
     ctx: PlannerContext = st.session_state.context
     sm: PlannerStateMachine = st.session_state.state_machine
-    ctx.deferred.osm_import = True
+    ctx.deferred.osm_import_mode = mode
     bump_dedup_epoch()
     sm.complete_import()  # → idle_ready; listener triggers the rerun that runs the deferred fetch
 
@@ -216,18 +218,21 @@ def add_node_on_path_action(segment_id: str, lon: float, lat: float) -> bool:
 
 
 def process_osm_import_deferred() -> bool:
-    """Process a pending OSM import: fetch the chosen area, convert, add as one undoable batch.
+    """Process a pending OSM import: fetch the chosen area, build, add as one undoable batch.
 
     The area is the square box the user placed and confirmed (ctx.deferred.osm_import_center_*
-    + half-width). Returns True if it handled a pending import. Any network/parse error shows an
-    error toast and imports nothing.
+    + half-width). The deferred mode picks the importer: lifts only (raw OSM) or lifts + slopes
+    (connected-graph algorithm). Returns True if it handled a pending import. Any network/parse
+    error shows an error toast and imports nothing. Reference artifacts (raw fetch + built-graph PNG)
+    are written to OUTPUT_DIR for inspection; they are never read back.
     """
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
 
-    if not ctx.deferred.osm_import:
+    mode = ctx.deferred.osm_import_mode
+    if mode is None:
         return False
-    ctx.deferred.osm_import = False
+    ctx.deferred.osm_import_mode = None
 
     dem = st.session_state.dem_service
     # The box center is always placed before confirm (start_import stores it)
@@ -242,22 +247,18 @@ def process_osm_import_deferred() -> bool:
     ctx.deferred.osm_import_center_lon = None
     ctx.deferred.osm_import_center_lat = None
 
+    importer_cls: type[BaseOSMImporter] = LiftOnlyImporter if mode == OSMImportMode.LIFTS_ONLY else GraphImporter
     t0 = time.perf_counter()
     try:
-        importer = OSMImporter(dem=dem)
-        summary = importer.convert(bbox=bbox, elements=importer.fetch(bbox=bbox))
+        result = importer_cls(dem=dem, bbox=bbox).run(dump_dir=OUTPUT_DIR)
     except Exception as exc:  # network / HTTP / parse — report, import nothing
         logger.warning(f"OSM import failed: {exc}")
         OSMImportErrorMessage(error=str(exc)).display()
         return True
 
-    graph.import_osm(
-        pistes=[(p.points, p.name) for p in summary.pistes],
-        lifts=[(lift.bottom, lift.top, lift.lift_type, lift.name) for lift in summary.lifts],
-        dem=dem,
-    )
+    graph.import_osm(result, dem=dem)
     logger.info(
-        f"OSM import: {len(summary.pistes)} pistes + {len(summary.lifts)} lifts "
+        f"OSM import ({mode}): {len(result.slope_chains)} slope chains + {len(result.lifts)} lifts "
         f"in {(time.perf_counter() - t0) * 1000:.0f}ms"
     )
     bump_dedup_epoch()

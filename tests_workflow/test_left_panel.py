@@ -163,7 +163,7 @@ class TestImportOSMButton:
         # Selecting Import only arms the click-to-place mode; it stays idle and does NOT flag a fetch.
         assert ctx.build_mode.mode == BuildMode.IMPORT, "clicking Import must select import mode"
         assert sm.is_idle_ready, "selecting a mode must not leave idle"
-        assert ctx.deferred.osm_import is False, "import is not flagged until the box is placed + confirmed"
+        assert ctx.deferred.osm_import_mode is None, "import is not flagged until the box is placed + confirmed"
 
 
 class TestPathSettingsVisibility:
@@ -243,16 +243,15 @@ class TestDescribeUndoAction:
         assert "Restore deleted road" in self._describe_top(empty_graph)
 
     def test_import_osm_label(self, empty_graph, mock_dem_blue_slope) -> None:
+        from skiresort_planner.generators.osm_importer import ImportResult
+
         dem = mock_dem_blue_slope
         m = 111320.0
-        piste = (
-            [
-                PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
-                PathPoint(lon=0.0, lat=-500 / m, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / m)),
-            ],
-            "Run",
-        )
-        empty_graph.import_osm(pistes=[piste], lifts=[], dem=dem)
+        slope_points = [
+            PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
+            PathPoint(lon=0.0, lat=-500 / m, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / m)),
+        ]
+        empty_graph.import_osm(ImportResult(slope_chains=[([slope_points], "Run")]), dem=dem)
         assert "OSM import" in self._describe_top(empty_graph)
 
     def test_merge_nodes_label(self, empty_graph, mock_dem_blue_slope) -> None:

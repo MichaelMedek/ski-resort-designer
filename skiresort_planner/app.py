@@ -373,14 +373,14 @@ def _run_app_ui() -> None:
     logger.debug(
         f"[MAIN] ===== rerun ===== state={sm.get_state_name()} camera_epoch={camera_epoch} "
         f"dedup_epoch={st.session_state.get('dedup_epoch', 0)} "
-        f"deferred(osm={ctx.deferred.osm_import},custom={ctx.deferred.custom_connect},"
+        f"deferred(osm={ctx.deferred.osm_import_mode},custom={ctx.deferred.custom_connect},"
         f"fan={bool(ctx.deferred.fan_generation)})"
     )
 
     # Deferred actions (once per render). Progress uses st.toast, NOT st.spinner: a body spinner
     # shifts the body element order between reruns, re-creating the map iframe (flash + camera reset);
     # a toast is a transient overlay that never touches the layout. Fan is fast (no cue).
-    if ctx.deferred.osm_import:
+    if ctx.deferred.osm_import_mode is not None:
         st.toast("🗺️ Importing lifts & pistes from OpenStreetMap…")
         process_osm_import_deferred()
     elif ctx.deferred.custom_connect:

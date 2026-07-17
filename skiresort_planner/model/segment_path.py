@@ -56,6 +56,7 @@ class SegmentPath(NodeConnected):
     segment_ids: list[str]
     start_node_id: str
     end_node_id: str
+    source: str | None = None  # provenance tag (e.g. EntitySource.OSM); None for hand-built paths
 
     # Subclasses set their entity id prefix (e.g. "SL", "R").
     ID_PREFIX: ClassVar[str] = ""
@@ -136,6 +137,7 @@ class SegmentPath(NodeConnected):
             segment_ids=cast(list[str], data["segment_ids"]),
             start_node_id=cast(str, data["start_node_id"]),
             end_node_id=cast(str, data["end_node_id"]),
+            source=cast("str | None", data.get("source")),
         )
 
     def __repr__(self) -> str:

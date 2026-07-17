@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 
 import streamlit as st
 
-from skiresort_planner.constants import MapConfig
+from skiresort_planner.constants import MapConfig, OSMImportMode
 from skiresort_planner.model.click_info import ClickInfo, MapClickType, MarkerType
 from skiresort_planner.model.message import InvalidClickMessage, OutsideTerrainMessage
 from skiresort_planner.model.node import Node
@@ -639,10 +639,10 @@ def handle_import_placing_click(click_info: ClickInfo, elevation: float | None) 
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
 
-    # Center-dot re-click → confirm (the documented shortcut, like re-clicking a proposal).
+    # Center-dot re-click → confirm the full lifts + slopes import (the primary action).
     if click_info.click_type == MapClickType.MARKER and click_info.marker_type == MarkerType.IMPORT_CENTER:
-        logger.debug("[IMPORT] Center-dot click: confirming import")
-        confirm_import_action()
+        logger.debug("[IMPORT] Center-dot click: confirming lifts + slopes import")
+        confirm_import_action(OSMImportMode.LIFTS_AND_SLOPES)
         return
 
     # Terrain click → re-place the box center (keep placing, redraw the box).

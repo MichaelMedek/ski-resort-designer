@@ -1,15 +1,17 @@
-"""Unit tests for the OpenStreetMap importer (generators/osm_importer.py).
+"""Unit tests for the OpenStreetMap importer base + lift-only child (generators/osm_importer.py,
+generators/osm_lift_importer.py).
 
-The importer takes GEOMETRY ONLY from OSM; elevation/difficulty/pylons/WIDTH are recomputed. These
-tests feed synthetic Overpass `elements` + a controllable fake DEM (with a nodata hole) and
-assert: downhill-only piste filter, named-only filter (unnamed ways skipped), aerialway→lift-type
-map (mapping-only; unmapped values are silently ignored), linear resample spacing + DEM Z, min-length
-gate, and that ways reaching outside the box / over nodata are skipped ENTIRELY (only full entities
-import).
+The importer takes GEOMETRY ONLY from OSM; elevation/pylons are recomputed. These tests feed
+synthetic Overpass `elements` + a controllable fake DEM (with a nodata hole) and assert: the
+aerialway→lift-type map (mapping-only; unmapped values are silently ignored), named-only filter
+(unnamed lifts skipped), min-length gate, out-of-box / over-nodata skips, longest-per-name dedup,
+the fetch/retry classification, and bbox_around. Slope geometry lives in the connected-graph
+builder (test_osm_import_rules.py), not here.
 """
 
 from skiresort_planner.core.dem_service import DEMService
-from skiresort_planner.generators.osm_importer import ImportSummary, OSMImporter, OverpassElement
+from skiresort_planner.generators.osm_importer import ImportResult, OverpassElement
+from skiresort_planner.generators.osm_lift_importer import LiftOnlyImporter
 
 M = 111320.0  # metres per degree near the equator
 
@@ -39,40 +41,22 @@ def _way(tags: dict[str, str], verts: list[tuple[float, float]]) -> OverpassElem
     return {"type": "way", "tags": tags, "geometry": [{"lon": x, "lat": y} for x, y in verts]}
 
 
-def _convert(elements: list[OverpassElement], dem: _FakeDEM | None = None) -> ImportSummary:
-    return OSMImporter(dem=dem or _FakeDEM()).convert(bbox=BBOX, elements=elements)
+def _lifts(elements: list[OverpassElement], dem: _FakeDEM | None = None) -> ImportResult:
+    """Assemble a lift-only import (no network) from synthetic elements."""
+    return LiftOnlyImporter(dem=dem or _FakeDEM(), bbox=BBOX)._assemble(elements)
 
 
-class TestPisteFiltering:
-    def test_only_downhill_imported(self) -> None:
-        elements = [
-            _way({"piste:type": "downhill", "name": "Ried"}, [(0.0, 0.0), (0.0, -0.01), (0.0, -0.02)]),
-            _way({"piste:type": "connection"}, [(0.0, 0.0), (0.0, -0.01)]),
-            _way({"piste:type": "snow_park"}, [(0.0, 0.0), (0.0, -0.01)]),
-            _way({"piste:type": "yes"}, [(0.0, 0.0), (0.0, -0.01)]),
-        ]
-        summary = _convert(elements)
-        assert len(summary.pistes) == 1, "only the downhill run imports"
-        assert summary.pistes[0].name == "Ried"
-
-    def test_name_resolution_and_unnamed(self) -> None:
-        named = _way({"piste:type": "downhill", "piste:ref": "7"}, [(0.0, 0.0), (0.0, -0.01)])
-        unnamed = _way({"piste:type": "downhill"}, [(0.0, 0.0), (0.0, -0.02)])
-        summary = _convert([named, unnamed])
-        assert len(summary.pistes) == 1, "only the named run imports"
-        assert summary.pistes[0].name == "7"  # falls back name→piste:name→piste:ref→ref
-        assert summary.skipped == 1, "unnamed run is skipped (potentially outdated/duplicate)"
+class TestLiftOnlyResult:
+    def test_slope_chains_always_empty(self) -> None:
+        result = _lifts([_way({"aerialway": "gondola", "name": "Gipfelbahn"}, [(0.0, 0.0), (0.0, -0.02)])])
+        assert result.slope_chains == [], "lift-only import never produces slopes"
+        assert result.source == "OSM"
 
 
 class TestNamedOnly:
-    def test_unnamed_piste_skipped(self) -> None:
-        # Unnamed downhill runs are frequently outdated/duplicate → skipped and counted.
-        summary = _convert([_way({"piste:type": "downhill"}, [(0.0, 0.0), (0.0, -0.02)])])
-        assert summary.pistes == [] and summary.skipped == 1
-
     def test_unnamed_lift_skipped(self) -> None:
-        summary = _convert([_way({"aerialway": "chair_lift"}, [(0.0, 0.0), (0.0, -0.02)])])
-        assert summary.lifts == [] and summary.skipped == 1
+        result = _lifts([_way({"aerialway": "chair_lift"}, [(0.0, 0.0), (0.0, -0.02)])])
+        assert result.lifts == [] and result.skipped == 1
 
 
 class TestFetch:
@@ -111,7 +95,7 @@ class TestFetch:
             return resp
 
         monkeypatch.setattr("skiresort_planner.generators.osm_importer.requests.post", fake_post)
-        elements = OSMImporter(dem=_FakeDEM()).fetch(BBOX)
+        elements = LiftOnlyImporter(dem=_FakeDEM(), bbox=BBOX).fetch()
         assert elements == [{"id": 1}] and calls["n"] == 1, "one query, no retry when it succeeds"
 
     def test_transient_error_waits_then_retries_once(self, monkeypatch) -> None:
@@ -133,7 +117,7 @@ class TestFetch:
             return resp
 
         monkeypatch.setattr("skiresort_planner.generators.osm_importer.requests.post", fake_post)
-        elements = OSMImporter(dem=_FakeDEM()).fetch(BBOX)
+        elements = LiftOnlyImporter(dem=_FakeDEM(), bbox=BBOX).fetch()
         assert elements == [{"id": 2}] and calls["n"] == 2, "one retry after a transient failure"
 
     def test_non_transient_error_not_retried(self, monkeypatch) -> None:
@@ -150,7 +134,7 @@ class TestFetch:
 
         monkeypatch.setattr("skiresort_planner.generators.osm_importer.requests.post", fake_post)
         with pytest.raises(requests.HTTPError):
-            OSMImporter(dem=_FakeDEM()).fetch(BBOX)
+            LiftOnlyImporter(dem=_FakeDEM(), bbox=BBOX).fetch()
         assert calls["n"] == 1, "a non-transient error is raised at once, not retried"
 
     def test_seconds_until_free_slot_parsing(self, monkeypatch) -> None:
@@ -172,49 +156,16 @@ class TestFetch:
         assert osm_importer._seconds_until_free_slot() == OSMConfig.SLOT_WAIT_MAX_S, "clamped to the cap"
 
 
-class TestResample:
-    def test_spacing_and_dem_z(self) -> None:
-        # ~2.2 km straight run, 30 m step → many points, all draped on the DEM.
-        summary = _convert([_way({"piste:type": "downhill", "name": "Ried"}, [(0.0, 0.0), (0.0, -0.02)])])
-        pts = summary.pistes[0].points
-        assert len(pts) > 50, "long run resampled to many points"
-        assert all(p.elevation == 2500.0 - p.lat * M * 0.20 for p in pts), "Z is the DEM value"
-        # Consecutive spacing ≈ RESAMPLE_STEP_M (30 m), not the raw 2-vertex polyline.
-        gaps = [pts[i].distance_to(other=pts[i + 1]) for i in range(len(pts) - 1)]
-        assert max(gaps) < 40.0, f"no gap far above the 30 m step, got {max(gaps):.0f}"
-
-    def test_two_vertex_run_keeps_endpoints_oriented_downhill(self) -> None:
-        # A straight 2-vertex run resamples to interior points; the DEM here rises toward -lat, so
-        # the run is reoriented to descend (top→bottom). Its endpoints are the two way vertices.
-        summary = _convert([_way({"piste:type": "downhill", "name": "Ried"}, [(0.0, 0.0), (0.0, -0.01)])])
-        pts = summary.pistes[0].points
-        assert pts[0].elevation >= pts[-1].elevation, "imported run must descend top→bottom"
-        endpoints = {(round(pts[0].lat, 6), pts[0].lon), (round(pts[-1].lat, 6), pts[-1].lon)}
-        assert endpoints == {(0.0, 0.0), (-0.01, 0.0)}, "trim keeps the two way endpoints"
-
-
-class TestFullOnly:
-    def test_truncated_way_skipped_entirely(self) -> None:
-        # A way with a vertex outside the box (far east) is dropped whole, not clipped.
-        summary = _convert([_way({"piste:type": "downhill", "name": "Ried"}, [(0.0, 0.0), (0.5, 0.0)])])
-        assert summary.pistes == [] and summary.skipped == 1
-
-    def test_nodata_way_skipped_entirely(self) -> None:
-        # Fully inside the box but over a DEM nodata hole → not fully sampleable → skipped.
-        dem = _FakeDEM(hole_lon=0.0)  # any lon > 0 is nodata
-        summary = _convert([_way({"piste:type": "downhill", "name": "Ried"}, [(0.001, 0.0), (0.001, -0.02)])], dem=dem)
-        assert summary.pistes == [] and summary.skipped == 1
-
-
 class TestLifts:
     def test_aerialway_type_map_and_orientation(self) -> None:
         # bottom vertex given first but at higher lat (=higher elev on south slope); importer
         # must orient bottom = lower station.
-        summary = _convert([_way({"aerialway": "gondola", "name": "Gipfelbahn"}, [(0.0, 0.0), (0.0, -0.02)])])
-        assert len(summary.lifts) == 1
-        lift = summary.lifts[0]
-        assert lift.lift_type == "gondola"
-        assert lift.bottom.elevation < lift.top.elevation, "bottom is the lower station"
+        result = _lifts([_way({"aerialway": "gondola", "name": "Gipfelbahn"}, [(0.0, 0.0), (0.0, -0.02)])])
+        assert len(result.lifts) == 1
+        bottom, top, lift_type, name = result.lifts[0]
+        assert lift_type == "gondola"
+        assert name == "Gipfelbahn"
+        assert bottom.elevation < top.elevation, "bottom is the lower station"
 
     def test_all_four_lift_types(self) -> None:
         elements = [
@@ -223,7 +174,7 @@ class TestLifts:
             _way({"aerialway": "mixed_lift", "name": "C"}, [(0.002, 0.0), (0.002, -0.01)]),
             _way({"aerialway": "cable_car", "name": "D"}, [(0.003, 0.0), (0.003, -0.01)]),
         ]
-        types = sorted(lift.lift_type for lift in _convert(elements).lifts)
+        types = sorted(lift_type for _b, _t, lift_type, _n in _lifts(elements).lifts)
         assert types == ["aerial_tram", "chairlift", "gondola", "surface_lift"]
 
     def test_unmapped_aerialway_ignored_silently(self) -> None:
@@ -239,162 +190,59 @@ class TestLifts:
             _way({"aerialway": "yes"}, [(0.005, 0.0), (0.005, -0.02)]),
             _way({"aerialway": "flying_carpet_9000"}, [(0.006, 0.0), (0.006, -0.02)]),
         ]
-        summary = _convert(elements)
-        assert summary.lifts == [] and summary.skipped == 0
+        result = _lifts(elements)
+        assert result.lifts == [] and result.skipped == 0
 
     def test_short_lift_skipped(self) -> None:
         # A named gondola under MIN_LIFT_LENGTH_M (300 m) is a nursery lift → skipped and counted.
-        summary = _convert([_way({"aerialway": "gondola", "name": "Baby"}, [(0.0, 0.0), (0.0, -0.002)])])  # ~223 m
-        assert summary.lifts == [] and summary.skipped == 1
+        result = _lifts([_way({"aerialway": "gondola", "name": "Baby"}, [(0.0, 0.0), (0.0, -0.002)])])  # ~223 m
+        assert result.lifts == [] and result.skipped == 1
+
+    def test_truncated_lift_skipped_entirely(self) -> None:
+        # A lift with a vertex outside the box (far east) is dropped whole, not clipped.
+        result = _lifts([_way({"aerialway": "gondola", "name": "Out"}, [(0.0, 0.0), (0.5, 0.0)])])
+        assert result.lifts == [] and result.skipped == 1
+
+    def test_nodata_lift_skipped_entirely(self) -> None:
+        # Fully inside the box but a station over a DEM nodata hole → not sampleable → skipped.
+        dem = _FakeDEM(hole_lon=0.0)  # any lon > 0 is nodata
+        result = _lifts([_way({"aerialway": "gondola", "name": "Hole"}, [(0.001, 0.0), (0.001, -0.02)])], dem=dem)
+        assert result.lifts == [] and result.skipped == 1
 
     def test_lift_name_resolution_and_unnamed(self) -> None:
         named = _way({"aerialway": "chair_lift", "name": "Gipfelbahn"}, [(0.0, 0.0), (0.0, -0.02)])
         by_ref = _way({"aerialway": "chair_lift", "ref": "B7"}, [(0.001, 0.0), (0.001, -0.02)])
         unnamed = _way({"aerialway": "chair_lift"}, [(0.002, 0.0), (0.002, -0.02)])
-        summary = _convert([named, by_ref, unnamed])
-        assert {lift.name for lift in summary.lifts} == {"Gipfelbahn", "B7"}, "name→ref resolution"
-        assert summary.skipped == 1, "unnamed lift is skipped"
-
-
-class TestMinLength:
-    def test_short_piste_skipped(self) -> None:
-        # A named downhill run under MIN_PISTE_LENGTH_M is a stub → skipped and counted.
-        from skiresort_planner.constants import OSMConfig
-
-        dlat = (OSMConfig.MIN_PISTE_LENGTH_M * 0.5) / M  # arm well under the minimum
-        summary = _convert([_way({"piste:type": "downhill", "name": "Stub"}, [(0.0, 0.0), (0.0, -dlat)])])
-        assert summary.pistes == [] and summary.skipped == 1
-
-    def test_long_piste_imported(self) -> None:
-        # A run comfortably over the minimum imports normally.
-        summary = _convert([_way({"piste:type": "downhill", "name": "Ried"}, [(0.0, 0.0), (0.0, -0.004)])])  # ~445 m
-        assert len(summary.pistes) == 1 and summary.skipped == 0
-
-
-class TestDescendingTrim:
-    """OSM out-and-back pistes (drawn up AND down) must be trimmed to their descending run.
-
-    The _FakeDEM is a pure south slope (elev = 2500 - lat·M·0.20), so a run going south descends and
-    a run going north climbs. A polyline that goes down then back up drapes to an up-and-down profile
-    with ~0 net drop — the bug the user hit ('7a', 0% gradient). We keep only the longest descending
-    stretch, judged at rolling-window scale so DEM bumps don't fragment a real run.
-    """
-
-    def test_out_and_back_trimmed_to_descending_arm(self) -> None:
-        # South 600 m (down) then back north 600 m (up): only the descending arm should survive.
-        verts = [(0.0, 0.0), (0.0, -0.006), (0.0, 0.0)]
-        summary = _convert([_way({"piste:type": "downhill", "name": "7a"}, verts)])
-        assert len(summary.pistes) == 1, "the descending arm alone still clears the length min"
-        pts = summary.pistes[0].points
-        assert pts[0].elevation > pts[-1].elevation, "kept run descends"
-        assert pts[-1].lat == 0.0 and pts[0].lat < 0.0, "kept the south (descending) arm"
-        assert pts[0].elevation - pts[-1].elevation > 100.0, "real drop, not the ~0 of the out-and-back"
-
-    def test_pure_descent_is_unchanged(self) -> None:
-        summary = _convert([_way({"piste:type": "downhill", "name": "Ried"}, [(0.0, -0.006), (0.0, 0.0)])])
-        pts = summary.pistes[0].points
-        assert pts[0].elevation > pts[-1].elevation
-        assert (pts[0].lat, pts[-1].lat) == (-0.006, 0.0)
-
-    def test_out_and_back_where_each_arm_too_short_is_skipped(self) -> None:
-        # Down then up, each arm under MIN_PISTE_LENGTH_M: after trimming to one arm the run is dropped.
-        from skiresort_planner.constants import OSMConfig
-
-        dlat = (OSMConfig.MIN_PISTE_LENGTH_M * 0.5) / M  # each arm well under the minimum
-        verts = [(0.0, 0.0), (0.0, -dlat), (0.0, 0.0)]
-        summary = _convert([_way({"piste:type": "downhill", "name": "TinyOut"}, verts)])
-        assert summary.pistes == [] and summary.skipped == 1
-
-    def test_longest_descending_run_helper(self) -> None:
-        from skiresort_planner.generators.osm_importer import _longest_descending_run
-        from skiresort_planner.model.path_point import PathPoint
-
-        def run(elevs):
-            # Points spaced 30 m so the series spans well past the rolling window (realistic scale).
-            pts = [PathPoint(lon=0.0, lat=-i * 30 / M, elevation=e) for i, e in enumerate(elevs)]
-            out = _longest_descending_run(pts)
-            return out[0].elevation, out[-1].elevation, len(out)
-
-        # Pure 30-point descent: unchanged and oriented top→bottom.
-        pure = [100.0 - 2 * i for i in range(30)]
-        assert run(pure) == (100.0, pure[-1], 30)
-        assert run(pure)[0] > run(pure)[1]
-
-        # 20 down then 20 up: trimmed to the descending arm only.
-        out_and_back = [100.0 - 3 * i for i in range(20)] + [40.0 + 3 * i for i in range(20)]
-        first, last, n = run(out_and_back)
-        assert first > last and n < len(out_and_back), "out-and-back trimmed to its descending arm"
-
-        # Net descent with periodic small up-bumps: the whole run is kept (bumps tolerated).
-        undulating = []
-        e = 200.0
-        for i in range(30):
-            e += 6.0 if i % 5 == 0 else 0.0
-            e -= 4.0
-            undulating.append(e)
-        _first, _last, n = run(undulating)
-        assert n == 30, "an undulating-but-descending run is not fragmented by DEM bumps"
+        result = _lifts([named, by_ref, unnamed])
+        assert {name for _b, _t, _lt, name in result.lifts} == {"Gipfelbahn", "B7"}, "name→ref resolution"
+        assert result.skipped == 1, "unnamed lift is skipped"
 
 
 class TestDedupeByName:
-    """OSM sometimes maps the same run/lift twice (an outdated way + a re-drawn one, same name),
-    which import as two identical entities. We keep the LONGEST per name within each kind and count
-    the shorter same-name duplicates as skipped. Pistes and lifts dedupe independently.
+    """OSM sometimes maps the same lift twice (an outdated way + a re-drawn one, same name), which
+    import as two identical entities. We keep the LONGEST per name and count the shorter duplicates.
     """
-
-    def test_shorter_same_name_piste_dropped(self) -> None:
-        # Two 'Ried' downhill runs; the longer (0→-0.02) is kept, the shorter (0→-0.006) dropped.
-        elements = [
-            _way({"piste:type": "downhill", "name": "Ried"}, [(0.0, 0.0), (0.0, -0.006)]),
-            _way({"piste:type": "downhill", "name": "Ried"}, [(0.0, 0.0), (0.0, -0.02)]),
-        ]
-        summary = _convert(elements)
-        assert len(summary.pistes) == 1, "only the longer 'Ried' survives"
-        kept = summary.pistes[0]
-        assert kept.name == "Ried"
-        assert abs(kept.points[0].lat - kept.points[-1].lat) > 0.01, "kept the longer geometry"
-        assert summary.skipped == 1, "the shorter duplicate is counted as skipped"
 
     def test_shorter_same_name_lift_dropped(self) -> None:
         elements = [
             _way({"aerialway": "gondola", "name": "Gipfelbahn"}, [(0.0, 0.0), (0.0, -0.02)]),
             _way({"aerialway": "gondola", "name": "Gipfelbahn"}, [(0.0, 0.0), (0.0, -0.006)]),
         ]
-        summary = _convert(elements)
-        assert len(summary.lifts) == 1 and summary.lifts[0].name == "Gipfelbahn"
-        drop = summary.lifts[0].bottom.distance_to(other=summary.lifts[0].top)
-        assert drop > 1000.0, "kept the longer lift"
-        assert summary.skipped == 1
+        result = _lifts(elements)
+        assert len(result.lifts) == 1
+        bottom, top, _lt, name = result.lifts[0]
+        assert name == "Gipfelbahn"
+        assert bottom.distance_to(other=top) > 1000.0, "kept the longer lift"
+        assert result.skipped == 1
 
     def test_distinct_names_all_kept(self) -> None:
         elements = [
-            _way({"piste:type": "downhill", "name": "Ried"}, [(0.0, 0.0), (0.0, -0.02)]),
-            _way({"piste:type": "downhill", "name": "Kessel"}, [(0.001, 0.0), (0.001, -0.02)]),
+            _way({"aerialway": "gondola", "name": "Gipfelbahn"}, [(0.0, 0.0), (0.0, -0.02)]),
+            _way({"aerialway": "chair_lift", "name": "Talbahn"}, [(0.001, 0.0), (0.001, -0.02)]),
         ]
-        summary = _convert(elements)
-        assert {p.name for p in summary.pistes} == {"Ried", "Kessel"}
-        assert summary.skipped == 0
-
-    def test_same_name_different_kind_not_deduped(self) -> None:
-        # A piste and a lift sharing a name must NOT collide — kinds dedupe independently.
-        elements = [
-            _way({"piste:type": "downhill", "name": "Sonnblick"}, [(0.0, 0.0), (0.0, -0.02)]),
-            _way({"aerialway": "gondola", "name": "Sonnblick"}, [(0.001, 0.0), (0.001, -0.02)]),
-        ]
-        summary = _convert(elements)
-        assert len(summary.pistes) == 1 and len(summary.lifts) == 1
-        assert summary.skipped == 0
-
-    def test_three_same_name_keeps_only_longest(self) -> None:
-        elements = [
-            _way({"piste:type": "downhill", "name": "Ried"}, [(0.0, 0.0), (0.0, -0.006)]),
-            _way({"piste:type": "downhill", "name": "Ried"}, [(0.0, 0.0), (0.0, -0.03)]),
-            _way({"piste:type": "downhill", "name": "Ried"}, [(0.0, 0.0), (0.0, -0.01)]),
-        ]
-        summary = _convert(elements)
-        assert len(summary.pistes) == 1, "only the single longest 'Ried' survives"
-        assert abs(summary.pistes[0].points[0].lat - summary.pistes[0].points[-1].lat) > 0.02
-        assert summary.skipped == 2, "the two shorter duplicates are both skipped"
+        result = _lifts(elements)
+        assert {name for _b, _t, _lt, name in result.lifts} == {"Gipfelbahn", "Talbahn"}
+        assert result.skipped == 0
 
 
 class TestEndpointsMatch:

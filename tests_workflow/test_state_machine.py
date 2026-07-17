@@ -507,7 +507,7 @@ class TestImportPlacing:
         sm.cancel_import()
         assert sm.is_idle_ready
         assert ctx.deferred.osm_import_center_lon is None and ctx.deferred.osm_import_center_lat is None
-        assert ctx.deferred.osm_import is False
+        assert ctx.deferred.osm_import_mode is None
 
     def test_complete_returns_to_idle(self) -> None:
         sm, ctx = self._sm()
