@@ -509,3 +509,17 @@ class TestImportRules:
             f"{len(offenders)} slopes have a point > {MAX_TERRAIN_DEVIATION_M}m off terrain "
             f"(above/below DEM): {offenders[:5]}"
         )
+
+    def test_r24_no_lift_dropped(self, ischgl_graph):
+        """EVERY raw OSM way with an allowed aerialway type and length ≥
+        MIN_LIFT_LENGTH_M MUST appear in the final output. The builder may never drop a lift.
+        """
+        _pistes, lifts = ways_to_lines(_load_cache(), ISCHGL_BBOX)
+        expected = sum(
+            1
+            for vs, _lt, _nm in lifts
+            if sum(_hav(vs[i], vs[i + 1]) for i in range(len(vs) - 1)) >= OSMConfig.MIN_LIFT_LENGTH_M
+        )
+        assert len(ischgl_graph.lifts) == expected, (
+            f"only {len(ischgl_graph.lifts)}/{expected} qualifying lifts survived — a lift was DROPPED "
+        )
