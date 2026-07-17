@@ -458,35 +458,21 @@ class TestImportRules:
             f"(missing slopes, not a lift fault): {unskiable[:5]}"
         )
 
-    def test_r22_no_slope_dead_ends_except_at_bbox_edge(self, ischgl_graph):
+    def test_r22_no_slope_dead_ends(self, ischgl_graph):
         """No slope may end in EMPTY SPACE: every slope endpoint node must either connect onward (be a
-        vertex of another segment or a lift) OR sit on the import bbox edge (a run genuinely cut off by
-        the box — nothing we can do). A dead-end in the interior signals a dropped/truncated slope.
+        vertex of another segment or a lift). A dead-end signals a dropped/truncated slope.
         """
-        node_pt = ischgl_graph.node_points
         deg: dict[int, int] = defaultdict(int)
         for r in ischgl_graph.slope_runs:
             deg[r.node_a] += 1
             deg[r.node_b] += 1
         lift_nodes = {n for lf in ischgl_graph.lifts for n in (lf.node_a, lf.node_b)}
-        min_lon, min_lat, max_lon, max_lat = ISCHGL_BBOX
-        edge_tol_deg = 150.0 / 111_320.0  # within ~150 m of the box edge counts as a genuine cut-off
-
-        def on_bbox_edge(n: int) -> bool:
-            p = node_pt[n]
-            lon, lat = float(p.lon), float(p.lat)
-            return (
-                abs(lon - min_lon) < edge_tol_deg
-                or abs(lon - max_lon) < edge_tol_deg
-                or abs(lat - min_lat) < edge_tol_deg
-                or abs(lat - max_lat) < edge_tol_deg
-            )
 
         dead_ends = []
         for r in ischgl_graph.slope_runs:
             for n in (r.node_a, r.node_b):
-                # degree 1 among slopes AND not a lift station AND not at the box edge → floating end
-                if deg[n] == 1 and n not in lift_nodes and not on_bbox_edge(n):
+                # degree 1 among slopes AND not a lift station → floating end
+                if deg[n] == 1 and n not in lift_nodes:
                     dead_ends.append(n)
         assert dead_ends == [], (
             f"{len(set(dead_ends))} slope nodes dead-end in empty space (interior, no lift, no onward "
