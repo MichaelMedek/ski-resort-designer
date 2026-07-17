@@ -273,7 +273,7 @@ class TestCustomPathBranch:
         assert sm.current_state_value == "slope_custom_path"
         assert len(ctx.build(SegmentKind.SLOPE).segments) == 0
 
-        sm.cancel_custom_connect()
+        sm.cancel_custom()  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
         assert sm.current_state_value == "slope_starting", "has_no_segments guard routes back to starting"
         assert ctx.custom_connect.force_mode is False, "custom connect cleared by before_cancel_custom"
@@ -298,7 +298,7 @@ class TestCustomPathBranch:
         assert sm.current_state_value == "slope_custom_path"
         assert len(ctx.build(SegmentKind.SLOPE).segments) == 1
 
-        sm.cancel_custom_connect()
+        sm.cancel_custom()  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
         assert sm.current_state_value == "slope_building", "one segment routes back to building, not starting"
         assert len(ctx.build(SegmentKind.SLOPE).segments) == 1, "committed segment survives cancel_custom"

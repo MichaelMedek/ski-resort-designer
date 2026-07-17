@@ -176,13 +176,20 @@ class TestMergePlacingMessages:
         from skiresort_planner.model.message import MergeActionMessage
 
         msg = MergeActionMessage(selected_count=1).message
-        assert "at least" in msg and "2" in msg
+        assert "Delete" in msg and "Merge" in msg, "the <2 prompt covers both merge and delete"
 
     def test_action_two_or_more_offers_confirm(self) -> None:
         from skiresort_planner.model.message import MergeActionMessage
 
         msg = MergeActionMessage(selected_count=2).message
         assert "Confirm Merge" in msg
+
+    def test_unable_to_delete_names_the_reason(self) -> None:
+        from skiresort_planner.model.message import UnableToDeleteMessage
+
+        msg = UnableToDeleteMessage(reason="N5 is a lift station — delete the lift first")
+        assert "Cannot delete" in msg.message and "lift station" in msg.message
+        assert msg.icon == "🗑️"
 
     def test_too_far_reads_strictly_above_max(self) -> None:
         from skiresort_planner.model.message import MergeTooFarMessage

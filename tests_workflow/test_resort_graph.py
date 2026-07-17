@@ -25,9 +25,10 @@ from skiresort_planner.model.actions import (
 )
 from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint
-from skiresort_planner.model.path_segment import SegmentKind
+from skiresort_planner.model.path_segment import PathSegment, SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
-from skiresort_planner.model.resort_graph import ResortGraph
+from skiresort_planner.model.resort_graph import NodeDeletability, ResortGraph, _chain_node_sequence
+from skiresort_planner.model.slope import Slope
 from tests_workflow.conftest import MockDEMService
 
 M = MapConfig.METERS_PER_DEGREE_EQUATOR
@@ -1358,20 +1359,381 @@ class TestMergeNodes:
         assert (restored.start_node_id, restored.end_node_id) == boundary_before, "boundary ids restored"
         assert restored.start_node_id != restored.end_node_id, "endpoints distinct again"
 
-    def test_merge_partial_collapse_keeps_multisegment_path(self, empty_graph, mock_dem_blue_slope) -> None:
-        """Merging both endpoints of ONE interior segment of a two-segment slope leaves that segment
-        zero-length but the PATH boundary distinct — the path survives (restitch is 0-length-safe).
+    def test_undo_collapsing_merge_after_survivor_swept_by_cleanup(self, empty_graph, mock_dem_blue_slope) -> None:
+        """Regression: a merge that collapses the survivor's only slope leaves the survivor node
+        isolated; a later cleanup_isolated_nodes removes it entirely. Undo must still restore the
+        merge (survivor recreated wholesale), not crash with KeyError on the missing survivor.
+        """
+        dem = mock_dem_blue_slope
+        graph = empty_graph
+        graph.commit_paths(
+            paths=[ProposedPathSegment(points=_leg(0.0, 0.0, 0.0, -20.0, 6, dem), target_difficulty="blue")]
+        )
+        slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        survivor = slope.start_node_id
+
+        graph.merge_nodes(node_ids=[slope.start_node_id, slope.end_node_id], dem=dem)
+        assert graph.cleanup_isolated_nodes() >= 1, "the collapsed merge left the survivor isolated"
+        assert survivor not in graph.nodes, "cleanup removed the isolated survivor"
+
+        graph.undo_last()  # must not KeyError on the swept survivor
+
+        assert survivor in graph.nodes, "undo recreates the swept survivor node"
+        assert slope.id in graph.slopes, "undo restores the collapsed slope"
+
+    def test_merge_partial_collapse_splices_out_the_zero_length_segment(self, empty_graph, mock_dem_blue_slope) -> None:
+        """Merging both endpoints of ONE segment of a two-segment slope collapses that segment to
+        zero length; it is SPLICED OUT of the chain (no zero-length curl) and the slope survives with
+        the remaining segment. Undo restores the original two-segment chain verbatim.
         """
         dem = mock_dem_blue_slope
         graph = empty_graph
         seg_ids = _commit_L_slope(graph, dem)
         slope = graph.finish_slope(segment_ids=seg_ids)
         first_seg = graph.segments[slope.segment_ids[0]]
+        original_chain = list(slope.segment_ids)
         # Merge the first segment's own endpoints (path start + interior junction).
         graph.merge_nodes(node_ids=[first_seg.start_node_id, first_seg.end_node_id], dem=dem)
 
         assert slope.id in graph.slopes, "a partially-collapsed multi-segment path is not deleted"
+        assert first_seg.id not in graph.slopes[slope.id].segment_ids, "the collapsed segment is spliced out"
+        assert len(graph.slopes[slope.id].segment_ids) == len(original_chain) - 1, "one segment removed"
+        assert all(
+            graph.segments[sid].start_node_id != graph.segments[sid].end_node_id
+            for sid in graph.slopes[slope.id].segment_ids
+        ), "no zero-length segment remains in the chain"
         assert slope.start_node_id != slope.end_node_id, "path boundary stays distinct"
+
+        graph.undo_last()
+        assert graph.slopes[slope.id].segment_ids == original_chain, "undo restores the original chain"
+
+
+# =============================================================================
+# Node delete / insert (merge-mode editing tools)
+# =============================================================================
+
+
+def _commit_straight_slope(graph, dem, n_segments: int):
+    """Commit n straight due-south descending segments into one finished slope; return the slope.
+
+    Each segment is its own commit so nodes materialise at every junction (interior nodes exist).
+    Segments are ~480m so junctions sit well beyond the node-snap distance.
+    """
+    lat = 0.0
+    for _ in range(n_segments):
+        leg = _leg(0.0, lat, 0.0, -20.0, 25, dem)  # ~480m south per segment
+        graph.commit_paths(paths=[ProposedPathSegment(points=leg, target_difficulty="blue")])
+        lat = leg[-1].lat
+    return graph.finish_slope(segment_ids=list(graph.segments.keys()))
+
+
+class TestNodeDeletability:
+    """node_deletability classifies why a node can/can't be deleted (single source for UI + op)."""
+
+    def test_interior_node_is_deletable_interior(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=3)
+        interior = empty_graph.segments[slope.segment_ids[0]].end_node_id  # junction of seg0/seg1
+        assert empty_graph.node_deletability(interior) == NodeDeletability.DELETABLE_INTERIOR
+
+    def test_clean_endpoint_of_multisegment_path_is_deletable_end(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=3)
+        assert empty_graph.node_deletability(slope.start_node_id) == NodeDeletability.DELETABLE_END
+        assert empty_graph.node_deletability(slope.end_node_id) == NodeDeletability.DELETABLE_END
+
+    def test_endpoint_of_single_segment_path_is_last_segment(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=1)
+        assert empty_graph.node_deletability(slope.start_node_id) == NodeDeletability.LAST_SEGMENT
+
+    def test_lift_station_is_never_deletable(self, empty_graph, mock_dem_blue_slope) -> None:
+        dem = mock_dem_blue_slope
+        graph = empty_graph
+        graph.nodes["A"] = Node(id="A", location=PathPoint(lon=0.0, lat=0.0, elevation=2000.0))
+        graph.nodes["T"] = Node(id="T", location=PathPoint(lon=0.0, lat=-1000 / M, elevation=2400.0))
+        graph.add_lift(start_node_id="A", end_node_id="T", lift_type="chairlift", dem=dem)
+        assert graph.node_deletability("A") == NodeDeletability.IS_LIFT_STATION
+
+    def test_branch_node_shared_by_two_paths_is_path_endpoint(self, empty_graph, mock_dem_blue_slope) -> None:
+        """A node that is the boundary of one slope AND interior/boundary of another is a junction —
+        not deletable; the user must delete a path first.
+        """
+        dem = mock_dem_blue_slope
+        graph = empty_graph
+        # Slope 1: due south to a junction node.
+        leg1 = _leg(0.0, 0.0, 0.0, -20.0, 25, dem)
+        graph.commit_paths(paths=[ProposedPathSegment(points=leg1, target_difficulty="blue")])
+        slope1 = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        junction = slope1.end_node_id
+        # Slope 2 starts at that same junction and heads south-east (reuses the node via snap).
+        j = graph.nodes[junction]
+        leg2 = _leg(j.lon, j.lat, 20.0, -20.0, 25, dem)
+        seg_before = set(graph.segments)
+        graph.commit_paths(paths=[ProposedPathSegment(points=leg2, target_difficulty="blue")])
+        new_seg = (set(graph.segments) - seg_before).pop()
+        graph.finish_slope(segment_ids=[new_seg])
+        assert graph.node_deletability(junction) == NodeDeletability.IS_PATH_ENDPOINT
+
+
+class TestDeleteNodes:
+    """delete_nodes fuses interior nodes / trims clean endpoints, as ONE undoable action."""
+
+    def test_delete_interior_fuses_two_segments_into_one(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=3)
+        interior = empty_graph.segments[slope.segment_ids[0]].end_node_id
+        length_before = slope.get_total_length(empty_graph.segments)
+
+        empty_graph.delete_nodes(node_ids=[interior], dem=mock_dem_blue_slope)
+
+        assert interior not in empty_graph.nodes, "the interior node is gone"
+        assert len(empty_graph.slopes[slope.id].segment_ids) == 2, "3 segments fused to 2"
+        length_after = empty_graph.slopes[slope.id].get_total_length(empty_graph.segments)
+        assert length_after == pytest.approx(length_before, rel=0.01), "path length preserved by the fuse"
+
+    def test_delete_two_adjacent_interior_collapses_three_to_one(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=3)
+        n0 = empty_graph.segments[slope.segment_ids[0]].end_node_id
+        n1 = empty_graph.segments[slope.segment_ids[1]].end_node_id
+
+        empty_graph.delete_nodes(node_ids=[n0, n1], dem=mock_dem_blue_slope)
+
+        assert len(empty_graph.slopes[slope.id].segment_ids) == 1, "both interior nodes fused → 1 segment"
+        assert n0 not in empty_graph.nodes and n1 not in empty_graph.nodes
+
+    def test_delete_clean_endpoint_trims_boundary_segment(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=3)
+        old_start = slope.start_node_id
+        new_start_expected = empty_graph.segments[slope.segment_ids[1]].start_node_id
+
+        empty_graph.delete_nodes(node_ids=[old_start], dem=mock_dem_blue_slope)
+
+        assert old_start not in empty_graph.nodes, "the trimmed end node is freed"
+        assert len(empty_graph.slopes[slope.id].segment_ids) == 2, "the boundary segment is trimmed"
+        assert empty_graph.slopes[slope.id].start_node_id == new_start_expected, "boundary re-pointed"
+
+    def test_delete_end_node_and_adjacent_node_leaves_no_dangling_boundary(
+        self, empty_graph, mock_dem_blue_slope
+    ) -> None:
+        """Regression: deleting an end node AND its neighbour together must trim + fuse in one pass —
+        the old two-phase logic left a segment pointing at the (also-deleted) neighbour node.
+        """
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=4)
+        end = slope.start_node_id
+        adjacent = empty_graph.segments[slope.segment_ids[0]].end_node_id  # neighbour of the end node
+
+        empty_graph.delete_nodes(node_ids=[end, adjacent], dem=mock_dem_blue_slope)
+
+        surviving = graph_slope = empty_graph.slopes[slope.id]
+        assert end not in empty_graph.nodes and adjacent not in empty_graph.nodes, "both nodes freed"
+        # Every surviving segment must reference nodes that still exist (no dangling boundary).
+        for sid in surviving.segment_ids:
+            seg = empty_graph.segments[sid]
+            assert seg.start_node_id in empty_graph.nodes, f"{sid} start node missing"
+            assert seg.end_node_id in empty_graph.nodes, f"{sid} end node missing"
+        assert graph_slope.start_node_id in empty_graph.nodes, "path start node exists"
+        assert graph_slope.end_node_id == empty_graph.segments[surviving.segment_ids[-1]].end_node_id
+
+    def test_delete_records_single_undo_and_restores_verbatim(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=3)
+        interior = empty_graph.segments[slope.segment_ids[0]].end_node_id
+        chain_before = list(slope.segment_ids)
+
+        empty_graph.delete_nodes(node_ids=[interior], dem=mock_dem_blue_slope)
+        assert empty_graph.undo_stack[-1].action_type.name == "DELETE_NODES", "delete pushes one DELETE_NODES entry"
+
+        empty_graph.undo_last()
+        assert interior in empty_graph.nodes, "undo restores the deleted node"
+        assert empty_graph.slopes[slope.id].segment_ids == chain_before, "undo restores the chain verbatim"
+
+    def test_delete_non_deletable_raises(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=1)
+        # A single-segment path's endpoint is LAST_SEGMENT — delete_nodes_rejection refuses it.
+        with pytest.raises(ValueError, match="delete the path instead"):
+            empty_graph.delete_nodes(node_ids=[slope.start_node_id], dem=mock_dem_blue_slope)
+
+    def test_delete_never_orphans_a_segment_after_cross_path_merge(self, empty_graph, mock_dem_blue_slope) -> None:
+        """Regression: a merge can make a node a junction shared by a second path. Deleting nodes on
+        one path must never delete a node the other path's segment still references (crash: KeyError
+        on a segment endpoint). Only truly-unreferenced nodes are removed.
+        """
+        dem = mock_dem_blue_slope
+        graph = empty_graph
+        s1 = _commit_straight_slope(graph, dem, n_segments=2)
+        s1_interior = graph.segments[s1.segment_ids[0]].end_node_id
+        # A second 2-segment slope, then move its interior node coincident with s1's interior node so
+        # the cross-path merge is unconditionally accepted (independent of finish-smoothing jitter).
+        before = set(graph.segments)
+        lat = 0.0
+        for _ in range(2):
+            leg = _leg(80 / M, lat, 0.0, -20.0, 25, dem)
+            graph.commit_paths(paths=[ProposedPathSegment(points=leg, target_difficulty="blue")])
+            lat = leg[-1].lat
+        s2 = graph.finish_slope(segment_ids=list(set(graph.segments) - before))
+        s2_interior = graph.segments[s2.segment_ids[0]].end_node_id
+        graph.nodes[s2_interior].location = graph.nodes[s1_interior].location  # make them coincident
+
+        # Merge s2's interior node onto s1's interior node → a shared junction.
+        graph.merge_nodes(node_ids=[s1_interior, s2_interior], dem=dem)
+
+        # Deleting any still-deletable node must leave the graph referentially intact (no segment
+        # pointing at a removed node) — whether the delete proceeds or is refused.
+        for nid in list(graph.nodes):
+            if graph.node_deletability(nid) in (NodeDeletability.DELETABLE_INTERIOR, NodeDeletability.DELETABLE_END):
+                graph.delete_nodes(node_ids=[nid], dem=dem)
+                break
+        for seg in graph.segments.values():
+            assert seg.start_node_id in graph.nodes, f"orphan: {seg.id} start {seg.start_node_id}"
+            assert seg.end_node_id in graph.nodes, f"orphan: {seg.id} end {seg.end_node_id}"
+
+
+class TestInsertNodeOnPath:
+    """insert_node_on_path splits a segment at the clicked point, as ONE undoable action."""
+
+    def test_insert_splits_segment_and_updates_chain(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=1)
+        seg_id = slope.segment_ids[0]
+        seg = empty_graph.segments[seg_id]
+        mid = seg.points[len(seg.points) // 2]
+
+        node_id = empty_graph.insert_node_on_path(segment_id=seg_id, lon=mid.lon, lat=mid.lat)
+
+        assert node_id in empty_graph.nodes, "a new node was created"
+        assert seg_id not in empty_graph.segments, "the original segment is replaced"
+        assert len(empty_graph.slopes[slope.id].segment_ids) == 2, "[seg] → [A', B']"
+        a, b = empty_graph.slopes[slope.id].segment_ids
+        assert empty_graph.segments[a].end_node_id == node_id
+        assert empty_graph.segments[b].start_node_id == node_id
+        # The node snapped to an existing vertex, so it sits exactly on the drawn path.
+        assert empty_graph.nodes[node_id].location == mid
+
+    def test_insert_too_close_to_endpoint_raises(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=1)
+        seg = empty_graph.segments[slope.segment_ids[0]]
+        near_start = seg.points[0]
+        with pytest.raises(ValueError, match="too close to an existing node"):
+            empty_graph.insert_node_on_path(segment_id=seg.id, lon=near_start.lon, lat=near_start.lat)
+
+    def test_insert_records_single_undo_and_restores_verbatim(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=1)
+        seg_id = slope.segment_ids[0]
+        mid = empty_graph.segments[seg_id].points[len(empty_graph.segments[seg_id].points) // 2]
+        chain_before = list(slope.segment_ids)
+
+        node_id = empty_graph.insert_node_on_path(segment_id=seg_id, lon=mid.lon, lat=mid.lat)
+        assert empty_graph.undo_stack[-1].action_type.name == "INSERT_NODE", "insert pushes one INSERT_NODE entry"
+
+        empty_graph.undo_last()
+        assert node_id not in empty_graph.nodes, "undo removes the inserted node"
+        assert seg_id in empty_graph.segments, "undo restores the original segment"
+        assert empty_graph.slopes[slope.id].segment_ids == chain_before, "undo restores the chain verbatim"
+
+
+class TestNodeEditHelpers:
+    """Direct unit tests for the fragile private chain-surgery helpers, isolated from the graph ops
+    that call them (delete_nodes / merge_nodes), so a break is pinpointed to the helper.
+    """
+
+    def _seg(self, sid: str, start: str, end: str, pts: list[tuple[float, float]]) -> PathSegment:
+        points = [PathPoint(lon=x, lat=y, elevation=100.0) for x, y in pts]
+        return PathSegment(id=sid, name=sid, points=points, start_node_id=start, end_node_id=end)
+
+    # -- _chain_node_sequence: pure, the shared node-walk primitive -----------------------------
+
+    def test_chain_node_sequence_single_segment(self) -> None:
+        seg = self._seg("S1", "N1", "N2", [(0.0, 0.0), (1.0, 0.0)])
+        assert _chain_node_sequence([seg]) == ["N1", "N2"]
+
+    def test_chain_node_sequence_walks_the_whole_chain(self) -> None:
+        segs = [
+            self._seg("S1", "N1", "N2", [(0.0, 0.0), (1.0, 0.0)]),
+            self._seg("S2", "N2", "N3", [(1.0, 0.0), (2.0, 0.0)]),
+            self._seg("S3", "N3", "N4", [(2.0, 0.0), (3.0, 0.0)]),
+        ]
+        assert _chain_node_sequence(segs) == ["N1", "N2", "N3", "N4"]
+
+    # -- _segments_touching / _owning_path: graph queries -----------------------------------------
+
+    def test_segments_touching_finds_both_incident_segments(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=3)
+        junction = empty_graph.segments[slope.segment_ids[0]].end_node_id
+        touching = empty_graph._segments_touching(junction)
+        assert {s.id for s in touching} == {slope.segment_ids[0], slope.segment_ids[1]}
+
+    def test_segments_touching_empty_for_unknown_node(self, empty_graph) -> None:
+        assert empty_graph._segments_touching("GHOST") == []
+
+    def test_owning_path_returns_finished_owner(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=2)
+        interior = empty_graph.segments[slope.segment_ids[0]].end_node_id
+        assert empty_graph._owning_path(interior).id == slope.id
+
+    def test_owning_path_none_for_unattached_node(self, empty_graph) -> None:
+        assert empty_graph._owning_path("GHOST") is None
+
+    # -- _nearest_vertex_index: geometry pick -----------------------------------------------------
+
+    def test_nearest_vertex_index_picks_closest(self) -> None:
+        graph = ResortGraph()
+        seg = self._seg("S1", "N1", "N2", [(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)])
+        assert graph._nearest_vertex_index(seg, lon=0.9, lat=0.0) == 1  # nearest to the middle vertex
+        assert graph._nearest_vertex_index(seg, lon=-5.0, lat=0.0) == 0  # off the start end
+        assert graph._nearest_vertex_index(seg, lon=99.0, lat=0.0) == 2  # off the far end
+
+    # -- _drop_collapsed_segments_in_chain: zero-length curl removal ------------------------------
+
+    def test_drop_collapsed_removes_only_the_curl_and_rederives_boundaries(self, empty_graph) -> None:
+        graph = empty_graph
+        graph.nodes["N1"] = Node(id="N1", location=PathPoint(lon=0.0, lat=0.0, elevation=100.0))
+        graph.nodes["S"] = Node(id="S", location=PathPoint(lon=1.0, lat=0.0, elevation=100.0))
+        graph.nodes["N4"] = Node(id="N4", location=PathPoint(lon=2.0, lat=0.0, elevation=100.0))
+        graph.segments["S1"] = self._seg("S1", "N1", "S", [(0.0, 0.0), (1.0, 0.0)])
+        graph.segments["S2"] = self._seg("S2", "S", "S", [(1.0, 0.0), (1.0, 0.0)])  # zero-length curl
+        graph.segments["S3"] = self._seg("S3", "S", "N4", [(1.0, 0.0), (2.0, 0.0)])
+        slope = Slope(id="SL1", name="t", segment_ids=["S1", "S2", "S3"], start_node_id="N1", end_node_id="N4")
+        graph.slopes["SL1"] = slope
+
+        dropped = graph._drop_collapsed_segments_in_chain(slope)
+
+        assert dropped == ["S2"], "only the zero-length segment is dropped"
+        assert slope.segment_ids == ["S1", "S3"], "curl spliced out, neighbours kept"
+        assert "S2" not in graph.segments, "the curl segment is removed from the graph"
+        assert (slope.start_node_id, slope.end_node_id) == ("N1", "N4"), "boundaries preserved"
+
+    def test_drop_collapsed_noop_when_no_curl(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=2)
+        chain_before = list(slope.segment_ids)
+        assert empty_graph._drop_collapsed_segments_in_chain(slope) == [], "no curl → nothing dropped"
+        assert slope.segment_ids == chain_before, "chain unchanged when there is no curl"
+
+    # -- _rebuild_chain_without_nodes: the fragile trim + fuse node-walk --------------------------
+
+    def test_rebuild_fuses_a_single_interior_node(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=3)
+        interior = empty_graph.segments[slope.segment_ids[0]].end_node_id
+        empty_graph._rebuild_chain_without_nodes(path=slope, drop_nodes={interior}, dem=mock_dem_blue_slope)
+        assert len(slope.segment_ids) == 2, "the two segments around the node fused into one"
+        assert all(
+            interior not in (empty_graph.segments[s].start_node_id, empty_graph.segments[s].end_node_id)
+            for s in slope.segment_ids
+        ), "the dropped node appears in no surviving segment"
+
+    def test_rebuild_trims_a_boundary_node(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=3)
+        old_start = slope.start_node_id
+        new_start_expected = empty_graph.segments[slope.segment_ids[1]].start_node_id
+        empty_graph._rebuild_chain_without_nodes(path=slope, drop_nodes={old_start}, dem=mock_dem_blue_slope)
+        assert len(slope.segment_ids) == 2, "the lone boundary segment is trimmed"
+        assert slope.start_node_id == new_start_expected, "boundary re-derived from the surviving chain"
+
+    def test_rebuild_end_plus_adjacent_leaves_no_dangling_node(self, empty_graph, mock_dem_blue_slope) -> None:
+        # The regression the node-walk fixed: trimming an end AND fusing its neighbour in one pass.
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=4)
+        end = slope.start_node_id
+        adjacent = empty_graph.segments[slope.segment_ids[0]].end_node_id
+        empty_graph._rebuild_chain_without_nodes(path=slope, drop_nodes={end, adjacent}, dem=mock_dem_blue_slope)
+        for sid in slope.segment_ids:
+            seg = empty_graph.segments[sid]
+            assert seg.start_node_id in empty_graph.nodes and seg.end_node_id in empty_graph.nodes
+        assert end not in _chain_node_sequence([empty_graph.segments[s] for s in slope.segment_ids])
+        assert adjacent not in _chain_node_sequence([empty_graph.segments[s] for s in slope.segment_ids])
 
 
 # =============================================================================

@@ -203,10 +203,9 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
             sm.view_slope(slope_id=slope.id)  # Triggers st.rerun() via listener
             return
 
-        # SEGMENT → in merge mode a belt click enters merge and adds a node there; otherwise it opens
-        # the parent entity's panel. A SEGMENT marker only reaches the panel branch for a segment the
-        # map hasn't yet re-tagged as its finished entity (one-frame race); an orphan (parent deleted)
-        # resolves to None and is ignored.
+        # SEGMENT → in merge mode a belt click enters merge and adds a node; otherwise it opens the
+        # parent's panel. A SEGMENT reaches the panel branch only in the one-frame race before the map
+        # re-tags it as its finished entity; an orphan (parent deleted) resolves to None and is ignored.
         if marker_type == MarkerType.SEGMENT:
             assert click_info.segment_id is not None  # Validated in ClickInfo
             if ctx.build_mode.is_merge():

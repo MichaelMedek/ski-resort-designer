@@ -68,7 +68,7 @@ class TestSidebarRuns:
     def test_sidebar_during_slope_building(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         # Building state renders the building controls + undo/reset buttons.
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        sm.start_building(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
+        sm.start_slope(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
         SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
 
     def test_sidebar_during_road_building(self, fake_st, empty_graph) -> None:
@@ -94,11 +94,11 @@ class TestSidebarRuns:
         # generic idle text (the drift that once left the road body wrong).
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         if kind == "slope":
-            sm.show_slope_info_panel(slope_id=_build_slope(empty_graph, path_points_blue))
+            sm.view_slope(slope_id=_build_slope(empty_graph, path_points_blue))
         elif kind == "road":
-            sm.show_road_info_panel(road_id=_build_road(empty_graph, path_points_blue))
+            sm.view_road(road_id=_build_road(empty_graph, path_points_blue))
         elif kind == "lift":
-            sm.show_lift_info_panel(lift_id=_build_lift(empty_graph, mock_dem_blue_slope))
+            sm.view_lift(lift_id=_build_lift(empty_graph, mock_dem_blue_slope))
         else:
             raise ValueError
 
@@ -179,14 +179,14 @@ class TestPathSettingsVisibility:
 
     def test_path_settings_shown_in_fan_out(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        sm.start_building(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
+        sm.start_slope(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
         seen = self._capture_markdown(fake_st)
         SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
         assert any("Path Settings" in m for m in seen), "fan-out mode shows the Path Settings block"
 
     def test_path_settings_hidden_in_custom_mode(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        sm.start_building(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
+        sm.start_slope(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
         ctx.custom_connect.target_location = (0.0, 0.0, 2000.0)  # showing custom-connect proposals (force_mode)
         seen = self._capture_markdown(fake_st)
         SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
@@ -280,7 +280,7 @@ class TestDescribeUndoAction:
         _build_slope(empty_graph, path_points_blue)
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         # Now START a new slope build with no committed segments yet.
-        sm.start_building(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
+        sm.start_slope(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
         assert sm.is_slope_starting
 
         assert _next_undo_skips_confirm(sm=sm, ctx=ctx, graph=empty_graph), (
@@ -312,7 +312,7 @@ class TestNextUndoSkipsConfirm:
 
         _build_slope(empty_graph, path_points_blue)  # a stale FinishSlopeAction sits on the stack
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        sm.start_building(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
+        sm.start_slope(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
         # No committed segments yet → undo cancels the build, a routine one-tap step.
         assert _next_undo_skips_confirm(sm=sm, ctx=ctx, graph=empty_graph)
 

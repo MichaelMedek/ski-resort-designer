@@ -9,6 +9,7 @@ delete actions for slope/lift/road uniformly.
 import pytest
 
 from skiresort_planner.constants import MapConfig
+from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
@@ -17,6 +18,13 @@ from skiresort_planner.ui.state_machine import PlannerStateMachine
 from tests_workflow.conftest import MockDEMService
 
 M = 111320.0  # metres per degree near the equator
+
+
+def _node_at(dem: MockDEMService, node_id: str, lon: float, lat: float) -> Node:
+    """A Node at (lon, lat) with DEM elevation — for seeding lift stations in delete tests."""
+    return Node(
+        id=node_id, location=PathPoint(lon=lon, lat=lat, elevation=dem.get_elevation_or_raise(lon=lon, lat=lat))
+    )
 
 
 def _session(fake_st, graph, factory=None, dem=None):
@@ -69,7 +77,7 @@ class TestDeleteSlopeAction:
 
         slope = _make_slope(empty_graph, path_points_blue)
         sm, _ctx = _session(fake_st, empty_graph)
-        sm.show_slope_info_panel(slope_id=slope.id)
+        sm.view_slope(slope_id=slope.id)
 
         delete_slope_action(slope_id=slope.id)
         assert not sm.is_idle_viewing_slope, "deleting the viewed slope must close its panel"
@@ -123,7 +131,7 @@ class TestDeleteRoadAction:
 
         road = _make_road(empty_graph)
         sm, _ctx = _session(fake_st, empty_graph)
-        sm.show_road_info_panel(road_id=road.id)
+        sm.view_road(road_id=road.id)
 
         delete_road_action(road_id=road.id)
         assert not sm.is_idle_viewing_road, "deleting the viewed road must close its panel"
@@ -233,6 +241,130 @@ class TestConfirmMergeAction:
 
         _session(fake_st, empty_graph)
         assert delete_lift_action(lift_id="L999") is False
+
+
+class TestDeleteNodesAction:
+    """delete_nodes_action deletes deletable nodes (return to idle) or refuses with a toast."""
+
+    def test_interior_node_deletes_and_returns_to_idle(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
+        from skiresort_planner.ui.actions import delete_nodes_action
+
+        dem = mock_dem_blue_slope
+        _two_segment_slope(empty_graph, dem)
+        slope = empty_graph.finish_slope(segment_ids=list(empty_graph.segments.keys()))
+        interior = empty_graph.segments[slope.segment_ids[0]].end_node_id
+        sm, ctx = _session(fake_st, empty_graph, dem=dem)
+        sm.start_merge()
+        sm.toggle_merge_node(node_id=interior)
+
+        delete_nodes_action()
+
+        assert interior not in empty_graph.nodes, "the interior node was deleted"
+        assert empty_graph.undo_stack[-1].action_type.name == "DELETE_NODES", "one DELETE_NODES undo action"
+        assert sm.is_idle_ready, "delete returns to idle"
+        assert ctx.merge.node_ids == [], "selection cleared by the before-hook"
+
+    def test_lift_station_refused_no_change(self, fake_st, empty_graph, mock_dem_blue_slope, monkeypatch) -> None:
+        from skiresort_planner.ui.actions import delete_nodes_action
+
+        dem = mock_dem_blue_slope
+        empty_graph.nodes["A"] = _node_at(dem, "A", 0.0, 0.0)
+        empty_graph.nodes["T"] = _node_at(dem, "T", 0.0, -1000 / M)
+        empty_graph.add_lift(start_node_id="A", end_node_id="T", lift_type="chairlift", dem=dem)
+        sm, ctx = _session(fake_st, empty_graph, dem=dem)
+        stack_before = len(empty_graph.undo_stack)
+        sm.start_merge()
+        sm.toggle_merge_node(node_id="A")
+
+        import streamlit
+
+        toasts: list[str] = []
+        monkeypatch.setattr(streamlit, "toast", lambda text, *a, **k: toasts.append(text))
+
+        delete_nodes_action()
+
+        assert "A" in empty_graph.nodes, "a lift station is never deleted"
+        assert len(empty_graph.undo_stack) == stack_before, "no undo action recorded on refusal"
+        assert sm.is_merge_placing, "stays in merge so the user can adjust the selection"
+        assert any("lift" in t.lower() for t in toasts), "the user is told why the delete was refused"
+
+    def test_no_nodes_raises(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
+        from skiresort_planner.ui.actions import delete_nodes_action
+
+        _session(fake_st, empty_graph, dem=mock_dem_blue_slope)
+        with pytest.raises(RuntimeError, match="no selected nodes"):
+            delete_nodes_action()
+
+    def test_deleting_whole_path_is_refused(self, fake_st, empty_graph, mock_dem_blue_slope, monkeypatch) -> None:
+        """An end node + the sole interior node of a 2-segment slope are each individually deletable,
+        but together they'd empty the path — refuse with a message and change nothing.
+        """
+        from skiresort_planner.ui.actions import delete_nodes_action
+
+        dem = mock_dem_blue_slope
+        _two_segment_slope(empty_graph, dem)
+        slope = empty_graph.finish_slope(segment_ids=list(empty_graph.segments.keys()))
+        end = slope.start_node_id
+        interior = empty_graph.segments[slope.segment_ids[0]].end_node_id
+        sm, ctx = _session(fake_st, empty_graph, dem=dem)
+        stack_before = len(empty_graph.undo_stack)
+        sm.start_merge()
+        sm.toggle_merge_node(node_id=end)
+        sm.toggle_merge_node(node_id=interior)
+
+        import streamlit
+
+        toasts: list[str] = []
+        monkeypatch.setattr(streamlit, "toast", lambda text, *a, **k: toasts.append(text))
+
+        delete_nodes_action()
+
+        assert slope.id in empty_graph.slopes, "the path is not emptied"
+        assert len(empty_graph.undo_stack) == stack_before, "no undo action recorded on refusal"
+        assert sm.is_merge_placing, "stays in merge so the user can adjust the selection"
+        assert any("whole path" in t.lower() for t in toasts), "the user is told the delete was refused"
+
+    def test_branch_junction_refused_no_change(self, fake_st, empty_graph, mock_dem_blue_slope, monkeypatch) -> None:
+        """A node shared by two slopes is a branch junction — deleting it is refused (delete a path
+        first), nothing changes.
+        """
+        from skiresort_planner.ui.actions import delete_nodes_action
+
+        dem = mock_dem_blue_slope
+        # Slope 1 south to a junction; slope 2 branches south-east from that same node.
+        leg1 = [
+            PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
+            PathPoint(lon=0.0, lat=-400 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-400 / M)),
+        ]
+        empty_graph.commit_paths(paths=[ProposedPathSegment(points=leg1, target_difficulty="blue")])
+        slope1 = empty_graph.finish_slope(segment_ids=list(empty_graph.segments.keys()))
+        junction = slope1.end_node_id
+        j = empty_graph.nodes[junction]
+        leg2 = [
+            PathPoint(lon=j.lon, lat=j.lat, elevation=j.elevation),
+            PathPoint(
+                lon=400 / M, lat=j.lat - 400 / M, elevation=dem.get_elevation_or_raise(lon=400 / M, lat=j.lat - 400 / M)
+            ),
+        ]
+        before = set(empty_graph.segments)
+        empty_graph.commit_paths(paths=[ProposedPathSegment(points=leg2, target_difficulty="blue")])
+        empty_graph.finish_slope(segment_ids=list(set(empty_graph.segments) - before))
+        sm, ctx = _session(fake_st, empty_graph, dem=dem)
+        stack_before = len(empty_graph.undo_stack)
+        sm.start_merge()
+        sm.toggle_merge_node(node_id=junction)
+
+        import streamlit
+
+        toasts: list[str] = []
+        monkeypatch.setattr(streamlit, "toast", lambda text, *a, **k: toasts.append(text))
+
+        delete_nodes_action()
+
+        assert junction in empty_graph.nodes, "a branch junction is not deleted"
+        assert len(empty_graph.undo_stack) == stack_before, "no undo action recorded on refusal"
+        assert sm.is_merge_placing, "stays in merge so the user can adjust the selection"
+        assert any("delete that path" in t.lower() for t in toasts), "the user is told to delete a path first"
 
 
 class TestUndoLastActionDispatch:
@@ -378,7 +510,7 @@ class TestSelectLiftTypeAction:
         )
         lift = empty_graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
         sm, ctx = _session(fake_st, empty_graph, dem=dem)
-        sm.show_lift_info_panel(lift_id=lift.id)
+        sm.view_lift(lift_id=lift.id)
 
         select_lift_type_action(lift_type="gondola")
 

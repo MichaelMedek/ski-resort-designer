@@ -216,7 +216,7 @@ class TestRenderLoop:
         graph, sm, ctx = _seed_full_session(fake_st, mock_dem_blue_slope)
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
-        sm.show_slope_info_panel(slope_id=slope.id)
+        sm.view_slope(slope_id=slope.id)
         keys: list[str] = []
         fake_st.plotly_chart = lambda *a, **k: keys.append(k.get("key"))
 
@@ -231,7 +231,7 @@ class TestRenderLoop:
         proposal = ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)
         graph.commit_paths(paths=[proposal], record_undo=False)
         road = graph.finish_road(segment_ids=[list(graph.segments.keys())[-1]])
-        sm.show_road_info_panel(road_id=road.id)
+        sm.view_road(road_id=road.id)
         keys: list[str] = []
         fake_st.plotly_chart = lambda *a, **k: keys.append(k.get("key"))
 

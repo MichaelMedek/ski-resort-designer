@@ -112,6 +112,31 @@ class TestClickDetectorParsing:
         for attr, value in expected_attrs.items():
             assert getattr(result, attr) == value
 
+    def test_segment_marker_carries_click_coordinate(self, detector: ClickDetector) -> None:
+        """The SEGMENT (path belt) marker keeps the deck.gl coordinate so a path click adds a node."""
+        result = detector.detect(clicked_object={"type": "segment", "id": "S1"}, clicked_coordinate=[10.27, 46.97])
+        assert result is not None
+        assert result.marker_type == MarkerType.SEGMENT
+        assert result.lon == pytest.approx(10.27)
+        assert result.lat == pytest.approx(46.97)
+
+    @pytest.mark.parametrize(
+        "clicked_object,expected_marker_type",
+        [
+            pytest.param({"type": "node", "id": "N1"}, MarkerType.NODE, id="node"),
+            pytest.param({"type": "slope", "id": "SL1"}, MarkerType.SLOPE, id="slope_icon"),
+            pytest.param({"type": "road", "id": "R1"}, MarkerType.ROAD, id="road_icon"),
+        ],
+    )
+    def test_non_positioned_marker_ignores_click_coordinate(
+        self, detector: ClickDetector, clicked_object: dict[str, object], expected_marker_type: MarkerType
+    ) -> None:
+        """NODE and the slope/road ICON markers stay position-less — only the SEGMENT belt is positioned."""
+        result = detector.detect(clicked_object=clicked_object, clicked_coordinate=[10.27, 46.97])
+        assert result is not None
+        assert result.marker_type == expected_marker_type
+        assert result.lat is None and result.lon is None
+
     @pytest.mark.parametrize(
         "clicked_object",
         [
