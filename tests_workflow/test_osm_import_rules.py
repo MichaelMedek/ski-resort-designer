@@ -20,6 +20,7 @@ MIN_LIFTS_SKIABLE_FRAC = 0.50  # R16: frac of lift tops that can descend to some
 MAX_STRAIGHT_M = 100.0  # no artificial straight leg longer than this (a < 100 m pull is the only straight)
 MAX_PULL_M = 500.0  # an end connector (off-piste pull to a hub) may not exceed this; else the segment is dropped
 PISTE_TOL_M = 40.0  # a point farther than this from every OSM piste counts as off-piste (connector)
+MAX_TERRAIN_DEVIATION_M = 50.0  # R23: a slope point may not float >this above / below the real DEM terrain
 CACHE = os.path.join(os.path.dirname(__file__), "..", "scratch_osm_raw_ischgl.json")
 ISCHGL_BBOX = (10.27745, 46.95502, 10.35655, 47.00898)
 
@@ -489,4 +490,22 @@ class TestImportRules:
         assert dead_ends == [], (
             f"{len(set(dead_ends))} slope nodes dead-end in empty space (interior, no lift, no onward "
             f"segment): {sorted(set(dead_ends))[:8]} — a dropped/truncated slope"
+        )
+
+    def test_r23_slope_points_hug_terrain(self, ischgl_graph):
+        """STRICT: every slope point must sit within MAX_TERRAIN_DEVIATION_M of the real DEM terrain —
+        never floating >50 m above it or buried >50 m below. A slope follows the ground; a point far
+        off terrain is invented/tunnelling geometry.
+        """
+        dem = DEMService()  # real EuroDEM (same terrain the builder draped onto)
+        offenders = []
+        for r in ischgl_graph.slope_runs:
+            for p in r.points:
+                terrain = dem.get_elevation(lon=p.lon, lat=p.lat)
+                if terrain is not None and abs(p.elevation - terrain) > MAX_TERRAIN_DEVIATION_M:
+                    offenders.append((r.name, round(p.elevation - terrain, 1)))
+                    break
+        assert offenders == [], (
+            f"{len(offenders)} slopes have a point > {MAX_TERRAIN_DEVIATION_M}m off terrain "
+            f"(above/below DEM): {offenders[:5]}"
         )
