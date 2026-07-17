@@ -15,13 +15,12 @@ from skiresort_planner.generators.osm_graph_builder import OSMGraphBuilder, ways
 MIN_CONNECTED_FRAC = 0.90  # THE hard invariant (measured on segments)
 MAX_NODES = 500  # blizzard guard on the circle-count (reference 347)
 MAX_SEGMENTS = 1000  # segment count is free (full-split); only a true blizzard trips this
-MIN_SEGMENTS = 50  # a full box must not collapse to near-empty
-MIN_LIFTS_SKIABLE_FRAC = 0.50  # R16: frac of lift tops that can descend to some lift base
+MIN_SEGMENTS = 200  # a full box must not collapse to near-empty
 MAX_STRAIGHT_M = 100.0  # no artificial straight leg longer than this (a < 100 m pull is the only straight)
 MAX_PULL_M = 500.0  # an end connector (off-piste pull to a hub) may not exceed this; else the segment is dropped
-PISTE_TOL_M = 40.0  # a point farther than this from every OSM piste counts as off-piste (connector)
+PISTE_TOL_M = 50.0  # a point farther than this from every OSM piste counts as off-piste (connector)
 MAX_TERRAIN_DEVIATION_M = 50.0  # R23: a slope point may not float >this above / below the real DEM terrain
-MAX_NODE_TERRAIN_DEVIATION_M = 10.0  # R25: every hub NODE must be within ±this of real terrain (strict)
+MAX_NODE_TERRAIN_DEVIATION_M = 10.0  # R25: every NODE must be within ±this of real terrain (strict)
 CACHE = os.path.join(os.path.dirname(__file__), "..", "scratch_osm_raw_ischgl.json")
 ISCHGL_BBOX = (10.27745, 46.95502, 10.35655, 47.00898)
 
@@ -288,19 +287,14 @@ class TestImportRules:
             f"{clusters} slope-node pairs within {OSMConfig.MIN_NODE_DIST_M:.0f}m — one hub, must merge"
         )
 
-    def test_r14_most_lifts_have_a_slope(self, ischgl_graph):
-        """In real life a lift drops you where you ski down, so MOST lifts share a station with a slope.
-        SOFT ratio, not 100%: R1 explicitly keeps unconnected lifts (the user finishes those), so a few
-        slope-less lifts are EXPECTED — demanding all of them would contradict R1. Gate the fraction.
+    def test_r14_every_lift_has_a_slope(self, ischgl_graph):
+        """HARD (implied by R21): EVERY lift must share a station node with at least one slope. R21
+        (strictly ski top→own-base) is strictly stronger, so if R21 holds this holds — assert it directly.
         """
         lifts = ischgl_graph.lifts
         slope_nodes = {n for r in ischgl_graph.slope_runs for n in (r.node_a, r.node_b)}
-        with_slope = [lf for lf in lifts if lf.node_a in slope_nodes or lf.node_b in slope_nodes]
-        frac = len(with_slope) / len(lifts) if lifts else 1.0
-        assert frac >= MIN_LIFTS_SKIABLE_FRAC, (
-            f"only {len(with_slope)}/{len(lifts)} lifts touch a slope ({frac:.0%} < {MIN_LIFTS_SKIABLE_FRAC:.0%}) — "
-            f"most lifts must connect to a slope (a few unconnected are allowed per R1)"
-        )
+        orphan = [lf.name for lf in lifts if lf.node_a not in slope_nodes and lf.node_b not in slope_nodes]
+        assert orphan == [], f"{len(orphan)}/{len(lifts)} lifts touch NO slope: {orphan[:5]}"
 
     def test_r15_most_runs_survive(self, ischgl_graph):
         """Sanity on volume: a 6 km Ischgl box has many segments (reference: 332 segments / 136 slopes)
@@ -311,11 +305,10 @@ class TestImportRules:
             f"only {n} segments for a full Ischgl box (want ≥{MIN_SEGMENTS}) — dropping/under-noding runs"
         )
 
-    def test_r16_lift_top_reaches_a_base(self, ischgl_graph):
-        """CORRECTED ski-resort invariant: from a lift's TOP you can ski DOWN to SOME lift base (you
-        stay in the skiable network). NOT "back to its OWN base" — on any interconnected mountain you
-        ride lift A and ski to lift B's base; demanding a return to A's own base fails legitimately
-        (measured 11/21 on Ischgl). SOFT ratio, since R1 keeps some unconnected lifts.
+    def test_r16_every_lift_top_reaches_a_base(self, ischgl_graph):
+        """HARD (implied by R21): from EVERY lift TOP you can ski DOWN to some lift base — you stay in
+        the skiable network. R21 (ski to its OWN base) is strictly stronger, so if R21 holds this holds.
+        Assert ALL, not a fraction.
         """
         elev = {k: v.elevation for k, v in ischgl_graph.node_points.items()}
         down: dict[int, set[int]] = defaultdict(set)
@@ -335,15 +328,13 @@ class TestImportRules:
             return seen
 
         lift_bases = {(lf.node_b if elev[lf.node_a] >= elev[lf.node_b] else lf.node_a) for lf in ischgl_graph.lifts}
-        skiable = []
+        stuck = []
         for lf in ischgl_graph.lifts:
             top = lf.node_a if elev[lf.node_a] >= elev[lf.node_b] else lf.node_b
-            if reachable(top) & (lift_bases - {top}):  # can descend to some OTHER lift's base
-                skiable.append(lf)
-        frac = len(skiable) / len(ischgl_graph.lifts) if ischgl_graph.lifts else 1.0
-        assert frac >= MIN_LIFTS_SKIABLE_FRAC, (
-            f"only {len(skiable)}/{len(ischgl_graph.lifts)} lift tops can ski down to a lift base "
-            f"({frac:.0%} < {MIN_LIFTS_SKIABLE_FRAC:.0%}) — ride-up-ski-down loop broken for too many"
+            if not (reachable(top) & (lift_bases - {top})):  # can descend to some OTHER lift's base
+                stuck.append(lf.name)
+        assert stuck == [], (
+            f"{len(stuck)}/{len(ischgl_graph.lifts)} lift tops CANNOT ski down to any lift base: {stuck[:5]}"
         )
 
     def test_r17_slopes_descend_by_orientation(self, ischgl_graph):
