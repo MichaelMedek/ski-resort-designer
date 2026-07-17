@@ -247,10 +247,11 @@ def process_osm_import_deferred() -> bool:
     ctx.deferred.osm_import_center_lon = None
     ctx.deferred.osm_import_center_lat = None
 
+    importer_cls: type[BaseOSMImporter]
     if mode == OSMImportMode.LIFTS_ONLY:
-        importer_cls: type[BaseOSMImporter] = LiftOnlyImporter
+        importer_cls = LiftOnlyImporter
     elif mode == OSMImportMode.LIFTS_AND_SLOPES:
-        importer_cls: type[BaseOSMImporter] = GraphImporter
+        importer_cls = GraphImporter
     else:
         raise ValueError(f"Unknown {mode=}")
     t0 = time.perf_counter()
