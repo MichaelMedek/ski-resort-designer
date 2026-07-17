@@ -27,7 +27,12 @@ from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import PathSegment, SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
-from skiresort_planner.model.resort_graph import NodeDeletability, ResortGraph, _chain_node_sequence
+from skiresort_planner.model.resort_graph import (
+    NodeDeletability,
+    ResortGraph,
+    _chain_node_sequence,
+    deletability_reason,
+)
 from skiresort_planner.model.slope import Slope
 from tests_workflow.conftest import MockDEMService
 
@@ -1472,6 +1477,41 @@ class TestNodeDeletability:
         graph.finish_slope(segment_ids=[new_seg])
         assert graph.node_deletability(junction) == NodeDeletability.IS_PATH_ENDPOINT
 
+    def test_isolated_node_is_not_interior(self, empty_graph, mock_dem_blue_slope) -> None:
+        """A node touching no finished-path segment (here: an unfinished, committed-but-not-grouped
+        segment) is the NOT_INTERIOR fallthrough — not deletable, and delete_nodes refuses it.
+        """
+        graph = empty_graph
+        # Commit a segment WITHOUT finishing it → its endpoint nodes belong to no slope/road.
+        graph.commit_paths(
+            paths=[
+                ProposedPathSegment(
+                    points=_leg(0.0, 0.0, 0.0, -20.0, 25, mock_dem_blue_slope), target_difficulty="blue"
+                )
+            ]
+        )
+        interior_of_unfinished = graph.segments[list(graph.segments)[0]].start_node_id
+        assert graph.node_deletability(interior_of_unfinished) == NodeDeletability.NOT_INTERIOR
+        assert graph.delete_nodes_rejection([interior_of_unfinished]) == deletability_reason(
+            node_id=interior_of_unfinished, reason=NodeDeletability.NOT_INTERIOR
+        )
+
+    @pytest.mark.parametrize(
+        "reason",
+        [
+            NodeDeletability.IS_PATH_ENDPOINT,
+            NodeDeletability.IS_LIFT_STATION,
+            NodeDeletability.LAST_SEGMENT,
+            NodeDeletability.NOT_INTERIOR,
+        ],
+    )
+    def test_every_non_deletable_reason_has_a_sentence(self, reason) -> None:
+        """Guard against enum drift: every non-deletable NodeDeletability must map to a sentence, so a
+        new reason without one is caught here rather than KeyError-ing in delete_nodes_rejection.
+        """
+        sentence = deletability_reason(node_id="N9", reason=reason)
+        assert sentence.startswith("N9 ") and len(sentence) > len("N9 "), f"empty sentence for {reason}"
+
 
 class TestDeleteNodes:
     """delete_nodes fuses interior nodes / trims clean endpoints, as ONE undoable action."""
@@ -1550,9 +1590,9 @@ class TestDeleteNodes:
             empty_graph.delete_nodes(node_ids=[slope.start_node_id], dem=mock_dem_blue_slope)
 
     def test_delete_never_orphans_a_segment_after_cross_path_merge(self, empty_graph, mock_dem_blue_slope) -> None:
-        """Regression: a merge can make a node a junction shared by a second path. Deleting nodes on
-        one path must never delete a node the other path's segment still references (crash: KeyError
-        on a segment endpoint). Only truly-unreferenced nodes are removed.
+        """Regression: a merge can make a node a junction shared by a second path. Deleting a node on
+        one path must never remove a node the other path's segment still references (the KeyError
+        crash). Only truly-unreferenced nodes are removed.
         """
         dem = mock_dem_blue_slope
         graph = empty_graph
@@ -1569,16 +1609,20 @@ class TestDeleteNodes:
         s2 = graph.finish_slope(segment_ids=list(set(graph.segments) - before))
         s2_interior = graph.segments[s2.segment_ids[0]].end_node_id
         graph.nodes[s2_interior].location = graph.nodes[s1_interior].location  # make them coincident
-
-        # Merge s2's interior node onto s1's interior node → a shared junction.
         graph.merge_nodes(node_ids=[s1_interior, s2_interior], dem=dem)
 
-        # Deleting any still-deletable node must leave the graph referentially intact (no segment
-        # pointing at a removed node) — whether the delete proceeds or is refused.
-        for nid in list(graph.nodes):
-            if graph.node_deletability(nid) in (NodeDeletability.DELETABLE_INTERIOR, NodeDeletability.DELETABLE_END):
-                graph.delete_nodes(node_ids=[nid], dem=dem)
-                break
+        # Pick a genuinely-deletable endpoint and delete it — the test is only meaningful if a delete
+        # actually runs, so bind that: a deletable node must exist and the count must drop.
+        deletable = next(
+            nid
+            for nid in list(graph.nodes)
+            if graph.node_deletability(nid) in (NodeDeletability.DELETABLE_INTERIOR, NodeDeletability.DELETABLE_END)
+        )
+        nodes_before = len(graph.nodes)
+        graph.delete_nodes(node_ids=[deletable], dem=dem)
+        assert graph.undo_stack[-1].action_type.name == "DELETE_NODES", "a delete actually ran"
+        assert deletable not in graph.nodes and len(graph.nodes) < nodes_before, "the node was removed"
+        # And no surviving segment references a removed node (the crash this guards).
         for seg in graph.segments.values():
             assert seg.start_node_id in graph.nodes, f"orphan: {seg.id} start {seg.start_node_id}"
             assert seg.end_node_id in graph.nodes, f"orphan: {seg.id} end {seg.end_node_id}"
@@ -1610,6 +1654,29 @@ class TestInsertNodeOnPath:
         near_start = seg.points[0]
         with pytest.raises(ValueError, match="too close to an existing node"):
             empty_graph.insert_node_on_path(segment_id=seg.id, lon=near_start.lon, lat=near_start.lat)
+
+    def test_insert_on_unknown_segment_id_is_rejected(self, empty_graph, mock_dem_blue_slope) -> None:
+        """A stale/unknown segment id (external click after a rerun/delete) → 'finished path' reason,
+        and insert_node_on_path raises rather than KeyError-ing on the missing segment.
+        """
+        assert empty_graph.insert_node_rejection("S999", lon=0.0, lat=0.0) == "click a finished path to add a node"
+        with pytest.raises(ValueError, match="click a finished path"):
+            empty_graph.insert_node_on_path(segment_id="S999", lon=0.0, lat=0.0)
+
+    def test_insert_on_unfinished_segment_is_rejected(self, empty_graph, mock_dem_blue_slope) -> None:
+        """A committed-but-not-finished segment belongs to no path (the one-frame race) → rejected."""
+        empty_graph.commit_paths(
+            paths=[
+                ProposedPathSegment(
+                    points=_leg(0.0, 0.0, 0.0, -20.0, 25, mock_dem_blue_slope), target_difficulty="blue"
+                )
+            ]
+        )
+        seg_id = list(empty_graph.segments)[0]
+        mid = empty_graph.segments[seg_id].points[12]
+        assert (
+            empty_graph.insert_node_rejection(seg_id, lon=mid.lon, lat=mid.lat) == "click a finished path to add a node"
+        )
 
     def test_insert_records_single_undo_and_restores_verbatim(self, empty_graph, mock_dem_blue_slope) -> None:
         slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=1)

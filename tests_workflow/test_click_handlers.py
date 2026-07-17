@@ -203,6 +203,42 @@ class TestIdleClickRouting:
         assert sm.is_merge_placing, "the click enters merge mode (does not open the slope panel)"
         assert ctx.viewing.slope_id is None, "no slope panel opened"
 
+    def test_merge_mode_segment_click_rejected_stays_idle(
+        self, fake_st, path_factory, mock_dem_blue_slope, path_points_blue, monkeypatch
+    ) -> None:
+        """In idle+merge, a belt click whose insert is REJECTED (too close to an endpoint) must NOT
+        enter merge — it stays idle_ready with a toast. Guards the `if insert: start_merge()` branch.
+        """
+        from skiresort_planner.ui.click_handlers import handle_idle_click
+
+        graph = ResortGraph()
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        seg_id = slope.segment_ids[0]
+        near_end = graph.segments[seg_id].points[0]  # within STEP_SIZE_M of the endpoint node
+        sm, ctx = _session(fake_st, graph, path_factory, mock_dem_blue_slope)
+        ctx.build_mode.mode = BuildMode.MERGE
+        nodes_before = len(graph.nodes)
+
+        import streamlit
+
+        toasts: list[str] = []
+        monkeypatch.setattr(streamlit, "toast", lambda text, *a, **k: toasts.append(text))
+
+        handle_idle_click(
+            ClickInfo(
+                click_type=MapClickType.MARKER,
+                marker_type=MarkerType.SEGMENT,
+                segment_id=seg_id,
+                lon=near_end.lon,
+                lat=near_end.lat,
+            ),
+            elevation=None,
+        )
+        assert len(graph.nodes) == nodes_before, "a rejected insert adds no node"
+        assert sm.is_idle_ready, "a rejected idle belt click must NOT enter merge"
+        assert any("add a node" in t.lower() for t in toasts), "the user is told why"
+
     def test_slope_mode_node_click_starts_building(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         from skiresort_planner.ui.click_handlers import handle_idle_click
 

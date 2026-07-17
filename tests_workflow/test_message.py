@@ -188,7 +188,8 @@ class TestMergePlacingMessages:
         from skiresort_planner.model.message import UnableToDeleteMessage
 
         msg = UnableToDeleteMessage(reason="N5 is a lift station — delete the lift first")
-        assert "Cannot delete" in msg.message and "lift station" in msg.message
+        # Assert the exact wrapped format so a dropped prefix / wrong separator / omitted reason fails.
+        assert msg.message == "Cannot delete — N5 is a lift station — delete the lift first"
         assert msg.icon == "🗑️"
 
     def test_too_far_reads_strictly_above_max(self) -> None:

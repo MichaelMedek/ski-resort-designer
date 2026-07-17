@@ -367,6 +367,54 @@ class TestDeleteNodesAction:
         assert any("delete that path" in t.lower() for t in toasts), "the user is told to delete a path first"
 
 
+class TestAddNodeOnPathAction:
+    """add_node_on_path_action returns True (inserted) / False (rejected) — the bool the click
+    handlers gate their state transition on — and shows an InvalidClickMessage on rejection.
+    """
+
+    def test_success_returns_true_inserts_node_and_bumps_epoch(
+        self, fake_st, empty_graph, mock_dem_blue_slope, path_points_blue
+    ) -> None:
+        from skiresort_planner.ui.actions import add_node_on_path_action
+
+        slope = _make_slope(empty_graph, path_points_blue)
+        seg_id = slope.segment_ids[0]
+        mid = empty_graph.segments[seg_id].points[len(empty_graph.segments[seg_id].points) // 2]
+        _session(fake_st, empty_graph, dem=mock_dem_blue_slope)
+        nodes_before = len(empty_graph.nodes)
+        epoch_before = fake_st.session_state["dedup_epoch"]
+
+        result = add_node_on_path_action(segment_id=seg_id, lon=mid.lon, lat=mid.lat)
+
+        assert result is True, "a successful insert returns True (callers gate the transition on it)"
+        assert len(empty_graph.nodes) == nodes_before + 1, "one node inserted"
+        assert seg_id not in empty_graph.segments, "the clicked segment was split"
+        assert fake_st.session_state["dedup_epoch"] > epoch_before, "insert refreshes the map"
+
+    def test_rejected_returns_false_changes_nothing_and_toasts(
+        self, fake_st, empty_graph, mock_dem_blue_slope, path_points_blue, monkeypatch
+    ) -> None:
+        from skiresort_planner.ui.actions import add_node_on_path_action
+
+        slope = _make_slope(empty_graph, path_points_blue)
+        seg_id = slope.segment_ids[0]
+        near_end = empty_graph.segments[seg_id].points[0]  # within STEP_SIZE_M of the endpoint node
+        _session(fake_st, empty_graph, dem=mock_dem_blue_slope)
+        nodes_before = len(empty_graph.nodes)
+
+        import streamlit
+
+        toasts: list[str] = []
+        monkeypatch.setattr(streamlit, "toast", lambda text, *a, **k: toasts.append(text))
+
+        result = add_node_on_path_action(segment_id=seg_id, lon=near_end.lon, lat=near_end.lat)
+
+        assert result is False, "a rejected insert returns False (callers must NOT transition)"
+        assert len(empty_graph.nodes) == nodes_before, "nothing inserted"
+        assert seg_id in empty_graph.segments, "the segment is untouched"
+        assert any("add a node" in t.lower() for t in toasts), "the user is told why"
+
+
 class TestUndoLastActionDispatch:
     """undo_last_action ROUTING only — the per-entity graph undo end-state is
     owned by test_resort_graph. Here we assert the action layer pops the stack,

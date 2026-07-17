@@ -275,6 +275,26 @@ class ResortGraph:
         )
         return info.slope_pct, info.direction
 
+    def _build_segment(
+        self, points: list[PathPoint], start_node_id: str, end_node_id: str, kind: SegmentKind
+    ) -> PathSegment:
+        """Create + register a PathSegment between two nodes (id/name from the counter, side slope
+        computed from points). The single PathSegment assembly site — shared by commit and insert.
+        """
+        side_slope_pct, side_slope_dir = self._side_slope_for_points(points)
+        segment = PathSegment(
+            id=self._next_segment_id(),
+            name=f"Segment {self._segment_counter}",
+            points=points,
+            start_node_id=start_node_id,
+            end_node_id=end_node_id,
+            side_slope_pct=side_slope_pct,
+            side_slope_dir=side_slope_dir,
+            kind=kind,
+        )
+        self.segments[segment.id] = segment
+        return segment
+
     def node_deletability(self, node_id: str) -> NodeDeletability:
         """Why a node can/can't be deleted. Single source used by the UI button + the delete op.
 
@@ -322,13 +342,10 @@ class ResortGraph:
                 return deletability_reason(node_id=nid, reason=reason)
 
         # Check 2 (per path): even all-individually-deletable nodes can, TOGETHER, empty a path (e.g.
-        # deleting both nodes of a 2-segment slope). Group the selection by owning path and refuse any
-        # path that would be left with fewer than 2 surviving nodes (i.e. no segment).
+        # deleting both nodes of a 2-segment slope). Refuse any owning path left with < 2 surviving nodes.
         drop = set(node_ids)
-        by_path = {owner.id: owner for nid in node_ids if (owner := self._owning_path(nid)) is not None}
-        for path in by_path.values():
-            segs = [self.segments[sid] for sid in path.segment_ids]
-            node_seq = _chain_node_sequence(segs)
+        for path in self._paths_owning_nodes(node_ids):
+            node_seq = _chain_node_sequence([self.segments[sid] for sid in path.segment_ids])
             if sum(1 for n in node_seq if n not in drop) < 2:
                 return f"this would delete the whole path {path.name} — delete the path instead"
         return None  # both checks passed → the selection is safe to delete
@@ -337,6 +354,13 @@ class ResortGraph:
         """The finished slope/road that owns a segment touching node_id, or None."""
         touching = self._segments_touching(node_id)
         return self.get_entity_by_segment_id(touching[0].id) if touching else None
+
+    def _paths_owning_nodes(self, node_ids: list[str]) -> list["SegmentPath"]:
+        """The distinct finished paths owning the given nodes — the single node→path grouping used by
+        both the delete precondition check and the delete executor, so they can't drift.
+        """
+        by_id = {owner.id: owner for nid in node_ids if (owner := self._owning_path(nid)) is not None}
+        return list(by_id.values())
 
     # =========================================================================
     # Commit Operations
@@ -423,27 +447,17 @@ class ResortGraph:
             if end_created:
                 new_node_ids.append(end_node.id)
 
-            # Calculate side slope (requires terrain analysis, stored in segment)
+            # Side slope needs ≥2 points; the segment factory computes it from the first two.
             if len(path.points) < 2:
                 raise ValueError(
                     f"Path must have at least 2 points to compute side slope, got {len(path.points)}: {path}"
                 )
-            side_slope_pct, side_slope_dir = self._side_slope_for_points(path.points)
 
             # Create segment (metrics computed as properties from points)
-            segment_id = self._next_segment_id()
-            segment = PathSegment(
-                id=segment_id,
-                name=f"Segment {self._segment_counter}",
-                points=path.points,
-                start_node_id=start_node.id,
-                end_node_id=end_node.id,
-                side_slope_pct=side_slope_pct,
-                side_slope_dir=side_slope_dir,
-                kind=path.kind,  # slope vs road identity carried from the proposal
+            segment = self._build_segment(
+                points=path.points, start_node_id=start_node.id, end_node_id=end_node.id, kind=path.kind
             )
-            self.segments[segment_id] = segment
-            new_segment_ids.append(segment_id)
+            new_segment_ids.append(segment.id)
             end_node_ids.append(end_node.id)
 
         # Record for undo
@@ -1003,13 +1017,8 @@ class ResortGraph:
             raise ValueError(f"delete_nodes: {rejection}")
 
         to_delete = set(node_ids)
-        # Group the delete-set by owning path (each deletable node belongs to exactly one path).
-        paths_by_id: dict[str, SegmentPath] = {}
-        for nid in node_ids:
-            owner = self._owning_path(nid)
-            assert owner is not None  # guaranteed by delete_nodes_rejection
-            paths_by_id[owner.id] = owner
-        affected_paths = list(paths_by_id.values())
+        # Each deletable node belongs to exactly one finished path (guaranteed by the rejection check).
+        affected_paths = self._paths_owning_nodes(node_ids)
 
         deleted_nodes = tuple(self.nodes[nid] for nid in node_ids)
         paths_before = tuple(copy.deepcopy(p) for p in affected_paths)
@@ -1135,18 +1144,7 @@ class ResortGraph:
             (seg.points[: i + 1], seg.start_node_id, node.id),
             (seg.points[i:], node.id, seg.end_node_id),
         ):
-            side_pct, side_dir = self._side_slope_for_points(pts)
-            new_seg = PathSegment(
-                id=self._next_segment_id(),
-                name=f"Segment {self._segment_counter}",
-                points=list(pts),
-                start_node_id=s_node,
-                end_node_id=e_node,
-                side_slope_pct=side_pct,
-                side_slope_dir=side_dir,
-                kind=seg.kind,
-            )
-            self.segments[new_seg.id] = new_seg
+            new_seg = self._build_segment(points=list(pts), start_node_id=s_node, end_node_id=e_node, kind=seg.kind)
             new_ids.append(new_seg.id)
 
         idx = owner.segment_ids.index(segment_id)
