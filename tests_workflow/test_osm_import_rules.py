@@ -7,8 +7,9 @@ from collections import defaultdict, deque
 
 import pytest
 
-from skiresort_planner.constants import OSMConfig
+from skiresort_planner.constants import OSMConfig, SlopeConfig
 from skiresort_planner.core.dem_service import DEMService
+from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.generators.osm_graph_builder import OSMGraphBuilder, ways_to_lines
 
 # thresholds the rules assert against (reference resort: 347 nodes / 332 segments / 136 slopes / 61 lifts).
@@ -44,13 +45,11 @@ def _polylen(coords):
 
 
 def _backclimb(pts):
-    """Uphill (m) of a run after smoothing elevations over ROLLING_WINDOW_M (300 m) — the same
-    rolling-window idea used for segment difficulty. After that smoothing a real piste MUST be monotonic
-    descending; the metric is the total upward movement in the smoothed profile (0 for a clean descent).
-    The window removes small DEM/geometry noise; a genuine sustained climb survives.
+    """Uphill (m) of a run after smoothing elevations over BACKCLIMB_WINDOW_M (~60 m, step-size scale).
+    A slope MUST be monotonic descending; the metric is total upward movement in the smoothed profile
+    (0 for a clean descent). The window removes small DEM/geometry noise but — unlike the old 300 m
+    window — does NOT hide a real 100 m+ mid-run climb.
     """
-    from skiresort_planner.constants import SlopeConfig
-
     es = [p.elevation for p in pts]
     if len(es) < 3:
         return 0.0
@@ -58,13 +57,42 @@ def _backclimb(pts):
         es = es[::-1]
     seg = [pts[i].distance_to(other=pts[i + 1]) for i in range(len(pts) - 1)]
     avg = (sum(seg) / len(seg)) if seg else 30.0
-    win = max(1, round(SlopeConfig.ROLLING_WINDOW_M / max(avg, 1.0)))
+    win = max(1, round(OSMConfig.BACKCLIMB_WINDOW_M / max(avg, 1.0)))
     half = win // 2
     sm = [
         sum(es[max(0, i - half) : min(len(es), i + half + 1)]) / len(es[max(0, i - half) : min(len(es), i + half + 1)])
         for i in range(len(es))
     ]
     return sum(max(0.0, sm[i + 1] - sm[i]) for i in range(len(sm) - 1))
+
+
+def _run_max_slope(pts):
+    """Steepest-section slope magnitude (%) of a run, rolled over ROLLING_WINDOW_M — independent
+    reimplementation of the builder's metric, for the grouping-difficulty check.
+    """
+    if len(pts) < 2:
+        return 0.0
+    cum = [0.0]
+    for i in range(1, len(pts)):
+        cum.append(cum[-1] + pts[i - 1].distance_to(other=pts[i]))
+    total = cum[-1]
+    if total <= 0:
+        return 0.0
+    avg = abs(pts[0].elevation - pts[-1].elevation) / total * 100.0
+    win = SlopeConfig.ROLLING_WINDOW_M
+    if total < win:
+        return avg
+    best = avg
+    for i in range(len(pts)):
+        j = i
+        while j < len(pts) and cum[j] - cum[i] < win:
+            j += 1
+        if j >= len(pts):
+            break
+        run_m = cum[j] - cum[i]
+        if run_m > 0:
+            best = max(best, abs(pts[i].elevation - pts[j].elevation) / run_m * 100.0)
+    return best
 
 
 def _components(graph):
@@ -174,11 +202,14 @@ class TestImportRules:
     def test_r6_nodes_lie_on_slopes(self, ischgl_graph):
         """STRICT: no node may sit within MIN_NODE_DIST_M of a slope's geometry unless it is a vertex of
         that slope — a slope passing near a station must SPLIT at it (pass THROUGH it as a shared node).
-        EXCEPTION: a hub HIGHER than both the run's endpoints is a peak the descending run legitimately
-        passes BELOW; it cannot share that node without climbing, so it is not a missed split.
+        EXCEPTIONS: (a) a hub HIGHER than both the run's endpoints is a peak the descending run passes
+        BELOW (can't share it without climbing); (b) a hub BELOW the lowest lift base is a valley-terminus
+        pit the run skirts on its way to a lift base — sharing it would strand the descent in the pit.
         """
         pts = {k: (v.lon, v.lat) for k, v in ischgl_graph.node_points.items()}
         elev = {k: v.elevation for k, v in ischgl_graph.node_points.items()}
+        lift_nodes = {n for lf in ischgl_graph.lifts for n in (lf.node_a, lf.node_b)}
+        min_lift_base = min((elev[n] for n in lift_nodes), default=0.0)
         tol = OSMConfig.MIN_NODE_DIST_M
         floating = 0
         for r in ischgl_graph.slope_runs:
@@ -186,7 +217,7 @@ class TestImportRules:
             hi_end = max(elev[r.node_a], elev[r.node_b])
             run_pts = [(p.lon, p.lat) for p in r.points]
             for nk, npt in pts.items():
-                if nk in endpts or elev[nk] > hi_end:
+                if nk in endpts or elev[nk] > hi_end or elev[nk] < min_lift_base:
                     continue
                 dmin = min(_hav(npt, rp) for rp in run_pts)
                 if dmin < tol:
@@ -463,6 +494,7 @@ class TestImportRules:
         """
         elev = {k: v.elevation for k, v in ischgl_graph.node_points.items()}
         lift_nodes = {n for lf in ischgl_graph.lifts for n in (lf.node_a, lf.node_b)}
+        min_lift_base = min((elev[n] for n in lift_nodes), default=0.0)
         down: dict[int, set[int]] = defaultdict(set)
         up: dict[int, set[int]] = defaultdict(set)
         slope_nodes: set[int] = set()
@@ -485,7 +517,9 @@ class TestImportRules:
                         q.append(y)
             return False
 
-        stranded_down = sorted(n for n in slope_nodes if not reaches(n, down))
+        # A sink BELOW the lowest lift base is a genuine VALLEY TERMINUS — you ski out of the box to a
+        # return lift whose base is outside the bbox (e.g. the Ischgl village gondola). Not a dead-end.
+        stranded_down = sorted(n for n in slope_nodes if not reaches(n, down) and elev[n] > min_lift_base)
         stranded_up = sorted(n for n in slope_nodes if not reaches(n, up))
         assert stranded_down == [], (
             f"{len(stranded_down)} slope nodes cannot reach a lift going DOWN (skier stranded): "
@@ -596,3 +630,30 @@ class TestImportRules:
             f"{len(bad)} lifts have a station that matches NO raw OSM lift endpoint (>{tol}m) — "
             f"builder moved a station off its real OSM position: {bad[:5]}"
         )
+
+    def test_r29_segments_group_into_fewer_slopes(self, ischgl_graph):
+        """Segments must GROUP into whole slopes: a real resort has many segments per slope (the
+        full-split cuts a named piste into pieces at every junction). Require ≥ 2× (target 3×) more
+        segments than slopes, every segment in exactly one slope, and each slope's difficulty = its
+        steepest member (never below any member's band — grouping must not soften difficulty).
+        """
+        slopes = ischgl_graph.slopes
+        runs = ischgl_graph.slope_runs
+        assert slopes, "no grouped slopes — segments were never grouped"
+        # referential completeness: every run in exactly one slope
+        covered = [ri for s in slopes for ri in s.run_indices]
+        assert sorted(covered) == list(range(len(runs))), (
+            f"grouping is not a partition: {len(covered)} refs cover {len(set(covered))}/{len(runs)} runs"
+        )
+        ratio = len(runs) / len(slopes)
+        assert ratio >= 2.0, f"only {ratio:.1f}x more segments ({len(runs)}) than slopes ({len(slopes)}) — want ≥2x"
+        # difficulty is the steepest member's band (grouping never softens a slope)
+        rank = {d: i for i, d in enumerate(SlopeConfig.DIFFICULTIES)}
+        for s in slopes:
+            steepest = max(
+                rank[TerrainAnalyzer.classify_difficulty(slope_pct=_run_max_slope(runs[ri].points))]
+                for ri in s.run_indices
+            )
+            assert rank[s.difficulty] >= steepest, (
+                f"slope '{s.name}' classified {s.difficulty} below its steepest member — grouping softened it"
+            )
