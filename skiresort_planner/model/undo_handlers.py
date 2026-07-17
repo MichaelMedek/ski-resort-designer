@@ -241,13 +241,13 @@ class _MergeNodesHandler(UndoHandler):
     action_type = ActionType.MERGE_NODES
 
     def apply_undo(self, graph: "ResortGraph", action: UndoAction) -> None:
-        # Restore the merged-away nodes, move the survivor back, and restore every touched builder
-        # from its pre-merge snapshot. Each snapshot carries the original endpoint/boundary ids, so
-        # replacing it in place also undoes the repoint.
+        # Restore the merged-away nodes, the touched builders (each snapshot carries the original
+        # endpoint ids, so replacing it undoes the repoint), and the survivor WHOLESALE — a merge that
+        # collapsed the survivor's only path can leave it isolated, so it may be gone from graph.nodes.
         merge = cast(MergeNodesAction, action)
         for node in merge.deleted_nodes:
             graph.nodes[node.id] = node
-        graph.nodes[merge.survivor_id].location = merge.survivor_before.location
+        graph.nodes[merge.survivor_id] = merge.survivor_before
         for seg_before in merge.segments_before:
             graph.segments[seg_before.id] = seg_before
         for lift_before in merge.lifts_before:
