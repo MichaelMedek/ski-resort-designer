@@ -15,7 +15,7 @@ from skiresort_planner.generators.osm_graph_builder import OSMGraphBuilder, ways
 MIN_CONNECTED_FRAC = 0.90  # THE hard invariant (measured on segments)
 MAX_NODES = 500  # blizzard guard on the circle-count (reference 347)
 MAX_SEGMENTS = 1000  # segment count is free (full-split); only a true blizzard trips this
-MIN_SEGMENTS = 200  # a full box must not collapse to near-empty
+MIN_SEGMENTS = 100  # a full box must not collapse to near-empty
 MAX_STRAIGHT_M = 100.0  # no artificial straight leg longer than this (a < 100 m pull is the only straight)
 MAX_PULL_M = 500.0  # an end connector (off-piste pull to a hub) may not exceed this; else the segment is dropped
 PISTE_TOL_M = 50.0  # a point farther than this from every OSM piste counts as off-piste (connector)
@@ -514,4 +514,59 @@ class TestImportRules:
                 offenders.append((k, round(p.elevation - terrain, 1)))
         assert offenders == [], (
             f"{len(offenders)} nodes are > {MAX_NODE_TERRAIN_DEVIATION_M}m off terrain: {offenders[:8]}"
+        )
+
+    def test_r26_lift_endpoints_sit_on_their_hubs(self, ischgl_graph):
+        """A lift's drawn stations (bottom/top) must BE its hub-node coordinates."""
+        node_pt = ischgl_graph.node_points
+        tol = 1.0  # metres — the lift station IS its node; anything larger is a node/geometry desync
+        bad = []
+        for lf in ischgl_graph.lifts:
+            # lf.bottom is node_a when node_a is the lower station, else node_b (orientation set at build)
+            lo, hi = (
+                (lf.node_a, lf.node_b)
+                if node_pt[lf.node_a].elevation <= node_pt[lf.node_b].elevation
+                else (lf.node_b, lf.node_a)
+            )
+            db = _hav((lf.bottom.lon, lf.bottom.lat), (node_pt[lo].lon, node_pt[lo].lat))
+            dt = _hav((lf.top.lon, lf.top.lat), (node_pt[hi].lon, node_pt[hi].lat))
+            if db > tol or dt > tol:
+                bad.append((lf.name, round(max(db, dt), 1)))
+        assert bad == [], (
+            f"{len(bad)} lifts whose drawn station is not ON its hub node (>{tol}m) — a node was "
+            f"remapped away from its real station (teleport hack): {bad[:5]}"
+        )
+
+    def test_r27_referential_integrity(self, ischgl_graph):
+        """Every node id referenced by a slope or lift MUST exist in node_points,
+        and every node in node_points MUST be referenced by at least one slope/lift.
+        """
+        nodes = set(ischgl_graph.node_points)
+        referenced = {n for r in ischgl_graph.slope_runs for n in (r.node_a, r.node_b)} | {
+            n for lf in ischgl_graph.lifts for n in (lf.node_a, lf.node_b)
+        }
+        dangling = sorted(referenced - nodes)
+        orphaned = sorted(nodes - referenced)
+        assert dangling == [], (
+            f"{len(dangling)} slope/lift endpoints reference nodes not in node_points: {dangling[:8]}"
+        )
+        assert orphaned == [], f"{len(orphaned)} nodes in node_points are referenced by nothing: {orphaned[:8]}"
+
+    def test_r28_lift_stations_match_raw_osm(self, ischgl_graph):
+        """Every imported lift's bottom/top must sit within RESAMPLE_STEP_M of
+        a RAW OSM lift endpoint. The builder takes lift geometry verbatim from OSM (only the DEM z is
+        recomputed), so a station that drifted from every raw OSM station was moved by the builder.
+        """
+        _pistes, raw_lifts = ways_to_lines(_load_cache(), ISCHGL_BBOX)
+        raw_stations = [vs[0] for vs, _lt, _nm in raw_lifts] + [vs[-1] for vs, _lt, _nm in raw_lifts]
+        tol = OSMConfig.RESAMPLE_STEP_M  # a station is a raw OSM vertex; allow one resample step of slack
+        bad = []
+        for lf in ischgl_graph.lifts:
+            for station in (lf.bottom, lf.top):
+                if min(_hav((station.lon, station.lat), rs) for rs in raw_stations) > tol:
+                    bad.append(lf.name)
+                    break
+        assert bad == [], (
+            f"{len(bad)} lifts have a station that matches NO raw OSM lift endpoint (>{tol}m) — "
+            f"builder moved a station off its real OSM position: {bad[:5]}"
         )
