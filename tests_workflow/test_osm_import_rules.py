@@ -678,3 +678,27 @@ class TestImportRules:
             assert rank[s.difficulty] >= steepest, (
                 f"slope '{s.name}' classified {s.difficulty} below its steepest member — grouping softened it"
             )
+
+
+class TestGraphImporter:
+    """The production GraphImporter wrapper: it fetches, runs the builder, and reports the built
+    graph as an ImportResult (hub-aligned lifts + slope chains), writing reference artifacts.
+    """
+
+    def test_run_yields_importresult_and_writes_artifacts(self, tmp_path, monkeypatch) -> None:
+        from skiresort_planner.generators.osm_graph_builder import GraphImporter
+
+        importer = GraphImporter(dem=DEMService(), bbox=ISCHGL_BBOX)
+        monkeypatch.setattr(importer, "fetch", lambda: _load_fixture())  # no network — use the fixture
+
+        result = importer.run(dump_dir=tmp_path)
+
+        assert result.source == "OSM"
+        assert result.lifts, "the graph importer must report the hub-aligned lifts"
+        assert result.slope_chains, "the graph importer must report grouped slope chains"
+        # Every chain is a non-empty list of segment point-lists.
+        for chain, _name in result.slope_chains:
+            assert chain and all(len(seg) >= 2 for seg in chain)
+        # Reference artifacts written for inspection (never read back).
+        assert (tmp_path / "osm_raw.json").exists()
+        assert (tmp_path / "osm_import.png").exists()

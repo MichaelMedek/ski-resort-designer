@@ -763,11 +763,17 @@ class ResortGraph:
         segment_ids: list[str] = []
         duplicates = 0
 
+        # Dedup is measured against a snapshot frozen BEFORE this batch. Kind-scoped so a slope never dedups a lift.
+        tol = OSMConfig.OSM_DEDUP_TOL_M
+        pre_slope_ends = [s.endpoints(nodes=self.nodes) for s in self.slopes.values()]
+        pre_lift_ends = [lf.endpoints(nodes=self.nodes) for lf in self.lifts.values()]
+        pre_slope_names = {s.name for s in self.slopes.values() if s.source == source and s.name}
+        pre_lift_names = {lf.name for lf in self.lifts.values() if lf.source == source and lf.name}
+
         for chain, name in result.slope_chains:
             head, tail = chain[0][0], chain[-1][-1]
-            if self.has_endpoint_duplicate(a=head, b=tail, tol_m=OSMConfig.OSM_DEDUP_TOL_M) or self._has_source_name(
-                name=name, source=source
-            ):
+            endpoint_dup = any(endpoints_match(pair_a=(head, tail), pair_b=e, tol_m=tol) for e in pre_slope_ends)
+            if endpoint_dup or (name and name in pre_slope_names):
                 logger.debug(f"import_osm: skipping duplicate slope '{name}' at endpoints {head} -> {tail}")
                 duplicates += 1
                 continue
@@ -785,9 +791,8 @@ class ResortGraph:
             slope_ids.append(slope.id)
 
         for bottom, top, lift_type, lift_name in result.lifts:
-            if self.has_endpoint_duplicate(a=bottom, b=top, tol_m=OSMConfig.OSM_DEDUP_TOL_M) or self._has_source_name(
-                name=lift_name, source=source
-            ):
+            endpoint_dup = any(endpoints_match(pair_a=(bottom, top), pair_b=e, tol_m=tol) for e in pre_lift_ends)
+            if endpoint_dup or (lift_name and lift_name in pre_lift_names):
                 logger.debug(
                     f"import_osm: skipping duplicate lift '{lift_name}' (type={lift_type}) at endpoints "
                     f"{bottom} -> {top}"
@@ -821,37 +826,6 @@ class ResortGraph:
             f"{len(created_node_ids)} new nodes, {duplicates} duplicates skipped"
         )
         return OSMImportResult(slopes_added=len(slope_ids), lifts_added=len(lift_ids), duplicates_skipped=duplicates)
-
-    def _has_source_name(self, name: str | None, source: str) -> bool:
-        """True if a slope or lift with this same `source` and a matching non-empty `name` exists —
-        a named entity already imported from that source (skip re-importing). Empty/None never matches.
-        """
-        if not name:
-            return False
-        slope_hit = any(s.source == source and s.name == name for s in self.slopes.values())
-        lift_hit = any(lf.source == source and lf.name == name for lf in self.lifts.values())
-        return slope_hit or lift_hit
-
-    def has_endpoint_duplicate(
-        self, a: PathPoint, b: PathPoint, *, tol_m: float = GeometricTuningConfig.STEP_SIZE_M
-    ) -> bool:
-        """True if an existing slope or lift already spans endpoints `a` and `b` (within `tol_m`).
-
-        Direct geometric comparison against each stored entity's endpoints (endpoints_match, either
-        orientation). Default `tol_m` is the import snap distance; the OSM re-import passes a coarser
-        OSM_DEDUP_TOL_M. No coordinate rounding or shared-node lookup, so it stays correct where many
-        runs cluster around one junction.
-        """
-        pair = (a, b)
-        slope_match = any(
-            endpoints_match(pair_a=pair, pair_b=slope.endpoints(nodes=self.nodes), tol_m=tol_m)
-            for slope in self.slopes.values()
-        )
-        lift_match = any(
-            endpoints_match(pair_a=pair, pair_b=lift.endpoints(nodes=self.nodes), tol_m=tol_m)
-            for lift in self.lifts.values()
-        )
-        return slope_match or lift_match
 
     def max_node_span_m(self, node_ids: list[str]) -> float:
         """Largest pairwise distance (m) among the given nodes; 0 for fewer than two."""

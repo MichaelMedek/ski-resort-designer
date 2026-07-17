@@ -838,6 +838,45 @@ class TestImportOSMBatch:
         chains = [([pts], name) for pts, name in self._pistes(dem, piste_count)]
         return ImportResult(lifts=list(lifts), slope_chains=chains)
 
+    def test_same_named_chains_within_one_import_all_land(self, empty_graph, mock_dem_blue_slope) -> None:
+        """Regression: one OSM piste splits into MANY chains sharing its name. Dedup must compare
+        against the pre-batch snapshot, not the growing graph — else the first chain evicts its
+        siblings and almost all slopes vanish (the Ischgl 86→25 collapse).
+        """
+        from skiresort_planner.generators.osm_importer import ImportResult
+
+        graph, dem = empty_graph, mock_dem_blue_slope
+        # Four DISTINCT, non-overlapping chains that all carry the SAME name "1".
+        chains: list[tuple[list[list[PathPoint]], str | None]] = []
+        for i in range(4):
+            lon = 0.01 * i
+            pts = [
+                PathPoint(lon=lon, lat=0.0, elevation=dem.get_elevation_or_raise(lon=lon, lat=0.0)),
+                PathPoint(lon=lon, lat=-500 / M, elevation=dem.get_elevation_or_raise(lon=lon, lat=-500 / M)),
+            ]
+            chains.append(([pts], "1"))
+        slopes, _lifts, duplicates = graph.import_osm(ImportResult(slope_chains=chains), dem=dem)
+        assert (slopes, duplicates) == (4, 0), "every same-named chain of one import must land"
+        assert len(graph.slopes) == 4
+
+    def test_lift_not_deduped_by_a_nearby_slope(self, empty_graph, mock_dem_blue_slope) -> None:
+        """Regression: dedup is kind-scoped. A slope ending within OSM_DEDUP_TOL_M of a lift base must
+        NOT mark the lift a duplicate (the missing Sassgalunbahn) — lifts dedup only against lifts.
+        """
+        from skiresort_planner.generators.osm_importer import ImportResult
+
+        graph, dem = empty_graph, mock_dem_blue_slope
+        base = PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
+        top = PathPoint(lon=0.0, lat=-800 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-800 / M))
+        # A slope whose top endpoint coincides with the lift base (they legitimately share a hub).
+        slope_pts = [
+            base,
+            PathPoint(lon=0.0, lat=-500 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / M)),
+        ]
+        result = ImportResult(lifts=[(base, top, "chairlift", "Sassgalunbahn")], slope_chains=[([slope_pts], "1")])
+        slopes, lifts, duplicates = graph.import_osm(result, dem=dem)
+        assert (slopes, lifts, duplicates) == (1, 1, 0), "the lift imports despite a slope at its base"
+
     def test_import_adds_entities_as_single_undo(self, empty_graph, mock_dem_blue_slope) -> None:
         graph, dem = empty_graph, mock_dem_blue_slope
         slopes, lifts, duplicates = graph.import_osm(self._result(dem, piste_count=3, lifts=[self._lift(dem)]), dem=dem)
@@ -947,11 +986,17 @@ class TestImportOSMBatch:
         assert (slopes, duplicates) == (0, 1), "the hand-built run is recognised, not duplicated"
         assert len(graph.slopes) == 1
 
-    def test_has_endpoint_duplicate_false_for_absent_run(self, empty_graph, mock_dem_blue_slope) -> None:
+    def test_absent_run_is_not_deduped(self, empty_graph, mock_dem_blue_slope) -> None:
+        """A run at endpoints no existing entity holds imports normally (dedup false-negative guard)."""
+        from skiresort_planner.generators.osm_importer import ImportResult
+
         dem = mock_dem_blue_slope
-        a = PathPoint(lon=0.4, lat=0.4, elevation=dem.get_elevation_or_raise(lon=0.4, lat=0.4))
-        b = PathPoint(lon=0.4, lat=0.3, elevation=dem.get_elevation_or_raise(lon=0.4, lat=0.3))
-        assert empty_graph.has_endpoint_duplicate(a=a, b=b) is False
+        pts = [
+            PathPoint(lon=0.4, lat=0.4, elevation=dem.get_elevation_or_raise(lon=0.4, lat=0.4)),
+            PathPoint(lon=0.4, lat=0.3, elevation=dem.get_elevation_or_raise(lon=0.4, lat=0.3)),
+        ]
+        slopes, _lifts, duplicates = empty_graph.import_osm(ImportResult(slope_chains=[([pts], "New")]), dem=dem)
+        assert (slopes, duplicates) == (1, 0)
 
     def test_reimport_is_idempotent_with_snapped_shared_junctions(self, empty_graph, mock_dem_blue_slope) -> None:
         """Regression: real resorts share junctions, so import SNAPS endpoints onto common nodes.
@@ -1299,9 +1344,11 @@ class TestMergeNodes:
         assert (restored_slope.start_node_id, restored_slope.end_node_id) == slope_boundary_before
 
     def test_merge_after_slope_does_not_break_import_duplicate_check(self, empty_graph, mock_dem_blue_slope) -> None:
-        """End-to-end regression for the crash: after merging a slope boundary node, has_endpoint_duplicate
-        (called by import_osm) must not raise on the slope's now-updated endpoints.
+        """End-to-end regression for the crash: after merging a slope boundary node, the import dedup
+        (import_osm matching each existing slope's endpoints) must not raise on the updated endpoints.
         """
+        from skiresort_planner.generators.osm_importer import ImportResult
+
         dem = mock_dem_blue_slope
         graph = empty_graph
         seg_ids = _commit_L_slope(graph, dem)
@@ -1312,11 +1359,14 @@ class TestMergeNodes:
         self._node(graph, dem, "X", 5 / self.M, 5 / self.M)
         graph.merge_nodes(node_ids=[top_node_id, "X"], dem=dem)
 
-        # Would raise ValueError("Start or end node not found ...") before the fix.
-        result = graph.has_endpoint_duplicate(
-            a=PathPoint(lon=0.5, lat=0.5, elevation=0.0), b=PathPoint(lon=0.6, lat=0.6, elevation=0.0)
-        )
-        assert result is False
+        # Would raise ValueError("Start or end node not found ...") before the fix — importing a run
+        # at unrelated endpoints must dedup-check the merged slope without crashing, and land.
+        far = [
+            PathPoint(lon=0.5, lat=0.5, elevation=dem.get_elevation_or_raise(lon=0.5, lat=0.5)),
+            PathPoint(lon=0.6, lat=0.6, elevation=dem.get_elevation_or_raise(lon=0.6, lat=0.6)),
+        ]
+        slopes, _lifts, duplicates = graph.import_osm(ImportResult(slope_chains=[([far], "New")]), dem=dem)
+        assert (slopes, duplicates) == (1, 0)
 
     # -- collapse to zero length deletes the entity (both endpoints merged onto the survivor) ----
 
