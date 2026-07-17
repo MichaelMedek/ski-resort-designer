@@ -132,11 +132,6 @@ def ways_to_lines(
 class OSMGraphBuilder:
     """Turns raw Overpass ways into a connected ImportGraph. Pure geometry — no graph mutation."""
 
-    # Max a node may be carved below the DEM to make a descent monotone — stays within R25's ±10 m
-    # node-vs-terrain tolerance. Also the per-hop carry the descent-witness search may cross (a small
-    # DEM-sampling saddle the carve later flattens). Single source of truth for both.
-    CARVE_CAP_M = 10.0
-
     def __init__(self, dem: DEMService, bbox: tuple[float, float, float, float]) -> None:
         self.dem = dem
         self.bbox = bbox
@@ -396,7 +391,7 @@ class OSMGraphBuilder:
                     if y not in elev:
                         continue
                     climb = max(0.0, elev[y] - elev[x])
-                    if climb > self.CARVE_CAP_M:
+                    if climb > OSMConfig.CARVE_CAP_M:
                         continue
                     nc = c + climb
                     if nc < best.get(y, 1e18):
@@ -416,7 +411,7 @@ class OSMGraphBuilder:
                 continue
             for lh in lift_hubs:
                 if (
-                    elev[lh] > elev[h] + self.CARVE_CAP_M
+                    elev[lh] > elev[h] + OSMConfig.CARVE_CAP_M
                     and math.dist(pts[h], pts[lh]) < OSMConfig.RELAXED_MERGE_DIST_M
                 ):
                     protected.add(h)
@@ -467,7 +462,7 @@ class OSMGraphBuilder:
                     continue
                 for y, pair in adj[x]:
                     climb = max(0.0, elev[y] - elev[x])
-                    if climb > self.CARVE_CAP_M:
+                    if climb > OSMConfig.CARVE_CAP_M:
                         continue  # a single hop over CARVE_CAP_M is a real wall, not a sampling bump
                     nc = c + climb
                     if nc < best.get(y, 1e18):
@@ -635,7 +630,7 @@ class OSMGraphBuilder:
         for r in graph.slope_runs:
             adj[r.node_a].add(r.node_b)
             adj[r.node_b].add(r.node_a)
-        cap = self.CARVE_CAP_M  # carve stays within R25's strict ±10 m node-vs-terrain tolerance
+        cap = OSMConfig.CARVE_CAP_M  # carve stays within R25's strict ±10 m node-vs-terrain tolerance
 
         def min_climb_path(top: int, base: int) -> list[int] | None:
             best = {top: 0.0}
