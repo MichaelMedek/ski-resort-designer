@@ -172,18 +172,21 @@ class TestImportRules:
         assert close == [], f"{len(close)} node pairs closer than {OSMConfig.MIN_NODE_DIST_M}m — must merge (strict)"
 
     def test_r6_nodes_lie_on_slopes(self, ischgl_graph):
-        """STRICT, no exception: no node (slope OR lift) may sit within MIN_NODE_DIST_M of a slope's
-        geometry unless it is a vertex of that slope. A slope passing near a lift station must be SPLIT
-        at the station — pass THROUGH it as a shared node — never float beside it.
+        """STRICT: no node may sit within MIN_NODE_DIST_M of a slope's geometry unless it is a vertex of
+        that slope — a slope passing near a station must SPLIT at it (pass THROUGH it as a shared node).
+        EXCEPTION: a hub HIGHER than both the run's endpoints is a peak the descending run legitimately
+        passes BELOW; it cannot share that node without climbing, so it is not a missed split.
         """
         pts = {k: (v.lon, v.lat) for k, v in ischgl_graph.node_points.items()}
+        elev = {k: v.elevation for k, v in ischgl_graph.node_points.items()}
         tol = OSMConfig.MIN_NODE_DIST_M
         floating = 0
         for r in ischgl_graph.slope_runs:
             endpts = {r.node_a, r.node_b}
+            hi_end = max(elev[r.node_a], elev[r.node_b])
             run_pts = [(p.lon, p.lat) for p in r.points]
             for nk, npt in pts.items():
-                if nk in endpts:
+                if nk in endpts or elev[nk] > hi_end:
                     continue
                 dmin = min(_hav(npt, rp) for rp in run_pts)
                 if dmin < tol:
@@ -450,24 +453,47 @@ class TestImportRules:
         )
 
     def test_r22_no_slope_dead_ends(self, ischgl_graph):
-        """No slope may end in EMPTY SPACE: every slope endpoint node must either connect onward (be a
-        vertex of another segment or a lift). A dead-end signals a dropped/truncated slope.
-        """
-        deg: dict[int, int] = defaultdict(int)
-        for r in ischgl_graph.slope_runs:
-            deg[r.node_a] += 1
-            deg[r.node_b] += 1
-        lift_nodes = {n for lf in ischgl_graph.lifts for n in (lf.node_a, lf.node_b)}
+        """No slope may dead-end where a skier gets STRANDED. STRICT, traced:
 
-        dead_ends = []
+        (a) DOWN — from EVERY slope node, following descending edges must reach a LIFT STATION (a node
+            you can ride back up). A node all of whose slopes arrive from above and none continue down,
+            and which is not a lift base, is a stranding dead-end — fail loudly.
+        (b) UP  — every slope node must be reachable, following descending edges FROM some lift station
+            (you must be able to get onto the slope by riding a lift up, then skiing down to it).
+        """
+        elev = {k: v.elevation for k, v in ischgl_graph.node_points.items()}
+        lift_nodes = {n for lf in ischgl_graph.lifts for n in (lf.node_a, lf.node_b)}
+        down: dict[int, set[int]] = defaultdict(set)
+        up: dict[int, set[int]] = defaultdict(set)
+        slope_nodes: set[int] = set()
         for r in ischgl_graph.slope_runs:
-            for n in (r.node_a, r.node_b):
-                # degree 1 among slopes AND not a lift station → floating end
-                if deg[n] == 1 and n not in lift_nodes:
-                    dead_ends.append(n)
-        assert dead_ends == [], (
-            f"{len(set(dead_ends))} slope nodes dead-end in empty space (interior, no lift, no onward "
-            f"segment): {sorted(set(dead_ends))[:8]} — a dropped/truncated slope"
+            hi, lo = (r.node_a, r.node_b) if elev[r.node_a] >= elev[r.node_b] else (r.node_b, r.node_a)
+            down[hi].add(lo)
+            up[lo].add(hi)
+            slope_nodes |= {hi, lo}
+
+        def reaches(start: int, graph: dict[int, set[int]]) -> bool:
+            """True if a lift station is reachable from `start` over `graph` (down= or up=adjacency)."""
+            seen, q = {start}, deque([start])
+            while q:
+                x = q.popleft()
+                if x in lift_nodes:
+                    return True
+                for y in graph[x]:
+                    if y not in seen:
+                        seen.add(y)
+                        q.append(y)
+            return False
+
+        stranded_down = sorted(n for n in slope_nodes if not reaches(n, down))
+        stranded_up = sorted(n for n in slope_nodes if not reaches(n, up))
+        assert stranded_down == [], (
+            f"{len(stranded_down)} slope nodes cannot reach a lift going DOWN (skier stranded): "
+            f"{stranded_down[:8]} — a dropped/truncated slope"
+        )
+        assert stranded_up == [], (
+            f"{len(stranded_up)} slope nodes cannot be reached from a lift going down (unreachable): "
+            f"{stranded_up[:8]} — a dropped/truncated slope"
         )
 
     def test_r23_slope_points_hug_terrain(self, ischgl_graph):
