@@ -472,11 +472,12 @@ class TestImportRules:
 
         def on_bbox_edge(n: int) -> bool:
             p = node_pt[n]
+            lon, lat = float(p.lon), float(p.lat)
             return (
-                abs(p.lon - min_lon) < edge_tol_deg
-                or abs(p.lon - max_lon) < edge_tol_deg
-                or abs(p.lat - min_lat) < edge_tol_deg
-                or abs(p.lat - max_lat) < edge_tol_deg
+                abs(lon - min_lon) < edge_tol_deg
+                or abs(lon - max_lon) < edge_tol_deg
+                or abs(lat - min_lat) < edge_tol_deg
+                or abs(lat - max_lat) < edge_tol_deg
             )
 
         dead_ends = []
