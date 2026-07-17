@@ -76,7 +76,7 @@ class ClickDetector:
 
         # Object click (marker, segment, etc.)
         if clicked_object is not None:
-            return self._parse_object_click(obj=clicked_object)
+            return self._parse_object_click(obj=clicked_object, clicked_coordinate=clicked_coordinate)
 
         # Terrain click (no object picked)
         if clicked_coordinate is not None:
@@ -113,9 +113,18 @@ class ClickDetector:
 
         return f"{obj_type}_{obj_id}" if obj_id else obj_type
 
-    def _parse_object_click(self, obj: dict[str, object]) -> ClickInfo | None:
-        """Parse clicked object to ClickInfo."""
+    def _parse_object_click(
+        self, obj: dict[str, object], clicked_coordinate: list[float] | None = None
+    ) -> ClickInfo | None:
+        """Parse clicked object to ClickInfo.
+
+        The SEGMENT (path-body) marker carries the click's [lon, lat] so a path click can add a node
+        there; other markers stay position-less. The coordinate is a deck.gl event field — present on
+        every real click, absent only for object-only picks (same handling as the terrain branch).
+        """
         obj_type = _as_str(obj.get("type"))
+
+        coord_lon, coord_lat = (clicked_coordinate[0], clicked_coordinate[1]) if clicked_coordinate else (None, None)
 
         if not obj_type:
             logger.warning(f"Object click without type field: {obj}")
@@ -169,6 +178,8 @@ class ClickDetector:
                 click_type=MapClickType.MARKER,
                 marker_type=MarkerType.SEGMENT,
                 segment_id=seg_id,
+                lat=coord_lat,
+                lon=coord_lon,
             )
 
         # SLOPE click (icon marker)

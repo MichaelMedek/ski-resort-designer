@@ -271,6 +271,21 @@ class MergeTooFarMessage(ToastMessage):
         return f"Nodes Too Far Apart — {span_shown:.1f}m (max: {self.max_span_m:.0f}m)"
 
 
+@dataclass(frozen=True)
+class UnableToDeleteMessage(ToastMessage):
+    """A selected node can't be deleted (lift station, shared/branch junction, or sole segment)."""
+
+    reason: str  # human sentence, e.g. "N5 is a lift station — delete the lift first"
+
+    @property
+    def icon(self) -> str:
+        return "🗑️"
+
+    @property
+    def message(self) -> str:
+        return f"Cannot delete — {self.reason}"
+
+
 # =============================================================================
 # CENTER (UNDER MAP) - Loading states (BLUE)
 # =============================================================================
@@ -421,7 +436,7 @@ class MergePlacingContextMessage(Message):
     @property
     def message(self) -> str:
         if self.selected_count == 0:
-            return "🔗 **Merge Nodes** — Selecting\n\n- 👆 Click node markers to select them"
+            return "🔗 **Merge Nodes** — Selecting\n\n- 👆 Click node markers, or a path to add a node"
         return (
             "🔗 **Merge Nodes** — Selecting\n\n"
             f"- ⚪ Selected: {self.selected_count} node(s)\n"
@@ -603,14 +618,14 @@ class MergeActionMessage(Message):
     def message(self) -> str:
         if self.selected_count < 2:
             return (
-                "🔗 **Select Nodes to Merge**\n\n"
-                "- 👆 Click **node markers** to select (click again to deselect)\n"
-                "- Select at least **2 nodes** to merge them into one"
+                "🔗 **Select Nodes** — merge, delete, or click a path\n\n"
+                "- 👆 Click **node markers** to select (again to deselect)\n"
+                "- 🗑️ **Delete** trims 1 node • 🔗 **Merge** needs 2 • or click a **path** to add a node"
             )
         return (
-            "🔗 **Merge the Selected Nodes**\n\n"
+            "🔗 **Merge or Delete the Selected Nodes**\n\n"
             "- 👆 Click more **node markers** to add/remove\n"
-            "- ✅ Click **Confirm Merge** to collapse them to their median position"
+            "- ✅ **Confirm Merge** to collapse them • 🗑️ **Delete** to remove them"
         )
 
 

@@ -24,6 +24,7 @@ from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.ui.actions import (
+    add_node_on_path_action,
     center_on_lift,
     center_on_road,
     center_on_segment_path,
@@ -97,20 +98,20 @@ def _start_mode_from_terrain(
         logger.debug(f"[IDLE] Terrain click: starting new slope at ({lat:.6f}, {lon:.6f})")
         # Selection + fan arming happen in the before-hook / enter_slope_starting (Single Point
         # of Truth), like roads — not here.
-        sm.start_building(lon=lon, lat=lat, elevation=elevation, node_id=None)
+        sm.start_slope(lon=lon, lat=lat, elevation=elevation, node_id=None)
     elif ctx.build_mode.is_lift():
         logger.debug(f"[IDLE] Terrain click: starting {build_mode} at ({lat:.6f}, {lon:.6f})")
-        sm.select_lift_start(node_id=None, location=PathPoint(lon=lon, lat=lat, elevation=elevation))
+        sm.start_lift(node_id=None, location=PathPoint(lon=lon, lat=lat, elevation=elevation))
     elif ctx.build_mode.is_road():
         logger.debug(f"[IDLE] Terrain click: starting road at ({lat:.6f}, {lon:.6f})")
         # Selection is set in before_start_road (Single Point of Truth), mirroring slopes.
-        sm.select_road_start(node_id=None, location=PathPoint(lon=lon, lat=lat, elevation=elevation))
+        sm.start_road(node_id=None, location=PathPoint(lon=lon, lat=lat, elevation=elevation))
     elif ctx.build_mode.is_import():
         logger.debug(f"[IDLE] Terrain click: placing import box center at ({lat:.6f}, {lon:.6f})")
         sm.start_import(lon=lon, lat=lat)
     elif ctx.build_mode.is_merge():
-        # Merge starts from a NODE, not terrain. Guide the user, stay idle.
-        InvalidClickMessage(action="select for merge", reason="Click a node marker to start merging.").display()
+        # Merge/delete act on nodes; add-node acts on a path. A bare terrain click hits neither.
+        InvalidClickMessage(action="edit nodes", reason="Click a node to select it, or a path to add a node.").display()
     else:
         raise RuntimeError(f"[IDLE] Unknown build_mode '{build_mode}'.")
 
@@ -126,14 +127,14 @@ def _start_mode_from_node(ctx: PlannerContext, sm: PlannerStateMachine, node: No
         logger.debug(f"[IDLE] Node click: starting slope from {node.id}")
         # Selection + fan arming happen in the before-hook / enter_slope_starting (Single Point of
         # Truth), like roads — not here.
-        sm.start_building(lon=node.lon, lat=node.lat, elevation=node.elevation, node_id=node.id)
+        sm.start_slope(lon=node.lon, lat=node.lat, elevation=node.elevation, node_id=node.id)
     elif ctx.build_mode.is_lift():
         logger.debug(f"[IDLE] Node click: starting {build_mode} from {node.id}")
-        sm.select_lift_start(node_id=node.id)
+        sm.start_lift(node_id=node.id)
     elif ctx.build_mode.is_road():
         logger.debug(f"[IDLE] Node click: starting road from {node.id}")
         # Selection is set in before_start_road (Single Point of Truth), mirroring slopes.
-        sm.select_road_start(node_id=node.id)
+        sm.start_road(node_id=node.id)
     elif ctx.build_mode.is_import():
         logger.debug(f"[IDLE] Node click: placing import box center at {node.id}")
         sm.start_import(lon=node.lon, lat=node.lat)
@@ -199,14 +200,22 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
                 raise RuntimeError(f"Slope {click_info.slope_id} not found in graph")
             logger.debug(f"[IDLE] Slope click: showing panel for {slope.name}")
             center_on_slope(ctx=ctx, graph=graph, slope=slope, zoom=MapConfig.VIEWING_ZOOM)
-            sm.show_slope_info_panel(slope_id=slope.id)  # Triggers st.rerun() via listener
+            sm.view_slope(slope_id=slope.id)  # Triggers st.rerun() via listener
             return
 
-        # SEGMENT → show the parent entity's panel. A SEGMENT marker only reaches here for a segment
-        # the map hasn't yet re-tagged as its finished entity (one-frame race); an orphan (parent
-        # deleted) resolves to None and is ignored.
+        # SEGMENT → in merge mode a belt click enters merge and adds a node there; otherwise it opens
+        # the parent entity's panel. A SEGMENT marker only reaches the panel branch for a segment the
+        # map hasn't yet re-tagged as its finished entity (one-frame race); an orphan (parent deleted)
+        # resolves to None and is ignored.
         if marker_type == MarkerType.SEGMENT:
             assert click_info.segment_id is not None  # Validated in ClickInfo
+            if ctx.build_mode.is_merge():
+                # A SEGMENT is a positioned marker, so ClickDetector always sets lat/lon (see ClickInfo).
+                assert click_info.lon is not None and click_info.lat is not None
+                logger.debug(f"[IDLE] Merge mode: adding a node on segment {click_info.segment_id}")
+                if add_node_on_path_action(segment_id=click_info.segment_id, lon=click_info.lon, lat=click_info.lat):
+                    sm.start_merge()  # enter merge so the user can keep editing (mirrors node-click entry)
+                return
             parent = graph.get_entity_by_segment_id(segment_id=click_info.segment_id)
             if not parent:
                 logger.debug(f"[IDLE] Segment {click_info.segment_id} click: orphan segment, ignoring")
@@ -215,9 +224,9 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
             # parent is a SegmentPath; branch on its reload-safe .kind (never isinstance).
             center_on_segment_path(ctx=ctx, graph=graph, path=parent, zoom=MapConfig.VIEWING_ZOOM)
             if parent.kind == SegmentKind.SLOPE:
-                sm.show_slope_info_panel(slope_id=parent.id)
+                sm.view_slope(slope_id=parent.id)
             elif parent.kind == SegmentKind.ROAD:
-                sm.show_road_info_panel(road_id=parent.id)
+                sm.view_road(road_id=parent.id)
             else:
                 raise RuntimeError(f"[IDLE] Segment click: unhandled parent kind {parent.kind}.")
             return
@@ -232,7 +241,7 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
             # Sync build mode to the viewed lift's type (single source of truth for selection)
             ctx.build_mode.mode = lift.lift_type
             center_on_lift(ctx=ctx, graph=graph, lift=lift, zoom=MapConfig.VIEWING_ZOOM)
-            sm.show_lift_info_panel(lift_id=lift.id)  # Triggers st.rerun() via listener
+            sm.view_lift(lift_id=lift.id)  # Triggers st.rerun() via listener
             return
 
         # PYLON → Show parent lift panel and sync build mode
@@ -245,7 +254,7 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
             # Sync build mode to the viewed lift's type (single source of truth for selection)
             ctx.build_mode.mode = lift.lift_type
             center_on_lift(ctx=ctx, graph=graph, lift=lift, zoom=MapConfig.VIEWING_ZOOM)
-            sm.show_lift_info_panel(lift_id=lift.id)  # Triggers st.rerun() via listener
+            sm.view_lift(lift_id=lift.id)  # Triggers st.rerun() via listener
             return
 
         # ROAD → Show road panel
@@ -256,7 +265,7 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
                 raise RuntimeError(f"Road {click_info.road_id} not found in graph")
             logger.debug(f"[IDLE] Road click: showing panel for {road.name}")
             center_on_road(ctx=ctx, graph=graph, road=road, zoom=MapConfig.VIEWING_ZOOM)
-            sm.show_road_info_panel(road_id=road.id)  # Triggers st.rerun() via listener
+            sm.view_road(road_id=road.id)  # Triggers st.rerun() via listener
             return
 
         # PROPOSAL clicks in idle = programming error
@@ -654,9 +663,10 @@ def handle_merge_placing_click(click_info: ClickInfo, elevation: float | None) -
     """Handle a click while selecting nodes to merge (MERGE_PLACING).
 
     A NODE marker click toggles that node in the selection (re-click removes it) via the
-    toggle_merge_node self-loop, then redraws so the selection colour updates. Every other click
-    (terrain, slope/lift/road/proposal markers) is an InvalidClickMessage — merge only operates on
-    nodes, and this branch handles every marker type so the dispatch never crashes.
+    toggle_merge_node self-loop, then redraws so the selection colour updates. A SEGMENT marker (a
+    slope/road belt or center-line) inserts a new node on that path at the click point. Every other
+    click (terrain, slope/road icons, lift/proposal markers) is an InvalidClickMessage — this branch
+    handles every marker type so the dispatch never crashes.
     """
     sm: PlannerStateMachine = st.session_state.state_machine
 
@@ -671,8 +681,19 @@ def handle_merge_placing_click(click_info: ClickInfo, elevation: float | None) -
         trigger_rerun()
         return
 
+    # SEGMENT marker (a path belt/center-line) → add a node on that path at the clicked point.
+    # The belt carries both the segment id and the click coordinate (it is the only positioned marker).
+    if click_info.click_type == MapClickType.MARKER and click_info.marker_type == MarkerType.SEGMENT:
+        assert click_info.segment_id is not None  # Validated in ClickInfo
+        # A SEGMENT is a positioned marker, so ClickDetector always sets lat/lon (see ClickInfo).
+        assert click_info.lon is not None and click_info.lat is not None
+        logger.debug(f"[MERGE] Path click: adding a node on segment {click_info.segment_id}")
+        if add_node_on_path_action(segment_id=click_info.segment_id, lon=click_info.lon, lat=click_info.lat):
+            trigger_rerun()  # stay in merge_placing; redraw with the new node in place (no recenter)
+        return
+
     # Anything else (terrain or a non-node marker) is not selectable for merge.
     InvalidClickMessage(
         action="select for merge",
-        reason="Click node markers to select which nodes to merge, then press Confirm Merge.",
+        reason="Click a node to select it, or a path to add a node.",
     ).display()

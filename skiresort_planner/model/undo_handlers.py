@@ -21,11 +21,13 @@ from skiresort_planner.model.actions import (
     AddLiftAction,
     AddSegmentsAction,
     DeleteLiftAction,
+    DeleteNodesAction,
     DeleteRoadAction,
     DeleteSlopeAction,
     FinishRoadAction,
     FinishSlopeAction,
     ImportOSMAction,
+    InsertNodeAction,
     MergeNodesAction,
     UndoAction,
 )
@@ -259,6 +261,45 @@ class _MergeNodesHandler(UndoHandler):
         return f"Un-merge {len(merge.deleted_nodes) + 1} nodes"
 
 
+class _DeleteNodesHandler(UndoHandler):
+    action_type = ActionType.DELETE_NODES
+
+    def apply_undo(self, graph: "ResortGraph", action: UndoAction) -> None:
+        # Restore nodes + every segment of the affected chains verbatim (some were mutated in place
+        # by the fusion, some dropped), then restore each path's original segment_ids/boundaries
+        # (paths reference the segments, so segments come first).
+        delete = cast(DeleteNodesAction, action)
+        for node in delete.deleted_nodes:
+            graph.nodes[node.id] = node
+        for seg_before in delete.segments_before:
+            graph.segments[seg_before.id] = seg_before
+        for path_before in delete.paths_before:
+            graph.entity_dict_for_kind(path_before.kind)[path_before.id] = path_before
+        logger.info(f"Reverted delete of {len(delete.deleted_nodes)} node(s)")
+
+    def describe(self, action: UndoAction, graph: "ResortGraph") -> str:
+        delete = cast(DeleteNodesAction, action)
+        return f"Restore {len(delete.deleted_nodes)} deleted node(s)"
+
+
+class _InsertNodeHandler(UndoHandler):
+    action_type = ActionType.INSERT_NODE
+
+    def apply_undo(self, graph: "ResortGraph", action: UndoAction) -> None:
+        # Drop the two split segments, restore the original segment + the path's chain, then remove
+        # the created node (now unreferenced).
+        insert = cast(InsertNodeAction, action)
+        for seg_id in insert.created_segment_ids:
+            del graph.segments[seg_id]
+        graph.segments[insert.segment_before.id] = insert.segment_before
+        graph.entity_dict_for_kind(insert.path_before.kind)[insert.path_before.id] = insert.path_before
+        del graph.nodes[insert.created_node_id]
+        logger.info(f"Reverted insert of node {insert.created_node_id}")
+
+    def describe(self, action: UndoAction, graph: "ResortGraph") -> str:
+        return "Remove the inserted node"
+
+
 _UNDO_HANDLER_LIST: list[UndoHandler] = [
     _AddSegmentsHandler(),
     _FinishSlopeHandler(),
@@ -269,6 +310,8 @@ _UNDO_HANDLER_LIST: list[UndoHandler] = [
     _DeleteRoadHandler(),
     _ImportOSMHandler(),
     _MergeNodesHandler(),
+    _DeleteNodesHandler(),
+    _InsertNodeHandler(),
 ]
 
 # Keyed by ActionType.name (str) — reload-safe (see module docstring).

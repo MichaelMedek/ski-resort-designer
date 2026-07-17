@@ -33,3 +33,7 @@ class NodeConnected(ABC):
     def endpoints(self, nodes: dict[str, "Node"]) -> tuple["PathPoint", "PathPoint"]:
         """The start and end node locations, for geometric duplicate matching (see endpoints_match)."""
         return nodes[self.start_node_id].location, nodes[self.end_node_id].location
+
+    def touches(self, node_id: str) -> bool:
+        """True if node_id is one of this entity's boundary nodes."""
+        return node_id in (self.start_node_id, self.end_node_id)

@@ -38,6 +38,7 @@ from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.actions import (
     confirm_import_action,
     confirm_merge_action,
+    delete_nodes_action,
     rename_entity_action,
 )
 from skiresort_planner.ui.context import EntityKind, PlannerContext
@@ -184,9 +185,9 @@ def _render_entity_actions(
             ctx.map.pitch = MapConfig.DEFAULT_PITCH
             ctx.map.bearing = MapConfig.DEFAULT_BEARING
             bump_dedup_epoch()  # keep the user's pan (no recenter); a 3D→2D close re-frames via the view detector
-            # Uses close_panel event - SM resolves to appropriate transition
+            # close_panel event - SM resolves to the appropriate transition by current state
             # State transition triggers st.rerun() via listener - never returns
-            sm.hide_info_panel()
+            sm.close_panel()  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
     # Bottom-right: Delete.
     with bottom_right:
@@ -492,6 +493,19 @@ class MergePlacingControlPanel(ControlPanel):
         ):
             logger.debug(f"UI: Confirm Merge clicked for {count} nodes")
             confirm_merge_action()
+        # Delete needs only 1+ node; validity (interior/endpoint vs. lift/junction) is checked on click.
+        can_delete = count >= 1
+        if st.button(
+            "🗑️ Delete Node(s)",
+            type="secondary",
+            width="stretch",
+            disabled=not can_delete,
+            help=("Select at least 1 node to delete" if not can_delete else "Delete interior / end nodes of a path"),
+        ):
+            logger.debug(f"UI: Delete Node(s) clicked for {count} nodes")
+            delete_nodes_action()
+        # Discoverability hint, mirroring the path builder's "click any point" caption.
+        st.caption("🎯 Or click any path on the map to add a node there.")
 
 
 def _render_proposal_browser(ctx: PlannerContext, *, key_prefix: str, noun: str) -> None:

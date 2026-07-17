@@ -88,9 +88,9 @@ class ViewingSidebarPanel(SidebarPanel):
             key="close_panel_btn",
         ):
             bump_dedup_epoch()  # closing the panel keeps the user's pan (no recenter)
-            # Uses close_panel event - SM resolves to appropriate transition.
+            # close_panel event - SM resolves to the appropriate transition by current state.
             # State transition triggers st.rerun() via listener.
-            self.sm.hide_info_panel()
+            self.sm.close_panel()  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
 
 class PathBuildSidebarPanel(SidebarPanel):

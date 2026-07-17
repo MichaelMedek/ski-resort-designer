@@ -24,13 +24,14 @@ from skiresort_planner.model.actions import (
     FinishRoadAction,
     FinishSlopeAction,
     ImportOSMAction,
-    MergeNodesAction,
     UndoAction,
 )
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.message import (
+    InvalidClickMessage,
     MergeTooFarMessage,
     OSMImportErrorMessage,
+    UnableToDeleteMessage,
 )
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.resort_graph import ResortGraph
@@ -167,6 +168,51 @@ def confirm_merge_action() -> None:
     logger.info(f"Merged {len(node_ids)} nodes into {node_ids[0]}")
     bump_dedup_epoch()
     sm.complete_merge()  # → idle_ready; the before-hook clears the selection
+
+
+def delete_nodes_action() -> None:
+    """Delete the selected merge-mode nodes (interior fusion / clean-endpoint trim), return to idle.
+
+    Pre-checks delete_nodes_rejection and shows an UnableToDeleteMessage if the selection can't be
+    deleted (lift station, shared/branch junction, sole segment, or would empty a path) — nothing
+    changes so the user can adjust. On success it is one undoable action and returns to idle.
+    """
+    ctx: PlannerContext = st.session_state.context
+    sm: PlannerStateMachine = st.session_state.state_machine
+    graph: ResortGraph = st.session_state.graph
+    dem = st.session_state.dem_service
+
+    node_ids = list(ctx.merge.node_ids)
+    if not node_ids:
+        # The Delete button is disabled at 0 selected, so this is a defensive guard, not a user path.
+        raise RuntimeError("delete_nodes_action called with no selected nodes")
+
+    rejection = graph.delete_nodes_rejection(node_ids)
+    if rejection is not None:
+        logger.info(f"Delete refused: {rejection}")
+        UnableToDeleteMessage(reason=rejection).display()
+        return  # no state change — the user can deselect the offending node and retry
+
+    graph.delete_nodes(node_ids=node_ids, dem=dem)
+    bump_dedup_epoch()
+    sm.complete_merge()  # → idle_ready; the before-hook clears the selection
+
+
+def add_node_on_path_action(segment_id: str, lon: float, lat: float) -> bool:
+    """Insert a node on a clicked path segment (merge mode). Returns True if a node was inserted.
+
+    The caller drives the state tail (stay in merge and redraw, or enter merge from idle) so this
+    stays a pure graph edit. Pre-checks insert_node_rejection (external click input) and shows an
+    InvalidClickMessage if the split is rejected — no exception handling.
+    """
+    graph: ResortGraph = st.session_state.graph
+    rejection = graph.insert_node_rejection(segment_id=segment_id, lon=lon, lat=lat)
+    if rejection is not None:
+        InvalidClickMessage(action="add a node", reason=rejection).display()
+        return False
+    graph.insert_node_on_path(segment_id=segment_id, lon=lon, lat=lat)
+    bump_dedup_epoch()
+    return True
 
 
 def process_osm_import_deferred() -> bool:
@@ -799,9 +845,11 @@ def _undo_import_osm(undone: ImportOSMAction) -> None:
         trigger_rerun()
 
 
-def _undo_merge_nodes(undone: MergeNodesAction) -> None:
-    """Handle undo of MERGE_NODES: the graph already restored the nodes/endpoints — just redraw."""
-    logger.info(f"Undone node merge into {undone.survivor_id}")
+def _undo_redraw_only(undone: UndoAction) -> None:
+    """Undo side-effect for node-graph edits (merge / delete / insert): the graph already restored
+    the nodes/segments/chain, so the UI only needs to redraw in place (no recenter).
+    """
+    logger.info(f"Undone node edit ({undone.action_type.name})")
     bump_dedup_epoch()  # redraw in place — undo must NOT recenter (keep the user's view)
     trigger_rerun()
 
@@ -818,7 +866,9 @@ _UNDO_SIDE_EFFECTS: dict[str, "Callable[[UndoAction], None]"] = {
     ActionType.DELETE_LIFT.name: lambda a: _undo_delete_entity(undone=cast(DeleteLiftAction, a)),
     ActionType.DELETE_ROAD.name: lambda a: _undo_delete_entity(undone=cast(DeleteRoadAction, a)),
     ActionType.IMPORT_OSM.name: lambda a: _undo_import_osm(undone=cast(ImportOSMAction, a)),
-    ActionType.MERGE_NODES.name: lambda a: _undo_merge_nodes(undone=cast(MergeNodesAction, a)),
+    ActionType.MERGE_NODES.name: _undo_redraw_only,
+    ActionType.DELETE_NODES.name: _undo_redraw_only,
+    ActionType.INSERT_NODE.name: _undo_redraw_only,
 }
 _action_names = {t.name for t in ActionType}
 assert set(_UNDO_SIDE_EFFECTS) == _action_names, (
@@ -888,7 +938,7 @@ def cancel_custom_path() -> None:
     """
     sm: PlannerStateMachine = st.session_state.state_machine
     logger.debug("[ACTION] Cancel Connection - triggering state transition")
-    sm.cancel_custom_connect()
+    sm.cancel_custom()  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
 
 # =============================================================================
@@ -928,7 +978,7 @@ def _close_panel_and_refresh(*, deleted: bool, is_viewing_deleted: bool) -> bool
         return False
     sm: PlannerStateMachine = st.session_state.state_machine
     if is_viewing_deleted:
-        sm.send("close_panel")
+        sm.close_panel()  # type: ignore[attr-defined]  # dynamic python-statemachine event
     bump_dedup_epoch()
     return True
 
