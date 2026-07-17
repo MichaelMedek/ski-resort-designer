@@ -21,6 +21,7 @@ MAX_STRAIGHT_M = 100.0  # no artificial straight leg longer than this (a < 100 m
 MAX_PULL_M = 500.0  # an end connector (off-piste pull to a hub) may not exceed this; else the segment is dropped
 PISTE_TOL_M = 40.0  # a point farther than this from every OSM piste counts as off-piste (connector)
 MAX_TERRAIN_DEVIATION_M = 50.0  # R23: a slope point may not float >this above / below the real DEM terrain
+MAX_NODE_TERRAIN_DEVIATION_M = 10.0  # R25: every hub NODE must be within ±this of real terrain (strict)
 CACHE = os.path.join(os.path.dirname(__file__), "..", "scratch_osm_raw_ischgl.json")
 ISCHGL_BBOX = (10.27745, 46.95502, 10.35655, 47.00898)
 
@@ -522,4 +523,18 @@ class TestImportRules:
         )
         assert len(ischgl_graph.lifts) == expected, (
             f"only {len(ischgl_graph.lifts)}/{expected} qualifying lifts survived — a lift was DROPPED "
+        )
+
+    def test_r25_every_node_hugs_terrain_strict(self, ischgl_graph):
+        """STRICT: EVERY node must sit within MAX_NODE_TERRAIN_DEVIATION_M (±10 m) of the real DEM
+        terrain. A node floating further off the ground is invented placement.
+        """
+        dem = DEMService()
+        offenders = []
+        for k, p in ischgl_graph.node_points.items():
+            terrain = dem.get_elevation(lon=p.lon, lat=p.lat)
+            if terrain is not None and abs(p.elevation - terrain) > MAX_NODE_TERRAIN_DEVIATION_M:
+                offenders.append((k, round(p.elevation - terrain, 1)))
+        assert offenders == [], (
+            f"{len(offenders)} nodes are > {MAX_NODE_TERRAIN_DEVIATION_M}m off terrain: {offenders[:8]}"
         )
