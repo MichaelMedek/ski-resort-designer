@@ -403,7 +403,7 @@ class OSMGraphBuilder:
 
         A lift top fed only by pistes SHORTER than the merge distance keeps no descending edge — every
         piece has both ends on the top hub and is dropped. We rebuild the pre-merge node graph, and from
-        each such top walk the real geometry downhill (min-climb ≤ CARVE_CAP_M per hop) to the DISTINCT,
+        each such top walk the real geometry downhill (min-climb ≤ NODE_TERRAIN_TOL_M per hop) to the DISTINCT,
         strictly-lower, non-lift hub NEAREST the lift's OWN base; the concatenated arc becomes one
         contracted run top→that-hub. No new node is created (R5 safe); the geometry is real OSM (R19).
         """
@@ -447,7 +447,7 @@ class OSMGraphBuilder:
             starts = [p for p in range(len(pn_xy)) if pn_hub[p] == top]
             if not starts:
                 continue
-            # min-climb walk (≤CARVE_CAP per hop) over ALL reachable pre-merge nodes; collect valid exit
+            # min-climb walk (≤NODE_TERRAIN_TOL per hop) over ALL reachable pre-merge nodes; collect valid exit
             # hubs (distinct, strictly lower, non-lift) and pick the one nearest the aim point.
             best: dict[int, float] = dict.fromkeys(starts, 0.0)
             par: dict[int, tuple[int, int]] = {}
@@ -465,7 +465,7 @@ class OSMGraphBuilder:
                     continue  # record, but keep walking for exits nearer the aim
                 for y, si in padj[x]:
                     climb = max(0.0, pn_elev[y] - pn_elev[x])
-                    if climb > OSMConfig.CARVE_CAP_M:  # nodata (inf) rejected here
+                    if climb > OSMConfig.NODE_TERRAIN_TOL_M:  # nodata (inf) rejected here
                         continue
                     nc = c + climb
                     if nc < best.get(y, 1e18):
@@ -526,7 +526,7 @@ class OSMGraphBuilder:
         hubs: list[XY],
     ) -> set[frozenset[int]]:
         """Hub-pairs on a near-descending segment chain top→base for SOME lift (its raw descent witness).
-        Elevation is the DEM height at each hub coord. An edge may carry UP to CARVE_CAP_M (a small
+        Elevation is the DEM height at each hub coord. An edge may carry UP to NODE_TERRAIN_TOL_M (a small
         DEM-sampling saddle the later carve smooths, staying within R25's ±10 m) — a STRICT-descent BFS
         would miss a real run that dips over a 6 m sampling bump at the lift top (Lange Wandbahn). We take
         the MIN-CLIMB path (Dijkstra on per-edge climb) top→base and protect its pairs from dedup.
@@ -551,7 +551,7 @@ class OSMGraphBuilder:
             if a not in elev or b not in elev:
                 continue
             top, base = (a, b) if elev[a] >= elev[b] else (b, a)
-            # Min-climb Dijkstra: cost = total upward movement; each hop may climb ≤ CARVE_CAP_M (carve
+            # Min-climb Dijkstra: cost = total upward movement; each hop may climb ≤ NODE_TERRAIN_TOL_M (carve
             # will later flatten it). The min-climb path is the descent the carve makes strictly monotone.
             best: dict[int, float] = {top: 0.0}
             par: dict[int, frozenset[int]] = {}
@@ -562,8 +562,8 @@ class OSMGraphBuilder:
                     continue
                 for y, pair in adj[x]:
                     climb = max(0.0, elev[y] - elev[x])
-                    if climb > OSMConfig.CARVE_CAP_M:
-                        continue  # a single hop over CARVE_CAP_M is a real wall, not a sampling bump
+                    if climb > OSMConfig.NODE_TERRAIN_TOL_M:
+                        continue  # a single hop over NODE_TERRAIN_TOL_M is a real wall, not a sampling bump
                     nc = c + climb
                     if nc < best.get(y, 1e18):
                         best[y] = nc
@@ -918,7 +918,7 @@ class OSMGraphBuilder:
         pn_elev: list[float],
         padj: dict[int, list[tuple[int, int]]],
     ) -> bool:
-        """Walk the pre-merge OSM geometry downhill from `sink` (min-climb ≤ CARVE_CAP per hop) to the
+        """Walk the pre-merge OSM geometry downhill from `sink` (min-climb ≤ NODE_TERRAIN_TOL per hop) to the
         nearest node that reaches a lift, and add the connecting run(s) — split at intermediate existing
         hubs so nothing floats (R6) or duplicates (R2). Returns True if any run was added.
         """
@@ -941,7 +941,7 @@ class OSMGraphBuilder:
                 break
             for y, si in padj[x]:
                 climb = max(0.0, pn_elev[y] - pn_elev[x])
-                if climb > OSMConfig.CARVE_CAP_M:
+                if climb > OSMConfig.NODE_TERRAIN_TOL_M:
                     continue
                 nc = c + climb
                 if nc < best.get(y, 1e18):
@@ -980,6 +980,7 @@ class OSMGraphBuilder:
             pts = self._drape(clean, pa, pb)  # `clean` is already metre XY
             if pts is None or len(pts) < 2:
                 continue
+            self._snap_interior_to_source(pts)  # pull any bend-chord point back onto the real OSM piste (R19)
             if pts[0].elevation < pts[-1].elevation:
                 pts = pts[::-1]
             na, nb = (ha, hb) if pts[0] is pa else (hb, ha)
@@ -989,10 +990,30 @@ class OSMGraphBuilder:
             added = True
         return added
 
+    def _snap_interior_to_source(self, pts: list[PathPoint]) -> None:
+        """Pull each INTERIOR point that strays > SLOPE_ON_SOURCE_TOL_M from every source piste back onto
+        the nearest one (project + re-sample DEM z), in place. Removes bend-chord bows the drape leaves
+        between coarse concatenated vertices, keeping the run on real OSM geometry (R19). Endpoints (hubs)
+        untouched. No-op when there are no source lines.
+        """
+        if not self._source_lines:
+            return
+        tol = OSMConfig.SLOPE_ON_SOURCE_TOL_M
+        for i in range(1, len(pts) - 1):
+            q = Point(self._to_m(pts[i].lon, pts[i].lat))
+            nearest = min(self._source_lines, key=lambda ln: ln.distance(q))
+            if nearest.distance(q) <= tol:
+                continue
+            proj = nearest.interpolate(nearest.project(q))
+            lon, lat = self._to_deg(proj.x, proj.y)
+            elev = self.dem.get_elevation(lon=lon, lat=lat)
+            if elev is not None:
+                pts[i] = PathPoint(lon=lon, lat=lat, elevation=elev)
+
     def _carve_descents(self, graph: ImportGraph) -> None:
         """R21: make each lift's top→base descent strictly monotone by CARVING tiny DEM-sampling pits in
         node elevations along the descent path. For each lift, take the minimum-climb path top→base and
-        lower interior (non-lift) nodes so the path descends, capped at MAX_TERRAIN_DEVIATION_M below the
+        lower interior (non-lift) nodes so the path descends, capped at NODE_TERRAIN_TOL_M below the
         DEM (R23 stays satisfied). Node COORDINATES unchanged; slope endpoints re-pinned. Iterated.
         """
         import heapq
@@ -1003,7 +1024,7 @@ class OSMGraphBuilder:
         for r in graph.slope_runs:
             adj[r.node_a].add(r.node_b)
             adj[r.node_b].add(r.node_a)
-        cap = OSMConfig.CARVE_CAP_M  # carve stays within R25's strict ±10 m node-vs-terrain tolerance
+        cap = OSMConfig.NODE_TERRAIN_TOL_M  # carve stays within R25's strict ±10 m node-vs-terrain tolerance
 
         def min_climb_path(top: int, base: int) -> list[int] | None:
             best = {top: 0.0}
@@ -1149,8 +1170,8 @@ class OSMGraphBuilder:
     @staticmethod
     def _enforce_monotone(pts: list[PathPoint]) -> None:
         """Clamp draped elevations to non-increasing from the high end (in place), but never more than
-        MAX_TERRAIN_DEVIATION_M below the point's own DEM elevation (R23). Endpoints untouched (they are
-        the hub nodes). Removes DEM-sampling humps so a physically-descending piste reads monotone.
+        SLOPE_TERRAIN_TOL_M below the point's own DEM elevation (R23). Endpoints untouched (they are the
+        hub nodes). Removes DEM-sampling humps so a physically-descending piste reads monotone.
         """
         n = len(pts)
         if n < 3:
@@ -1158,7 +1179,7 @@ class OSMGraphBuilder:
         hi_first = pts[0].elevation >= pts[-1].elevation
         order = range(1, n - 1) if hi_first else range(n - 2, 0, -1)
         prev = pts[0].elevation if hi_first else pts[-1].elevation
-        floor_below = OSMConfig.PISTE_TOL_M  # ≤ R23's MAX_TERRAIN_DEVIATION_M (50 m); keep within terrain
+        floor_below = OSMConfig.SLOPE_TERRAIN_TOL_M  # a slope point may sink at most this below its DEM (R23)
         for i in order:
             p = pts[i]
             if p.elevation > prev:

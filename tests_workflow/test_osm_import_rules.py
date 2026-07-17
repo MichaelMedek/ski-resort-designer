@@ -12,22 +12,24 @@ from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.generators.osm_graph_builder import OSMGraphBuilder, ways_to_lines
 
-# thresholds the rules assert against (reference resort: 347 nodes / 332 segments / 136 slopes / 61 lifts).
-MIN_CONNECTED_FRAC = 0.90  # THE hard invariant (measured on segments)
-MAX_NODES = 500  # blizzard guard on the circle-count (reference 347)
-MAX_SEGMENTS = 1000  # segment count is free (full-split); only a true blizzard trips this
+# Pure test-assertion thresholds (counts / connectivity) live here; every geometric domain tolerance
+# comes from OSMConfig (single source of truth — no drift between the builder and the rules it must meet).
+MIN_CONNECTED_FRAC = 0.99  # near-total connectivity (current import is a single component)
+MAX_NODES = 200  # node-count ceiling (current 99)
+MAX_SEGMENTS = 300  # segment-count ceiling (current 155)
 MIN_SEGMENTS = 100  # a full box must not collapse to near-empty
-MAX_STRAIGHT_M = 100.0  # no artificial straight leg longer than this (a < 100 m pull is the only straight)
-MAX_PULL_M = 500.0  # an end connector (off-piste pull to a hub) may not exceed this; else the segment is dropped
-PISTE_TOL_M = 50.0  # a point farther than this from every OSM piste counts as off-piste (connector)
-MAX_TERRAIN_DEVIATION_M = 50.0  # R23: a slope point may not float >this above / below the real DEM terrain
-MAX_NODE_TERRAIN_DEVIATION_M = 10.0  # R25: every NODE must be within ±this of real terrain (strict)
-CACHE = os.path.join(os.path.dirname(__file__), "..", "scratch_osm_raw_ischgl.json")
+MIN_SEG_PER_SLOPE = 3.0  # R29: segments must group into ≥this-fold fewer slopes (current 3.04×)
+MAX_STRAIGHT_M = OSMConfig.MAX_STRAIGHT_M  # max single straight leg between consecutive points
+MAX_PULL_M = OSMConfig.MAX_PULL_M  # end connector length cap; over this → dropped
+PISTE_TOL_M = OSMConfig.PISTE_TOL_M  # off-piste threshold — SAME source the builder gates on
+MAX_TERRAIN_DEVIATION_M = OSMConfig.SLOPE_TERRAIN_TOL_M  # R23: slope point vs real DEM
+MAX_NODE_TERRAIN_DEVIATION_M = OSMConfig.NODE_TERRAIN_TOL_M  # R25: node vs real DEM (strict)
+FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "ischgl_osm.json")
 ISCHGL_BBOX = (10.27745, 46.95502, 10.35655, 47.00898)
 
 
-def _load_cache():
-    with open(CACHE, encoding="utf-8") as f:
+def _load_fixture():
+    with open(FIXTURE, encoding="utf-8") as f:
         return json.load(f)["elements"]
 
 
@@ -123,10 +125,10 @@ def _components(graph):
 
 @pytest.fixture(scope="module")
 def ischgl_graph():
-    """Build the graph from the cached real Ischgl fetch, or skip if the cache is absent."""
-    if not os.path.exists(CACHE):
-        pytest.skip("scratch_osm_raw_ischgl.json cache absent — run scratch_fetch.py to enable real-data rules")
-    els = _load_cache()
+    """Build the graph from the committed Ischgl OSM fixture (set in stone — never re-fetched). The
+    fixture MUST be present; a missing one is a broken checkout, not a reason to silently skip.
+    """
+    els = _load_fixture()
     dem = DEMService()  # REAL EuroDEM Alps terrain (data/alps_dem.tif)
     pistes, lifts = ways_to_lines(els, ISCHGL_BBOX)
     return OSMGraphBuilder(dem=dem, bbox=ISCHGL_BBOX).build(pistes, lifts)
@@ -137,7 +139,7 @@ class TestImportRules:
 
     def test_r1_all_lifts_imported(self, ischgl_graph):
         """Every skiable lift over the min length is imported (kept even if unconnected)."""
-        els = _load_cache()
+        els = _load_fixture()
         _pistes, lifts = ways_to_lines(els, ISCHGL_BBOX)
         # count lift ways that clear the min-length gate (what the builder must keep)
         expected = 0
@@ -150,13 +152,30 @@ class TestImportRules:
         )
 
     def test_r2_no_duplicate_runs(self, ischgl_graph):
-        """No slope's geometry is ~covered by another slope (no double runs)."""
-        runs = [[(p.lon, p.lat) for p in r.points] for r in ischgl_graph.slope_runs]
+        """No slope's geometry is ~covered by another slope (no double runs). EXCEPTION: two runs that
+        SHARE an endpoint node may run coincident near that node because both were PULLED onto the hub —
+        allowed ONLY while that coincident stretch is ≤ MAX_PULL_M. A longer coincident run is a genuine
+        double-draw of a shared piste (a node belongs at the fork) and must fail.
+        """
+        sruns = ischgl_graph.slope_runs
+        runs = [[(p.lon, p.lat) for p in r.points] for r in sruns]
         dupes = 0
         for i, a in enumerate(runs):
             for j, b in enumerate(runs):
                 if i == j or len(b) < 2:
                     continue
+                shared = {sruns[i].node_a, sruns[i].node_b} & {sruns[j].node_a, sruns[j].node_b}
+                if shared:
+                    # walk a from the shared node; the coincident prefix ends where a departs > DEDUP_TOL
+                    # of b. Allowed only if that prefix is within the pull distance (a mere hub-pull).
+                    a_from_shared = a if sruns[i].node_a in shared else a[::-1]
+                    coincident = 0.0
+                    for k in range(1, len(a_from_shared)):
+                        if min(_hav(a_from_shared[k], vb) for vb in b) > OSMConfig.DEDUP_TOL_M:
+                            break
+                        coincident += _hav(a_from_shared[k - 1], a_from_shared[k])
+                    if coincident <= MAX_PULL_M:
+                        continue  # short coincidence at the shared hub → pull artifact, not a duplicate
                 # fraction of a's vertices within DEDUP_TOL of polyline b
                 near = 0
                 for va in a:
@@ -289,7 +308,7 @@ class TestImportRules:
         """Every imported slope must lie within reasonable proximity of an ORIGINAL OSM piste — no
         invented geometry (e.g. a run stitched across a gap that tunnels where no piste exists).
         """
-        els = _load_cache()
+        els = _load_fixture()
         pistes, _lifts = ways_to_lines(els, ISCHGL_BBOX)
         src = [verts for verts, _nm in pistes if len(verts) >= 2]  # raw OSM piste polylines (lon/lat)
         tol = 45.0  # ~1 piste-width; the builder's on-source gate (SLOPE_ON_SOURCE_TOL_M) drops worse
@@ -409,7 +428,7 @@ class TestImportRules:
         def to_m(lon, lat):
             return ((lon - ISCHGL_BBOX[0]) * mlon, (lat - ISCHGL_BBOX[1]) * mlat)
 
-        pistes, _lifts = ways_to_lines(_load_cache(), ISCHGL_BBOX)
+        pistes, _lifts = ways_to_lines(_load_fixture(), ISCHGL_BBOX)
         src = unary_union([LineString([to_m(lon, lat) for lon, lat in vs]) for vs, _nm in pistes if len(vs) >= 2])
         offenders = []
         for r in ischgl_graph.slope_runs:
@@ -552,7 +571,7 @@ class TestImportRules:
         """EVERY raw OSM way with an allowed aerialway type and length ≥
         MIN_LIFT_LENGTH_M MUST appear in the final output. The builder may never drop a lift.
         """
-        _pistes, lifts = ways_to_lines(_load_cache(), ISCHGL_BBOX)
+        _pistes, lifts = ways_to_lines(_load_fixture(), ISCHGL_BBOX)
         expected = sum(
             1
             for vs, _lt, _nm in lifts
@@ -617,7 +636,7 @@ class TestImportRules:
         a RAW OSM lift endpoint. The builder takes lift geometry verbatim from OSM (only the DEM z is
         recomputed), so a station that drifted from every raw OSM station was moved by the builder.
         """
-        _pistes, raw_lifts = ways_to_lines(_load_cache(), ISCHGL_BBOX)
+        _pistes, raw_lifts = ways_to_lines(_load_fixture(), ISCHGL_BBOX)
         raw_stations = [vs[0] for vs, _lt, _nm in raw_lifts] + [vs[-1] for vs, _lt, _nm in raw_lifts]
         tol = OSMConfig.RESAMPLE_STEP_M  # a station is a raw OSM vertex; allow one resample step of slack
         bad = []
@@ -646,7 +665,9 @@ class TestImportRules:
             f"grouping is not a partition: {len(covered)} refs cover {len(set(covered))}/{len(runs)} runs"
         )
         ratio = len(runs) / len(slopes)
-        assert ratio >= 2.0, f"only {ratio:.1f}x more segments ({len(runs)}) than slopes ({len(slopes)}) — want ≥2x"
+        assert ratio >= MIN_SEG_PER_SLOPE, (
+            f"only {ratio:.1f}x more segments ({len(runs)}) than slopes ({len(slopes)}) — want ≥{MIN_SEG_PER_SLOPE}x"
+        )
         # difficulty is the steepest member's band (grouping never softens a slope)
         rank = {d: i for i, d in enumerate(SlopeConfig.DIFFICULTIES)}
         for s in slopes:
