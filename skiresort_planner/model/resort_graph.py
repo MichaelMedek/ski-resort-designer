@@ -1018,9 +1018,16 @@ class ResortGraph:
         for path in affected_paths:
             self._rebuild_chain_without_nodes(path=path, drop_nodes=to_delete, dem=dem)
 
-        for nid in node_ids:
-            del self.nodes[nid]
-        self.cleanup_isolated_nodes()  # frees a trimmed endpoint node (its lone segment is gone)
+        # Only remove a selected node once nothing references it.
+        self.cleanup_isolated_nodes()
+
+        # Post-condition: the graph must stay referentially intact — no segment may point at a deleted
+        # node. Fail here (at the source) rather than let a later click crash on the dangling id.
+        for seg in self.segments.values():
+            assert seg.start_node_id in self.nodes and seg.end_node_id in self.nodes, (
+                f"delete_nodes left segment {seg.id} referencing a missing node "
+                f"({seg.start_node_id}->{seg.end_node_id})"
+            )
 
         self._push_undo(
             DeleteNodesAction(deleted_nodes=deleted_nodes, paths_before=paths_before, segments_before=segments_before)
