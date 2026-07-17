@@ -20,6 +20,7 @@ duplicate runs, ≥90% connectivity:
 Output is an ImportGraph the ResortGraph materializes with shared nodes as one undoable batch.
 """
 
+import heapq
 import logging
 import math
 from collections import defaultdict, deque
@@ -180,14 +181,18 @@ class OSMGraphBuilder:
         lift_lines = [(ls, lt, nm) for ls, lt, nm in lift_lines if ls.length >= OSMConfig.MIN_LIFT_LENGTH_M]
 
         kept, deduped = self._dedup(piste_lines)
+        logger.debug(f"[IMPORT] dedup: {len(piste_lines)} pistes → {len(kept)} kept ({deduped} dropped)")
         segments = self._full_split(kept)
         segments = self._split_at_lift_stations(segments, lift_lines)
+        logger.debug(f"[IMPORT] split: {len(segments)} segments from {len(kept)} pistes + {len(lift_lines)} lifts")
         graph = self._assemble(segments, lift_lines, source=kept)
         self._name_runs(graph)
         self._group_slopes(graph)
         graph.deduped = deduped
+        named = sum(1 for r in graph.slope_runs if r.name)
+        logger.debug(f"[IMPORT] grouped: {len(graph.slope_runs)} segments ({named} named) → {len(graph.slopes)} slopes")
         logger.info(
-            f"OSM graph: {len(graph.node_points)} nodes, {len(graph.slope_runs)} slopes, "
+            f"[IMPORT] OSM graph: {len(graph.node_points)} nodes, {len(graph.slope_runs)} slopes, "
             f"{len(graph.lifts)} lifts (deduped {graph.deduped}, dropped uphill {graph.dropped_uphill}, "
             f"isolated {graph.dropped_isolated})"
         )
@@ -407,8 +412,6 @@ class OSMGraphBuilder:
         strictly-lower, non-lift hub NEAREST the lift's OWN base; the concatenated arc becomes one
         contracted run top→that-hub. No new node is created (R5 safe); the geometry is real OSM (R19).
         """
-        import heapq
-
         helev: dict[int, float] = {}
         for h in {a for ab in seg_ab for a in ab} | {a for ab in lift_ab for a in ab}:
             lon, lat = self._to_deg(*hubs[h])
@@ -486,7 +489,7 @@ class OSMGraphBuilder:
             if len(clean) < 2:
                 continue
             logger.debug(
-                f"OSM contract: stranded hub {top} → through-run to hub {exit_hub}, "
+                f"[IMPORT] contract: stranded hub {top} → through-run to hub {exit_hub}, "
                 f"{len(clean)} pts, min-climb {best[target]:.1f}m"
             )
             out.append((LineString(clean), top, exit_hub))
@@ -531,8 +534,6 @@ class OSMGraphBuilder:
         would miss a real run that dips over a 6 m sampling bump at the lift top (Lange Wandbahn). We take
         the MIN-CLIMB path (Dijkstra on per-edge climb) top→base and protect its pairs from dedup.
         """
-        import heapq
-
         elev: dict[int, float] = {}
         for h, xy in enumerate(hubs):
             lon, lat = self._to_deg(*xy)
@@ -825,7 +826,7 @@ class OSMGraphBuilder:
         terminus, return lift out of bbox) is left alone. Iterated to a fixpoint.
         """
         segments, seg_ab, hubs = self._pre_segments, self._pre_seg_ab, self._pre_hubs
-        elev = {k: v.elevation for k, v in graph.node_points.items()}
+        elev = self._node_elevations(graph)
         lift_nodes = {n for lf in graph.lifts for n in (lf.node_a, lf.node_b)}
         if not lift_nodes:
             return
@@ -855,7 +856,7 @@ class OSMGraphBuilder:
         for _ in range(20):
             added = False
             for lf in graph.lifts:
-                elev = {k: v.elevation for k, v in graph.node_points.items()}
+                elev = self._node_elevations(graph)
                 top = lf.node_a if elev[lf.node_a] >= elev[lf.node_b] else lf.node_b
                 base = lf.node_b if top == lf.node_a else lf.node_a
                 reach_base = self._down_reaches(graph, {base}, elev)  # nodes that strict-descend to base
@@ -867,12 +868,27 @@ class OSMGraphBuilder:
                 break
 
     @staticmethod
-    def _down_reaches(graph: ImportGraph, targets: set[int], elev: dict[int, float]) -> set[int]:
-        """Every node that reaches any of `targets` following DESCENDING slope edges (targets included)."""
-        up: dict[int, set[int]] = defaultdict(set)
+    def _node_elevations(graph: ImportGraph) -> dict[int, float]:
+        """Node id → elevation for the current graph nodes."""
+        return {k: v.elevation for k, v in graph.node_points.items()}
+
+    @staticmethod
+    def _down_adjacency(graph: ImportGraph, elev: dict[int, float]) -> dict[int, set[int]]:
+        """Hi → {lo}: descending slope adjacency, each run oriented by its endpoints' elevations."""
+        down: dict[int, set[int]] = defaultdict(set)
         for r in graph.slope_runs:
             hi, lo = (r.node_a, r.node_b) if elev[r.node_a] >= elev[r.node_b] else (r.node_b, r.node_a)
-            up[lo].add(hi)  # from lo you can be REACHED by hi going down
+            down[hi].add(lo)
+        return down
+
+    @staticmethod
+    def _down_reaches(graph: ImportGraph, targets: set[int], elev: dict[int, float]) -> set[int]:
+        """Every node that reaches any of `targets` following DESCENDING slope edges (targets included)."""
+        down = OSMGraphBuilder._down_adjacency(graph, elev)
+        up: dict[int, set[int]] = defaultdict(set)
+        for hi, los in down.items():
+            for lo in los:
+                up[lo].add(hi)  # from lo you can be REACHED by hi going down
         good = set(targets)
         q = deque(targets)
         while q:
@@ -886,11 +902,7 @@ class OSMGraphBuilder:
     @staticmethod
     def _hubs_reaching_lift(graph: ImportGraph, lift_nodes: set[int]) -> set[int]:
         """Every node from which a lift station is reachable following DESCENDING slope edges."""
-        elev = {k: v.elevation for k, v in graph.node_points.items()}
-        down: dict[int, set[int]] = defaultdict(set)
-        for r in graph.slope_runs:
-            hi, lo = (r.node_a, r.node_b) if elev[r.node_a] >= elev[r.node_b] else (r.node_b, r.node_a)
-            down[hi].add(lo)
+        down = OSMGraphBuilder._down_adjacency(graph, OSMGraphBuilder._node_elevations(graph))
         good: set[int] = set()
         for start in graph.node_points:
             seen, q = {start}, deque([start])
@@ -922,8 +934,6 @@ class OSMGraphBuilder:
         nearest node that reaches a lift, and add the connecting run(s) — split at intermediate existing
         hubs so nothing floats (R6) or duplicates (R2). Returns True if any run was added.
         """
-        import heapq
-
         starts = [p for p in range(len(pn_xy)) if pn_hub[p] == sink]
         if not starts:
             return False
@@ -985,7 +995,7 @@ class OSMGraphBuilder:
                 pts = pts[::-1]
             na, nb = (ha, hb) if pts[0] is pa else (hb, ha)
             pts[0], pts[-1] = graph.node_points[na], graph.node_points[nb]
-            logger.debug(f"OSM reconnect: sink {sink} sub-run {na}→{nb}, {len(pts)} pts")
+            logger.debug(f"[IMPORT] reconnect: sink {sink} sub-run {na}→{nb}, {len(pts)} pts")
             graph.slope_runs.append(SlopeRun(points=pts, node_a=na, node_b=nb))
             added = True
         return added
@@ -1016,9 +1026,7 @@ class OSMGraphBuilder:
         lower interior (non-lift) nodes so the path descends, capped at NODE_TERRAIN_TOL_M below the
         DEM (R23 stays satisfied). Node COORDINATES unchanged; slope endpoints re-pinned. Iterated.
         """
-        import heapq
-
-        raw = {k: v.elevation for k, v in graph.node_points.items()}
+        raw = self._node_elevations(graph)
         e = dict(raw)
         adj: dict[int, set[int]] = defaultdict(set)
         for r in graph.slope_runs:
@@ -1194,7 +1202,7 @@ class OSMGraphBuilder:
         """
         tol = OSMConfig.MIN_NODE_DIST_M
         hub_m = {k: self._to_m(v.lon, v.lat) for k, v in graph.node_points.items()}
-        elev = {k: v.elevation for k, v in graph.node_points.items()}
+        elev = self._node_elevations(graph)
         keep: list[SlopeRun] = []
         for r in graph.slope_runs:
             line = LineString([self._to_m(p.lon, p.lat) for p in r.points])

@@ -136,7 +136,7 @@ class OSMImporter:
             if not _is_transient(exc):
                 raise
             wait_s = _seconds_until_free_slot()
-            logger.info(f"Overpass busy ({exc}); waiting {wait_s:.0f}s for a free slot, then retrying once")
+            logger.info(f"[IMPORT] Overpass busy ({exc}); waiting {wait_s:.0f}s for a free slot, then retrying once")
             time.sleep(wait_s)
             return self._query(bbox)
 
@@ -162,7 +162,7 @@ class OSMImporter:
         )
         response.raise_for_status()
         elements = cast(list[OverpassElement], response.json()["elements"])
-        logger.info(f"Overpass returned {len(elements)} elements for bbox {bbox}")
+        logger.info(f"[IMPORT] Overpass returned {len(elements)} elements for bbox {bbox}")
         return elements
 
     def convert(self, bbox: BBox, elements: list[OverpassElement]) -> ImportSummary:
@@ -185,7 +185,9 @@ class OSMImporter:
         summary.pistes, dropped_pistes = _dedupe_longest_per_name(items=summary.pistes, kind="piste")
         summary.lifts, dropped_lifts = _dedupe_longest_per_name(items=summary.lifts, kind="lift")
         summary.skipped += dropped_pistes + dropped_lifts
-        logger.info(f"Converted: {len(summary.pistes)} pistes, {len(summary.lifts)} lifts, {summary.skipped} skipped")
+        logger.info(
+            f"[IMPORT] Converted: {len(summary.pistes)} pistes, {len(summary.lifts)} lifts, {summary.skipped} skipped"
+        )
         return summary
 
     # -- pistes ---------------------------------------------------------------

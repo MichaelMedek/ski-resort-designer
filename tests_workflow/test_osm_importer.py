@@ -258,8 +258,11 @@ class TestLifts:
 
 class TestMinLength:
     def test_short_piste_skipped(self) -> None:
-        # A named downhill run under MIN_PISTE_LENGTH_M (200 m) is a stub → skipped and counted.
-        summary = _convert([_way({"piste:type": "downhill", "name": "Stub"}, [(0.0, 0.0), (0.0, -0.0015)])])  # ~167 m
+        # A named downhill run under MIN_PISTE_LENGTH_M is a stub → skipped and counted.
+        from skiresort_planner.constants import OSMConfig
+
+        dlat = (OSMConfig.MIN_PISTE_LENGTH_M * 0.5) / M  # arm well under the minimum
+        summary = _convert([_way({"piste:type": "downhill", "name": "Stub"}, [(0.0, 0.0), (0.0, -dlat)])])
         assert summary.pistes == [] and summary.skipped == 1
 
     def test_long_piste_imported(self) -> None:
@@ -294,8 +297,11 @@ class TestDescendingTrim:
         assert (pts[0].lat, pts[-1].lat) == (-0.006, 0.0)
 
     def test_out_and_back_where_each_arm_too_short_is_skipped(self) -> None:
-        # Down ~122 m then up ~122 m: each arm < 200 m min, so after trimming the run is dropped.
-        verts = [(0.0, 0.0), (0.0, -0.0011), (0.0, 0.0)]
+        # Down then up, each arm under MIN_PISTE_LENGTH_M: after trimming to one arm the run is dropped.
+        from skiresort_planner.constants import OSMConfig
+
+        dlat = (OSMConfig.MIN_PISTE_LENGTH_M * 0.5) / M  # each arm well under the minimum
+        verts = [(0.0, 0.0), (0.0, -dlat), (0.0, 0.0)]
         summary = _convert([_way({"piste:type": "downhill", "name": "TinyOut"}, verts)])
         assert summary.pistes == [] and summary.skipped == 1
 
