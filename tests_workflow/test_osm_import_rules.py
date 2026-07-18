@@ -6,8 +6,9 @@ import os
 from collections import defaultdict, deque
 
 import pytest
+from shapely.geometry import LineString, Point
 
-from skiresort_planner.constants import OSMConfig, SlopeConfig
+from skiresort_planner.constants import MapConfig, OSMConfig
 from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.generators.osm_graph_builder import OSMGraphBuilder, _linear_chains, ways_to_lines
 
@@ -45,55 +46,46 @@ def _polylen(coords):
     return sum(_hav(coords[i], coords[i + 1]) for i in range(len(coords) - 1))
 
 
+def _to_local(lon, lat):
+    """Project (lon,lat) to local metres about the Ischgl box centre (flat-earth, fine at this scale),
+    using the production METERS_PER_DEGREE_EQUATOR constant (same basis as model/path_smoothing.py).
+    """
+    lat0 = (ISCHGL_BBOX[1] + ISCHGL_BBOX[3]) / 2
+    mlon = MapConfig.METERS_PER_DEGREE_EQUATOR * math.cos(math.radians(lat0))
+    return ((lon - ISCHGL_BBOX[0]) * mlon, (lat - ISCHGL_BBOX[1]) * MapConfig.METERS_PER_DEGREE_EQUATOR)
+
+
+def _seg_point_dist(pt, poly):
+    """Min distance (m) from local-metre point `pt` to a polyline `poly` (list of local-metre points),
+    via shapely — distance to the nearest LINE SEGMENT, not just a vertex (a node can float beside a leg).
+    """
+    return Point(pt).distance(LineString(poly))
+
+
 def _backclimb(pts):
-    """Uphill (m) of a run after smoothing elevations over BACKCLIMB_WINDOW_M (~60 m, step-size scale).
-    A slope MUST be monotonic descending; the metric is total upward movement in the smoothed profile
-    (0 for a clean descent). The window removes small DEM/geometry noise but — unlike the old 300 m
-    window — does NOT hide a real 100 m+ mid-run climb.
+    """ULTRA-STRICT uphill metric (R3): the largest elevation RISE over any BACKCLIMB_WINDOW_M span of
+    the descending-oriented run. A real piste must go strictly DOWN — over every ~80 m window the far
+    end sits no higher than the near end. Returns the worst window's rise (0 for a clean descent). Raw
+    DEM elevations, no smoothing — a genuine uphill is surfaced, not averaged away.
     """
     es = [p.elevation for p in pts]
-    if len(es) < 3:
+    if len(es) < 2:
         return 0.0
     if es[0] < es[-1]:
         es = es[::-1]
-    seg = [pts[i].distance_to(other=pts[i + 1]) for i in range(len(pts) - 1)]
-    avg = (sum(seg) / len(seg)) if seg else 30.0
-    win = max(1, round(OSMConfig.BACKCLIMB_WINDOW_M / max(avg, 1.0)))
-    half = win // 2
-    sm = [
-        sum(es[max(0, i - half) : min(len(es), i + half + 1)]) / len(es[max(0, i - half) : min(len(es), i + half + 1)])
-        for i in range(len(es))
-    ]
-    return sum(max(0.0, sm[i + 1] - sm[i]) for i in range(len(sm) - 1))
-
-
-def _run_max_slope(pts):
-    """Steepest-section slope magnitude (%) of a run, rolled over ROLLING_WINDOW_M — independent
-    reimplementation of the builder's metric, for the grouping-difficulty check.
-    """
-    if len(pts) < 2:
-        return 0.0
+        pts = pts[::-1]
     cum = [0.0]
     for i in range(1, len(pts)):
         cum.append(cum[-1] + pts[i - 1].distance_to(other=pts[i]))
-    total = cum[-1]
-    if total <= 0:
-        return 0.0
-    avg = abs(pts[0].elevation - pts[-1].elevation) / total * 100.0
-    win = SlopeConfig.ROLLING_WINDOW_M
-    if total < win:
-        return avg
-    best = avg
-    for i in range(len(pts)):
-        j = i
-        while j < len(pts) and cum[j] - cum[i] < win:
+    win = OSMConfig.BACKCLIMB_WINDOW_M
+    worst = 0.0
+    for i in range(len(es)):
+        j = i + 1
+        while j < len(es) and cum[j] - cum[i] < win:
             j += 1
-        if j >= len(pts):
-            break
-        run_m = cum[j] - cum[i]
-        if run_m > 0:
-            best = max(best, abs(pts[i].elevation - pts[j].elevation) / run_m * 100.0)
-    return best
+        j = min(j, len(es) - 1)
+        worst = max(worst, es[j] - es[i])
+    return worst
 
 
 def _components(graph):
@@ -218,32 +210,33 @@ class TestImportRules:
         assert close == [], f"{len(close)} node pairs closer than {OSMConfig.MIN_NODE_DIST_M}m — must merge (strict)"
 
     def test_r6_nodes_lie_on_slopes(self, ischgl_graph):
-        """STRICT: no node may sit within MIN_NODE_DIST_M of a slope's geometry unless it is a vertex of
-        that slope — a slope passing near a station must SPLIT at it (pass THROUGH it as a shared node).
-        EXCEPTIONS: (a) a hub HIGHER than both the run's endpoints is a peak the descending run passes
-        BELOW (can't share it without climbing); (b) a hub BELOW the lowest lift base is a valley-terminus
-        pit the run skirts on its way to a lift base — sharing it would strand the descent in the pit.
+        """STRICT: a node within MIN_NODE_DIST_M of a slope segment MUST be a VERTEX of that segment IF the
+        segment's endpoint elevations SPAN the node's elevation (one end above, one below) — the
+        descending run passes through that height near that spot, so it must split there and share the
+        node. A node ABOVE both endpoints (a peak the run passes below) or BELOW both (a pit it skirts) is
+        a legitimate float, not a missed split. Measured on OUR final path-segment abstraction, per segment.
         """
-        pts = {k: (v.lon, v.lat) for k, v in ischgl_graph.node_points.items()}
         elev = {k: v.elevation for k, v in ischgl_graph.node_points.items()}
-        lift_nodes = {n for lf in ischgl_graph.lifts for n in (lf.node_a, lf.node_b)}
-        min_lift_base = min((elev[n] for n in lift_nodes), default=0.0)
-        tol = OSMConfig.MIN_NODE_DIST_M
-        floating = 0
+        node_m = {k: _to_local(v.lon, v.lat) for k, v in ischgl_graph.node_points.items()}
+        floating = []
         for r in ischgl_graph.slope_runs:
-            endpts = {r.node_a, r.node_b}
-            hi_end = max(elev[r.node_a], elev[r.node_b])
-            run_pts = [(p.lon, p.lat) for p in r.points]
-            for nk, npt in pts.items():
-                if nk in endpts or elev[nk] > hi_end or elev[nk] < min_lift_base:
-                    continue
-                dmin = min(_hav(npt, rp) for rp in run_pts)
-                if dmin < tol:
-                    floating += 1
+            seg_verts = {(round(p.lon, 6), round(p.lat, 6)) for p in r.points}  # this segment's own vertices
+            seg_m = [_to_local(p.lon, p.lat) for p in r.points]
+            lo_e, hi_e = sorted((elev[r.node_a], elev[r.node_b]))
+            for nk, nm in node_m.items():
+                if (
+                    round(ischgl_graph.node_points[nk].lon, 6),
+                    round(ischgl_graph.node_points[nk].lat, 6),
+                ) in seg_verts:
+                    continue  # the node IS a vertex of this segment — allowed
+                if not (lo_e <= elev[nk] <= hi_e):
+                    continue  # node above both ends (peak) or below both (pit) — a legitimate float
+                if _seg_point_dist(nm, seg_m) < OSMConfig.MIN_NODE_DIST_M:
+                    floating.append((nk, r.name))
                     break
-        assert floating == 0, (
-            f"{floating} slopes pass within {tol:.0f}m of a node without it being a vertex — "
-            f"the slope must split at (pass through) that node"
+        assert floating == [], (
+            f"{len(floating)} slope segments pass within {OSMConfig.MIN_NODE_DIST_M:.0f}m of a node whose height "
+            f"they span, without it being a vertex — must split there (pass through): {floating[:8]}"
         )
 
     def test_r7_no_long_straight_segment(self, ischgl_graph):
