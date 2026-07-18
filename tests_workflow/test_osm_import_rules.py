@@ -692,3 +692,44 @@ class TestGraphImporter:
         # Reference artifacts written for inspection (never read back).
         assert (tmp_path / "osm_raw.json").exists()
         assert (tmp_path / "osm_import.png").exists()
+
+    def test_r30_named_piste_is_one_app_slope(self, ischgl_graph):
+        """R30: each real named OSM piste materialises as EXACTLY ONE app-slope (chain), even where it
+        branches — never fragmented into several same-named slopes with divergent difficulty (the '63
+        appeared 3×' bug). to_slope_chains emits one chain per named ImportSlope.
+        """
+        from collections import Counter
+
+        chains = ischgl_graph.to_slope_chains()
+        name_counts = Counter(name for _pts, name in chains if name)
+        split = {n: c for n, c in name_counts.items() if c > 1}
+        assert not split, f"named pistes fragmented into multiple app-slopes: {split}"
+
+    def test_r31_every_slope_top_is_skier_reachable(self, ischgl_graph):
+        """R31: no phantom slope — every slope's HIGH node is reachable by a skier (stand on a lift top,
+        ski DOWN, ride lifts UP). An unreachable top means the feeder piste into it was dropped; the
+        uphill-feeder reconnect must have rebuilt it (from real OSM) or the slope must not exist.
+        """
+        g = ischgl_graph
+        elev = {k: v.elevation for k, v in g.node_points.items()}
+        down = defaultdict(set)
+        for r in g.slope_runs:
+            hi, lo = (r.node_a, r.node_b) if elev[r.node_a] >= elev[r.node_b] else (r.node_b, r.node_a)
+            down[hi].add(lo)
+        lift_up = defaultdict(set)
+        seeds = set()
+        for lf in g.lifts:
+            base, top = (lf.node_a, lf.node_b) if elev[lf.node_a] <= elev[lf.node_b] else (lf.node_b, lf.node_a)
+            lift_up[base].add(top)
+            seeds.add(top)
+        reach = set(seeds)
+        q = deque(seeds)
+        while q:
+            x = q.popleft()
+            for y in list(down.get(x, ())) + list(lift_up.get(x, ())):
+                if y not in reach:
+                    reach.add(y)
+                    q.append(y)
+        tops = {(r.node_a if elev[r.node_a] >= elev[r.node_b] else r.node_b) for r in g.slope_runs}
+        unreachable = tops - reach
+        assert not unreachable, f"slope tops no skier can reach (phantom entries): {sorted(unreachable)}"
