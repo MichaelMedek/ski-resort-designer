@@ -1,0 +1,35 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      # Lint/format/hygiene gate — pre-commit owns ruff (single pinned v0.9.1).
+      # Fails CI if any hook errors OR modifies a file (--show-diff-on-failure prints the diff).
+      - name: Pre-commit
+        run: pre-commit run --all-files --show-diff-on-failure
+      # addopts already injects --mypy + --cov=skiresort_planner --cov-report=term-missing
+      # --cov-fail-under=90, so plain pytest enforces typing, coverage, and the 90% gate.
+      - name: Pytest (mypy + coverage gate)
+        run: pytest
