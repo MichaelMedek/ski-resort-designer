@@ -732,7 +732,7 @@ class OSMConfig:
     HALF_WIDTH_DEFAULT_KM = 2.0
 
     # Minimum imported length: shorter entities are ignored (nursery/kiddie lifts, stub runs).
-    MIN_LIFT_LENGTH_M = 300.0
+    MIN_LIFT_LENGTH_M = 200.0
     MIN_PISTE_LENGTH_M = 30.0
 
     # OSM aerialway value → our LiftConfig.TYPES. ONLY these values import; every other aerialway
@@ -761,8 +761,8 @@ class OSMConfig:
     DEDUP_COVER_FRAC = 0.78  # covered fraction to call a piste a duplicate
     MIN_NODE_DIST_M = 100.0  # min hub spacing (closer nodes merge)
     RELAXED_MERGE_DIST_M = 200.0  # slope-node→lift pull radius
-    MAX_BACKCLIMB_M = 35.0  # max smoothed uphill on a descending run
-    BACKCLIMB_WINDOW_M = 80.0  # rolling window for the uphill check (step scale)
+    MAX_BACKCLIMB_M = 30.0  # max uphill RISE over any BACKCLIMB_WINDOW_M span (60m-DEM sampling-noise tolerance)
+    BACKCLIMB_WINDOW_M = 80.0  # window for the strict per-span uphill check
     SLOPE_ON_SOURCE_TOL_M = 30.0  # strict on-piste band (slope body hugs OSM)
     PISTE_TOL_M = 40.0  # off-piste threshold (~a wide piste's half-width)
     MAX_PULL_M = 300.0  # max straight hub connector (longer → drop the segment)
