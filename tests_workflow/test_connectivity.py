@@ -1,8 +1,9 @@
 """Tests for core-resort connectivity: the shared scipy primitive, the directed SCC core
 detection, per-entity membership, and the disconnected-count summary.
 
-Graphs are built directly (Node + Slope objects + add_lift) so each topology is exact — the
-connectivity code reads only node-id endpoints, never geometry, so no path tracing is needed.
+Graphs are built directly (Node + one-segment Slope + add_lift) so each topology is exact. The
+ski graph is walked PER SEGMENT, so a slope must carry a real segment chain (interior junctions
+are what connect the resort) — the _slope helper commits a matching PathSegment for each slope.
 """
 
 import pytest
@@ -11,6 +12,7 @@ from skiresort_planner.constants import ConnectivityConfig, LiftType
 from skiresort_planner.model.connectivity import component_labels
 from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint
+from skiresort_planner.model.path_segment import PathSegment, SegmentKind
 from skiresort_planner.model.resort_graph import CoreMembership, ResortGraph
 from skiresort_planner.model.road import Road
 from skiresort_planner.model.slope import Slope
@@ -24,9 +26,22 @@ def _node(graph: ResortGraph, nid: str, lon: float, lat: float, elev: float) -> 
     graph.nodes[nid] = Node(id=nid, location=PathPoint(lon=lon, lat=lat, elevation=elev))
 
 
-def _slope(graph: ResortGraph, slid: str, top: str, bottom: str) -> None:
-    """A slope descends top -> bottom. Geometry is irrelevant to connectivity, so segment_ids is []."""
-    graph.slopes[slid] = Slope(id=slid, name=slid, segment_ids=[], start_node_id=top, end_node_id=bottom)
+def _seg(graph: ResortGraph, sid: str, start: str, end: str) -> str:
+    """A one-hop slope segment start->end (2-point geometry from the node locations)."""
+    a, b = graph.nodes[start], graph.nodes[end]
+    graph.segments[sid] = PathSegment(
+        id=sid, name=sid, start_node_id=start, end_node_id=end, kind=SegmentKind.SLOPE, points=[a.location, b.location]
+    )
+    return sid
+
+
+def _slope(graph: ResortGraph, slid: str, top: str, bottom: str, *, via: list[str] | None = None) -> None:
+    """A slope descending top -> bottom, optionally through interior junction nodes `via`, as a real
+    chain of one-hop segments (interior nodes are what stitch the resort together).
+    """
+    chain = [top, *(via or []), bottom]
+    seg_ids = [_seg(graph, f"{slid}_S{i}", chain[i], chain[i + 1]) for i in range(len(chain) - 1)]
+    graph.slopes[slid] = Slope(id=slid, name=slid, segment_ids=seg_ids, start_node_id=top, end_node_id=bottom)
 
 
 def _ladder_core(graph: ResortGraph, dem: MockDEMService, *, n_lifts: int, base: str = "B") -> None:
@@ -128,10 +143,25 @@ class TestCoreResort:
                 == CoreMembership.IN_CORE
             )
 
+    def test_slope_joined_at_interior_segment_node_is_connected(
+        self, empty_graph: ResortGraph, dem: MockDEMService
+    ) -> None:
+        """Regression: a slope reached via another slope's INTERIOR segment node must be in-core.
 
-# =============================================================================
-# 4 & 5. Disconnected slope (dead-end valley) and disconnected lift
-# =============================================================================
+        Ischgl bug — slope 30(2) branched off slope 30(1) at a mid-chain junction; the old
+        endpoint-only graph couldn't see it and wrongly flagged it disconnected.
+        """
+        _ladder_core(empty_graph, dem, n_lifts=5)
+        # A core slope P1 -> B routed through an interior junction node J.
+        _node(empty_graph, "J", lon=0.0, lat=0.0005, elev=1500.0)
+        _slope(empty_graph, "SL_trunk", top="P1", bottom="B", via=["J"])
+        # A branch slope that starts at the trunk's INTERIOR node J and rejoins the core base B.
+        _slope(empty_graph, "SL_branch", top="J", bottom="B")
+        core = empty_graph.get_core_resort()
+        assert core is not None
+        assert "J" in core.node_ids, "interior junction node must be a graph vertex"
+        assert empty_graph.entity_membership(start_node_id="J", end_node_id="B", core=core) == CoreMembership.IN_CORE
+        assert empty_graph.count_disconnected() == 0
 
 
 class TestDisconnected:

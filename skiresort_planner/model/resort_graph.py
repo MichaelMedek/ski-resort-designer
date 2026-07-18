@@ -1475,10 +1475,16 @@ class ResortGraph:
         return [self.nodes[nid] for nid in shared]
 
     def _ski_digraph_edges(self) -> list[tuple[str, str]]:
-        """Directed edges of the skiable graph: slopes go top→bottom, lifts bottom→top (plus the
-        reverse edge for bidirectional types per LiftConfig.UPHILL_ONLY). Roads are excluded.
+        """Directed edges of the skiable graph, one edge PER SEGMENT so interior junction nodes are
+        real vertices (a slope may be joined mid-chain by another slope/lift). Slopes descend
+        segment-by-segment; lifts go bottom→top (plus reverse for bidirectional types per
+        LiftConfig.UPHILL_ONLY). Roads are excluded.
         """
-        edges: list[tuple[str, str]] = [(sl.start_node_id, sl.end_node_id) for sl in self.slopes.values()]
+        edges: list[tuple[str, str]] = []
+        for slope in self.slopes.values():
+            segs = [self.segments[sid] for sid in slope.segment_ids]
+            seq = _chain_node_sequence(segs)  # top → each interior junction → bottom
+            edges.extend(zip(seq, seq[1:], strict=False))  # consecutive pairs (seq is 1 longer than the pairs)
         for lift in self.lifts.values():
             edges.append((lift.start_node_id, lift.end_node_id))
             if not LiftConfig.UPHILL_ONLY[LiftType(lift.lift_type)]:
