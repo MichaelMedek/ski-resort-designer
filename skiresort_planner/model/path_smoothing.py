@@ -69,11 +69,16 @@ def _fit_spline(
     if float(cumdist[-1]) < step_m * 2:
         return None
 
-    tck, _ = splprep([xs, ys], u=cumdist, w=weights, s=smoothing_factor * len(points), k=3)
-
-    # PCHIP needs strictly increasing arc length; drop any point coincident with its predecessor
-    # (zero horizontal advance) so the elevation profile is well-defined.
+    # Both splprep and PCHIP need STRICTLY increasing arc length; drop any point coincident with its
+    # predecessor (zero horizontal advance) before fitting. Imported OSM chains can carry such
+    # duplicates — feeding them raw made splprep raise "Invalid inputs". `cumdist` (the caller's
+    # junction/index reference) stays the FULL array; only the fit inputs are deduped.
     keep = np.concatenate(([True], np.diff(cumdist) > 0))
+    if int(keep.sum()) < 4:
+        return None  # too few distinct points to fit a cubic spline
+    w = weights[keep] if weights is not None else None
+
+    tck, _ = splprep([xs[keep], ys[keep]], u=cumdist[keep], w=w, s=smoothing_factor * int(keep.sum()), k=3)
     elevation = PchipInterpolator(cumdist[keep], elevs[keep])
     return _SplineFit(
         tck=tck,

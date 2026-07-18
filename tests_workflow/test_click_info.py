@@ -40,7 +40,7 @@ class TestClickInfoValidation:
                     "lat": 46.5,
                     "lon": 10.5,
                 },
-                "MARKER click must NOT have lat/lon",
+                "node marker must NOT have lat/lon",
                 id="marker_with_coords",
             ),
             pytest.param(

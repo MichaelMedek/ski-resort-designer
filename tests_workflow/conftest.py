@@ -90,13 +90,20 @@ class _FakeSessionState(dict[str, object]):
 
 
 class _Ctx:
-    """No-op context manager usable as a column/expander/sidebar/spinner target."""
+    """No-op context manager usable as a column/expander/sidebar/spinner/progress-bar target."""
 
     def __enter__(self) -> "_Ctx":
         return self
 
     def __exit__(self, *exc: object) -> Literal[False]:
         return False
+
+    def __getattr__(self, name: str) -> Callable[..., None]:
+        # Any method call on the handle (e.g. progress-bar .progress(v, text=...)) is a no-op.
+        def _noop(*args: object, **kwargs: object) -> None:
+            return None
+
+        return _noop
 
 
 class FakeStreamlit:
@@ -131,6 +138,11 @@ class FakeStreamlit:
         return _Ctx()
 
     def spinner(self, *args: object, **kwargs: object) -> _Ctx:
+        return _Ctx()
+
+    def progress(self, *args: object, **kwargs: object) -> "_Ctx":
+        # st.progress(v) returns a bar handle whose .progress(v, text=...) updates it; _Ctx.progress
+        # is itself a no-op via __getattr__, so returning a _Ctx makes both calls safe in tests.
         return _Ctx()
 
     def form(self, *args: object, **kwargs: object) -> _Ctx:

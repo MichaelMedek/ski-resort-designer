@@ -7,7 +7,6 @@ so a formatting regression is caught. Static-text toasts need no test.
 import re
 
 from skiresort_planner.model.message import (
-    LiftMustGoUphillMessage,
     OSMImportErrorMessage,
     TargetNotDownhillMessage,
     TargetTooFarMessage,
@@ -21,6 +20,55 @@ def _first_number(text: str) -> float:
     m = re.search(r"-?\d+\.?\d*", text)
     assert m is not None, f"no number in {text!r}"
     return float(m.group())
+
+
+def _concrete_subclasses(base: type) -> list[type]:
+    """All concrete (instantiable) subclasses of `base` defined in model.message, recursively.
+
+    Excludes the abstract intermediates (Message/ToastMessage/Info*/Warning*) so the list is exactly
+    the real user-facing message classes — the set a completeness guard must cover.
+    """
+    from skiresort_planner.model import message as m
+
+    abstract = {m.Message, m.ToastMessage, m.InfoMessage, m.WarningMessage, m.InfoToast, m.WarningToast}
+    out: list[type] = []
+
+    def walk(cls: type) -> None:
+        for sub in cls.__subclasses__():
+            if sub not in abstract:
+                out.append(sub)
+            walk(sub)
+
+    walk(base)
+    return sorted(set(out), key=lambda c: c.__name__)
+
+
+def _make(cls: type):
+    """Instantiate a message dataclass with dummy values for its required fields (defaults elsewhere).
+
+    Covers the field types the messages actually use (str/float/int/SegmentKind/OSMImportMode) so the
+    hierarchy tests can construct EVERY class without hard-coding constructor args per class.
+    """
+    import dataclasses
+    import typing
+
+    from skiresort_planner.constants import OSMImportMode
+    from skiresort_planner.model.path_segment import SegmentKind
+
+    dummies: dict[type, object] = {
+        str: "x",
+        float: 1.0,
+        int: 1,
+        SegmentKind: SegmentKind.SLOPE,
+        OSMImportMode: OSMImportMode.LIFTS_ONLY,
+    }
+    hints = typing.get_type_hints(cls)  # resolves string annotations to real types
+    kwargs = {}
+    for f in dataclasses.fields(cls):
+        if f.default is not dataclasses.MISSING or f.default_factory is not dataclasses.MISSING:
+            continue  # has a default — leave it
+        kwargs[f.name] = dummies[hints[f.name]]
+    return cls(**kwargs)
 
 
 class TestTooSteepDetail:
@@ -56,6 +104,16 @@ class TestTooSteepDetail:
         assert "no route" in msg and "under 70%" in msg and "±" not in msg
 
 
+class TestDisconnectedEntityMessage:
+    def test_names_entity_kind_and_core_lift(self) -> None:
+        from skiresort_planner.model.message import DisconnectedEntityMessage
+
+        msg = DisconnectedEntityMessage(entity_noun="slope", core_lift_name="5 (Summit Express)").message
+        assert "This slope is disconnected from the core area" in msg
+        assert "5 (Summit Express)" in msg
+        assert "can't be reached" in msg
+
+
 class TestTargetTooFarMessage:
     def test_just_over_max_reads_strictly_above(self) -> None:
         # Fires only when distance strictly exceeds the max; must not render "1000m (max: 1000m)".
@@ -78,13 +136,21 @@ class TestTargetNotDownhillMessage:
         assert "above your current point" in msg
 
 
-class TestLiftMustGoUphillMessage:
-    def test_tiny_downhill_never_renders_negative_zero(self) -> None:
-        # Fires when end <= start (diff <= 0). A -0.4m diff must not render a misleading "-0m".
-        msg = LiftMustGoUphillMessage(start_elevation_m=2500.4, end_elevation_m=2500.0).message
-        assert "-0m" not in msg and "+0m" not in msg, f"must not render a misleading zero diff: {msg}"
-        diff_shown = _first_number(msg.split("(")[1])
-        assert diff_shown < 0, f"a downhill lift must show a negative diff: {msg}"
+class TestLiftPlacingMessages:
+    def test_context_message_labels_first_station(self) -> None:
+        from skiresort_planner.model.message import LiftPlacingContextMessage
+
+        msg = LiftPlacingContextMessage(first_node_id="N7", first_elevation_m=2500.0).message
+        assert "First station" in msg and "Node **N7**" in msg
+
+    def test_action_message_mentions_auto_orientation(self) -> None:
+        from skiresort_planner.model.message import LiftActionMessage
+
+        msg = LiftActionMessage().message
+        assert "Second Station" in msg
+        assert "low → high" in msg
+        # The old bottom-elevation constraint wording is gone.
+        assert "above" not in msg
 
 
 class TestPathActionMessageTooSteep:
@@ -141,6 +207,80 @@ class TestOSMImportMessages:
         assert "OSM import failed" in msg
         assert "outside the terrain coverage" in msg
 
+    def test_loading_message_branches_by_mode(self) -> None:
+        from skiresort_planner.constants import OSMImportMode
+        from skiresort_planner.model.message import OSMImportLoadingMessage
+
+        lifts = OSMImportLoadingMessage(mode=OSMImportMode.LIFTS_ONLY).message
+        both = OSMImportLoadingMessage(mode=OSMImportMode.LIFTS_AND_SLOPES).message
+        assert "lifts" in lifts.lower() and "slopes" not in lifts.lower(), "lifts-only text"
+        assert "slopes" in both.lower(), "lifts+slopes text mentions slopes"
+
+
+class TestMessageHierarchy:
+    """Every concrete message inherits its level/icon from a base class by construction. These tests
+    enumerate ALL message classes so a newly-added one that skips the InfoMessage/WarningMessage/
+    InfoToast/WarningToast bases fails here (completeness guard), and assert the two-levels-only rule.
+    """
+
+    def test_only_info_and_warning_levels_exist(self) -> None:
+        from skiresort_planner.model.message import MessageLevel
+
+        assert set(MessageLevel) == {MessageLevel.INFO, MessageLevel.WARNING}, "no ERROR level (fail-fast)"
+
+    def test_every_inline_message_is_info_or_warning(self) -> None:
+        # Each concrete inline Message must subclass InfoMessage (blue) or WarningMessage (yellow) —
+        # never Message directly — so its level is fixed by the base, not re-declared per class.
+        from skiresort_planner.model import message as m
+
+        for cls in _concrete_subclasses(m.Message):
+            assert issubclass(cls, m.InfoMessage | m.WarningMessage), (
+                f"{cls.__name__} must subclass InfoMessage or WarningMessage, not Message directly"
+            )
+
+    def test_every_toast_is_info_or_warning(self) -> None:
+        # Each concrete toast must subclass InfoToast or WarningToast so its icon is fixed by the base.
+        from skiresort_planner.model import message as m
+
+        for cls in _concrete_subclasses(m.ToastMessage):
+            assert issubclass(cls, m.InfoToast | m.WarningToast), (
+                f"{cls.__name__} must subclass InfoToast or WarningToast, not ToastMessage directly"
+            )
+
+    def test_info_and_warning_inline_levels(self) -> None:
+        from skiresort_planner.model import message as m
+        from skiresort_planner.model.message import InfoMessage, MessageLevel
+
+        for cls in _concrete_subclasses(m.Message):
+            expected = MessageLevel.INFO if issubclass(cls, InfoMessage) else MessageLevel.WARNING
+            assert _make(cls).level == expected, f"{cls.__name__} level"
+
+    def test_info_and_warning_toast_icons(self) -> None:
+        # InfoToast subclasses share one icon; WarningToast subclasses share another; the two differ.
+        from skiresort_planner.model import message as m
+        from skiresort_planner.model.message import InfoToast, WarningToast
+
+        info_icon = _make(next(c for c in _concrete_subclasses(InfoToast))).icon
+        warn_icon = _make(next(c for c in _concrete_subclasses(WarningToast))).icon
+        assert info_icon != warn_icon, "info vs warning toasts are visually distinct"
+        for cls in _concrete_subclasses(m.ToastMessage):
+            expected = info_icon if issubclass(cls, InfoToast) else warn_icon
+            assert _make(cls).icon == expected, f"{cls.__name__} icon inherited from its toast base"
+
+    def test_clicking_disabled_in_3d_toast_text(self) -> None:
+        from skiresort_planner.model.message import ClickingDisabledIn3DToast, WarningToast
+
+        toast = ClickingDisabledIn3DToast()
+        assert isinstance(toast, WarningToast)
+        assert "3D" in toast.message
+
+    def test_custom_path_computing_toast_text(self) -> None:
+        from skiresort_planner.model.message import CustomPathComputingToast, InfoToast
+
+        toast = CustomPathComputingToast()
+        assert isinstance(toast, InfoToast)
+        assert "custom path" in toast.message.lower()
+
 
 class TestImportPlacingMessages:
     def test_context_shows_center_and_area(self) -> None:
@@ -150,11 +290,13 @@ class TestImportPlacingMessages:
         assert "47.05" in msg and "10.32" in msg, "center coordinates shown"
         assert "4.0 × 4.0 km" in msg, "half-width 2.0 → 4×4 km area"
 
-    def test_action_message_mentions_confirm(self) -> None:
+    def test_action_message_names_the_import_buttons(self) -> None:
+        # The center dot is inert; only the panel buttons confirm, so the guidance must name them.
         from skiresort_planner.model.message import ImportActionMessage
 
         msg = ImportActionMessage().message
-        assert "Confirm" in msg or "center dot" in msg
+        assert "Import lifts + slopes" in msg and "Import lifts only" in msg
+        assert "center dot" not in msg, "center dot no longer confirms — must not be advertised"
 
 
 class TestMergePlacingMessages:
@@ -176,13 +318,21 @@ class TestMergePlacingMessages:
         from skiresort_planner.model.message import MergeActionMessage
 
         msg = MergeActionMessage(selected_count=1).message
-        assert "at least" in msg and "2" in msg
+        assert "Delete" in msg and "Merge" in msg, "the <2 prompt covers both merge and delete"
 
     def test_action_two_or_more_offers_confirm(self) -> None:
         from skiresort_planner.model.message import MergeActionMessage
 
         msg = MergeActionMessage(selected_count=2).message
         assert "Confirm Merge" in msg
+
+    def test_unable_to_delete_names_the_reason(self) -> None:
+        from skiresort_planner.model.message import UnableToDeleteMessage, WarningToast
+
+        msg = UnableToDeleteMessage(reason="N5 is a lift station — delete the lift first")
+        # Assert the exact wrapped format so a dropped prefix / wrong separator / omitted reason fails.
+        assert msg.message == "Cannot delete — N5 is a lift station — delete the lift first"
+        assert isinstance(msg, WarningToast), "a rejected delete is a warning toast (inherits its icon)"
 
     def test_too_far_reads_strictly_above_max(self) -> None:
         from skiresort_planner.model.message import MergeTooFarMessage

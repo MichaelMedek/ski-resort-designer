@@ -183,17 +183,17 @@ class TestForceStateMethods:
         # Enter lift placing mode
         sm.start_lift(node_id=None, location=None)
         # Manually set some lift state to verify it gets cleared
-        ctx.lift.start_node_id = "test_node"
+        ctx.lift.first_node_id = "test_node"
 
         assert sm.current_state_value == "lift_placing"
-        assert ctx.lift.start_node_id == "test_node"
+        assert ctx.lift.first_node_id == "test_node"
 
         # Force to idle - exit_lift_placing should clear lift context
         with sm.undo_running():
             sm.force_idle()
 
         assert sm.current_state_value == "idle_ready"
-        assert ctx.lift.start_node_id is None, "Lift context should be cleared by exit hook"
+        assert ctx.lift.first_node_id is None, "Lift context should be cleared by exit hook"
 
 
 class TestCancelSlope:
@@ -273,7 +273,7 @@ class TestCustomPathBranch:
         assert sm.current_state_value == "slope_custom_path"
         assert len(ctx.build(SegmentKind.SLOPE).segments) == 0
 
-        sm.cancel_custom_connect()
+        sm.cancel_custom()  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
         assert sm.current_state_value == "slope_starting", "has_no_segments guard routes back to starting"
         assert ctx.custom_connect.force_mode is False, "custom connect cleared by before_cancel_custom"
@@ -298,7 +298,7 @@ class TestCustomPathBranch:
         assert sm.current_state_value == "slope_custom_path"
         assert len(ctx.build(SegmentKind.SLOPE).segments) == 1
 
-        sm.cancel_custom_connect()
+        sm.cancel_custom()  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
         assert sm.current_state_value == "slope_building", "one segment routes back to building, not starting"
         assert len(ctx.build(SegmentKind.SLOPE).segments) == 1, "committed segment survives cancel_custom"

@@ -410,7 +410,7 @@ class _PathBuildingState(BuildState):
     def info_block(self, ctx: PlannerContext) -> InfoBlock:
         return InfoBlock(
             icon=StyleConfig.BUILDING_ICON,
-            label=f"Building {KIND_SPECS[self.kind].display_noun}...",
+            label=f"Building {KIND_SPECS[self.kind].display_noun}…",
             bullets=["⏳ Complete or cancel current build to change type"],
         )
 
@@ -451,13 +451,11 @@ class _LiftPlacingState(BuildState):
         *,
         use_3d: bool,
     ) -> list[pdk.Layer]:
-        if ctx.lift.start_node_id:
-            node = graph.nodes.get(ctx.lift.start_node_id)
-            if node is None:
-                raise ValueError(f"Lift start node {ctx.lift.start_node_id} not found in graph")
+        if ctx.lift.first_node_id:
+            node = graph.nodes[ctx.lift.first_node_id]  # live node (never dangling)
             lat, lon, elevation = node.lat, node.lon, node.elevation
-        elif ctx.lift.start_location:
-            loc = ctx.lift.start_location
+        elif ctx.lift.first_location:
+            loc = ctx.lift.first_location
             lat, lon, elevation = loc.lat, loc.lon, loc.elevation
         else:
             return []
@@ -481,7 +479,7 @@ class _LiftPlacingState(BuildState):
     def info_block(self, ctx: PlannerContext) -> InfoBlock:
         return InfoBlock(
             icon=StyleConfig.BUILDING_ICON,
-            label="Placing Lift...",
+            label="Placing Lift…",
             bullets=["⏳ Complete or cancel current build to change type"],
         )
 
@@ -522,15 +520,15 @@ class _ImportPlacingState(BuildState):
         *,
         use_3d: bool,
     ) -> list[pdk.Layer]:
-        center_lon = ctx.deferred.osm_import_center_lon
-        center_lat = ctx.deferred.osm_import_center_lat
+        center_lon = ctx.pending.osm_import_center_lon
+        center_lat = ctx.pending.osm_import_center_lat
         if center_lon is None or center_lat is None:
             return []
         center_elev = dem.get_elevation(lon=center_lon, lat=center_lat) or 0.0
         return renderer.create_import_bbox_layers(
             center_lon=center_lon,
             center_lat=center_lat,
-            half_width_m=ctx.deferred.osm_import_half_width_km * 1000.0,
+            half_width_m=ctx.pending.osm_import_half_width_km * 1000.0,
             elevation=center_elev,
             use_3d=use_3d,
         )
@@ -550,7 +548,7 @@ class _ImportPlacingState(BuildState):
     def info_block(self, ctx: PlannerContext) -> InfoBlock:
         return InfoBlock(
             icon=StyleConfig.BUILDING_ICON,
-            label="Importing Area...",
+            label="Importing Area…",
             bullets=["⏳ Complete or cancel current build to change type"],
         )
 
@@ -608,7 +606,7 @@ class _MergePlacingState(BuildState):
     def info_block(self, ctx: PlannerContext) -> InfoBlock:
         return InfoBlock(
             icon=StyleConfig.BUILDING_ICON,
-            label="Merging Nodes...",
+            label="Merging Nodes…",
             bullets=["⏳ Complete or cancel current build to change type"],
         )
 
@@ -720,7 +718,7 @@ class _LiftOperation(BuilderOperation):
     """The four lift-type buttons: enabled off a slope/road view, and re-typing the viewed lift."""
 
     group = OperationGroup.BUILDER
-    first_instruction = "🗺️ Click terrain or a node to place the bottom station."
+    first_instruction = "🗺️ Click terrain or a node to place the first station."
 
     def __init__(self, mode: str) -> None:
         self.mode = mode

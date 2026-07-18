@@ -11,6 +11,7 @@ SegmentPath); they import no graph or UI code, so they can live in the model lay
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import ClassVar
 
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.node import Node
@@ -35,46 +36,36 @@ class ActionType(StrEnum):
     DELETE_ROAD = "delete_road"
     IMPORT_OSM = "import_osm"
     MERGE_NODES = "merge_nodes"
+    DELETE_NODES = "delete_nodes"
+    INSERT_NODE = "insert_node"
 
 
 @dataclass(frozen=True)
 class AddSegmentsAction:
     """Undo action for committed path segments."""
 
+    action_type: ClassVar[ActionType] = ActionType.ADD_SEGMENTS
     segment_ids: tuple[str, ...]
     node_ids: tuple[str, ...]
-
-    @property
-    def action_type(self) -> ActionType:
-        """Return the enum type for dispatch."""
-        return ActionType.ADD_SEGMENTS
 
 
 @dataclass(frozen=True)
 class FinishSlopeAction:
     """Undo action for finishing a slope."""
 
+    action_type: ClassVar[ActionType] = ActionType.FINISH_SLOPE
     slope_id: str
     segment_ids: tuple[str, ...]
     slope_name: str
     start_node_id: str | None
-
-    @property
-    def action_type(self) -> ActionType:
-        """Return the enum type for dispatch."""
-        return ActionType.FINISH_SLOPE
 
 
 @dataclass(frozen=True)
 class AddLiftAction:
     """Undo action for creating a lift."""
 
+    action_type: ClassVar[ActionType] = ActionType.ADD_LIFT
     lift_id: str
-
-    @property
-    def action_type(self) -> ActionType:
-        """Return the enum type for dispatch."""
-        return ActionType.ADD_LIFT
 
 
 @dataclass(frozen=True)
@@ -85,59 +76,43 @@ class FinishRoadAction:
     with the segments intact; further undos peel each segment (AddSegmentsAction).
     """
 
+    action_type: ClassVar[ActionType] = ActionType.FINISH_ROAD
     road_id: str
     segment_ids: tuple[str, ...]
     road_name: str
     start_node_id: str | None
-
-    @property
-    def action_type(self) -> ActionType:
-        """Return the enum type for dispatch."""
-        return ActionType.FINISH_ROAD
 
 
 @dataclass(frozen=True)
 class DeleteSlopeAction:
     """Undo action for deleting a slope (stores data for restore)."""
 
+    action_type: ClassVar[ActionType] = ActionType.DELETE_SLOPE
     slope_id: str
     deleted_slope: Slope
     deleted_segments: tuple[PathSegment, ...]
     deleted_nodes: tuple[Node, ...] = ()  # Nodes orphaned by segment removal
-
-    @property
-    def action_type(self) -> ActionType:
-        """Return the enum type for dispatch."""
-        return ActionType.DELETE_SLOPE
 
 
 @dataclass(frozen=True)
 class DeleteLiftAction:
     """Undo action for deleting a lift (stores data for restore)."""
 
+    action_type: ClassVar[ActionType] = ActionType.DELETE_LIFT
     lift_id: str
     deleted_lift: Lift
     deleted_nodes: tuple[Node, ...] = ()  # Nodes orphaned by lift removal
-
-    @property
-    def action_type(self) -> ActionType:
-        """Return the enum type for dispatch."""
-        return ActionType.DELETE_LIFT
 
 
 @dataclass(frozen=True)
 class DeleteRoadAction:
     """Undo action for deleting a road (stores data for restore)."""
 
+    action_type: ClassVar[ActionType] = ActionType.DELETE_ROAD
     road_id: str
     deleted_road: Road
     deleted_segments: tuple[PathSegment, ...]
     deleted_nodes: tuple[Node, ...] = ()  # Nodes orphaned by segment removal
-
-    @property
-    def action_type(self) -> ActionType:
-        """Return the enum type for dispatch."""
-        return ActionType.DELETE_ROAD
 
 
 @dataclass(frozen=True)
@@ -149,15 +124,11 @@ class ImportOSMAction:
     user can then import a different selection.
     """
 
+    action_type: ClassVar[ActionType] = ActionType.IMPORT_OSM
     slope_ids: tuple[str, ...]
     lift_ids: tuple[str, ...]
     segment_ids: tuple[str, ...]
     node_ids: tuple[str, ...]  # nodes CREATED by this import (not pre-existing shared ones)
-
-    @property
-    def action_type(self) -> ActionType:
-        """Return the enum type for dispatch."""
-        return ActionType.IMPORT_OSM
 
     def removed_entity(self, entity_id: str) -> bool:
         """True if the given slope/lift id was one this import created (now removed on undo)."""
@@ -174,6 +145,7 @@ class MergeNodesAction:
     snapshot carries the original endpoint ids, so replacing it in place also undoes the repoint.
     """
 
+    action_type: ClassVar[ActionType] = ActionType.MERGE_NODES
     survivor_id: str
     survivor_before: Node  # survivor's location before it moved to the median
     deleted_nodes: tuple[Node, ...]  # the merged-away nodes, to restore verbatim
@@ -182,10 +154,34 @@ class MergeNodesAction:
     lifts_before: tuple[Lift, ...]
     paths_before: tuple[SegmentPath, ...]  # slopes + roads whose boundary ids were repointed
 
-    @property
-    def action_type(self) -> ActionType:
-        """Return the enum type for dispatch."""
-        return ActionType.MERGE_NODES
+
+@dataclass(frozen=True)
+class DeleteNodesAction:
+    """Undo a batch delete of path nodes (interior fusion + clean-endpoint trim).
+
+    Restores each affected path's pre-delete segment chain + boundary ids, every segment of those
+    chains verbatim (some were mutated in place, some dropped), and the deleted nodes. The delete
+    reuses existing segment ids (fuses into the first segment of a run), so there is nothing extra
+    to drop on undo — restoring the snapshots is a complete reversal.
+    """
+
+    action_type: ClassVar[ActionType] = ActionType.DELETE_NODES
+    deleted_nodes: tuple[Node, ...]
+    paths_before: tuple[SegmentPath, ...]  # affected slopes/roads with their original segment chain
+    segments_before: tuple[PathSegment, ...]  # every segment of each affected chain, pre-delete
+
+
+@dataclass(frozen=True)
+class InsertNodeAction:
+    """Undo a node insert on a path: delete the created node + the two split segments, restore the
+    original pre-split segment and the owning path's original segment_ids.
+    """
+
+    action_type: ClassVar[ActionType] = ActionType.INSERT_NODE
+    created_node_id: str
+    created_segment_ids: tuple[str, ...]  # the two segments the split produced (A', B')
+    path_before: SegmentPath  # owning path with its original segment chain
+    segment_before: PathSegment  # the pre-split segment
 
 
 UndoAction = (
@@ -198,4 +194,6 @@ UndoAction = (
     | DeleteRoadAction
     | ImportOSMAction
     | MergeNodesAction
+    | DeleteNodesAction
+    | InsertNodeAction
 )

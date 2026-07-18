@@ -17,6 +17,7 @@ For user workflow, see [DETAILS_UI.md](DETAILS_UI.md).
 7. [Custom Direction / Connect Paths](#7-custom-direction--connect-paths)
 8. [Lift Pylon Placement](#8-lift-pylon-placement)
 9. [OpenStreetMap Import](#9-openstreetmap-import)
+10. [Node Editing: Merge / Delete / Insert](#10-node-editing-merge--delete--insert)
 
 ---
 
@@ -464,22 +465,66 @@ Spacing pylons may affect adjacent spans. Re-run Phase 1 to fix new violations.
 
 ## 9. OpenStreetMap Import
 
-An **Import from OpenStreetMap** control (sidebar, idle only) fetches the real lifts & pistes within a square area around the map center and adds them to the graph. **Geometry only** — we take just the lon/lat polylines and lift stations; elevation, difficulty, pylons, and **belt width** are all recomputed by our own pipeline. OSM's own attributes (including `piste:width`) are ignored.
+Two **Import from OpenStreetMap** buttons (sidebar, idle only) fetch the real lifts & pistes in a square area around the map center: **Lifts only** (raw OSM lifts) and **Lifts + slopes** (the connected-graph builder). **Geometry only** — we take the lon/lat polylines and lift stations; elevation, difficulty, pylons, and **belt width** are recomputed by our pipeline. OSM attributes (including `piste:width`) are ignored. Example graph structure our builder produces (slopes blue, lifts purple):
+
+![OSM Import](images/9-OSMImport.png)
 
 ### 9.1 Region + single-query fetch
 
-A **square bounding box**: the current map center + a half-width from a slider (`HALF_WIDTH_MIN/MAX/DEFAULT_KM`). A lift/piste-only query is **light** — even a full-size box returns in a few seconds.
-
+A **square bounding box**: map center + a half-width slider (`HALF_WIDTH_MIN/MAX/DEFAULT_KM`). One lift/piste-only Overpass query is **light** — even a full box returns in seconds.
 
 ### 9.2 Mapping OSM → graph
 
-- **Pistes** — `piste:type=downhill` only. The polyline is linearly resampled every `RESAMPLE_STEP_M` (~30 m, no cubic spline — OSM pistes are already smooth) with DEM elevation, then `commit_paths` → `finish_slope`. Difficulty comes from the DEM `max_slope_pct`; name from `name → piste:name → piste:ref → ref`.
-- **Lifts** — import ONLY `aerialway` values defined by us (drag/t-bar/j-bar/platter → surface_lift, chair_lift → chairlift, gondola/mixed_lift → gondola, cable_car → aerial_tram). Any other value is ignored.
+- **Lifts** — only `aerialway` types we map (drag/t-bar/j-bar/platter → surface_lift, chair_lift → chairlift, gondola/mixed_lift → gondola, cable_car → aerial_tram); others ignored. A way with interior `aerialway=station` nodes splits into per-section lifts.
+- **Pistes** (Lifts + slopes only) — standard groomed `downhill` + `connection`. The connected-graph builder planar-splits every crossing, merges endpoints/stations into shared hubs (lift-authoritative, no two nodes < `MIN_NODE_DIST_M`), DEM-drapes each run on the real OSM line, and groups segments into named slopes. Difficulty comes from the DEM `max_slope_pct`.
 
-### 9.3 Only full, non-trivial, NAMED entities; one undoable batch
+### 9.3 Only full, non-trivial entities; one undoable batch
 
-Every element that is not imported is logged with its reason. A way with any vertex outside the box, or over a DEM nodata hole, is skipped entirely (never half-imported). **Unnamed** lifts/pistes are skipped — they are frequently outdated or duplicate, so only named entities import. Lifts under `MIN_LIFT_LENGTH_M` (300 m) and pistes under `MIN_PISTE_LENGTH_M` (200 m) are skipped as trivial. The whole import is one `ImportOSMAction` — a single Undo removes it all.
+A way with any vertex outside the box, or over a DEM nodata hole, is skipped whole (never half-imported); skips are logged. Lifts under `MIN_LIFT_LENGTH_M` and pistes under `MIN_PISTE_LENGTH_M` are dropped as trivial; **Lifts only** also drops unnamed lifts and coincident same-name duplicates. The whole import is one `ImportOSMAction` — one Undo removes it all.
 
 ### 9.4 Idempotent re-import
 
 An incoming run is skipped if the graph already has a slope/lift with the **same two endpoints**.
+
+---
+
+## 10. Node Editing: Merge / Delete / Insert
+
+A finished slope/road is a **chain**: a node sequence $[n_0, \dots, n_N]$ where segment $i$ spans
+$n_i \to n_{i+1}$ and adjacent segments share the junction node by value. The three merge-mode edits
+rewrite that chain while preserving one invariant — **every segment runs between two distinct existing
+nodes and the chain stays connected**. Segment metrics are pure functions of `points`, so reshaping
+`points` *is* the edit; each is one undoable action.
+
+### 10.1 Merge
+
+The **survivor** $s$ (first id) moves to the selection's component-wise **median** position (elevation
+re-sampled from the DEM); the others are deleted and every reference repointed to $s$. Refused if the
+selection's span (largest pairwise distance) exceeds `MergeConfig.MAX_SPAN_M` (500 m) — the median is
+only sensible for a tight cluster. Repointing can leave a segment running $s \to s$ (zero-length
+"curl"): if the whole entity collapses ($n_0 = n_N$) it is deleted; if only one interior segment does,
+that link is dropped from the sequence ($\dots\!\to\!s\!\to\!s\!\to\!\dots$ becomes
+$\dots\!\to\!s\!\to\!\dots$) so the chain stays continuous.
+
+### 10.2 Delete
+
+A node is deletable only where removal leaves a valid chain:
+- **Interior** (two segments of one path, bounds no path) → the two segments **fuse** (concatenate
+  points, drop the shared junction): $n_{i-1}\!\to\!n_i\!\to\!n_{i+1}$ becomes $n_{i-1}\!\to\!n_{i+1}$.
+- **Clean endpoint** (one segment, boundary of one *multi-segment* path) → that boundary segment is
+  **trimmed** and the terminus re-derived.
+
+Refused otherwise: a **lift station**, a **shared/branch junction** (would split the other path), or a
+**sole segment** (would empty the path). Over a multi-node selection the deletions must still leave
+**≥ 2 nodes per path**, so an end node *plus* the only interior node of a 2-segment slope is refused
+though each is individually deletable. Adjacent interior nodes fuse in one left-to-right pass, so a
+trimmed end next to a fused interior never leaves a segment pointing at a deleted node.
+
+### 10.3 Insert
+
+Splitting a segment invents no geometry. Committed segments are dense (finish-smoothing resamples to
+`RESAMPLE_STEP_M` ≈ 7 m), so the click's nearest **existing vertex** already lies on the ribbon and
+*becomes* the new node — no projection, interpolation, or DEM lookup (the vertex carries its
+build-time elevation). The point list splits at that index into two segments sharing the new node.
+Refused if that vertex is within `GeometricTuningConfig.STEP_SIZE_M` (30 m) of an endpoint — that would
+stack the new node on an existing one instead of making a real interior split.

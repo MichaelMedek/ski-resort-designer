@@ -20,7 +20,7 @@ Sub-contexts:
     CustomConnectContext: Custom target connection mode
     MapContext: Map center and zoom
     ClickDeduplicationContext: Click deduplication tracking
-    DeferredContext: Flags for deferred actions
+    PendingContext: Flags for deferred actions
     UIMessagesContext: User-facing messages/errors
 """
 
@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, ClassVar
 
-from skiresort_planner.constants import ClickConfig, LiftConfig, MapConfig, OSMConfig, PathConfig
+from skiresort_planner.constants import ClickConfig, LiftConfig, MapConfig, OSMConfig, OSMImportMode, PathConfig
 from skiresort_planner.model.path_segment import SegmentKind
 
 if TYPE_CHECKING:
@@ -165,14 +165,14 @@ class SegmentBuildContext(BaseContext):
 
 @dataclass
 class LiftContext(BaseContext):
-    """Lift placement state (start endpoint only)."""
+    """Lift placement state (first-clicked endpoint; orientation decided at completion)."""
 
-    start_node_id: str | None = None
-    start_location: PathPoint | None = None  # For new node creation
+    first_node_id: str | None = None
+    first_location: PathPoint | None = None  # For new node creation
 
     def clear(self) -> None:
-        self.start_node_id = None
-        self.start_location = None
+        self.first_node_id = None
+        self.first_location = None
 
 
 class BuildMode:
@@ -621,10 +621,10 @@ class ClickDeduplicationContext(BaseContext):
 
 
 @dataclass
-class DeferredContext(BaseContext):
+class PendingContext(BaseContext):
     """Deferred action flags for work that runs after st.rerun().
 
-    When set, process_path_generation_deferred() (called from app.py) performs the work on the
+    When set, process_path_generation_pending() (called from app.py) performs the work on the
     next render cycle. This ensures expensive operations (path generation)
     run with full access to session state after the UI refresh.
     """
@@ -633,7 +633,8 @@ class DeferredContext(BaseContext):
     fan_generation: set[SegmentKind] = field(default_factory=set)
     gradient_target: float | None = None  # For smart path recommendation
     custom_connect: bool = False  # Generate paths to custom target location
-    osm_import: bool = False  # Fetch + import OSM lifts/pistes for the chosen area (slow network)
+    # Which OSM import to run on the next render (None = nothing pending). Slow network + graph build.
+    osm_import_mode: OSMImportMode | None = None
     osm_import_half_width_km: float = OSMConfig.HALF_WIDTH_DEFAULT_KM  # Square half-width from the import slider
     # Center of the placed import box (click-to-place). Set by start_import, consumed on confirm.
     osm_import_center_lon: float | None = None
@@ -647,7 +648,7 @@ class DeferredContext(BaseContext):
         self.fan_generation = set()
         self.gradient_target = None
         self.custom_connect = False
-        self.osm_import = False
+        self.osm_import_mode = None
         self.osm_import_half_width_km = OSMConfig.HALF_WIDTH_DEFAULT_KM
         self.osm_import_center_lon = None
         self.osm_import_center_lat = None
@@ -729,7 +730,7 @@ class PlannerContext:
     custom_connect: CustomConnectContext = field(default_factory=CustomConnectContext)
     map: MapContext = field(default_factory=MapContext)
     click_dedup: ClickDeduplicationContext = field(default_factory=ClickDeduplicationContext)
-    deferred: DeferredContext = field(default_factory=DeferredContext)
+    pending: PendingContext = field(default_factory=PendingContext)
     merge: MergeContext = field(default_factory=MergeContext)
     messages: UIMessagesContext = field(default_factory=UIMessagesContext)
     build_mode: BuildModeContext = field(default_factory=BuildModeContext)
@@ -764,7 +765,7 @@ class PlannerContext:
     def clear_custom_connect(self) -> None:
         """Clear custom connect mode."""
         self.custom_connect.clear()
-        self.deferred.clear_custom_connect()
+        self.pending.clear_custom_connect()
 
     def clear_merge(self) -> None:
         """Clear the node-merge selection."""
@@ -786,7 +787,7 @@ class PlannerContext:
             f"PlannerContext(state={self.state}, "
             f"coordinate={self.selection.coordinate}, "
             f"segments={segments}, "
-            f"lift_start={self.lift.start_node_id})"
+            f"lift_first={self.lift.first_node_id})"
         )
 
     def has_selection(self) -> bool:

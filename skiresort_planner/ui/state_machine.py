@@ -104,7 +104,6 @@ IMPORTANT: Direct transition calls are BLOCKED at runtime via __getattribute__.
         Resolves to:
         - cancel_path_to_starting: SLOPE_CUSTOM_PATH → SLOPE_STARTING
         - cancel_path_to_building: SLOPE_CUSTOM_PATH → SLOPE_BUILDING
-        (The cancel_custom_connect() method is a thin wrapper that sends this event.)
 
     select_custom_target - Route custom-connect proposals to a clicked target
         Args: target_location, target_node
@@ -1098,8 +1097,8 @@ class PlannerStateMachine(StateMachine):
 
     def before_start_lift(self, node_id: str | None = None, location: PathPoint | None = None) -> None:
         """Action before starting lift placement."""
-        self.context.lift.start_node_id = node_id
-        self.context.lift.start_location = location
+        self.context.lift.first_node_id = node_id
+        self.context.lift.first_location = location
 
     # Reuse start_lift logic for other entry points
     before_start_lift_from_slope_view = before_start_lift
@@ -1125,8 +1124,8 @@ class PlannerStateMachine(StateMachine):
 
     def before_start_import(self, lon: float, lat: float) -> None:
         """Action before starting import placement: store the first clicked center."""
-        self.context.deferred.osm_import_center_lon = lon
-        self.context.deferred.osm_import_center_lat = lat
+        self.context.pending.osm_import_center_lon = lon
+        self.context.pending.osm_import_center_lat = lat
 
     # Reuse start_import logic for the other idle entry points
     before_start_import_from_slope_view = before_start_import
@@ -1139,10 +1138,10 @@ class PlannerStateMachine(StateMachine):
         self.context.lift.clear()
 
     def before_cancel_import(self) -> None:
-        """Discard a placed-but-unconfirmed import: clear the box center and the pending flag."""
-        self.context.deferred.osm_import = False
-        self.context.deferred.osm_import_center_lon = None
-        self.context.deferred.osm_import_center_lat = None
+        """Discard a placed-but-unconfirmed import: clear the box center and the pending mode."""
+        self.context.pending.osm_import_mode = None
+        self.context.pending.osm_import_center_lon = None
+        self.context.pending.osm_import_center_lat = None
 
     def before_toggle_merge_node(self, node_id: str) -> None:
         """Self-loop in merge_placing: add/remove the clicked node from the selection."""
@@ -1219,7 +1218,7 @@ class PlannerStateMachine(StateMachine):
 
     def before_cancel_custom(self) -> None:
         """Event hook for cancel_custom (any kind). Clears custom state and regenerates the fan."""
-        self.context.deferred.fan_generation.add(self.active_build_kind)
+        self.context.pending.fan_generation.add(self.active_build_kind)
         self.context.clear_custom_connect()
         self.context.clear_proposals()
 
@@ -1398,69 +1397,6 @@ class PlannerStateMachine(StateMachine):
     def __repr__(self) -> str:
         """Return string representation of state machine."""
         return f"PlannerStateMachine(state={self.get_state_name()}, model={self.context!r})"
-
-    # ==========================================================================
-    # Convenience Methods for Common Transitions
-    # ==========================================================================
-
-    def start_building(
-        self,
-        lon: float,
-        lat: float,
-        elevation: float,
-        node_id: str | None = None,
-    ) -> None:
-        """Start building a slope from any idle state.
-
-        Uses start_slope event - SM resolves to appropriate transition.
-        """
-        self.start_slope(lon=lon, lat=lat, elevation=elevation, node_id=node_id)
-
-    def select_lift_start(self, node_id: str | None = None, location: PathPoint | None = None) -> None:
-        """Start placing a lift from any idle state.
-
-        Uses start_lift event - SM resolves to appropriate transition.
-        """
-        self.start_lift(node_id=node_id, location=location)
-
-    def select_road_start(self, node_id: str | None = None, location: PathPoint | None = None) -> None:
-        """Start placing a road from any idle state.
-
-        Uses start_road event - SM resolves to appropriate transition.
-        """
-        self.start_road(node_id=node_id, location=location)
-
-    def show_slope_info_panel(self, slope_id: str) -> None:
-        """Show slope info panel from any idle state.
-
-        Uses view_slope event - SM resolves to appropriate transition.
-        """
-        self.view_slope(slope_id=slope_id)
-
-    def show_lift_info_panel(self, lift_id: str) -> None:
-        """Show lift info panel from any idle state.
-
-        Uses view_lift event - SM resolves to appropriate transition.
-        """
-        self.view_lift(lift_id=lift_id)
-
-    def show_road_info_panel(self, road_id: str) -> None:
-        """Show road info panel from any idle state.
-
-        Uses view_road event - SM resolves to appropriate transition.
-        """
-        self.view_road(road_id=road_id)
-
-    def hide_info_panel(self) -> None:
-        """Hide info panel (transitions to idle_ready if viewing).
-
-        Uses close_panel event - SM resolves to appropriate transition.
-        """
-        self.send("close_panel")
-
-    def cancel_custom_connect(self) -> None:
-        """Leave custom targeting, back to fan-out. SM resolves based on guards."""
-        self.send("cancel_custom")
 
     @staticmethod
     def create(

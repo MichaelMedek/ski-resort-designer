@@ -19,10 +19,12 @@ from typing import TYPE_CHECKING, Literal
 
 import streamlit as st
 
-from skiresort_planner.constants import MapConfig, SlopeConfig, StyleConfig
+from skiresort_planner.constants import LiftType, MapConfig, OSMImportMode, SlopeConfig, StyleConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
+from skiresort_planner.model.connectivity import CoreMembership
 from skiresort_planner.model.message import (
+    DisconnectedEntityMessage,
     ImportActionMessage,
     ImportPlacingContextMessage,
     LiftActionMessage,
@@ -38,9 +40,11 @@ from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.actions import (
     confirm_import_action,
     confirm_merge_action,
+    delete_nodes_action,
     rename_entity_action,
 )
 from skiresort_planner.ui.context import EntityKind, PlannerContext
+from skiresort_planner.ui.dialogs import ConfirmDialog, InputDialog
 from skiresort_planner.ui.infra import bump_camera_epoch, bump_dedup_epoch, reload_map, trigger_rerun
 from skiresort_planner.ui.kind_spec import KIND_SPECS
 from skiresort_planner.ui.state_machine import PlannerStateMachine
@@ -55,6 +59,19 @@ if TYPE_CHECKING:
     from skiresort_planner.ui.mode_registry import EntityKindSpec
 
 logger = logging.getLogger(__name__)
+
+
+def _render_disconnected_warning(graph: ResortGraph, start_node_id: str, end_node_id: str, noun: str) -> None:
+    """Show a warning below the stats when this slope/lift is disconnected from the core resort.
+
+    Single source for both the slope and lift panels — computes core membership and displays the
+    message only on DISCONNECTED (silent when there's no core yet or the entity is in-core).
+    """
+    core = graph.get_core_resort()
+    membership = graph.entity_membership(start_node_id=start_node_id, end_node_id=end_node_id, core=core)
+    if membership == CoreMembership.DISCONNECTED:
+        assert core is not None  # DISCONNECTED implies a core exists
+        DisconnectedEntityMessage(entity_noun=noun, core_lift_name=core.longest_lift_name).display()
 
 
 def _commit_button_label(path: "ProposedPathSegment", *, continue_label: str, continue_help: str) -> tuple[str, str]:
@@ -72,41 +89,50 @@ def _commit_button_label(path: "ProposedPathSegment", *, continue_label: str, co
 # =============================================================================
 
 
-@st.dialog("Confirm Delete")
-def _confirm_delete_dialog(
-    kind: EntityKind,
-    entity_name: str,
-    entity_id: str,
-    delete_fn: Callable[[str], bool],
-) -> None:
-    """Show confirmation dialog before deleting a slope, road, or lift."""
-    st.write(f"Are you sure you want to delete **{entity_name}**?")
-    st.caption("This action can be undone using the Undo button.")
+class _DeleteEntityDialog(ConfirmDialog):
+    """Confirm deleting a slope, road, or lift."""
 
-    col_yes, col_no = st.columns(2)
-    with col_yes:
-        if st.button("🗑️ Yes, Delete", type="primary", use_container_width=True):
-            if delete_fn(entity_id):
-                logger.info(f"Deleted {kind.value} {entity_name} (id={entity_id})")
-            # Action functions handle state transition and map version bump
-            trigger_rerun()
-    with col_no:
-        if st.button("✖️ Cancel", use_container_width=True):
-            trigger_rerun()
+    def __init__(
+        self,
+        kind: EntityKind,
+        entity_name: str,
+        entity_id: str,
+        delete_fn: Callable[[str], bool],
+    ) -> None:
+        self.kind = kind
+        self.entity_name = entity_name
+        self.entity_id = entity_id
+        self.delete_fn = delete_fn
+
+    @property
+    def title(self) -> str:
+        return "🗑️ Confirm Delete"
+
+    def _body(self) -> None:
+        st.write(f"Are you sure you want to delete **{self.entity_name}**?")
+        st.caption("This action can be undone using the Undo button.")
+
+    def _on_confirm(self) -> None:
+        if self.delete_fn(self.entity_id):
+            logger.info(f"Deleted {self.kind.value} {self.entity_name} (id={self.entity_id})")
 
 
-@st.dialog("Rename")
-def _rename_dialog(entity_id: str, current_name: str) -> None:
+class _RenameDialog(InputDialog):
     """Prompt for a new name for a slope, road, or lift and apply it on Save."""
-    new_name = st.text_input("Name", value=current_name)
-    col_save, col_cancel = st.columns(2)
-    with col_save:
-        if st.button("💾 Save", type="primary", use_container_width=True):
-            rename_entity_action(entity_id=entity_id, new_name=new_name)
-            trigger_rerun()
-    with col_cancel:
-        if st.button("✖️ Cancel", use_container_width=True):
-            trigger_rerun()
+
+    def __init__(self, entity_id: str, current_name: str) -> None:
+        self.entity_id = entity_id
+        self.current_name = current_name
+
+    @property
+    def title(self) -> str:
+        return "✏️ Rename"
+
+    def _input(self) -> str:
+        return st.text_input("Name", value=self.current_name)
+
+    def _on_save(self, value: str) -> None:
+        rename_entity_action(entity_id=self.entity_id, new_name=value)
 
 
 # =============================================================================
@@ -173,7 +199,7 @@ def _render_entity_actions(
     # Top-right: Rename.
     with top_right:
         if _action_button("✏️ Rename", key=f"rename_{noun}", help=f"Give this {noun} a custom name"):
-            _rename_dialog(entity_id=entity_id, current_name=entity.name)
+            _RenameDialog(entity_id=entity_id, current_name=entity.name).show()
 
     # Bottom-left: Close.
     with bottom_left:
@@ -184,19 +210,19 @@ def _render_entity_actions(
             ctx.map.pitch = MapConfig.DEFAULT_PITCH
             ctx.map.bearing = MapConfig.DEFAULT_BEARING
             bump_dedup_epoch()  # keep the user's pan (no recenter); a 3D→2D close re-frames via the view detector
-            # Uses close_panel event - SM resolves to appropriate transition
+            # close_panel event - SM resolves to the appropriate transition by current state
             # State transition triggers st.rerun() via listener - never returns
-            sm.hide_info_panel()
+            sm.close_panel()  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
     # Bottom-right: Delete.
     with bottom_right:
         if _action_button("🗑️ Delete", key=f"delete_{noun}", help=f"Permanently remove this {noun}"):
-            _confirm_delete_dialog(
+            _DeleteEntityDialog(
                 kind=kind,
                 entity_name=entity.name,
                 entity_id=entity_id,
                 delete_fn=delete_fn,
-            )
+            ).show()
 
 
 # =============================================================================
@@ -399,39 +425,29 @@ class PathBuildingControlPanel(ControlPanel):
 
 
 class LiftPlacingControlPanel(ControlPanel):
-    """LIFT_PLACING: bottom-station context + 'select top station' action (no buttons)."""
-
-    def _start_elevation(self) -> float:
-        if self.ctx.lift.start_node_id:
-            return self.graph.nodes[self.ctx.lift.start_node_id].elevation
-        if self.ctx.lift.start_location:
-            return self.ctx.lift.start_location.elevation
-        raise RuntimeError("LiftPlacing state requires start_node_id or start_location to be set")
+    """LIFT_PLACING: first-station context + 'select second station' action (no buttons)."""
 
     def context_message(self) -> "Message | None":
         lift_type = self.ctx.build_mode.mode  # single source of truth for the selected lift type
-        lift_icon = StyleConfig.LIFT_ICONS[lift_type]
-        if self.ctx.lift.start_node_id:
-            node = self.graph.nodes[self.ctx.lift.start_node_id]
+        if self.ctx.lift.first_node_id:
+            node = self.graph.nodes[self.ctx.lift.first_node_id]
             return LiftPlacingContextMessage(
                 lift_type=lift_type,
-                lift_icon=lift_icon,
-                bottom_node_id=self.ctx.lift.start_node_id,
-                bottom_elevation_m=node.elevation,
+                first_node_id=self.ctx.lift.first_node_id,
+                first_elevation_m=node.elevation,
             )
-        if self.ctx.lift.start_location:
-            loc = self.ctx.lift.start_location
+        if self.ctx.lift.first_location:
+            loc = self.ctx.lift.first_location
             return LiftPlacingContextMessage(
                 lift_type=lift_type,
-                lift_icon=lift_icon,
-                bottom_lat=loc.lat,
-                bottom_lon=loc.lon,
-                bottom_elevation_m=loc.elevation,
+                first_lat=loc.lat,
+                first_lon=loc.lon,
+                first_elevation_m=loc.elevation,
             )
-        raise RuntimeError("LiftPlacing state requires start_node_id or start_location to be set")
+        raise RuntimeError("LiftPlacing state requires first_node_id or first_location to be set")
 
     def action_message(self) -> "Message | None":
-        return LiftActionMessage(bottom_elevation_m=self._start_elevation())
+        return LiftActionMessage()
 
     def buttons(self) -> None:
         return None
@@ -441,23 +457,35 @@ class ImportPlacingControlPanel(ControlPanel):
     """IMPORT_PLACING: box context + confirm-area action + Confirm Import button."""
 
     def context_message(self) -> "Message | None":
-        center_lon = self.ctx.deferred.osm_import_center_lon
-        center_lat = self.ctx.deferred.osm_import_center_lat
+        center_lon = self.ctx.pending.osm_import_center_lon
+        center_lat = self.ctx.pending.osm_import_center_lat
         if center_lon is None or center_lat is None:
             raise RuntimeError("ImportPlacing state requires a placed box center")
         return ImportPlacingContextMessage(
             center_lat=center_lat,
             center_lon=center_lon,
-            half_width_km=self.ctx.deferred.osm_import_half_width_km,
+            half_width_km=self.ctx.pending.osm_import_half_width_km,
         )
 
     def action_message(self) -> "Message | None":
         return ImportActionMessage()
 
     def buttons(self) -> None:
-        if st.button("✅ Confirm Import", type="primary", width="stretch", help="Fetch and import this area from OSM"):
-            logger.debug("UI: Confirm Import clicked")
-            confirm_import_action()
+        if st.button(
+            f"{StyleConfig.LIFT_ICONS[LiftType.GONDOLA]}{StyleConfig.SLOPE_ICON} Import lifts + slopes",
+            type="primary",
+            width="stretch",
+            help="Fetch this area from OSM and build a connected graph of lifts AND slopes",
+        ):
+            logger.debug("UI: Import lifts + slopes clicked")
+            confirm_import_action(OSMImportMode.LIFTS_AND_SLOPES)
+        if st.button(
+            f"{StyleConfig.LIFT_ICONS[LiftType.GONDOLA]} Import lifts only",
+            width="stretch",
+            help="Fetch this area from OSM and import ONLY the lifts, exactly as mapped (fast)",
+        ):
+            logger.debug("UI: Import lifts only clicked")
+            confirm_import_action(OSMImportMode.LIFTS_ONLY)
 
 
 class MergePlacingControlPanel(ControlPanel):
@@ -492,6 +520,19 @@ class MergePlacingControlPanel(ControlPanel):
         ):
             logger.debug(f"UI: Confirm Merge clicked for {count} nodes")
             confirm_merge_action()
+        # Delete needs only 1+ node; validity (interior/endpoint vs. lift/junction) is checked on click.
+        can_delete = count >= 1
+        if st.button(
+            "🗑️ Delete Node(s)",
+            type="secondary",
+            width="stretch",
+            disabled=not can_delete,
+            help=("Select at least 1 node to delete" if not can_delete else "Delete interior / end nodes of a path"),
+        ):
+            logger.debug(f"UI: Delete Node(s) clicked for {count} nodes")
+            delete_nodes_action()
+        # Discoverability hint, mirroring the path builder's "click any point" caption.
+        st.caption("🎯 Or click any path on the map to add a node there.")
 
 
 def _render_proposal_browser(ctx: PlannerContext, *, key_prefix: str, noun: str) -> None:
@@ -715,6 +756,12 @@ class PathStatsPanel(StatsPanel):
                 help=f"Steepest {SlopeConfig.ROLLING_WINDOW_M}m section within any single segment",
             )
 
+        # Slopes participate in skiable connectivity; roads don't — warn only for disconnected slopes.
+        if self.kind == SegmentKind.SLOPE:
+            _render_disconnected_warning(
+                graph=self.graph, start_node_id=owner.start_node_id, end_node_id=owner.end_node_id, noun="slope"
+            )
+
         with st.expander("📋 Segment Details", expanded=False):
             for i, seg_id in enumerate(owner.segment_ids, 1):
                 seg = self.graph.segments[seg_id]
@@ -786,3 +833,7 @@ class LiftStatsPanel(StatsPanel):
                 f"{max_cable_gradient:.0f}%",
                 help="Steepest gradient between any two adjacent pylons",
             )
+
+        _render_disconnected_warning(
+            graph=self.graph, start_node_id=lift.start_node_id, end_node_id=lift.end_node_id, noun="lift"
+        )

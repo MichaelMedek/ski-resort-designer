@@ -493,7 +493,7 @@ class TestImportPlacing:
         _force_state(sm=sm, state_name=idle_state)
         sm.start_import(lon=10.3, lat=47.0)
         assert sm.is_import_placing
-        assert ctx.deferred.osm_import_center_lon == 10.3 and ctx.deferred.osm_import_center_lat == 47.0
+        assert ctx.pending.osm_import_center_lon == 10.3 and ctx.pending.osm_import_center_lat == 47.0
 
     def test_retarget_keeps_placing(self) -> None:
         sm, ctx = self._sm()
@@ -506,8 +506,8 @@ class TestImportPlacing:
         sm.start_import(lon=1.0, lat=2.0)
         sm.cancel_import()
         assert sm.is_idle_ready
-        assert ctx.deferred.osm_import_center_lon is None and ctx.deferred.osm_import_center_lat is None
-        assert ctx.deferred.osm_import is False
+        assert ctx.pending.osm_import_center_lon is None and ctx.pending.osm_import_center_lat is None
+        assert ctx.pending.osm_import_mode is None
 
     def test_complete_returns_to_idle(self) -> None:
         sm, ctx = self._sm()
@@ -526,14 +526,14 @@ class TestImportPlacing:
         # the placed box center, or a stale box resurfaces. Guards the force/undo exit dispatch.
         sm, ctx = self._sm()
         sm.start_import(lon=1.0, lat=2.0)
-        assert ctx.deferred.osm_import_center_lon == 1.0
+        assert ctx.pending.osm_import_center_lon == 1.0
 
         with sm.undo_running():  # force_* is undo-only
             sm.force_idle()
 
         assert sm.is_idle_ready
-        assert ctx.deferred.osm_import_center_lon is None, "force_idle must run exit_import_placing (clears center)"
-        assert ctx.deferred.osm_import_center_lat is None
+        assert ctx.pending.osm_import_center_lon is None, "force_idle must run exit_import_placing (clears center)"
+        assert ctx.pending.osm_import_center_lat is None
 
 
 class TestViewSwitching:
@@ -553,29 +553,29 @@ class TestViewSwitching:
         sm, _ctx = self._sm()
         # idle_ready → view a slope → switch to a road → self-loop to another road → switch to a lift.
         # viewing_entity encodes both the state's kind and the id set by the before_switch_* hook.
-        sm.show_slope_info_panel(slope_id="SL1")
+        sm.view_slope(slope_id="SL1")
         assert sm.viewing_entity == (EntityKind.SLOPE, "SL1")
 
-        sm.show_road_info_panel(road_id="R1")  # switch_slope_to_road_view
+        sm.view_road(road_id="R1")  # switch_slope_to_road_view
         assert sm.viewing_entity == (EntityKind.ROAD, "R1")
 
-        sm.show_road_info_panel(road_id="R2")  # switch_road self-loop
+        sm.view_road(road_id="R2")  # switch_road self-loop
         assert sm.viewing_entity == (EntityKind.ROAD, "R2")
 
-        sm.show_lift_info_panel(lift_id="L1")  # switch_road_to_lift_view
+        sm.view_lift(lift_id="L1")  # switch_road_to_lift_view
         assert sm.viewing_entity == (EntityKind.LIFT, "L1")
 
-        sm.show_road_info_panel(road_id="R3")  # switch_lift_to_road_view
+        sm.view_road(road_id="R3")  # switch_lift_to_road_view
         assert sm.viewing_entity == (EntityKind.ROAD, "R3")
 
     def test_switch_road_to_slope_then_close(self) -> None:
         from skiresort_planner.ui.context import EntityKind
 
         sm, _ctx = self._sm()
-        sm.show_road_info_panel(road_id="R1")
-        sm.show_slope_info_panel(slope_id="SL9")  # switch_road_to_slope_view
+        sm.view_road(road_id="R1")
+        sm.view_slope(slope_id="SL9")  # switch_road_to_slope_view
         assert sm.viewing_entity == (EntityKind.SLOPE, "SL9")
-        sm.hide_info_panel()  # close_panel → idle_ready
+        sm.close_panel()  # type: ignore[attr-defined]  # dynamic python-statemachine event → idle_ready
         assert sm.viewing_entity is None
 
 

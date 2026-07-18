@@ -21,11 +21,13 @@ from skiresort_planner.model.actions import (
     AddLiftAction,
     AddSegmentsAction,
     DeleteLiftAction,
+    DeleteNodesAction,
     DeleteRoadAction,
     DeleteSlopeAction,
     FinishRoadAction,
     FinishSlopeAction,
     ImportOSMAction,
+    InsertNodeAction,
     MergeNodesAction,
     UndoAction,
 )
@@ -239,13 +241,13 @@ class _MergeNodesHandler(UndoHandler):
     action_type = ActionType.MERGE_NODES
 
     def apply_undo(self, graph: "ResortGraph", action: UndoAction) -> None:
-        # Restore the merged-away nodes, move the survivor back, and restore every touched builder
-        # from its pre-merge snapshot. Each snapshot carries the original endpoint/boundary ids, so
-        # replacing it in place also undoes the repoint.
+        # Restore the merged-away nodes, the touched builders (each snapshot carries the original
+        # endpoint ids, so replacing it undoes the repoint), and the survivor WHOLESALE — a merge that
+        # collapsed the survivor's only path can leave it isolated, so it may be gone from graph.nodes.
         merge = cast(MergeNodesAction, action)
         for node in merge.deleted_nodes:
             graph.nodes[node.id] = node
-        graph.nodes[merge.survivor_id].location = merge.survivor_before.location
+        graph.nodes[merge.survivor_id] = merge.survivor_before
         for seg_before in merge.segments_before:
             graph.segments[seg_before.id] = seg_before
         for lift_before in merge.lifts_before:
@@ -259,6 +261,45 @@ class _MergeNodesHandler(UndoHandler):
         return f"Un-merge {len(merge.deleted_nodes) + 1} nodes"
 
 
+class _DeleteNodesHandler(UndoHandler):
+    action_type = ActionType.DELETE_NODES
+
+    def apply_undo(self, graph: "ResortGraph", action: UndoAction) -> None:
+        # Restore nodes + every segment of the affected chains verbatim (some were mutated in place
+        # by the fusion, some dropped), then restore each path's original segment_ids/boundaries
+        # (paths reference the segments, so segments come first).
+        delete = cast(DeleteNodesAction, action)
+        for node in delete.deleted_nodes:
+            graph.nodes[node.id] = node
+        for seg_before in delete.segments_before:
+            graph.segments[seg_before.id] = seg_before
+        for path_before in delete.paths_before:
+            graph.entity_dict_for_kind(path_before.kind)[path_before.id] = path_before
+        logger.info(f"Reverted delete of {len(delete.deleted_nodes)} node(s)")
+
+    def describe(self, action: UndoAction, graph: "ResortGraph") -> str:
+        delete = cast(DeleteNodesAction, action)
+        return f"Restore {len(delete.deleted_nodes)} deleted node(s)"
+
+
+class _InsertNodeHandler(UndoHandler):
+    action_type = ActionType.INSERT_NODE
+
+    def apply_undo(self, graph: "ResortGraph", action: UndoAction) -> None:
+        # Drop the two split segments, restore the original segment + the path's chain, then remove
+        # the created node (now unreferenced).
+        insert = cast(InsertNodeAction, action)
+        for seg_id in insert.created_segment_ids:
+            del graph.segments[seg_id]
+        graph.segments[insert.segment_before.id] = insert.segment_before
+        graph.entity_dict_for_kind(insert.path_before.kind)[insert.path_before.id] = insert.path_before
+        del graph.nodes[insert.created_node_id]
+        logger.info(f"Reverted insert of node {insert.created_node_id}")
+
+    def describe(self, action: UndoAction, graph: "ResortGraph") -> str:
+        return "Remove the inserted node"
+
+
 _UNDO_HANDLER_LIST: list[UndoHandler] = [
     _AddSegmentsHandler(),
     _FinishSlopeHandler(),
@@ -269,6 +310,8 @@ _UNDO_HANDLER_LIST: list[UndoHandler] = [
     _DeleteRoadHandler(),
     _ImportOSMHandler(),
     _MergeNodesHandler(),
+    _DeleteNodesHandler(),
+    _InsertNodeHandler(),
 ]
 
 # Keyed by ActionType.name (str) — reload-safe (see module docstring).

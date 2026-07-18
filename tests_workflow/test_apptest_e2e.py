@@ -129,8 +129,8 @@ def create_command_executor() -> None:
         delete_slope_action,
         finish_current_road,
         finish_current_slope,
-        process_custom_connect_deferred,
-        process_path_generation_deferred,
+        process_custom_connect_pending,
+        process_path_generation_pending,
         recompute_paths,
         undo_last_action,
     )
@@ -144,10 +144,10 @@ def create_command_executor() -> None:
         Mirrors app.py logic but without spinners for testing.
         """
         ctx: PlannerContext = st.session_state.context
-        if ctx.deferred.custom_connect:
-            process_custom_connect_deferred()
-        elif ctx.deferred.fan_generation:
-            process_path_generation_deferred()
+        if ctx.pending.custom_connect:
+            process_custom_connect_pending()
+        elif ctx.pending.fan_generation:
+            process_path_generation_pending()
 
     # Initialize state machine if not already done
     sm: PlannerStateMachine

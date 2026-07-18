@@ -8,7 +8,6 @@ MIN_DROP_M / SEGMENT_LENGTH_MAX_M boundaries (imported, not hardcoded).
 from skiresort_planner.constants import ConnectionConfig, PathConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.model.message import (
-    LiftMustGoUphillMessage,
     SameNodeLiftMessage,
     TargetNotDownhillMessage,
     TargetTooFarMessage,
@@ -16,36 +15,21 @@ from skiresort_planner.model.message import (
 from skiresort_planner.ui.validators import (
     validate_custom_target_distance,
     validate_custom_target_downhill,
-    validate_lift_different_nodes,
-    validate_lift_goes_uphill,
+    validate_lift_stations_differ,
 )
 
 M = 111320.0  # metres per degree near the equator
 
 
-class TestLiftGoesUphill:
-    def test_uphill_is_valid(self) -> None:
-        assert validate_lift_goes_uphill(start_elevation=1500.0, end_elevation=2000.0) is None
+class TestLiftStationsDiffer:
+    def test_distinct_points_valid(self) -> None:
+        # Orientation is decided by elevation later, so distinct coordinates always pass here —
+        # even a downhill or equal-elevation second point (that just flips which end is bottom).
+        assert validate_lift_stations_differ(first_lon=0.0, first_lat=0.0, second_lon=0.0, second_lat=1.0) is None
 
-    def test_downhill_reports_both_elevations(self) -> None:
-        result = validate_lift_goes_uphill(start_elevation=2000.0, end_elevation=1500.0)
-        assert isinstance(result, LiftMustGoUphillMessage)
-        assert result.start_elevation_m == 2000.0
-        assert result.end_elevation_m == 1500.0
-
-    def test_equal_elevation_is_rejected(self) -> None:
-        # Boundary: end == start is NOT uphill.
-        assert isinstance(
-            validate_lift_goes_uphill(start_elevation=2000.0, end_elevation=2000.0), LiftMustGoUphillMessage
-        )
-
-
-class TestLiftDifferentNodes:
-    def test_different_nodes_valid(self) -> None:
-        assert validate_lift_different_nodes(start_node_id="N1", end_node_id="N2") is None
-
-    def test_same_node_rejected(self) -> None:
-        assert isinstance(validate_lift_different_nodes(start_node_id="N1", end_node_id="N1"), SameNodeLiftMessage)
+    def test_coincident_points_rejected(self) -> None:
+        result = validate_lift_stations_differ(first_lon=5.0, first_lat=6.0, second_lon=5.0, second_lat=6.0)
+        assert isinstance(result, SameNodeLiftMessage)
 
 
 class TestCustomTargetDownhill:

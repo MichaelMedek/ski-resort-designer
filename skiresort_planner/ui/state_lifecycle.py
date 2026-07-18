@@ -33,7 +33,7 @@ def _enter_fan_state(ctx: PlannerContext, kind: SegmentKind) -> None:
     """
     ctx.viewing.hide_panel()
     ctx.click_dedup.clear_marker()
-    ctx.deferred.fan_generation.add(kind)
+    ctx.pending.fan_generation.add(kind)
 
 
 def _enter_custom_path(ctx: PlannerContext) -> None:
@@ -41,7 +41,7 @@ def _enter_custom_path(ctx: PlannerContext) -> None:
     deferred custom-connect generation to the stored target. Kind-agnostic.
     """
     ctx.click_dedup.clear_marker()
-    ctx.deferred.custom_connect = True
+    ctx.pending.custom_connect = True
 
 
 def _enter_viewing_panel(ctx: PlannerContext) -> None:
@@ -164,9 +164,9 @@ def enter_slope_custom_path(ctx: PlannerContext) -> None:
 
 
 def enter_lift_placing(ctx: PlannerContext) -> None:
-    """Enter LIFT_PLACING: hide panel, clear marker dedup, ready for the top-station click.
+    """Enter LIFT_PLACING: hide panel, clear marker dedup, ready for the second-station click.
 
-    The before-hook set lift.start_node_id/start_location.
+    The before-hook set lift.first_node_id/first_location.
     """
     logger.debug("[LIFECYCLE] ENTER: lift_placing - hiding panel")
     _enter_placement_mode(ctx)
@@ -184,11 +184,11 @@ def exit_lift_placing(ctx: PlannerContext) -> None:
 def exit_import_placing(ctx: PlannerContext) -> None:
     """Exit IMPORT_PLACING: clear the placed import-box center so no stale box survives.
 
-    Leaves the osm_import fetch flag alone — a confirmed import sets it just before this runs.
+    Leaves the osm_import_mode fetch flag alone — a confirmed import sets it just before this runs.
     """
     logger.debug("[LIFECYCLE] EXIT: import_placing - clearing placed import-box center")
-    ctx.deferred.osm_import_center_lon = None
-    ctx.deferred.osm_import_center_lat = None
+    ctx.pending.osm_import_center_lon = None
+    ctx.pending.osm_import_center_lat = None
 
 
 def exit_merge_placing(ctx: PlannerContext) -> None:

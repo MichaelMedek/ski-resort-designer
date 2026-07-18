@@ -27,12 +27,14 @@ from skiresort_planner.model.actions import UndoAction
 from skiresort_planner.model.message import (
     FileLoadErrorMessage,
     PlaceNotFoundMessage,
+    UploadBlockedMessage,
 )
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.model.undo_handlers import UNDO_HANDLERS
 from skiresort_planner.persistence import backup_store
 from skiresort_planner.ui.actions import undo_cancels_current_build, undo_last_action
 from skiresort_planner.ui.context import BuildMode, PlannerContext
+from skiresort_planner.ui.dialogs import ConfirmDialog
 from skiresort_planner.ui.infra import bump_camera_epoch, reload_map, trigger_rerun
 from skiresort_planner.ui.mode_registry import BUILD_STATES, OPERATIONS, BuilderOperation, OperationGroup
 from skiresort_planner.ui.state_machine import PlannerStateMachine
@@ -69,20 +71,22 @@ def _request_pending_undo() -> None:
     st.session_state._pending_undo = True
 
 
-@st.dialog("Confirm Undo")
-def _confirm_undo_dialog(graph: ResortGraph) -> None:
-    """Show confirmation dialog before undoing an action."""
-    st.write("**Action to undo:**")
-    st.write(_describe_next_undo(graph=graph))
+class _UndoDialog(ConfirmDialog):
+    """Confirm undoing the next action on the stack."""
 
-    col_yes, col_no = st.columns(2)
-    with col_yes:
-        if st.button("↩️ Yes, Undo", type="primary", use_container_width=True):
-            _request_pending_undo()
-            trigger_rerun()
-    with col_no:
-        if st.button("✖️ Cancel", use_container_width=True):
-            trigger_rerun()
+    def __init__(self, graph: ResortGraph) -> None:
+        self.graph = graph
+
+    @property
+    def title(self) -> str:
+        return "↩️ Confirm Undo"
+
+    def _body(self) -> None:
+        st.write("**Undoing will:**")
+        st.write(_describe_next_undo(graph=self.graph))
+
+    def _on_confirm(self) -> None:
+        _request_pending_undo()
 
 
 def _perform_reset_resort() -> None:
@@ -100,23 +104,23 @@ def _perform_reset_resort() -> None:
         st.session_state.pop(key, None)
 
 
-@st.dialog("🗑️ Reset to Empty")
-def _confirm_reset_resort_dialog() -> None:
+class _ResetResortDialog(ConfirmDialog):
     """Confirm resetting to a fresh empty resort.
 
     Deletes the current resort's backup and starts a brand-new empty one.
     Needed because the bare link always reloads the biggest existing backup,
     so an empty start must be requested explicitly.
     """
-    st.warning("This clears the current resort and starts empty. The current backup is deleted. Cannot be undone.")
-    col_yes, col_no = st.columns(2)
-    with col_yes:
-        if st.button("🆕 Yes, Start Empty", type="primary", use_container_width=True):
-            _perform_reset_resort()
-            trigger_rerun()
-    with col_no:
-        if st.button("✖️ Cancel", use_container_width=True):
-            trigger_rerun()
+
+    @property
+    def title(self) -> str:
+        return "🗑️ Reset to Empty"
+
+    def _body(self) -> None:
+        st.write("This clears the current resort and starts empty. The current backup is deleted. Cannot be undone.")
+
+    def _on_confirm(self) -> None:
+        _perform_reset_resort()
 
 
 class SidebarRenderer:
@@ -165,7 +169,7 @@ class SidebarRenderer:
         if BuildMode.is_lift(mode):
             return f"Select, then click on map to start placing a {label}"
         if BuildMode.is_import(mode):
-            return "Select, then click the map to place an Open Street Map import area."
+            return "Select, then click the map to place an OpenStreetMap import area."
         if BuildMode.is_merge(mode):
             return "Select, then click node markers to merge them into one."
         raise ValueError(f"Button {mode} has no help text (is_disabled={is_disabled})")
@@ -259,7 +263,7 @@ class SidebarRenderer:
                 _request_pending_undo()
                 trigger_rerun()
             else:
-                _confirm_undo_dialog(graph=self.graph)
+                _UndoDialog(graph=self.graph).show()
 
     def _render_reset_view_button(self) -> None:
         """Render the reset-view button (recenters camera to defaults, cleans orphan nodes)."""
@@ -364,23 +368,26 @@ class SidebarRenderer:
             # Header with counts
             st.markdown(f"**{total_slopes} Slopes • {total_lifts} Lifts • {total_roads} Roads**")
 
+            # Disconnected-terrain badge — surfaced here so it's seen without clicking each entity.
+            disconnected = stats["disconnected_count"]
+            if disconnected > 0:
+                st.markdown(f"⚠️ {disconnected} disconnected from core area")
+
             # Elevation range across all nodes
             elev_range = self.graph.get_elevation_range()
             if elev_range is not None:
                 min_elev, max_elev = elev_range
                 st.markdown(f"⛰️ Elevation: {min_elev:.0f}m – {max_elev:.0f}m")
+
             st.divider()
 
             # === SLOPES SECTION ===
             st.markdown("**⛷️ Slopes**")
             if total_slopes > 0:
-                slope_vertical = sum(
-                    slope.get_total_drop(segments=self.graph.segments) for slope in self.graph.slopes.values()
+                st.markdown(
+                    f"↓ {stats['total_slope_drop_m'] / 1000:.3f}km **drop** • "
+                    f"{stats['total_slope_length_m'] / 1000:.3f}km **length**"
                 )
-                slope_length = sum(
-                    slope.get_total_length(segments=self.graph.segments) for slope in self.graph.slopes.values()
-                )
-                st.markdown(f"↓ {slope_vertical / 1000:.3f}km drop • {slope_length / 1000:.3f}km length")
 
                 # Difficulty breakdown (km) — loop the single-source difficulty list.
                 difficulty_lengths: dict[str, float] = {d: 0.0 for d in SlopeConfig.DIFFICULTIES}
@@ -436,84 +443,65 @@ class SidebarRenderer:
         """Render save/load resort functionality."""
         with st.expander("💾 Resort Data", expanded=False):
             stats = self.graph.get_stats()
-            can_save = stats["total_slopes"] > 0 or stats["total_lifts"] > 0 or stats["total_roads"] > 0
+            has_content = stats["total_slopes"] > 0 or stats["total_lifts"] > 0 or stats["total_roads"] > 0
 
             # Load from File
             uploaded_file = st.file_uploader(
                 "📂 Load from File",
                 type=["json"],
-                help="Load a previously saved resort design",
+                help="Load a previously saved resort design (only into an empty resort)",
                 label_visibility="collapsed",
                 key=f"resort_uploader_{st.session_state.get('_upload_counter', 0)}",
             )
 
             if uploaded_file is not None:
-                try:
-                    data = json.load(uploaded_file)
-                    loaded_graph = ResortGraph.from_dict(data=data)
-                    st.session_state.graph = loaded_graph
-
-                    logger.info(f"Loaded resort from file: {uploaded_file.name}")
+                if has_content:
+                    # Resort still has content — refuse to overwrite it silently.
+                    UploadBlockedMessage().display()
                     st.session_state._upload_counter = st.session_state.get("_upload_counter", 0) + 1
-                    # Persist as the session's working backup so an F5 restores it
-                    resort_id = st.session_state.get("resort_id")
-                    if resort_id:
-                        backup_store.save(graph=loaded_graph, resort_id=resort_id)
-                        st.session_state._saved_token = loaded_graph.change_token()
-                    # Frame the loaded resort; empty graph → bare remount.
-                    center = loaded_graph.get_center()
-                    if center is not None:
-                        logger.info(f"Centered map on mean: ({center[1]:.5f}, {center[0]:.5f})")
-                        reload_map(center=center, zoom=MapConfig.DEFAULT_ZOOM)
-                    else:
-                        bump_camera_epoch()
-                        trigger_rerun()
-                except Exception as e:
-                    FileLoadErrorMessage(error=str(e)).display()
-                    logger.error(f"Failed to load resort file: {e}")
+                else:
+                    try:
+                        data = json.load(uploaded_file)
+                        loaded_graph = ResortGraph.from_dict(data=data)
+                        st.session_state.graph = loaded_graph
 
-            # Save to File
-            if can_save:
-                resort_json = json.dumps(self.graph.to_dict(), indent=2)
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                json_filename = f"alpin_resort_{timestamp}.json"
-                st.download_button(
-                    "💾 Save to File",
-                    data=resort_json,
-                    file_name=json_filename,
-                    mime="application/json",
-                    width="stretch",
-                    help="Download resort design as JSON file",
-                )
-            else:
-                st.button(
-                    "💾 Save to File",
-                    width="stretch",
-                    disabled=True,
-                    help="Build some slopes, lifts or roads first",
-                )
+                        logger.info(f"Loaded resort from file: {uploaded_file.name}")
+                        st.session_state._upload_counter = st.session_state.get("_upload_counter", 0) + 1
+                        # Persist as the session's working backup so an F5 restores it
+                        resort_id = st.session_state.get("resort_id")
+                        if resort_id:
+                            backup_store.save(graph=loaded_graph, resort_id=resort_id)
+                            st.session_state._saved_token = loaded_graph.change_token()
+                        # Frame the loaded resort; empty graph → bare remount.
+                        center = loaded_graph.get_center()
+                        if center is not None:
+                            logger.info(f"Centered map on mean: ({center[1]:.5f}, {center[0]:.5f})")
+                            reload_map(center=center, zoom=MapConfig.DEFAULT_ZOOM)
+                        else:
+                            bump_camera_epoch()
+                            trigger_rerun()
+                    except Exception as e:
+                        FileLoadErrorMessage(error=str(e)).display()
+                        logger.error(f"Failed to load resort file: {e}")
 
-            # Export GPX - always show, disable if no data
-            if can_save:
-                gpx = self.graph.to_gpx()
-                gpx_filename = f"alpin_resort_{datetime.now().strftime('%Y%m%d_%H%M%S')}.gpx"
-                st.download_button(
-                    "📥 Export GPX",
-                    gpx,
-                    gpx_filename,
-                    "application/gpx+xml",
-                    width="stretch",
-                    help="Export for GPS devices and mapping apps",
-                )
-            else:
-                st.button(
-                    "📥 Export GPX",
-                    width="stretch",
-                    disabled=True,
-                    help="Build some slopes, lifts or roads first",
-                )
-
-            st.divider()
+            # Save to File + Export GPX: same button, disabled while the resort is empty.
+            downloads = (
+                ("💾 Save to File", "json", "application/json", "Download resort design as JSON file"),
+                ("📥 Export GPX", "gpx", "application/gpx+xml", "Export for GPS devices and mapping apps"),
+            )
+            for label, ext, mime, help_text in downloads:
+                if has_content:
+                    payload = json.dumps(self.graph.to_dict(), indent=2) if ext == "json" else self.graph.to_gpx()
+                    st.download_button(
+                        label,
+                        data=payload,
+                        file_name=f"alpin_resort_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{ext}",
+                        mime=mime,
+                        width="stretch",
+                        help=help_text,
+                    )
+                else:
+                    st.button(label, width="stretch", disabled=True, help="Build some slopes, lifts or roads first")
 
             # Reset to a fresh empty resort. Needed because the bare link always
             # reloads the biggest existing backup, so empty must be requested.
@@ -521,7 +509,7 @@ class SidebarRenderer:
                 "🗑️ Reset to Empty",
                 width="stretch",
                 help="Clear the current resort and start a new empty one",
-                disabled=not can_save,
+                disabled=not has_content,
                 key="reset_resort_button",
             ):
-                _confirm_reset_resort_dialog()
+                _ResetResortDialog().show()

@@ -51,7 +51,7 @@ class TestLiftPlacementWorkflow:
         sm.start_lift(node_id="N1")
 
         assert sm.current_state_value == "lift_placing", "Should be in LiftPlacing"
-        assert ctx.lift.start_node_id == "N1", "Start node should be stored"
+        assert ctx.lift.first_node_id == "N1", "Start node should be stored"
 
         # === Phase 2: Complete lift ===
         lift = graph.add_lift(
@@ -104,8 +104,8 @@ class TestLiftPlacementWorkflow:
         sm.start_lift(node_id=None, location=loc)
 
         assert sm.current_state_value == "lift_placing"
-        assert ctx.lift.start_node_id is None, "no existing node when starting from terrain"
-        assert ctx.lift.start_location is loc, "terrain start stores the location for new-node creation"
+        assert ctx.lift.first_node_id is None, "no existing node when starting from terrain"
+        assert ctx.lift.first_location is loc, "terrain start stores the location for new-node creation"
 
 
 class TestSwitchLiftSelfLoop:

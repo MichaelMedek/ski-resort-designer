@@ -23,15 +23,15 @@ def _dirty_ctx() -> PlannerContext:
     ctx.build(SegmentKind.SLOPE).segments = ["S1"]
     ctx.build(SegmentKind.SLOPE).name = "Slope 3"
     ctx.build(SegmentKind.ROAD).segments = ["R1"]
-    ctx.lift.start_node_id = "N9"
-    ctx.lift.start_location = PathPoint(lon=0.0, lat=0.0, elevation=2000.0)
+    ctx.lift.first_node_id = "N9"
+    ctx.lift.first_location = PathPoint(lon=0.0, lat=0.0, elevation=2000.0)
     ctx.custom_connect.target_location = (0.0, 0.0, 2100.0)  # force_mode derives from this
     ctx.custom_connect.start_node = "N1"
     ctx.selection.set(lon=5.0, lat=6.0, elevation=2100.0)
     ctx.merge.node_ids = ["N3", "N4"]
     ctx.viewing.panel_visible = True
-    ctx.deferred.osm_import_center_lon = 10.0
-    ctx.deferred.osm_import_center_lat = 47.0
+    ctx.pending.osm_import_center_lon = 10.0
+    ctx.pending.osm_import_center_lat = 47.0
     return ctx
 
 
@@ -41,7 +41,7 @@ class TestEnterIdleReady:
         sl.enter_idle_ready(ctx)
         assert ctx.build(SegmentKind.SLOPE).segments == [], "building segments cleared"
         assert ctx.build(SegmentKind.ROAD).segments == [], "road segments cleared"
-        assert ctx.lift.start_node_id is None and ctx.lift.start_location is None, "lift placement cleared"
+        assert ctx.lift.first_node_id is None and ctx.lift.first_location is None, "lift placement cleared"
         assert ctx.custom_connect.force_mode is False, "custom-connect cleared"
         assert not ctx.selection.has_selection(), "selection coordinates cleared"
         assert ctx.viewing.panel_visible is False, "viewing panel hidden"
@@ -63,7 +63,7 @@ class TestEnterViewingStates:
         sl.enter_idle_viewing_slope(ctx)
         assert ctx.viewing.panel_visible is True, "single point of truth: enter guarantees panel visible"
         assert ctx.build(SegmentKind.SLOPE).segments == [], "stale building state cleared defensively"
-        assert ctx.lift.start_node_id is None
+        assert ctx.lift.first_node_id is None
 
     def test_enter_viewing_lift_shows_panel(self) -> None:
         ctx = _dirty_ctx()
@@ -123,7 +123,7 @@ class TestEnterBuildingStates:
         # the deferred pass regenerates proposals (first click, undo-back, cancel-custom-to-fan).
         ctx = PlannerContext()
         enter_fn(ctx)
-        assert kind in ctx.deferred.fan_generation, f"{enter_fn.__name__} must arm the {kind.value} fan"
+        assert kind in ctx.pending.fan_generation, f"{enter_fn.__name__} must arm the {kind.value} fan"
 
     def test_enter_lift_placing_hides_panel(self) -> None:
         ctx = _dirty_ctx()
@@ -135,9 +135,9 @@ class TestEnterSlopeCustomPath:
     def test_flags_deferred_custom_connect_generation(self) -> None:
         # The only job of enter_slope_custom_path is to trigger deferred proposal generation.
         ctx = PlannerContext()
-        assert ctx.deferred.custom_connect is False
+        assert ctx.pending.custom_connect is False
         sl.enter_slope_custom_path(ctx)
-        assert ctx.deferred.custom_connect is True, "entering custom-path flags deferred generation"
+        assert ctx.pending.custom_connect is True, "entering custom-path flags deferred generation"
 
 
 class TestEnterPlacingStatesPreserveTheirScratch:
@@ -147,8 +147,8 @@ class TestEnterPlacingStatesPreserveTheirScratch:
         ctx = _dirty_ctx()
         sl.enter_import_placing(ctx)
         assert ctx.viewing.panel_visible is False
-        assert ctx.deferred.osm_import_center_lon == 10.0, "enter must not clear the placed box center (self-loop)"
-        assert ctx.deferred.osm_import_center_lat == 47.0
+        assert ctx.pending.osm_import_center_lon == 10.0, "enter must not clear the placed box center (self-loop)"
+        assert ctx.pending.osm_import_center_lat == 47.0
 
     def test_enter_merge_placing_keeps_the_selection(self) -> None:
         # Self-loop on every node toggle; enter must NOT wipe the accumulating selection.
@@ -162,21 +162,25 @@ class TestExitHandlersCleanUpScratch:
     def test_exit_lift_placing_clears_lift_context(self) -> None:
         ctx = _dirty_ctx()
         sl.exit_lift_placing(ctx)
-        assert ctx.lift.start_node_id is None and ctx.lift.start_location is None, "lift scratch cleared on exit"
+        assert ctx.lift.first_node_id is None and ctx.lift.first_location is None, "lift scratch cleared on exit"
 
     def test_exit_import_placing_clears_placed_center(self) -> None:
         ctx = _dirty_ctx()
         sl.exit_import_placing(ctx)
-        assert ctx.deferred.osm_import_center_lon is None, "placed center cleared on exit"
-        assert ctx.deferred.osm_import_center_lat is None
+        assert ctx.pending.osm_import_center_lon is None, "placed center cleared on exit"
+        assert ctx.pending.osm_import_center_lat is None
 
     def test_exit_import_placing_leaves_fetch_flag_alone(self) -> None:
-        # A confirmed import sets osm_import just before exit; exit must NOT clear it (the deferred
+        # A confirmed import sets osm_import_mode just before exit; exit must NOT clear it (the deferred
         # handler consumes it). Only the center coordinates are cleared here.
+        from skiresort_planner.constants import OSMImportMode
+
         ctx = _dirty_ctx()
-        ctx.deferred.osm_import = True
+        ctx.pending.osm_import_mode = OSMImportMode.LIFTS_AND_SLOPES
         sl.exit_import_placing(ctx)
-        assert ctx.deferred.osm_import is True, "exit_import_placing must not consume the pending fetch flag"
+        assert ctx.pending.osm_import_mode is OSMImportMode.LIFTS_AND_SLOPES, (
+            "exit_import_placing must not consume the pending fetch mode"
+        )
 
     def test_exit_merge_placing_clears_selection(self) -> None:
         ctx = _dirty_ctx()

@@ -8,7 +8,7 @@ mocking 10+ places where st.rerun might be called directly.
 
 IMPORTANT: Only infrastructure belongs here (rerun, map version).
 - Session state object access (sm, ctx, graph) stays in actions.py
-- UI presentation (st.toast progress cues) stays in app.py around process_*_deferred calls
+- UI presentation (loading messages, progress bars, toasts) stays in app.py's pending-action helpers
 """
 
 import logging

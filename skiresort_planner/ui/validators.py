@@ -13,7 +13,6 @@ Design Principles:
 from skiresort_planner.constants import ConnectionConfig, PathConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.model.message import (
-    LiftMustGoUphillMessage,
     SameNodeLiftMessage,
     TargetNotDownhillMessage,
     TargetTooFarMessage,
@@ -21,33 +20,21 @@ from skiresort_planner.model.message import (
 )
 
 
-def validate_lift_goes_uphill(
-    start_elevation: float,
-    end_elevation: float,
+def validate_lift_stations_differ(
+    first_lon: float,
+    first_lat: float,
+    second_lon: float,
+    second_lat: float,
 ) -> ToastMessage | None:
-    """Validate that lift end station is higher than start station.
+    """Validate that the two lift stations are distinct points.
+
+    Orientation (which is bottom/top) is decided by elevation at completion, so the only
+    geometric failure left is a lift from a point to itself.
 
     Returns:
-        None if valid, LiftMustGoUphillMessage if end is not higher.
+        None if the two coordinates differ, SameNodeLiftMessage if they coincide.
     """
-    if end_elevation <= start_elevation:
-        return LiftMustGoUphillMessage(
-            start_elevation_m=start_elevation,
-            end_elevation_m=end_elevation,
-        )
-    return None
-
-
-def validate_lift_different_nodes(
-    start_node_id: str,
-    end_node_id: str,
-) -> ToastMessage | None:
-    """Validate that lift start and end are different nodes.
-
-    Returns:
-        None if valid, SameNodeLiftMessage if same node.
-    """
-    if start_node_id == end_node_id:
+    if first_lon == second_lon and first_lat == second_lat:
         return SameNodeLiftMessage()
     return None
 

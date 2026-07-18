@@ -24,10 +24,15 @@ from skiresort_planner.model.actions import (
     FinishSlopeAction,
 )
 from skiresort_planner.model.node import Node
+from skiresort_planner.model.node_editing import NodeDeletability, deletability_reason
 from skiresort_planner.model.path_point import PathPoint
-from skiresort_planner.model.path_segment import SegmentKind
+from skiresort_planner.model.path_segment import PathSegment, SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
-from skiresort_planner.model.resort_graph import ResortGraph
+from skiresort_planner.model.resort_graph import (
+    ResortGraph,
+    _chain_node_sequence,
+)
+from skiresort_planner.model.slope import Slope
 from tests_workflow.conftest import MockDEMService
 
 M = MapConfig.METERS_PER_DEGREE_EQUATOR
@@ -564,6 +569,16 @@ class TestStatsWithRoads:
         assert stats["total_roads"] == 1
         assert stats["total_road_length_m"] > 0
 
+    def test_road_does_not_pollute_slope_totals(self, empty_graph, path_points_blue) -> None:
+        """Regression: slope drop/length/longest-run are slopes-only — a road must not inflate them."""
+        _commit_road(empty_graph, path_points_blue)
+        stats = empty_graph.get_stats()
+        assert stats["total_slopes"] == 0
+        assert stats["total_slope_drop_m"] == 0
+        assert stats["total_slope_length_m"] == 0
+        assert stats["longest_run_m"] == 0
+        assert stats["total_road_length_m"] > 0, "the road length still lands in the road field"
+
 
 class TestNodeSharingDeletes:
     """Deleting one entity must NOT orphan a node another entity still uses (real-world: a
@@ -825,16 +840,62 @@ class TestImportOSMBatch:
         top = PathPoint(lon=0.05, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.05, lat=0.0))
         return (bottom, top, "chairlift", "Gipfelbahn")
 
+    def _result(self, dem, *, piste_count=0, lifts=()):
+        """An ImportResult wrapping `piste_count` single-segment slope chains + the given lifts."""
+        from skiresort_planner.generators.osm_importer import ImportResult
+
+        chains = [([pts], name) for pts, name in self._pistes(dem, piste_count)]
+        return ImportResult(lifts=list(lifts), slope_chains=chains)
+
+    def test_same_named_chains_within_one_import_all_land(self, empty_graph, mock_dem_blue_slope) -> None:
+        """Regression: one OSM piste splits into MANY chains sharing its name. Dedup must compare
+        against the pre-batch snapshot, not the growing graph — else the first chain evicts its
+        siblings and almost all slopes vanish (the Ischgl 86→25 collapse).
+        """
+        from skiresort_planner.generators.osm_importer import ImportResult
+
+        graph, dem = empty_graph, mock_dem_blue_slope
+        # Four DISTINCT, non-overlapping chains that all carry the SAME name "1".
+        chains: list[tuple[list[list[PathPoint]], str | None]] = []
+        for i in range(4):
+            lon = 0.01 * i
+            pts = [
+                PathPoint(lon=lon, lat=0.0, elevation=dem.get_elevation_or_raise(lon=lon, lat=0.0)),
+                PathPoint(lon=lon, lat=-500 / M, elevation=dem.get_elevation_or_raise(lon=lon, lat=-500 / M)),
+            ]
+            chains.append(([pts], "1"))
+        slopes, _lifts, duplicates = graph.import_osm(ImportResult(slope_chains=chains), dem=dem)
+        assert (slopes, duplicates) == (4, 0), "every same-named chain of one import must land"
+        assert len(graph.slopes) == 4
+
+    def test_lift_not_deduped_by_a_nearby_slope(self, empty_graph, mock_dem_blue_slope) -> None:
+        """Regression: dedup is kind-scoped. A slope ending within OSM_DEDUP_TOL_M of a lift base must
+        NOT mark the lift a duplicate (the missing Sassgalunbahn) — lifts dedup only against lifts.
+        """
+        from skiresort_planner.generators.osm_importer import ImportResult
+
+        graph, dem = empty_graph, mock_dem_blue_slope
+        base = PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
+        top = PathPoint(lon=0.0, lat=-800 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-800 / M))
+        # A slope whose top endpoint coincides with the lift base (they legitimately share a hub).
+        slope_pts = [
+            base,
+            PathPoint(lon=0.0, lat=-500 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / M)),
+        ]
+        result = ImportResult(lifts=[(base, top, "chairlift", "Sassgalunbahn")], slope_chains=[([slope_pts], "1")])
+        slopes, lifts, duplicates = graph.import_osm(result, dem=dem)
+        assert (slopes, lifts, duplicates) == (1, 1, 0), "the lift imports despite a slope at its base"
+
     def test_import_adds_entities_as_single_undo(self, empty_graph, mock_dem_blue_slope) -> None:
         graph, dem = empty_graph, mock_dem_blue_slope
-        slopes, lifts, duplicates = graph.import_osm(pistes=self._pistes(dem, 3), lifts=[self._lift(dem)], dem=dem)
+        slopes, lifts, duplicates = graph.import_osm(self._result(dem, piste_count=3, lifts=[self._lift(dem)]), dem=dem)
         assert (slopes, lifts, duplicates) == (3, 1, 0)
         assert len(graph.slopes) == 3 and len(graph.lifts) == 1
         assert len(graph.undo_stack) == 1, "the whole import is ONE undo entry"
 
     def test_one_undo_reverts_the_whole_import(self, empty_graph, mock_dem_blue_slope) -> None:
         graph, dem = empty_graph, mock_dem_blue_slope
-        graph.import_osm(pistes=self._pistes(dem, 3), lifts=[self._lift(dem)], dem=dem)
+        graph.import_osm(self._result(dem, piste_count=3, lifts=[self._lift(dem)]), dem=dem)
 
         graph.undo_last()
 
@@ -849,7 +910,7 @@ class TestImportOSMBatch:
         pre_slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
         nodes_before = set(graph.nodes)
 
-        graph.import_osm(pistes=self._pistes(dem, 2), lifts=[], dem=dem)
+        graph.import_osm(self._result(dem, piste_count=2), dem=dem)
         graph.undo_last()  # undo ONLY the import
 
         assert pre_slope.id in graph.slopes, "the pre-existing slope survives the import-undo"
@@ -858,9 +919,9 @@ class TestImportOSMBatch:
     def test_reimport_same_area_adds_nothing(self, empty_graph, mock_dem_blue_slope) -> None:
         """Re-importing identical pistes+lifts is idempotent: the second import adds zero."""
         graph, dem = empty_graph, mock_dem_blue_slope
-        graph.import_osm(pistes=self._pistes(dem, 3), lifts=[self._lift(dem)], dem=dem)
+        graph.import_osm(self._result(dem, piste_count=3, lifts=[self._lift(dem)]), dem=dem)
 
-        slopes, lifts, duplicates = graph.import_osm(pistes=self._pistes(dem, 3), lifts=[self._lift(dem)], dem=dem)
+        slopes, lifts, duplicates = graph.import_osm(self._result(dem, piste_count=3, lifts=[self._lift(dem)]), dem=dem)
 
         assert (slopes, lifts, duplicates) == (0, 0, 4), "all 3 pistes + 1 lift recognised as already imported"
         assert len(graph.slopes) == 3 and len(graph.lifts) == 1, "no duplicates created"
@@ -868,17 +929,17 @@ class TestImportOSMBatch:
     def test_reimport_adds_only_new_entities(self, empty_graph, mock_dem_blue_slope) -> None:
         """A second import over an overlapping area adds only the genuinely-new runs."""
         graph, dem = empty_graph, mock_dem_blue_slope
-        graph.import_osm(pistes=self._pistes(dem, 2), lifts=[], dem=dem)
+        graph.import_osm(self._result(dem, piste_count=2), dem=dem)
 
         # 3 pistes: the first 2 overlap the previous import, the 3rd is new.
-        slopes, lifts, duplicates = graph.import_osm(pistes=self._pistes(dem, 3), lifts=[], dem=dem)
+        slopes, lifts, duplicates = graph.import_osm(self._result(dem, piste_count=3), dem=dem)
 
         assert (slopes, duplicates) == (1, 2)
         assert len(graph.slopes) == 3
 
     def test_imported_entities_expose_endpoints(self, empty_graph, mock_dem_blue_slope) -> None:
         graph, dem = empty_graph, mock_dem_blue_slope
-        graph.import_osm(pistes=self._pistes(dem, 1), lifts=[self._lift(dem)], dem=dem)
+        graph.import_osm(self._result(dem, piste_count=1, lifts=[self._lift(dem)]), dem=dem)
         # endpoints() returns the two node locations, computed on demand (never stored).
         assert all(len(s.endpoints(nodes=graph.nodes)) == 2 for s in graph.slopes.values())
         assert all(len(lift.endpoints(nodes=graph.nodes)) == 2 for lift in graph.lifts.values())
@@ -886,9 +947,37 @@ class TestImportOSMBatch:
     def test_imported_slope_and_lift_take_osm_name(self, empty_graph, mock_dem_blue_slope) -> None:
         graph, dem = empty_graph, mock_dem_blue_slope
         # piste index 1 is named "Run 1"; the lift is named "Gipfelbahn".
-        graph.import_osm(pistes=self._pistes(dem, 2), lifts=[self._lift(dem)], dem=dem)
+        graph.import_osm(self._result(dem, piste_count=2, lifts=[self._lift(dem)]), dem=dem)
         assert any(s.name == "Run 1" for s in graph.slopes.values()), "OSM piste name kept verbatim"
         assert any(lift.name == "Gipfelbahn" for lift in graph.lifts.values()), "OSM lift name kept verbatim"
+
+    def test_imported_entities_tagged_with_source(self, empty_graph, mock_dem_blue_slope) -> None:
+        """Every imported slope, its segments, and each lift carry source='OSM' (hidden provenance)."""
+        from skiresort_planner.constants import EntitySource
+
+        graph, dem = empty_graph, mock_dem_blue_slope
+        graph.import_osm(self._result(dem, piste_count=2, lifts=[self._lift(dem)]), dem=dem)
+        assert all(s.source == EntitySource.OSM for s in graph.slopes.values())
+        assert all(seg.source == EntitySource.OSM for seg in graph.segments.values())
+        assert all(lift.source == EntitySource.OSM for lift in graph.lifts.values())
+
+    def test_same_name_source_blocks_reimport_even_if_moved(self, empty_graph, mock_dem_blue_slope) -> None:
+        """A named OSM entity already imported is skipped on re-import even if its geometry shifted
+        (the connected-graph build is not bit-exact) — dedup keys on same source + non-empty name.
+        """
+        graph, dem = empty_graph, mock_dem_blue_slope
+        graph.import_osm(self._result(dem, piste_count=2, lifts=[self._lift(dem)]), dem=dem)  # names Run 1, Gipfelbahn
+
+        # Re-import the named run far away: endpoint match fails, but the source+name match holds.
+        far = [
+            PathPoint(lon=0.5, lat=0.5, elevation=dem.get_elevation_or_raise(lon=0.5, lat=0.5)),
+            PathPoint(lon=0.5, lat=0.4, elevation=dem.get_elevation_or_raise(lon=0.5, lat=0.4)),
+        ]
+        from skiresort_planner.generators.osm_importer import ImportResult
+
+        result = ImportResult(slope_chains=[([far], "Run 1")])
+        slopes, _lifts, duplicates = graph.import_osm(result, dem=dem)
+        assert (slopes, duplicates) == (0, 1), "same source+name is recognised, not re-added"
 
     def test_hand_built_slope_blocks_matching_import(self, empty_graph, mock_dem_blue_slope) -> None:
         """Dedup is source-agnostic: a run the user built by hand skips the matching OSM import."""
@@ -899,16 +988,24 @@ class TestImportOSMBatch:
         graph.finish_slope(segment_ids=list(graph.segments.keys()))
         assert len(graph.slopes) == 1
 
-        slopes, _lifts, duplicates = graph.import_osm(pistes=[(points, name)], lifts=[], dem=dem)
+        from skiresort_planner.generators.osm_importer import ImportResult
+
+        slopes, _lifts, duplicates = graph.import_osm(ImportResult(slope_chains=[([points], name)]), dem=dem)
 
         assert (slopes, duplicates) == (0, 1), "the hand-built run is recognised, not duplicated"
         assert len(graph.slopes) == 1
 
-    def test_has_endpoint_duplicate_false_for_absent_run(self, empty_graph, mock_dem_blue_slope) -> None:
+    def test_absent_run_is_not_deduped(self, empty_graph, mock_dem_blue_slope) -> None:
+        """A run at endpoints no existing entity holds imports normally (dedup false-negative guard)."""
+        from skiresort_planner.generators.osm_importer import ImportResult
+
         dem = mock_dem_blue_slope
-        a = PathPoint(lon=0.4, lat=0.4, elevation=dem.get_elevation_or_raise(lon=0.4, lat=0.4))
-        b = PathPoint(lon=0.4, lat=0.3, elevation=dem.get_elevation_or_raise(lon=0.4, lat=0.3))
-        assert empty_graph.has_endpoint_duplicate(a=a, b=b) is False
+        pts = [
+            PathPoint(lon=0.4, lat=0.4, elevation=dem.get_elevation_or_raise(lon=0.4, lat=0.4)),
+            PathPoint(lon=0.4, lat=0.3, elevation=dem.get_elevation_or_raise(lon=0.4, lat=0.3)),
+        ]
+        slopes, _lifts, duplicates = empty_graph.import_osm(ImportResult(slope_chains=[([pts], "New")]), dem=dem)
+        assert (slopes, duplicates) == (1, 0)
 
     def test_reimport_is_idempotent_with_snapped_shared_junctions(self, empty_graph, mock_dem_blue_slope) -> None:
         """Regression: real resorts share junctions, so import SNAPS endpoints onto common nodes.
@@ -917,6 +1014,8 @@ class TestImportOSMBatch:
         key differently from their stored (snapped) form and are wrongly re-added. Build two pistes
         that meet at a shared top within snap range, import, then re-import the SAME two → 0 added.
         """
+        from skiresort_planner.generators.osm_importer import ImportResult
+
         graph, dem = empty_graph, mock_dem_blue_slope
         m = 111320.0
 
@@ -926,12 +1025,12 @@ class TestImportOSMBatch:
         # Two runs whose TOP endpoints are ~5 m apart (< STEP_SIZE_M=30 m) → they snap to one node.
         shared_a = [pt(0.0, 0.0), pt(0.0, -600 / m)]
         shared_b = [pt(5 / m, 0.0), pt(0.02, -600 / m)]  # top ~5 m east of run A's top
-        pistes = [(shared_a, "A"), (shared_b, "B")]
+        result = ImportResult(slope_chains=[([shared_a], "A"), ([shared_b], "B")])
 
-        r1 = graph.import_osm(pistes=pistes, lifts=[], dem=dem)
+        r1 = graph.import_osm(result, dem=dem)
         assert r1.slopes_added == 2 and r1.duplicates_skipped == 0
 
-        r2 = graph.import_osm(pistes=pistes, lifts=[], dem=dem)
+        r2 = graph.import_osm(result, dem=dem)
         assert (r2.slopes_added, r2.duplicates_skipped) == (0, 2), "snapped re-import must be idempotent"
         assert len(graph.slopes) == 2, "no duplicate slopes created"
 
@@ -1254,9 +1353,11 @@ class TestMergeNodes:
         assert (restored_slope.start_node_id, restored_slope.end_node_id) == slope_boundary_before
 
     def test_merge_after_slope_does_not_break_import_duplicate_check(self, empty_graph, mock_dem_blue_slope) -> None:
-        """End-to-end regression for the crash: after merging a slope boundary node, has_endpoint_duplicate
-        (called by import_osm) must not raise on the slope's now-updated endpoints.
+        """End-to-end regression for the crash: after merging a slope boundary node, the import dedup
+        (import_osm matching each existing slope's endpoints) must not raise on the updated endpoints.
         """
+        from skiresort_planner.generators.osm_importer import ImportResult
+
         dem = mock_dem_blue_slope
         graph = empty_graph
         seg_ids = _commit_L_slope(graph, dem)
@@ -1267,11 +1368,14 @@ class TestMergeNodes:
         self._node(graph, dem, "X", 5 / self.M, 5 / self.M)
         graph.merge_nodes(node_ids=[top_node_id, "X"], dem=dem)
 
-        # Would raise ValueError("Start or end node not found ...") before the fix.
-        result = graph.has_endpoint_duplicate(
-            a=PathPoint(lon=0.5, lat=0.5, elevation=0.0), b=PathPoint(lon=0.6, lat=0.6, elevation=0.0)
-        )
-        assert result is False
+        # Would raise ValueError("Start or end node not found ...") before the fix — importing a run
+        # at unrelated endpoints must dedup-check the merged slope without crashing, and land.
+        far = [
+            PathPoint(lon=0.5, lat=0.5, elevation=dem.get_elevation_or_raise(lon=0.5, lat=0.5)),
+            PathPoint(lon=0.6, lat=0.6, elevation=dem.get_elevation_or_raise(lon=0.6, lat=0.6)),
+        ]
+        slopes, _lifts, duplicates = graph.import_osm(ImportResult(slope_chains=[([far], "New")]), dem=dem)
+        assert (slopes, duplicates) == (1, 0)
 
     # -- collapse to zero length deletes the entity (both endpoints merged onto the survivor) ----
 
@@ -1358,20 +1462,443 @@ class TestMergeNodes:
         assert (restored.start_node_id, restored.end_node_id) == boundary_before, "boundary ids restored"
         assert restored.start_node_id != restored.end_node_id, "endpoints distinct again"
 
-    def test_merge_partial_collapse_keeps_multisegment_path(self, empty_graph, mock_dem_blue_slope) -> None:
-        """Merging both endpoints of ONE interior segment of a two-segment slope leaves that segment
-        zero-length but the PATH boundary distinct — the path survives (restitch is 0-length-safe).
+    def test_undo_collapsing_merge_after_survivor_swept_by_cleanup(self, empty_graph, mock_dem_blue_slope) -> None:
+        """Regression: a merge that collapses the survivor's only slope leaves the survivor node
+        isolated; a later cleanup_isolated_nodes removes it entirely. Undo must still restore the
+        merge (survivor recreated wholesale), not crash with KeyError on the missing survivor.
+        """
+        dem = mock_dem_blue_slope
+        graph = empty_graph
+        graph.commit_paths(
+            paths=[ProposedPathSegment(points=_leg(0.0, 0.0, 0.0, -20.0, 6, dem), target_difficulty="blue")]
+        )
+        slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        survivor = slope.start_node_id
+
+        graph.merge_nodes(node_ids=[slope.start_node_id, slope.end_node_id], dem=dem)
+        assert graph.cleanup_isolated_nodes() >= 1, "the collapsed merge left the survivor isolated"
+        assert survivor not in graph.nodes, "cleanup removed the isolated survivor"
+
+        graph.undo_last()  # must not KeyError on the swept survivor
+
+        assert survivor in graph.nodes, "undo recreates the swept survivor node"
+        assert slope.id in graph.slopes, "undo restores the collapsed slope"
+
+    def test_merge_partial_collapse_splices_out_the_zero_length_segment(self, empty_graph, mock_dem_blue_slope) -> None:
+        """Merging both endpoints of ONE segment of a two-segment slope collapses that segment to
+        zero length; it is SPLICED OUT of the chain (no zero-length curl) and the slope survives with
+        the remaining segment. Undo restores the original two-segment chain verbatim.
         """
         dem = mock_dem_blue_slope
         graph = empty_graph
         seg_ids = _commit_L_slope(graph, dem)
         slope = graph.finish_slope(segment_ids=seg_ids)
         first_seg = graph.segments[slope.segment_ids[0]]
+        original_chain = list(slope.segment_ids)
         # Merge the first segment's own endpoints (path start + interior junction).
         graph.merge_nodes(node_ids=[first_seg.start_node_id, first_seg.end_node_id], dem=dem)
 
         assert slope.id in graph.slopes, "a partially-collapsed multi-segment path is not deleted"
+        assert first_seg.id not in graph.slopes[slope.id].segment_ids, "the collapsed segment is spliced out"
+        assert len(graph.slopes[slope.id].segment_ids) == len(original_chain) - 1, "one segment removed"
+        assert all(
+            graph.segments[sid].start_node_id != graph.segments[sid].end_node_id
+            for sid in graph.slopes[slope.id].segment_ids
+        ), "no zero-length segment remains in the chain"
         assert slope.start_node_id != slope.end_node_id, "path boundary stays distinct"
+
+        graph.undo_last()
+        assert graph.slopes[slope.id].segment_ids == original_chain, "undo restores the original chain"
+
+
+# =============================================================================
+# Node delete / insert (merge-mode editing tools)
+# =============================================================================
+
+
+def _commit_straight_slope(graph, dem, n_segments: int):
+    """Commit n straight due-south descending segments into one finished slope; return the slope.
+
+    Each segment is its own commit so nodes materialise at every junction (interior nodes exist).
+    Segments are ~480m so junctions sit well beyond the node-snap distance.
+    """
+    lat = 0.0
+    for _ in range(n_segments):
+        leg = _leg(0.0, lat, 0.0, -20.0, 25, dem)  # ~480m south per segment
+        graph.commit_paths(paths=[ProposedPathSegment(points=leg, target_difficulty="blue")])
+        lat = leg[-1].lat
+    return graph.finish_slope(segment_ids=list(graph.segments.keys()))
+
+
+class TestNodeDeletability:
+    """node_deletability classifies why a node can/can't be deleted (single source for UI + op)."""
+
+    def test_interior_node_is_deletable_interior(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=3)
+        interior = empty_graph.segments[slope.segment_ids[0]].end_node_id  # junction of seg0/seg1
+        assert empty_graph.node_deletability(interior) == NodeDeletability.DELETABLE_INTERIOR
+
+    def test_clean_endpoint_of_multisegment_path_is_deletable_end(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=3)
+        assert empty_graph.node_deletability(slope.start_node_id) == NodeDeletability.DELETABLE_END
+        assert empty_graph.node_deletability(slope.end_node_id) == NodeDeletability.DELETABLE_END
+
+    def test_endpoint_of_single_segment_path_is_last_segment(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=1)
+        assert empty_graph.node_deletability(slope.start_node_id) == NodeDeletability.LAST_SEGMENT
+
+    def test_lift_station_is_never_deletable(self, empty_graph, mock_dem_blue_slope) -> None:
+        dem = mock_dem_blue_slope
+        graph = empty_graph
+        graph.nodes["A"] = Node(id="A", location=PathPoint(lon=0.0, lat=0.0, elevation=2000.0))
+        graph.nodes["T"] = Node(id="T", location=PathPoint(lon=0.0, lat=-1000 / M, elevation=2400.0))
+        graph.add_lift(start_node_id="A", end_node_id="T", lift_type="chairlift", dem=dem)
+        assert graph.node_deletability("A") == NodeDeletability.IS_LIFT_STATION
+
+    def test_branch_node_shared_by_two_paths_is_path_endpoint(self, empty_graph, mock_dem_blue_slope) -> None:
+        """A node that is the boundary of one slope AND interior/boundary of another is a junction —
+        not deletable; the user must delete a path first.
+        """
+        dem = mock_dem_blue_slope
+        graph = empty_graph
+        # Slope 1: due south to a junction node.
+        leg1 = _leg(0.0, 0.0, 0.0, -20.0, 25, dem)
+        graph.commit_paths(paths=[ProposedPathSegment(points=leg1, target_difficulty="blue")])
+        slope1 = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        junction = slope1.end_node_id
+        # Slope 2 starts at that same junction and heads south-east (reuses the node via snap).
+        j = graph.nodes[junction]
+        leg2 = _leg(j.lon, j.lat, 20.0, -20.0, 25, dem)
+        seg_before = set(graph.segments)
+        graph.commit_paths(paths=[ProposedPathSegment(points=leg2, target_difficulty="blue")])
+        new_seg = (set(graph.segments) - seg_before).pop()
+        graph.finish_slope(segment_ids=[new_seg])
+        assert graph.node_deletability(junction) == NodeDeletability.IS_PATH_ENDPOINT
+
+    def test_isolated_node_is_not_interior(self, empty_graph, mock_dem_blue_slope) -> None:
+        """A node touching no finished-path segment (here: an unfinished, committed-but-not-grouped
+        segment) is the NOT_INTERIOR fallthrough — not deletable, and delete_nodes refuses it.
+        """
+        graph = empty_graph
+        # Commit a segment WITHOUT finishing it → its endpoint nodes belong to no slope/road.
+        graph.commit_paths(
+            paths=[
+                ProposedPathSegment(
+                    points=_leg(0.0, 0.0, 0.0, -20.0, 25, mock_dem_blue_slope), target_difficulty="blue"
+                )
+            ]
+        )
+        interior_of_unfinished = graph.segments[list(graph.segments)[0]].start_node_id
+        assert graph.node_deletability(interior_of_unfinished) == NodeDeletability.NOT_INTERIOR
+        assert graph.delete_nodes_rejection([interior_of_unfinished]) == deletability_reason(
+            node_id=interior_of_unfinished, reason=NodeDeletability.NOT_INTERIOR
+        )
+
+    @pytest.mark.parametrize(
+        "reason",
+        [
+            NodeDeletability.IS_PATH_ENDPOINT,
+            NodeDeletability.IS_LIFT_STATION,
+            NodeDeletability.LAST_SEGMENT,
+            NodeDeletability.NOT_INTERIOR,
+        ],
+    )
+    def test_every_non_deletable_reason_has_a_sentence(self, reason) -> None:
+        """Guard against enum drift: every non-deletable NodeDeletability must map to a sentence, so a
+        new reason without one is caught here rather than KeyError-ing in delete_nodes_rejection.
+        """
+        sentence = deletability_reason(node_id="N9", reason=reason)
+        assert sentence.startswith("N9 ") and len(sentence) > len("N9 "), f"empty sentence for {reason}"
+
+
+class TestDeleteNodes:
+    """delete_nodes fuses interior nodes / trims clean endpoints, as ONE undoable action."""
+
+    def test_delete_interior_fuses_two_segments_into_one(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=3)
+        interior = empty_graph.segments[slope.segment_ids[0]].end_node_id
+        length_before = slope.get_total_length(empty_graph.segments)
+
+        empty_graph.delete_nodes(node_ids=[interior], dem=mock_dem_blue_slope)
+
+        assert interior not in empty_graph.nodes, "the interior node is gone"
+        assert len(empty_graph.slopes[slope.id].segment_ids) == 2, "3 segments fused to 2"
+        length_after = empty_graph.slopes[slope.id].get_total_length(empty_graph.segments)
+        assert length_after == pytest.approx(length_before, rel=0.01), "path length preserved by the fuse"
+
+    def test_delete_two_adjacent_interior_collapses_three_to_one(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=3)
+        n0 = empty_graph.segments[slope.segment_ids[0]].end_node_id
+        n1 = empty_graph.segments[slope.segment_ids[1]].end_node_id
+
+        empty_graph.delete_nodes(node_ids=[n0, n1], dem=mock_dem_blue_slope)
+
+        assert len(empty_graph.slopes[slope.id].segment_ids) == 1, "both interior nodes fused → 1 segment"
+        assert n0 not in empty_graph.nodes and n1 not in empty_graph.nodes
+
+    def test_delete_clean_endpoint_trims_boundary_segment(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=3)
+        old_start = slope.start_node_id
+        new_start_expected = empty_graph.segments[slope.segment_ids[1]].start_node_id
+
+        empty_graph.delete_nodes(node_ids=[old_start], dem=mock_dem_blue_slope)
+
+        assert old_start not in empty_graph.nodes, "the trimmed end node is freed"
+        assert len(empty_graph.slopes[slope.id].segment_ids) == 2, "the boundary segment is trimmed"
+        assert empty_graph.slopes[slope.id].start_node_id == new_start_expected, "boundary re-pointed"
+
+    def test_delete_end_node_and_adjacent_node_leaves_no_dangling_boundary(
+        self, empty_graph, mock_dem_blue_slope
+    ) -> None:
+        """Regression: deleting an end node AND its neighbour together must trim + fuse in one pass —
+        the old two-phase logic left a segment pointing at the (also-deleted) neighbour node.
+        """
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=4)
+        end = slope.start_node_id
+        adjacent = empty_graph.segments[slope.segment_ids[0]].end_node_id  # neighbour of the end node
+
+        empty_graph.delete_nodes(node_ids=[end, adjacent], dem=mock_dem_blue_slope)
+
+        surviving = graph_slope = empty_graph.slopes[slope.id]
+        assert end not in empty_graph.nodes and adjacent not in empty_graph.nodes, "both nodes freed"
+        # Every surviving segment must reference nodes that still exist (no dangling boundary).
+        for sid in surviving.segment_ids:
+            seg = empty_graph.segments[sid]
+            assert seg.start_node_id in empty_graph.nodes, f"{sid} start node missing"
+            assert seg.end_node_id in empty_graph.nodes, f"{sid} end node missing"
+        assert graph_slope.start_node_id in empty_graph.nodes, "path start node exists"
+        assert graph_slope.end_node_id == empty_graph.segments[surviving.segment_ids[-1]].end_node_id
+
+    def test_delete_records_single_undo_and_restores_verbatim(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=3)
+        interior = empty_graph.segments[slope.segment_ids[0]].end_node_id
+        chain_before = list(slope.segment_ids)
+
+        empty_graph.delete_nodes(node_ids=[interior], dem=mock_dem_blue_slope)
+        assert empty_graph.undo_stack[-1].action_type.name == "DELETE_NODES", "delete pushes one DELETE_NODES entry"
+
+        empty_graph.undo_last()
+        assert interior in empty_graph.nodes, "undo restores the deleted node"
+        assert empty_graph.slopes[slope.id].segment_ids == chain_before, "undo restores the chain verbatim"
+
+    def test_delete_non_deletable_raises(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=1)
+        # A single-segment path's endpoint is LAST_SEGMENT — delete_nodes_rejection refuses it.
+        with pytest.raises(ValueError, match="delete the path instead"):
+            empty_graph.delete_nodes(node_ids=[slope.start_node_id], dem=mock_dem_blue_slope)
+
+    def test_delete_never_orphans_a_segment_after_cross_path_merge(self, empty_graph, mock_dem_blue_slope) -> None:
+        """Regression: a merge can make a node a junction shared by a second path. Deleting a node on
+        one path must never remove a node the other path's segment still references (the KeyError
+        crash). Only truly-unreferenced nodes are removed.
+        """
+        dem = mock_dem_blue_slope
+        graph = empty_graph
+        s1 = _commit_straight_slope(graph, dem, n_segments=2)
+        s1_interior = graph.segments[s1.segment_ids[0]].end_node_id
+        # A second 2-segment slope, then move its interior node coincident with s1's interior node so
+        # the cross-path merge is unconditionally accepted (independent of finish-smoothing jitter).
+        before = set(graph.segments)
+        lat = 0.0
+        for _ in range(2):
+            leg = _leg(80 / M, lat, 0.0, -20.0, 25, dem)
+            graph.commit_paths(paths=[ProposedPathSegment(points=leg, target_difficulty="blue")])
+            lat = leg[-1].lat
+        s2 = graph.finish_slope(segment_ids=list(set(graph.segments) - before))
+        s2_interior = graph.segments[s2.segment_ids[0]].end_node_id
+        graph.nodes[s2_interior].location = graph.nodes[s1_interior].location  # make them coincident
+        graph.merge_nodes(node_ids=[s1_interior, s2_interior], dem=dem)
+
+        # Pick a genuinely-deletable endpoint and delete it — the test is only meaningful if a delete
+        # actually runs, so bind that: a deletable node must exist and the count must drop.
+        deletable = next(
+            nid
+            for nid in list(graph.nodes)
+            if graph.node_deletability(nid) in (NodeDeletability.DELETABLE_INTERIOR, NodeDeletability.DELETABLE_END)
+        )
+        nodes_before = len(graph.nodes)
+        graph.delete_nodes(node_ids=[deletable], dem=dem)
+        assert graph.undo_stack[-1].action_type.name == "DELETE_NODES", "a delete actually ran"
+        assert deletable not in graph.nodes and len(graph.nodes) < nodes_before, "the node was removed"
+        # And no surviving segment references a removed node (the crash this guards).
+        for seg in graph.segments.values():
+            assert seg.start_node_id in graph.nodes, f"orphan: {seg.id} start {seg.start_node_id}"
+            assert seg.end_node_id in graph.nodes, f"orphan: {seg.id} end {seg.end_node_id}"
+
+
+class TestInsertNodeOnPath:
+    """insert_node_on_path splits a segment at the clicked point, as ONE undoable action."""
+
+    def test_insert_splits_segment_and_updates_chain(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=1)
+        seg_id = slope.segment_ids[0]
+        seg = empty_graph.segments[seg_id]
+        mid = seg.points[len(seg.points) // 2]
+
+        node_id = empty_graph.insert_node_on_path(segment_id=seg_id, lon=mid.lon, lat=mid.lat)
+
+        assert node_id in empty_graph.nodes, "a new node was created"
+        assert seg_id not in empty_graph.segments, "the original segment is replaced"
+        assert len(empty_graph.slopes[slope.id].segment_ids) == 2, "[seg] → [A', B']"
+        a, b = empty_graph.slopes[slope.id].segment_ids
+        assert empty_graph.segments[a].end_node_id == node_id
+        assert empty_graph.segments[b].start_node_id == node_id
+        # The node snapped to an existing vertex, so it sits exactly on the drawn path.
+        assert empty_graph.nodes[node_id].location == mid
+
+    def test_insert_too_close_to_endpoint_raises(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=1)
+        seg = empty_graph.segments[slope.segment_ids[0]]
+        near_start = seg.points[0]
+        with pytest.raises(ValueError, match="too close to an existing node"):
+            empty_graph.insert_node_on_path(segment_id=seg.id, lon=near_start.lon, lat=near_start.lat)
+
+    def test_insert_on_unknown_segment_id_is_rejected(self, empty_graph, mock_dem_blue_slope) -> None:
+        """A stale/unknown segment id (external click after a rerun/delete) → 'finished path' reason,
+        and insert_node_on_path raises rather than KeyError-ing on the missing segment.
+        """
+        assert empty_graph.insert_node_rejection("S999", lon=0.0, lat=0.0) == "click a finished path to add a node"
+        with pytest.raises(ValueError, match="click a finished path"):
+            empty_graph.insert_node_on_path(segment_id="S999", lon=0.0, lat=0.0)
+
+    def test_insert_on_unfinished_segment_is_rejected(self, empty_graph, mock_dem_blue_slope) -> None:
+        """A committed-but-not-finished segment belongs to no path (the one-frame race) → rejected."""
+        empty_graph.commit_paths(
+            paths=[
+                ProposedPathSegment(
+                    points=_leg(0.0, 0.0, 0.0, -20.0, 25, mock_dem_blue_slope), target_difficulty="blue"
+                )
+            ]
+        )
+        seg_id = list(empty_graph.segments)[0]
+        mid = empty_graph.segments[seg_id].points[12]
+        assert (
+            empty_graph.insert_node_rejection(seg_id, lon=mid.lon, lat=mid.lat) == "click a finished path to add a node"
+        )
+
+    def test_insert_records_single_undo_and_restores_verbatim(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=1)
+        seg_id = slope.segment_ids[0]
+        mid = empty_graph.segments[seg_id].points[len(empty_graph.segments[seg_id].points) // 2]
+        chain_before = list(slope.segment_ids)
+
+        node_id = empty_graph.insert_node_on_path(segment_id=seg_id, lon=mid.lon, lat=mid.lat)
+        assert empty_graph.undo_stack[-1].action_type.name == "INSERT_NODE", "insert pushes one INSERT_NODE entry"
+
+        empty_graph.undo_last()
+        assert node_id not in empty_graph.nodes, "undo removes the inserted node"
+        assert seg_id in empty_graph.segments, "undo restores the original segment"
+        assert empty_graph.slopes[slope.id].segment_ids == chain_before, "undo restores the chain verbatim"
+
+
+class TestNodeEditHelpers:
+    """Direct unit tests for the fragile private chain-surgery helpers, isolated from the graph ops
+    that call them (delete_nodes / merge_nodes), so a break is pinpointed to the helper.
+    """
+
+    def _seg(self, sid: str, start: str, end: str, pts: list[tuple[float, float]]) -> PathSegment:
+        points = [PathPoint(lon=x, lat=y, elevation=100.0) for x, y in pts]
+        return PathSegment(id=sid, name=sid, points=points, start_node_id=start, end_node_id=end)
+
+    # -- _chain_node_sequence: pure, the shared node-walk primitive -----------------------------
+
+    def test_chain_node_sequence_single_segment(self) -> None:
+        seg = self._seg("S1", "N1", "N2", [(0.0, 0.0), (1.0, 0.0)])
+        assert _chain_node_sequence([seg]) == ["N1", "N2"]
+
+    def test_chain_node_sequence_walks_the_whole_chain(self) -> None:
+        segs = [
+            self._seg("S1", "N1", "N2", [(0.0, 0.0), (1.0, 0.0)]),
+            self._seg("S2", "N2", "N3", [(1.0, 0.0), (2.0, 0.0)]),
+            self._seg("S3", "N3", "N4", [(2.0, 0.0), (3.0, 0.0)]),
+        ]
+        assert _chain_node_sequence(segs) == ["N1", "N2", "N3", "N4"]
+
+    # -- _segments_touching / _owning_path: graph queries -----------------------------------------
+
+    def test_segments_touching_finds_both_incident_segments(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=3)
+        junction = empty_graph.segments[slope.segment_ids[0]].end_node_id
+        touching = empty_graph._segments_touching(junction)
+        assert {s.id for s in touching} == {slope.segment_ids[0], slope.segment_ids[1]}
+
+    def test_segments_touching_empty_for_unknown_node(self, empty_graph) -> None:
+        assert empty_graph._segments_touching("GHOST") == []
+
+    def test_owning_path_returns_finished_owner(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=2)
+        interior = empty_graph.segments[slope.segment_ids[0]].end_node_id
+        assert empty_graph._owning_path(interior).id == slope.id
+
+    def test_owning_path_none_for_unattached_node(self, empty_graph) -> None:
+        assert empty_graph._owning_path("GHOST") is None
+
+    # -- _nearest_vertex_index: geometry pick -----------------------------------------------------
+
+    def test_nearest_vertex_index_picks_closest(self) -> None:
+        graph = ResortGraph()
+        seg = self._seg("S1", "N1", "N2", [(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)])
+        assert graph._nearest_vertex_index(seg, lon=0.9, lat=0.0) == 1  # nearest to the middle vertex
+        assert graph._nearest_vertex_index(seg, lon=-5.0, lat=0.0) == 0  # off the start end
+        assert graph._nearest_vertex_index(seg, lon=99.0, lat=0.0) == 2  # off the far end
+
+    # -- _drop_collapsed_segments_in_chain: zero-length curl removal ------------------------------
+
+    def test_drop_collapsed_removes_only_the_curl_and_rederives_boundaries(self, empty_graph) -> None:
+        graph = empty_graph
+        graph.nodes["N1"] = Node(id="N1", location=PathPoint(lon=0.0, lat=0.0, elevation=100.0))
+        graph.nodes["S"] = Node(id="S", location=PathPoint(lon=1.0, lat=0.0, elevation=100.0))
+        graph.nodes["N4"] = Node(id="N4", location=PathPoint(lon=2.0, lat=0.0, elevation=100.0))
+        graph.segments["S1"] = self._seg("S1", "N1", "S", [(0.0, 0.0), (1.0, 0.0)])
+        graph.segments["S2"] = self._seg("S2", "S", "S", [(1.0, 0.0), (1.0, 0.0)])  # zero-length curl
+        graph.segments["S3"] = self._seg("S3", "S", "N4", [(1.0, 0.0), (2.0, 0.0)])
+        slope = Slope(id="SL1", name="t", segment_ids=["S1", "S2", "S3"], start_node_id="N1", end_node_id="N4")
+        graph.slopes["SL1"] = slope
+
+        dropped = graph._drop_collapsed_segments_in_chain(slope)
+
+        assert dropped == ["S2"], "only the zero-length segment is dropped"
+        assert slope.segment_ids == ["S1", "S3"], "curl spliced out, neighbours kept"
+        assert "S2" not in graph.segments, "the curl segment is removed from the graph"
+        assert (slope.start_node_id, slope.end_node_id) == ("N1", "N4"), "boundaries preserved"
+
+    def test_drop_collapsed_noop_when_no_curl(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=2)
+        chain_before = list(slope.segment_ids)
+        assert empty_graph._drop_collapsed_segments_in_chain(slope) == [], "no curl → nothing dropped"
+        assert slope.segment_ids == chain_before, "chain unchanged when there is no curl"
+
+    # -- _rebuild_chain_without_nodes: the fragile trim + fuse node-walk --------------------------
+
+    def test_rebuild_fuses_a_single_interior_node(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=3)
+        interior = empty_graph.segments[slope.segment_ids[0]].end_node_id
+        empty_graph._rebuild_chain_without_nodes(path=slope, drop_nodes={interior}, dem=mock_dem_blue_slope)
+        assert len(slope.segment_ids) == 2, "the two segments around the node fused into one"
+        assert all(
+            interior not in (empty_graph.segments[s].start_node_id, empty_graph.segments[s].end_node_id)
+            for s in slope.segment_ids
+        ), "the dropped node appears in no surviving segment"
+
+    def test_rebuild_trims_a_boundary_node(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=3)
+        old_start = slope.start_node_id
+        new_start_expected = empty_graph.segments[slope.segment_ids[1]].start_node_id
+        empty_graph._rebuild_chain_without_nodes(path=slope, drop_nodes={old_start}, dem=mock_dem_blue_slope)
+        assert len(slope.segment_ids) == 2, "the lone boundary segment is trimmed"
+        assert slope.start_node_id == new_start_expected, "boundary re-derived from the surviving chain"
+
+    def test_rebuild_end_plus_adjacent_leaves_no_dangling_node(self, empty_graph, mock_dem_blue_slope) -> None:
+        # The regression the node-walk fixed: trimming an end AND fusing its neighbour in one pass.
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=4)
+        end = slope.start_node_id
+        adjacent = empty_graph.segments[slope.segment_ids[0]].end_node_id
+        empty_graph._rebuild_chain_without_nodes(path=slope, drop_nodes={end, adjacent}, dem=mock_dem_blue_slope)
+        for sid in slope.segment_ids:
+            seg = empty_graph.segments[sid]
+            assert seg.start_node_id in empty_graph.nodes and seg.end_node_id in empty_graph.nodes
+        assert end not in _chain_node_sequence([empty_graph.segments[s] for s in slope.segment_ids])
+        assert adjacent not in _chain_node_sequence([empty_graph.segments[s] for s in slope.segment_ids])
 
 
 # =============================================================================
@@ -1429,12 +1956,13 @@ class TestResortStats:
         assert empty_graph.get_stats() == {
             "total_slopes": 0,
             "total_segments": 0,
-            "total_vertical_m": 0,
-            "total_length_m": 0,
+            "total_slope_drop_m": 0,
+            "total_slope_length_m": 0,
             "longest_run_m": 0,
             "total_lifts": 0,
             "total_roads": 0,
             "total_road_length_m": 0,
+            "disconnected_count": 0,
         }
 
     def test_multi_segment_slope_reports_slope_totals(self, empty_graph, mock_dem_blue_slope) -> None:
@@ -1450,6 +1978,6 @@ class TestResortStats:
 
         assert stats["total_slopes"] == 1
         assert stats["total_segments"] == len(seg_ids)
-        assert stats["total_vertical_m"] == pytest.approx(exp_vertical)
+        assert stats["total_slope_drop_m"] == pytest.approx(exp_vertical)
         assert stats["longest_run_m"] == pytest.approx(exp_longest)
         assert stats["longest_run_m"] > max_single_seg, "whole run is longer than any single segment"

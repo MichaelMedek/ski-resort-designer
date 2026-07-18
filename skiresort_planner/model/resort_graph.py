@@ -17,25 +17,44 @@ import logging
 import statistics
 from dataclasses import asdict
 from datetime import datetime
-from typing import TYPE_CHECKING, NamedTuple, TypedDict, cast
+from typing import TYPE_CHECKING, TypedDict, cast
 
-from skiresort_planner.constants import EntityPrefixes, GeometricTuningConfig, MergeConfig, UndoConfig
+from skiresort_planner.constants import (
+    ConnectivityConfig,
+    EntityPrefixes,
+    GeometricTuningConfig,
+    LiftConfig,
+    LiftType,
+    MergeConfig,
+    OSMConfig,
+    UndoConfig,
+)
 from skiresort_planner.core.geo_calculator import GeoCalculator
-from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
+from skiresort_planner.core.terrain_analyzer import SideDirection, TerrainAnalyzer
+from skiresort_planner.generators.osm_importer import OSMImportResult
 from skiresort_planner.model.actions import (
     AddLiftAction,
     AddSegmentsAction,
     DeleteLiftAction,
+    DeleteNodesAction,
     DeleteRoadAction,
     DeleteSlopeAction,
     FinishRoadAction,
     FinishSlopeAction,
     ImportOSMAction,
+    InsertNodeAction,
     MergeNodesAction,
     UndoAction,
 )
+from skiresort_planner.model.connectivity import CoreMembership, CoreResort, both_in, component_labels
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.node import Node
+from skiresort_planner.model.node_editing import (
+    INSERT_REJECT_NOT_FINISHED,
+    INSERT_REJECT_TOO_CLOSE,
+    NodeDeletability,
+    deletability_reason,
+)
 from skiresort_planner.model.path_point import PathPoint, endpoints_match
 from skiresort_planner.model.path_segment import PathSegment, SegmentKind
 from skiresort_planner.model.path_smoothing import smooth_joined_path
@@ -47,8 +66,14 @@ from skiresort_planner.model.undo_handlers import UNDO_HANDLERS
 
 if TYPE_CHECKING:
     from skiresort_planner.core.dem_service import DEMService
+    from skiresort_planner.generators.osm_importer import ImportResult
 
 logger = logging.getLogger(__name__)
+
+
+def _chain_node_sequence(segments: list[PathSegment]) -> list[str]:
+    """The ordered node ids a segment chain visits: first segment's start, then each segment's end."""
+    return [segments[0].start_node_id, *(s.end_node_id for s in segments)]
 
 
 class SegmentStats(TypedDict):
@@ -64,24 +89,19 @@ class SegmentStats(TypedDict):
 
 
 class ResortStats(TypedDict):
-    """Whole-resort summary counts and totals."""
+    """Whole-resort summary. Length/drop totals are kind-SCOPED: slope figures cover only slopes,
+    the road figure only roads (a road is not a ski run, so they never share a total).
+    """
 
     total_slopes: int
     total_segments: int
-    total_vertical_m: float
-    total_length_m: float
-    longest_run_m: float
+    total_slope_drop_m: float  # sum of slope drops (slopes only)
+    total_slope_length_m: float  # sum of slope lengths (slopes only)
+    longest_run_m: float  # longest single slope (slopes only)
     total_lifts: int
     total_roads: int
-    total_road_length_m: float
-
-
-class OSMImportResult(NamedTuple):
-    """Counts from one import_osm call (named so callers don't guess tuple positions)."""
-
-    slopes_added: int
-    lifts_added: int
-    duplicates_skipped: int  # entities skipped because the graph already has that endpoint fingerprint
+    total_road_length_m: float  # sum of road lengths (roads only)
+    disconnected_count: int  # slopes+lifts not in the core resort (0 when no core yet)
 
 
 class ResortGraph:
@@ -220,9 +240,109 @@ class ResortGraph:
         Returns:
             Total number of segments and lifts connected to this node.
         """
-        segment_count = sum(1 for s in self.segments.values() if node_id in (s.start_node_id, s.end_node_id))
-        lift_count = sum(1 for lift in self.lifts.values() if node_id in (lift.start_node_id, lift.end_node_id))
-        return segment_count + lift_count
+        lift_count = sum(1 for lift in self.lifts.values() if lift.touches(node_id))
+        return len(self._segments_touching(node_id)) + lift_count
+
+    def _segments_touching(self, node_id: str) -> list[PathSegment]:
+        """Every segment with node_id as an endpoint."""
+        return [s for s in self.segments.values() if node_id in (s.start_node_id, s.end_node_id)]
+
+    def _side_slope_for_points(self, points: list[PathPoint]) -> tuple[float, SideDirection]:
+        """Side slope (pct, direction) for a segment from its first two points — the single call site.
+
+        Extracted from commit_paths so delete/insert can't drift from how the builder computes it.
+        """
+        info = TerrainAnalyzer.compute_side_slope(
+            start_lon=points[0].lon, start_lat=points[0].lat, end_lon=points[1].lon, end_lat=points[1].lat
+        )
+        return info.slope_pct, info.direction
+
+    def _build_segment(
+        self, points: list[PathPoint], start_node_id: str, end_node_id: str, kind: SegmentKind
+    ) -> PathSegment:
+        """Create + register a PathSegment between two nodes (id/name from the counter, side slope
+        computed from points). The single PathSegment assembly site — shared by commit and insert.
+        """
+        side_slope_pct, side_slope_dir = self._side_slope_for_points(points)
+        segment = PathSegment(
+            id=self._next_segment_id(),
+            name=f"Segment {self._segment_counter}",
+            points=points,
+            start_node_id=start_node_id,
+            end_node_id=end_node_id,
+            side_slope_pct=side_slope_pct,
+            side_slope_dir=side_slope_dir,
+            kind=kind,
+        )
+        self.segments[segment.id] = segment
+        return segment
+
+    def node_deletability(self, node_id: str) -> NodeDeletability:
+        """Why a node can/can't be deleted. Single source used by the UI button + the delete op.
+
+        Deletable when the node is a PURE INTERIOR node of one finished chain (its two segments
+        fuse into one) OR a CLEAN ENDPOINT of a >1-segment finished path (its lone boundary segment
+        trims off). Never for lift stations or shared/branch junctions.
+        """
+        # A lift station is never deletable (delete the lift first) — checked before anything else.
+        if any(lift.touches(node_id) for lift in self.lifts.values()):
+            return NodeDeletability.IS_LIFT_STATION
+
+        touching = self._segments_touching(node_id)
+        owners = {owner.id: owner for s in touching if (owner := self.get_entity_by_segment_id(s.id)) is not None}
+        sole_owner = next(iter(owners.values())) if len(owners) == 1 else None
+        is_boundary_anywhere = any(p.touches(node_id) for p in self.segment_path_entities)
+
+        # Exactly one classification per node — each an explicit positive condition, no silent default.
+        if len(touching) == 2 and sole_owner is not None and not is_boundary_anywhere:
+            # Interior of one finished chain (a boundary-of-another node is a branch → endpoint below).
+            return NodeDeletability.DELETABLE_INTERIOR
+        if len(touching) == 1 and sole_owner is not None and sole_owner.touches(node_id):
+            # Clean endpoint of one path; a sole-segment path would be emptied → delete the path.
+            if len(sole_owner.segment_ids) <= 1:
+                return NodeDeletability.LAST_SEGMENT
+            return NodeDeletability.DELETABLE_END
+        if is_boundary_anywhere:
+            # A boundary of some path but shared/branch (or interior of one + boundary of another).
+            return NodeDeletability.IS_PATH_ENDPOINT
+        # Anything else (isolated, unfinished-only, or a multi-path crossing) is simply not deletable.
+        return NodeDeletability.NOT_INTERIOR
+
+    def delete_nodes_rejection(self, node_ids: list[str]) -> str | None:
+        """Why the selected nodes can't be deleted together, or None if they can.
+
+        Single source for the delete preconditions, mirroring insert_node_rejection: every node must
+        be individually deletable AND the deletions together must leave each affected path with ≥2
+        nodes (an end node + the sole interior node of a 2-segment slope would empty it). The UI
+        pre-checks this for a friendly toast; delete_nodes calls it too as a fail-fast backstop.
+        """
+        # Check 1 (per node): every selected node must be individually deletable on its own shape.
+        # The first one that isn't (lift station, branch junction, sole segment, …) names the reason.
+        for nid in node_ids:
+            reason = self.node_deletability(nid)
+            if reason not in (NodeDeletability.DELETABLE_INTERIOR, NodeDeletability.DELETABLE_END):
+                return deletability_reason(node_id=nid, reason=reason)
+
+        # Check 2 (per path): even all-individually-deletable nodes can, TOGETHER, empty a path (e.g.
+        # deleting both nodes of a 2-segment slope). Refuse any owning path left with < 2 surviving nodes.
+        drop = set(node_ids)
+        for path in self._paths_owning_nodes(node_ids):
+            node_seq = _chain_node_sequence([self.segments[sid] for sid in path.segment_ids])
+            if sum(1 for n in node_seq if n not in drop) < 2:
+                return f"this would delete the whole path {path.name} — delete the path instead"
+        return None  # both checks passed → the selection is safe to delete
+
+    def _owning_path(self, node_id: str) -> "SegmentPath | None":
+        """The finished slope/road that owns a segment touching node_id, or None."""
+        touching = self._segments_touching(node_id)
+        return self.get_entity_by_segment_id(touching[0].id) if touching else None
+
+    def _paths_owning_nodes(self, node_ids: list[str]) -> list["SegmentPath"]:
+        """The distinct finished paths owning the given nodes — the single node→path grouping used by
+        both the delete precondition check and the delete executor, so they can't drift.
+        """
+        by_id = {owner.id: owner for nid in node_ids if (owner := self._owning_path(nid)) is not None}
+        return list(by_id.values())
 
     # =========================================================================
     # Commit Operations
@@ -309,34 +429,17 @@ class ResortGraph:
             if end_created:
                 new_node_ids.append(end_node.id)
 
-            # Calculate side slope (requires terrain analysis, stored in segment)
+            # Side slope needs ≥2 points; the segment factory computes it from the first two.
             if len(path.points) < 2:
                 raise ValueError(
                     f"Path must have at least 2 points to compute side slope, got {len(path.points)}: {path}"
                 )
-            side_info = TerrainAnalyzer.compute_side_slope(
-                start_lon=path.points[0].lon,
-                start_lat=path.points[0].lat,
-                end_lon=path.points[1].lon,
-                end_lat=path.points[1].lat,
-            )
-            side_slope_pct = side_info.slope_pct
-            side_slope_dir = side_info.direction
 
             # Create segment (metrics computed as properties from points)
-            segment_id = self._next_segment_id()
-            segment = PathSegment(
-                id=segment_id,
-                name=f"Segment {self._segment_counter}",
-                points=path.points,
-                start_node_id=start_node.id,
-                end_node_id=end_node.id,
-                side_slope_pct=side_slope_pct,
-                side_slope_dir=side_slope_dir,
-                kind=path.kind,  # slope vs road identity carried from the proposal
+            segment = self._build_segment(
+                points=path.points, start_node_id=start_node.id, end_node_id=end_node.id, kind=path.kind
             )
-            self.segments[segment_id] = segment
-            new_segment_ids.append(segment_id)
+            new_segment_ids.append(segment.id)
             end_node_ids.append(end_node.id)
 
         # Record for undo
@@ -393,7 +496,7 @@ class ResortGraph:
         segments = [self.segments[sid] for sid in segment_ids]
         assert len(segments) > 0, f"_smooth_finished_path: segment_ids={segment_ids} resolved to empty segments list"
         # Boundary nodes: start of the first segment, then each segment's end node.
-        boundary_node_ids = [segments[0].start_node_id, *(seg.end_node_id for seg in segments)]
+        boundary_node_ids = _chain_node_sequence(segments)
 
         before = max(seg.max_slope_pct for seg in segments)
         smoothed = smooth_joined_path(
@@ -613,56 +716,67 @@ class ResortGraph:
 
         return lift
 
-    def import_osm(
-        self,
-        pistes: list[tuple[list[PathPoint], str | None]],
-        lifts: list[tuple[PathPoint, PathPoint, str, str | None]],
-        dem: "DEMService",
-    ) -> OSMImportResult:
-        """Add a batch of OSM-derived pistes and lifts as ONE undoable unit.
+    def import_osm(self, result: "ImportResult", *, dem: "DEMService") -> OSMImportResult:
+        """Add an OSM import (lifts + slope chains) as ONE undoable unit, tagging every entity.
 
-        Each piste (its DEM-sampled points + optional name) is committed and finished as a slope;
-        each lift (bottom station, top station, lift type, optional name) becomes a lift with
-        regenerated pylons. All individual undo entries are suppressed and replaced by a single
-        ImportOSMAction, so one undo removes the entire import. Nodes the import newly creates are
-        tracked and removed on undo; nodes it reuses (shared with pre-existing entities) are left alone.
+        Each slope chain (its ordered segment point-lists + optional name) is committed segment by
+        segment and finished as one slope; each lift (bottom, top, type, name) becomes a lift with
+        regenerated pylons. Every created slope, segment, and lift is stamped with `result.source`
+        (e.g. EntitySource.OSM). All individual undo entries are suppressed and replaced by a single
+        ImportOSMAction, so one undo removes the whole import; newly-created nodes are tracked and
+        removed on undo, reused (shared) nodes are left alone.
 
-        Re-import is idempotent AND source-agnostic: an incoming piste/lift is skipped (counted as
-        a duplicate) if the graph ALREADY contains an entity with the same endpoint fingerprint.
+        Re-import is conservative: an incoming slope/lift is skipped (counted as a duplicate) if the
+        graph already holds an entity with a matching endpoint fingerprint (within OSM_DEDUP_TOL_M)
+        OR the same source and a matching non-empty name — we err toward NOT re-importing.
 
         Args:
-            pistes: (points, name) per downhill run — points already DEM-sampled by the importer.
-            lifts: (bottom, top, lift_type, name) per lift — stations already DEM-sampled.
+            result: The importer output — lifts, slope_chains, and the provenance source.
             dem: DEM service for lift terrain sampling / pylon placement.
 
         Returns:
             OSMImportResult(slopes_added, lifts_added, duplicates_skipped).
         """
+        source = result.source
         nodes_before = set(self.nodes)
         slope_ids: list[str] = []
         lift_ids: list[str] = []
         segment_ids: list[str] = []
         duplicates = 0
 
-        for points, name in pistes:
-            if self.has_endpoint_duplicate(a=points[0], b=points[-1]):
-                logger.debug(f"import_osm: skipping duplicate piste '{name}' at endpoints {points[0]} -> {points[-1]}")
+        # Dedup is measured against a snapshot frozen BEFORE this batch. Kind-scoped so a slope never dedups a lift.
+        tol = OSMConfig.OSM_DEDUP_TOL_M
+        pre_slope_ends = [s.endpoints(nodes=self.nodes) for s in self.slopes.values()]
+        pre_lift_ends = [lf.endpoints(nodes=self.nodes) for lf in self.lifts.values()]
+        pre_slope_names = {s.name for s in self.slopes.values() if s.source == source and s.name}
+        pre_lift_names = {lf.name for lf in self.lifts.values() if lf.source == source and lf.name}
+
+        for chain, name in result.slope_chains:
+            head, tail = chain[0][0], chain[-1][-1]
+            endpoint_dup = any(endpoints_match(pair_a=(head, tail), pair_b=e, tol_m=tol) for e in pre_slope_ends)
+            if endpoint_dup or (name and name in pre_slope_names):
+                logger.debug(f"import_osm: skipping duplicate slope '{name}' at endpoints {head} -> {tail}")
                 duplicates += 1
                 continue
-            proposal = ProposedPathSegment(points=points, kind=SegmentKind.SLOPE)
-            segments_before = set(self.segments)
-            self.commit_paths(paths=[proposal], record_undo=False)
-            # commit_paths returns endpoint node ids, not segment ids; a single proposal
-            # creates exactly one segment, so the tuple-unpack both finds and asserts it.
-            (seg_id,) = (sid for sid in self.segments if sid not in segments_before)
-            segment_ids.append(seg_id)
-            slope = self.finish_slope(segment_ids=[seg_id], name=name, record_undo=False)
+            chain_seg_ids: list[str] = []
+            for points in chain:  # commit each segment top→bottom so finish_slope's chain stitch is valid
+                segments_before = set(self.segments)
+                self.commit_paths(paths=[ProposedPathSegment(points=points, kind=SegmentKind.SLOPE)], record_undo=False)
+                (seg_id,) = (sid for sid in self.segments if sid not in segments_before)
+                chain_seg_ids.append(seg_id)
+            slope = self.finish_slope(segment_ids=chain_seg_ids, name=name, record_undo=False)
+            slope.source = source
+            for seg_id in chain_seg_ids:  # stamp AFTER finish_slope (it rewrites name, never source)
+                self.segments[seg_id].source = source
+            segment_ids.extend(chain_seg_ids)
             slope_ids.append(slope.id)
 
-        for bottom, top, lift_type, lift_name in lifts:
-            if self.has_endpoint_duplicate(a=bottom, b=top):
+        for bottom, top, lift_type, lift_name in result.lifts:
+            endpoint_dup = any(endpoints_match(pair_a=(bottom, top), pair_b=e, tol_m=tol) for e in pre_lift_ends)
+            if endpoint_dup or (lift_name and lift_name in pre_lift_names):
                 logger.debug(
-                    f"import_osm: skipping duplicate lift '{lift_name}' (type={lift_type}) at endpoints {bottom} -> {top}"
+                    f"import_osm: skipping duplicate lift '{lift_name}' (type={lift_type}) at endpoints "
+                    f"{bottom} -> {top}"
                 )
                 duplicates += 1
                 continue
@@ -676,6 +790,7 @@ class ResortGraph:
                 name=lift_name,
                 record_undo=False,
             )
+            lift.source = source
             lift_ids.append(lift.id)
 
         created_node_ids = tuple(nid for nid in self.nodes if nid not in nodes_before)
@@ -692,26 +807,6 @@ class ResortGraph:
             f"{len(created_node_ids)} new nodes, {duplicates} duplicates skipped"
         )
         return OSMImportResult(slopes_added=len(slope_ids), lifts_added=len(lift_ids), duplicates_skipped=duplicates)
-
-    def has_endpoint_duplicate(self, a: PathPoint, b: PathPoint) -> bool:
-        """True if an existing slope or lift already spans endpoints `a` and `b`.
-
-        Direct geometric comparison against each stored entity's endpoints (endpoints_match, within
-        STEP_SIZE_M — the import snap distance). No coordinate rounding or shared-node lookup, so it
-        stays correct where many runs cluster around one junction. Used to skip re-importing a run
-        the graph already has (whether imported earlier or built by hand).
-        """
-        tol = GeometricTuningConfig.STEP_SIZE_M
-        pair = (a, b)
-        slope_match = any(
-            endpoints_match(pair_a=pair, pair_b=slope.endpoints(nodes=self.nodes), tol_m=tol)
-            for slope in self.slopes.values()
-        )
-        lift_match = any(
-            endpoints_match(pair_a=pair, pair_b=lift.endpoints(nodes=self.nodes), tol_m=tol)
-            for lift in self.lifts.values()
-        )
-        return slope_match or lift_match
 
     def max_node_span_m(self, node_ids: list[str]) -> float:
         """Largest pairwise distance (m) among the given nodes; 0 for fewer than two."""
@@ -751,10 +846,16 @@ class ResortGraph:
         ]
         affected_lifts = [ln for ln in self.lifts.values() if ln.start_node_id in touched or ln.end_node_id in touched]
         # Slopes/roads store their own boundary node ids (mirroring their first/last segment), so a
-        # merge that repoints those nodes must repoint the entity boundary too.
-        affected_paths: list[SegmentPath] = [
-            p for p in self.segment_path_entities if p.start_node_id in touched or p.end_node_id in touched
-        ]
+        # merge that repoints those nodes must repoint the entity boundary too. Include any path that
+        # OWNS an affected segment, not just those whose boundary is touched.
+        affected_paths_by_id: dict[str, SegmentPath] = {
+            p.id: p for p in self.segment_path_entities if p.start_node_id in touched or p.end_node_id in touched
+        }
+        for seg in affected_segments:
+            owner = self.get_entity_by_segment_id(seg.id)
+            if owner is not None:
+                affected_paths_by_id[owner.id] = owner
+        affected_paths: list[SegmentPath] = list(affected_paths_by_id.values())
         segments_before = tuple(copy.deepcopy(s) for s in affected_segments)
         lifts_before = tuple(copy.deepcopy(ln) for ln in affected_lifts)
         paths_before = tuple(copy.deepcopy(p) for p in affected_paths)
@@ -790,16 +891,23 @@ class ResortGraph:
             del self.nodes[nid]
         self.cleanup_isolated_nodes()
 
-        # A merge can collapse an entity onto one node (both endpoints -> survivor: zero-length), so DELETE it here
-        # inside the same MergeNodesAction. Collapsed paths go first, tracking the segments they drop.
+        # A merge collapses an entity onto one node (both boundaries → survivor: zero length) — delete
+        # it here, inside the same MergeNodesAction, tracking the segments it drops.
         removed_segment_ids: set[str] = set()
+        collapsed_ids = {p.id for p in affected_paths if p.start_node_id == p.end_node_id}
         for path in affected_paths:
-            if path.start_node_id == path.end_node_id:
+            if path.id in collapsed_ids:
                 removed_segment_ids.update(self._remove_collapsed_path(path))
+
+        # A surviving multi-segment path can still hold a MIDDLE segment whose own endpoints both
+        # became the survivor (a zero-length "curl") — splice it out so the path stays continuous.
+        for path in affected_paths:
+            if path.id not in collapsed_ids:
+                removed_segment_ids.update(self._drop_collapsed_segments_in_chain(path))
 
         # Re-stitch every surviving affected builder fresh from the moved endpoints (each model owns
         # its recompute; a road is just segments with kind=ROAD, so no per-kind branch is needed).
-        # A segment we just dropped with its collapsed parent is skipped.
+        # A segment we just dropped with its collapsed parent or as a middle curl is skipped.
         for seg in affected_segments:
             if seg.id in removed_segment_ids:
                 continue
@@ -845,6 +953,189 @@ class ResortGraph:
         """
         self.lifts.pop(lift.id, None)
         logger.info(f"Merge collapsed lift {lift.name} to zero length — deleted it")
+
+    def _drop_collapsed_segments_in_chain(self, path: "SegmentPath") -> list[str]:
+        """Drop any zero-length (start==end) segment from a surviving path's chain; return their ids.
+
+        Used after a merge repoints endpoints: a segment whose own two endpoints collapsed onto the
+        survivor is a curl. Its neighbours already meet at the survivor, so removing it from the
+        chain (and re-deriving the boundary ids) keeps the path continuous.
+        """
+        collapsed = [
+            sid for sid in path.segment_ids if self.segments[sid].start_node_id == self.segments[sid].end_node_id
+        ]
+        if not collapsed:
+            return []
+        path.segment_ids = [sid for sid in path.segment_ids if sid not in collapsed]
+        for sid in collapsed:
+            del self.segments[sid]
+        # Re-derive boundaries from the surviving chain (the first/last segment's outer node).
+        path.start_node_id = self.segments[path.segment_ids[0]].start_node_id
+        path.end_node_id = self.segments[path.segment_ids[-1]].end_node_id
+        logger.info(f"Merge dropped {len(collapsed)} zero-length segment(s) from {path.name}")
+        return collapsed
+
+    # =========================================================================
+    # Node delete / insert (merge-mode editing tools)
+    # =========================================================================
+
+    def delete_nodes(self, node_ids: list[str], dem: "DEMService") -> None:
+        """Delete path nodes, keeping the rest of each path (interior fusion / clean-endpoint trim).
+
+        An interior node fuses its two segments into one; a clean endpoint trims its lone boundary
+        segment. The caller pre-checks delete_nodes_rejection; this re-checks and raises ValueError
+        as a fail-fast backstop (never a user path). ONE undoable DeleteNodesAction.
+        """
+        rejection = self.delete_nodes_rejection(node_ids)
+        if rejection is not None:
+            raise ValueError(f"delete_nodes: {rejection}")
+
+        to_delete = set(node_ids)
+        # Each deletable node belongs to exactly one finished path (guaranteed by the rejection check).
+        affected_paths = self._paths_owning_nodes(node_ids)
+
+        deleted_nodes = tuple(self.nodes[nid] for nid in node_ids)
+        paths_before = tuple(copy.deepcopy(p) for p in affected_paths)
+        segments_before = tuple(copy.deepcopy(self.segments[sid]) for p in affected_paths for sid in p.segment_ids)
+
+        for path in affected_paths:
+            self._rebuild_chain_without_nodes(path=path, drop_nodes=to_delete, dem=dem)
+
+        # Only remove a selected node once nothing references it.
+        self.cleanup_isolated_nodes()
+
+        # Post-condition: the graph must stay referentially intact — no segment may point at a deleted
+        # node. Fail here (at the source) rather than let a later click crash on the dangling id.
+        for seg in self.segments.values():
+            assert seg.start_node_id in self.nodes and seg.end_node_id in self.nodes, (
+                f"delete_nodes left segment {seg.id} referencing a missing node "
+                f"({seg.start_node_id}->{seg.end_node_id})"
+            )
+
+        self._push_undo(
+            DeleteNodesAction(deleted_nodes=deleted_nodes, paths_before=paths_before, segments_before=segments_before)
+        )
+        self.drop_undo_actions_for_removed_segments()
+        logger.info(f"Deleted {len(node_ids)} node(s) across {len(affected_paths)} path(s)")
+
+    def _rebuild_chain_without_nodes(self, path: "SegmentPath", drop_nodes: set[str], dem: "DEMService") -> None:
+        """Rewrite path.segment_ids with drop_nodes removed, via a single node-sequence walk.
+
+        The chain is the node sequence [n0, n1, …, nN] (segment i spans node i→i+1). Keep the
+        surviving nodes; between each consecutive surviving pair, fuse the spanned segments into one
+        (points concatenated, first segment's id reused). Segments before the first / after the last
+        surviving node are trimmed. One pass, so a deleted end node adjacent to another deleted node
+        can't leave a dangling boundary.
+        """
+        seg_ids = list(path.segment_ids)
+        segs = [self.segments[sid] for sid in seg_ids]
+        node_seq = _chain_node_sequence(segs)
+        kept_idx = [i for i, n in enumerate(node_seq) if n not in drop_nodes]
+        assert len(kept_idx) >= 2, f"delete would leave <2 nodes on {path.id} (caller must pre-check)"
+
+        # Fuse original segments [a, b) into one new segment per surviving-node pair (a, b).
+        new_ids: list[str] = []
+        for a, b in zip(kept_idx, kept_idx[1:], strict=False):
+            head = segs[a]
+            points = list(head.points)
+            for s in segs[a + 1 : b]:
+                points = points + s.points[1:]  # drop the duplicate junction point
+            head.points = points
+            head.start_node_id = node_seq[a]
+            head.end_node_id = node_seq[b]
+            new_ids.append(head.id)
+
+        # Drop every original segment not reused as a fused head (consumed mid-run, or a trimmed end).
+        for sid in seg_ids:
+            if sid not in new_ids:
+                del self.segments[sid]
+
+        # Recompute side slope + re-drape each fused head (endpoints unchanged, so restitch keeps it
+        # on-terrain — mirrors merge/commit).
+        for sid in new_ids:
+            seg = self.segments[sid]
+            seg.side_slope_pct, seg.side_slope_dir = self._side_slope_for_points(seg.points)
+            seg.restitch(start_node=self.nodes[seg.start_node_id], end_node=self.nodes[seg.end_node_id], dem=dem)
+
+        path.segment_ids = new_ids
+        path.start_node_id = self.segments[new_ids[0]].start_node_id
+        path.end_node_id = self.segments[new_ids[-1]].end_node_id
+
+    def _nearest_vertex_index(self, seg: PathSegment, lon: float, lat: float) -> int:
+        """Index of the segment vertex closest to (lon, lat). Segments are dense (~7m), so the click
+        effectively lands ON a vertex — snapping to it needs no projection or DEM (it has elevation).
+        """
+        return min(range(len(seg.points)), key=lambda i: seg.points[i].distance_to(other=PathPoint(lon, lat, 0.0)))
+
+    def insert_node_rejection(self, segment_id: str, lon: float, lat: float) -> str | None:
+        """Why a node can't be inserted on this segment at (lon, lat), or None if it can.
+
+        Single source for the add-node preconditions (unknown/unfinished segment, or the nearest
+        vertex too close to an endpoint node to make a real interior split). The UI pre-checks this
+        for a friendly toast; insert_node_on_path calls it too as a fail-fast backstop.
+        """
+        # segment_id is an external map-click id (may be stale after a rerun/delete) — a tolerated
+        # fallback, surfaced as a reason rather than crashing.
+        seg = self.segments.get(segment_id)
+        if seg is None or self.get_entity_by_segment_id(segment_id) is None:
+            return INSERT_REJECT_NOT_FINISHED
+        vertex = seg.points[self._nearest_vertex_index(seg, lon, lat)]
+        gap = GeometricTuningConfig.STEP_SIZE_M
+        start_node, end_node = self.nodes[seg.start_node_id], self.nodes[seg.end_node_id]
+        if (
+            start_node.distance_to(lon=vertex.lon, lat=vertex.lat) < gap
+            or end_node.distance_to(lon=vertex.lon, lat=vertex.lat) < gap
+        ):
+            return INSERT_REJECT_TOO_CLOSE.format(gap=gap)
+        return None
+
+    def insert_node_on_path(self, segment_id: str, lon: float, lat: float) -> str:
+        """Insert a node on a segment at the vertex nearest (lon, lat), splitting it into two and
+        updating the owning path's segment_ids [seg] -> [A', B']. Returns the new node id.
+
+        The new node IS the nearest existing vertex (no new geometry, no DEM). The caller pre-checks
+        insert_node_rejection; this re-checks and raises ValueError as a fail-fast backstop.
+        """
+        rejection = self.insert_node_rejection(segment_id=segment_id, lon=lon, lat=lat)
+        if rejection is not None:
+            raise ValueError(f"insert_node_on_path: {rejection}")
+        seg = self.segments[segment_id]
+        owner = self.get_entity_by_segment_id(segment_id)
+        assert owner is not None  # guaranteed by insert_node_rejection
+
+        path_before = copy.deepcopy(owner)
+        segment_before = copy.deepcopy(seg)
+
+        # Split at the nearest vertex; it becomes the new node and is shared by both halves (the
+        # junction point A' ends on and B' starts on, exactly as adjacent segments already share nodes).
+        i = self._nearest_vertex_index(seg, lon, lat)
+        split_pt = seg.points[i]
+        node = Node(id=self._next_node_id(), location=split_pt)
+        self.nodes[node.id] = node
+
+        new_ids: list[str] = []
+        for pts, s_node, e_node in (
+            (seg.points[: i + 1], seg.start_node_id, node.id),
+            (seg.points[i:], node.id, seg.end_node_id),
+        ):
+            new_seg = self._build_segment(points=list(pts), start_node_id=s_node, end_node_id=e_node, kind=seg.kind)
+            new_ids.append(new_seg.id)
+
+        idx = owner.segment_ids.index(segment_id)
+        owner.segment_ids[idx : idx + 1] = new_ids  # boundary ids unchanged (interior insert)
+        del self.segments[segment_id]
+
+        self._push_undo(
+            InsertNodeAction(
+                created_node_id=node.id,
+                created_segment_ids=tuple(new_ids),
+                path_before=path_before,
+                segment_before=segment_before,
+            )
+        )
+        self.drop_undo_actions_for_removed_segments()
+        logger.info(f"Inserted node {node.id} on {owner.name}, split {segment_id} into {new_ids}")
+        return node.id
 
     # =========================================================================
     # Undo Operations
@@ -1048,41 +1339,44 @@ class ResortGraph:
             "current_elev": current_elev,
         }
 
+    def _skiable_entities(self) -> list[SegmentPath | Lift]:
+        """The entities that participate in skiable connectivity: slopes + lifts, roads excluded.
+
+        Single source for "what is skiable" — both count_disconnected and the ski-digraph edge
+        builder derive from this, so a new skiable kind can't desync them.
+        """
+        return [*self.slopes.values(), *self.lifts.values()]  # NO roads!
+
+    def count_disconnected(self, core: "CoreResort | None") -> int:
+        """How many skiable entities are DISCONNECTED from the core (0 when there is no core yet).
+
+        Takes the precomputed `core` so the SCC is evaluated once per render (mirrors
+        entity_membership); pass get_core_resort()'s result.
+        """
+        if core is None:
+            return 0
+        return sum(
+            self.entity_membership(start_node_id=e.start_node_id, end_node_id=e.end_node_id, core=core)
+            == CoreMembership.DISCONNECTED
+            for e in self._skiable_entities()
+        )
+
     def get_stats(self) -> ResortStats:
-        """Get resort statistics."""
-        if not self.segments:
-            return {
-                "total_slopes": 0,
-                "total_segments": 0,
-                "total_vertical_m": 0,
-                "total_length_m": 0,
-                "longest_run_m": 0,
-                "total_lifts": len(self.lifts),
-                "total_roads": len(self.roads),
-                "total_road_length_m": 0,
-            }
-
-        total_vertical = sum(s.total_drop_m for s in self.segments.values())
-        total_length = sum(s.length_m for s in self.segments.values())
-
-        longest = 0.0
-        for slope in self.slopes.values():
-            slope_length = slope.get_total_length(segments=self.segments)
-            longest = max(slope_length, longest)
-        for seg in self.segments.values():
-            longest = max(seg.length_m, longest)
-
-        total_road_length = sum(road.get_total_length(segments=self.segments) for road in self.roads.values())
-
+        """Whole-resort summary. Length/drop totals are kind-scoped (slopes vs roads never mix); the
+        empty graph falls out naturally (sums→0, max default→0), so no special-case branch is needed.
+        """
+        slope_lengths = [s.get_total_length(segments=self.segments) for s in self.slopes.values()]
+        road_lengths = [r.get_total_length(segments=self.segments) for r in self.roads.values()]
         return {
             "total_slopes": len(self.slopes),
             "total_segments": len(self.segments),
-            "total_vertical_m": total_vertical,
-            "total_length_m": total_length,
-            "longest_run_m": longest,
+            "total_slope_drop_m": sum(s.get_total_drop(segments=self.segments) for s in self.slopes.values()),
+            "total_slope_length_m": sum(slope_lengths),
+            "longest_run_m": max(slope_lengths, default=0.0),
             "total_lifts": len(self.lifts),
             "total_roads": len(self.roads),
-            "total_road_length_m": total_road_length,
+            "total_road_length_m": sum(road_lengths),
+            "disconnected_count": self.count_disconnected(self.get_core_resort()),  # one SCC pass
         }
 
     def get_elevation_range(self) -> tuple[float, float] | None:
@@ -1132,6 +1426,72 @@ class ResortGraph:
 
         shared = road_nodes & ski_nodes
         return [self.nodes[nid] for nid in shared]
+
+    def _ski_digraph_edges(self) -> list[tuple[str, str]]:
+        """Directed edges of the skiable graph, one edge PER SEGMENT so interior junction nodes are
+        real vertices (a slope may be joined mid-chain by another slope/lift). Slopes descend
+        segment-by-segment; lifts go bottom→top (plus reverse for bidirectional types per
+        LiftConfig.UPHILL_ONLY). Roads are excluded — the skiable set matches _skiable_entities().
+        """
+        edges: list[tuple[str, str]] = []
+        for slope in self.slopes.values():
+            segs = [self.segments[sid] for sid in slope.segment_ids]
+            seq = _chain_node_sequence(segs)  # top → each interior junction → bottom
+            edges.extend(zip(seq, seq[1:], strict=False))  # consecutive pairs (seq is 1 longer than the pairs)
+        for lift in self.lifts.values():
+            edges.append((lift.start_node_id, lift.end_node_id))
+            if not LiftConfig.UPHILL_ONLY[LiftType(lift.lift_type)]:
+                edges.append((lift.end_node_id, lift.start_node_id))
+        return edges
+
+    def get_core_resort(self) -> CoreResort | None:
+        """The core skiable area — largest strongly-connected component of the ski graph.
+
+        Directed model: slopes descend, lifts ascend, gondolas/trams run both ways (per
+        LiftConfig.UPHILL_ONLY); roads don't count. Returned only once the largest SCC holds at
+        least ConnectivityConfig.MIN_CORE_LIFTS lifts, else None (no core yet → nothing is flagged).
+        Derived fresh, never stored — same contract as get_parking_nodes().
+        """
+        edges = self._ski_digraph_edges()
+        # Nodes touched by any slope/lift endpoint (roads excluded); no edges → no core.
+        nodes = {n for e in edges for n in e}
+        if not nodes:
+            return None
+        # Every ski-graph endpoint must be a materialised node (referential integrity — a dangling
+        # id here means a slope/lift outlived a deleted node; fail loud rather than mis-score the core).
+        assert nodes <= set(self.nodes), f"ski-graph references unknown nodes: {nodes - set(self.nodes)}"
+
+        comp = component_labels(nodes, edges, strong=True)
+        assert set(comp) == nodes, "component_labels must label exactly the ski-graph nodes"
+        members: dict[int, set[str]] = {}
+        for node_id, cid in comp.items():
+            members.setdefault(cid, set()).add(node_id)
+        # Largest component by node count (tie-break irrelevant — any largest is a valid core).
+        core_cid = max(members, key=lambda cid: len(members[cid]))
+        core_nodes = members[core_cid]
+        assert core_nodes, "a non-empty ski graph must yield a non-empty largest component"
+
+        core_lifts = [
+            lf for lf in self.lifts.values() if both_in(node_ids=core_nodes, a=lf.start_node_id, b=lf.end_node_id)
+        ]
+        if len(core_lifts) < ConnectivityConfig.MIN_CORE_LIFTS:
+            return None
+
+        longest = max(core_lifts, key=lambda lf: lf.get_length_m(nodes=self.nodes))
+        return CoreResort(node_ids=frozenset(core_nodes), longest_lift_name=longest.name)
+
+    def entity_membership(self, *, start_node_id: str, end_node_id: str, core: CoreResort | None) -> CoreMembership:
+        """Where a slope/lift (given by its two endpoints) sits relative to `core`.
+
+        Pass the precomputed `core` so it's evaluated once per render, not once per entity.
+        IN_CORE iff BOTH endpoints are in the core SCC; NO_CORE_YET when no core exists; else
+        DISCONNECTED (e.g. a dead-end valley slope you can't ski/lift back from).
+        """
+        if core is None:
+            return CoreMembership.NO_CORE_YET
+        if both_in(node_ids=core.node_ids, a=start_node_id, b=end_node_id):
+            return CoreMembership.IN_CORE
+        return CoreMembership.DISCONNECTED
 
     def change_token(self) -> tuple[int, int, int, int, int, int]:
         """Return a cheap snapshot that changes on any graph mutation.

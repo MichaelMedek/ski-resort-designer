@@ -2,14 +2,14 @@
 
 Architecture:
 - LEFT (sidebar): ONE blue info message showing current mode, progress, and general capabilities
-- CENTER (under map): Red error messages when user clicks invalid locations, blue for loading
+- CENTER (under map): blue loading / yellow invalid-click messages
 - RIGHT (control panel): ONE yellow instruction message for what to do NOW
 
 Design Principles:
 - Maximum ONE message per panel location at any time
-- LEFT = CONTEXT (blue) - Mode, stats, general info
-- CENTER = ERRORS (red) - Invalid clicks only / LOADING (blue)
-- RIGHT = ACTION (yellow) - Specific next step
+- Two levels only: INFO (blue) = context/status/loading, WARNING (yellow) = invalid input / next step.
+- Subclass InfoMessage/WarningMessage (inline) or InfoToast/WarningToast (transient) — the level/icon is
+  fixed by the base, so a subclass supplies only its text.
 
 All data (elevations, node names, stats) must be preserved in the consolidated messages.
 """
@@ -20,23 +20,24 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
 
+from skiresort_planner.constants import LiftType, OSMImportMode, StyleConfig
 from skiresort_planner.model.path_segment import SegmentKind
 
 
 class MessageLevel(StrEnum):
-    """Display level for UI messages."""
+    """Display level for UI messages. Only two levels: blue INFO and yellow WARNING."""
 
     INFO = "info"  # Blue - context/status/loading
-    WARNING = "warning"  # Yellow - action instructions
-    ERROR = "error"  # Red - user mistakes
+    WARNING = "warning"  # Yellow - action instructions / invalid input
 
 
 @dataclass(frozen=True)
 class Message(ABC):
     """Abstract base class for user-facing messages displayed inline (sidebars/panels).
 
-    These messages are rendered as st.info/st.warning/st.error blocks that persist
-    in the UI until replaced. Used for context, instructions, and status.
+    These messages are rendered as st.info/st.warning blocks that persist in the UI until replaced.
+    Used for context, instructions, and status. Subclass via InfoMessage/WarningMessage — those fix
+    the level so a subclass only supplies its text.
     """
 
     @property
@@ -58,9 +59,26 @@ class Message(ABC):
         render_fn = {
             MessageLevel.INFO: st.info,
             MessageLevel.WARNING: st.warning,
-            MessageLevel.ERROR: st.error,
         }[self.level]
         render_fn(self.message)
+
+
+@dataclass(frozen=True)
+class InfoMessage(Message):
+    """Inline blue (INFO) message — loading/status/context. Subclasses supply only `message`."""
+
+    @property
+    def level(self) -> MessageLevel:
+        return MessageLevel.INFO
+
+
+@dataclass(frozen=True)
+class WarningMessage(Message):
+    """Inline yellow (WARNING) message — next-step instructions / invalid input. Text-only subclasses."""
+
+    @property
+    def level(self) -> MessageLevel:
+        return MessageLevel.WARNING
 
 
 @dataclass(frozen=True)
@@ -96,21 +114,39 @@ class ToastMessage(ABC):
         st.toast(f"{self.icon} {self.message}")
 
 
+@dataclass(frozen=True)
+class InfoToast(ToastMessage):
+    """Transient blue (INFO) toast — an informational cue (e.g. "computing…"). Default icon ℹ️;
+    a subclass may override `icon` for a topical glyph. Semantic level INFO (st.toast has no color API).
+    """
+
+    @property
+    def icon(self) -> str:
+        return "ℹ️"
+
+
+@dataclass(frozen=True)
+class WarningToast(ToastMessage):
+    """Transient yellow (WARNING) toast — invalid input / rejected action. Default icon ⚠️;
+    a subclass may override `icon` for a topical glyph. Semantic level WARNING.
+    """
+
+    @property
+    def icon(self) -> str:
+        return "⚠️"
+
+
 # =============================================================================
 # TOAST MESSAGES - Transient popup notifications for errors/feedback
 # =============================================================================
 
 
 @dataclass(frozen=True)
-class InvalidClickMessage(ToastMessage):
+class InvalidClickMessage(WarningToast):
     """User clicked something not allowed in current state."""
 
     action: str  # e.g., "view slope", "click terrain"
     reason: str  # e.g., "while building slope", "without Custom Connect enabled"
-
-    @property
-    def icon(self) -> str:
-        return "⚠️"
 
     @property
     def message(self) -> str:
@@ -118,15 +154,11 @@ class InvalidClickMessage(ToastMessage):
 
 
 @dataclass(frozen=True)
-class OutsideTerrainMessage(ToastMessage):
+class OutsideTerrainMessage(WarningToast):
     """User clicked outside DEM/terrain coverage."""
 
     lat: float
     lon: float
-
-    @property
-    def icon(self) -> str:
-        return "📍"
 
     @property
     def message(self) -> str:
@@ -134,48 +166,20 @@ class OutsideTerrainMessage(ToastMessage):
 
 
 @dataclass(frozen=True)
-class LiftMustGoUphillMessage(ToastMessage):
-    """User clicked downhill for lift top station."""
-
-    start_elevation_m: float
-    end_elevation_m: float
-
-    @property
-    def icon(self) -> str:
-        return "🚡"
+class SameNodeLiftMessage(WarningToast):
+    """User clicked the same location for both lift stations."""
 
     @property
     def message(self) -> str:
-        # Fires only when end <= start. Show 1-decimal elevations so a sub-metre downhill is
-        # visible (integer metres would render an identical-looking "2500m → 2500m") and the
-        # diff stays arithmetically consistent with the two shown numbers.
-        start, end = round(self.start_elevation_m, 1), round(self.end_elevation_m, 1)
-        return f"Lift Must Go Uphill — {start:.1f}m → {end:.1f}m ({end - start:+.1f}m)"
+        return "Same Location — a lift needs two different stations."
 
 
 @dataclass(frozen=True)
-class SameNodeLiftMessage(ToastMessage):
-    """User clicked same location for lift start and end."""
-
-    @property
-    def icon(self) -> str:
-        return "🚡"
-
-    @property
-    def message(self) -> str:
-        return "Same Location — Top station cannot be at the same point as bottom station."
-
-
-@dataclass(frozen=True)
-class TargetTooFarMessage(ToastMessage):
+class TargetTooFarMessage(WarningToast):
     """User clicked too far away in custom connect mode."""
 
     distance_m: float
     max_distance_m: float
-
-    @property
-    def icon(self) -> str:
-        return "📏"
 
     @property
     def message(self) -> str:
@@ -186,16 +190,12 @@ class TargetTooFarMessage(ToastMessage):
 
 
 @dataclass(frozen=True)
-class TargetNotDownhillMessage(ToastMessage):
+class TargetNotDownhillMessage(WarningToast):
     """User clicked uphill or flat in custom connect mode."""
 
     start_elevation_m: float
     target_elevation_m: float
     min_drop_m: float
-
-    @property
-    def icon(self) -> str:
-        return "⛰️"
 
     @property
     def message(self) -> str:
@@ -208,14 +208,10 @@ class TargetNotDownhillMessage(ToastMessage):
 
 
 @dataclass(frozen=True)
-class FileLoadErrorMessage(ToastMessage):
+class FileLoadErrorMessage(WarningToast):
     """User uploaded invalid resort file."""
 
     error: str
-
-    @property
-    def icon(self) -> str:
-        return "📁"
 
     @property
     def message(self) -> str:
@@ -223,14 +219,19 @@ class FileLoadErrorMessage(ToastMessage):
 
 
 @dataclass(frozen=True)
-class PlaceNotFoundMessage(ToastMessage):
+class UploadBlockedMessage(WarningToast):
+    """Upload attempted while the resort still has content."""
+
+    @property
+    def message(self) -> str:
+        return "Clear the resort first — use “🗑️ Reset to Empty” before loading a file."
+
+
+@dataclass(frozen=True)
+class PlaceNotFoundMessage(WarningToast):
     """The sidebar place search returned no match (or the lookup failed)."""
 
     query: str
-
-    @property
-    def icon(self) -> str:
-        return "🔍"
 
     @property
     def message(self) -> str:
@@ -238,14 +239,10 @@ class PlaceNotFoundMessage(ToastMessage):
 
 
 @dataclass(frozen=True)
-class OSMImportErrorMessage(ToastMessage):
+class OSMImportErrorMessage(WarningToast):
     """An OpenStreetMap import could not run (off-coverage viewport or network/parse error)."""
 
     error: str
-
-    @property
-    def icon(self) -> str:
-        return "🗺️"
 
     @property
     def message(self) -> str:
@@ -253,15 +250,11 @@ class OSMImportErrorMessage(ToastMessage):
 
 
 @dataclass(frozen=True)
-class MergeTooFarMessage(ToastMessage):
+class MergeTooFarMessage(WarningToast):
     """Selected nodes span too far to merge (any pair exceeds MergeConfig.MAX_SPAN_M)."""
 
     span_m: float
     max_span_m: float
-
-    @property
-    def icon(self) -> str:
-        return "📏"
 
     @property
     def message(self) -> str:
@@ -271,22 +264,72 @@ class MergeTooFarMessage(ToastMessage):
         return f"Nodes Too Far Apart — {span_shown:.1f}m (max: {self.max_span_m:.0f}m)"
 
 
+@dataclass(frozen=True)
+class UnableToDeleteMessage(WarningToast):
+    """A selected node can't be deleted (lift station, shared/branch junction, or sole segment)."""
+
+    reason: str  # human sentence, e.g. "N5 is a lift station — delete the lift first"
+
+    @property
+    def message(self) -> str:
+        return f"Cannot delete — {self.reason}"
+
+
+@dataclass(frozen=True)
+class ClickingDisabledIn3DToast(WarningToast):
+    """User clicked the map in 3D view, where deck.gl picking is unreliable (default ⚠️ icon)."""
+
+    @property
+    def message(self) -> str:
+        return "Clicking disabled in 3D view. Return to 2D to interact with the map."
+
+
+@dataclass(frozen=True)
+class CustomPathComputingToast(InfoToast):
+    """Informational cue while custom-connect path options are being computed (default ℹ️ icon)."""
+
+    @property
+    def message(self) -> str:
+        return "🎯 Computing custom path options…"
+
+
 # =============================================================================
 # CENTER (UNDER MAP) - Loading states (BLUE)
 # =============================================================================
 
 
 @dataclass(frozen=True)
-class DEMLoadingMessage(Message):
+class DEMLoadingMessage(InfoMessage):
     """Shown while DEM terrain data is loading."""
 
     @property
-    def level(self) -> MessageLevel:
-        return MessageLevel.INFO
+    def message(self) -> str:
+        return "🗺️ **Loading Terrain Data** — This takes a few seconds on first load…"
+
+
+@dataclass(frozen=True)
+class SizingMapMessage(InfoMessage):
+    """Shown once on first load while the browser viewport height resolves (no map this pass)."""
 
     @property
     def message(self) -> str:
-        return "🗺️ **Loading Terrain Data** — This takes a few seconds on first load..."
+        return "📐 Sizing map to your window…"
+
+
+@dataclass(frozen=True)
+class OSMImportLoadingMessage(InfoMessage):
+    """Shown while an OSM import fetches + builds (blocks the whole render; no map this pass).
+
+    Icons come from StyleConfig (the single source the import buttons use) so the two never drift.
+    """
+
+    mode: OSMImportMode
+
+    @property
+    def message(self) -> str:
+        if self.mode == OSMImportMode.LIFTS_ONLY:
+            return f"{StyleConfig.LIFT_ICONS[LiftType.GONDOLA]} Importing lifts from OpenStreetMap…"
+        return f"{StyleConfig.LIFT_ICONS[LiftType.GONDOLA]}{StyleConfig.SLOPE_ICON} Importing lifts + slopes from OpenStreetMap…"
 
 
 # =============================================================================
@@ -295,7 +338,7 @@ class DEMLoadingMessage(Message):
 
 
 @dataclass(frozen=True)
-class PathBuildingContextMessage(Message):
+class PathBuildingContextMessage(InfoMessage):
     """RIGHT panel: build-progress context for ANY path kind (slope OR road).
 
     One class covers both the STARTING case (no segments yet → shows the origin) and the BUILDING
@@ -322,10 +365,6 @@ class PathBuildingContextMessage(Message):
     current_elevation_m: float = 0.0
 
     @property
-    def level(self) -> MessageLevel:
-        return MessageLevel.INFO
-
-    @property
     def message(self) -> str:
         if self.num_segments == 0:
             if self.start_node_id:
@@ -349,22 +388,22 @@ class PathBuildingContextMessage(Message):
 
 
 @dataclass(frozen=True)
-class LiftPlacingContextMessage(Message):
+class LiftPlacingContextMessage(InfoMessage):
     """RIGHT panel: Lift placing progress message.
 
-    Shows bottom station info while awaiting top station selection.
+    Shows the first-station info while awaiting the second station selection.
     """
 
     lift_type: str = "chairlift"
-    lift_icon: str = "🚡"
-    bottom_node_id: str | None = None
-    bottom_lat: float | None = None
-    bottom_lon: float | None = None
-    bottom_elevation_m: float = 0.0
+    first_node_id: str | None = None
+    first_lat: float | None = None
+    first_lon: float | None = None
+    first_elevation_m: float = 0.0
 
     @property
-    def level(self) -> MessageLevel:
-        return MessageLevel.INFO
+    def lift_icon(self) -> str:
+        # Derive from StyleConfig (the single source the type buttons use) so the two never drift.
+        return StyleConfig.LIFT_ICONS[self.lift_type]
 
     @property
     def lift_name(self) -> str:
@@ -372,30 +411,26 @@ class LiftPlacingContextMessage(Message):
 
     @property
     def message(self) -> str:
-        if self.bottom_node_id:
-            location = f"Node **{self.bottom_node_id}**"
-        elif self.bottom_lat is not None and self.bottom_lon is not None:
-            location = f"({self.bottom_lat:.4f}, {self.bottom_lon:.4f})"
+        if self.first_node_id:
+            location = f"Node **{self.first_node_id}**"
+        elif self.first_lat is not None and self.first_lon is not None:
+            location = f"({self.first_lat:.4f}, {self.first_lon:.4f})"
         else:
-            raise ValueError("LiftPlacingContextMessage requires bottom_node_id or bottom_lat/lon")
+            raise ValueError("LiftPlacingContextMessage requires first_node_id or first_lat/lon")
         return (
             f"{self.lift_icon} **{self.lift_name}** — Placing\n\n"
-            f"- 🚉 Bottom station: {location}\n"
-            f"- 📍 Elevation: {self.bottom_elevation_m:.0f}m"
+            f"- 🚉 First station: {location}\n"
+            f"- 📍 Elevation: {self.first_elevation_m:.0f}m"
         )
 
 
 @dataclass(frozen=True)
-class ImportPlacingContextMessage(Message):
+class ImportPlacingContextMessage(InfoMessage):
     """RIGHT panel: OSM import placement progress — shows the placed box center + area size."""
 
     center_lat: float = 0.0
     center_lon: float = 0.0
     half_width_km: float = 0.0
-
-    @property
-    def level(self) -> MessageLevel:
-        return MessageLevel.INFO
 
     @property
     def message(self) -> str:
@@ -408,20 +443,16 @@ class ImportPlacingContextMessage(Message):
 
 
 @dataclass(frozen=True)
-class MergePlacingContextMessage(Message):
+class MergePlacingContextMessage(InfoMessage):
     """RIGHT panel: node-merge selection progress — shows how many nodes are selected + their span."""
 
     selected_count: int = 0
     span_m: float = 0.0
 
     @property
-    def level(self) -> MessageLevel:
-        return MessageLevel.INFO
-
-    @property
     def message(self) -> str:
         if self.selected_count == 0:
-            return "🔗 **Merge Nodes** — Selecting\n\n- 👆 Click node markers to select them"
+            return "🔗 **Merge Nodes** — Selecting\n\n- 👆 Click node markers, or a path to add a node"
         return (
             "🔗 **Merge Nodes** — Selecting\n\n"
             f"- ⚪ Selected: {self.selected_count} node(s)\n"
@@ -452,7 +483,7 @@ def too_steep_detail(gentlest_pct: float | None, max_grade_pct: float, subject: 
 
 
 @dataclass(frozen=True)
-class PathActionMessage(Message):
+class PathActionMessage(WarningMessage):
     """RIGHT panel: action instruction while selecting a path proposal (slope OR road).
 
     Covers fan-out and custom-connect proposals for any path kind. The commit/finish wording noun
@@ -487,10 +518,6 @@ class PathActionMessage(Message):
     too_steep_cap_pct: float = 0.0
     too_steep_subject: str = ""
     too_steep_two_sided: bool = False
-
-    @property
-    def level(self) -> MessageLevel:
-        return MessageLevel.WARNING
 
     @property
     def message(self) -> str:
@@ -553,31 +580,21 @@ class PathActionMessage(Message):
 
 
 @dataclass(frozen=True)
-class LiftActionMessage(Message):
-    """RIGHT panel: instruction to select the top station during lift placement."""
-
-    bottom_elevation_m: float = 0.0
-
-    @property
-    def level(self) -> MessageLevel:
-        return MessageLevel.WARNING
+class LiftActionMessage(WarningMessage):
+    """RIGHT panel: instruction to select the second station during lift placement."""
 
     @property
     def message(self) -> str:
         return (
-            "⬆️ **Select Top Station**\n\n"
-            f"- 👆 Click terrain **above {self.bottom_elevation_m:.0f}m**\n"
-            "- ⚪ Or click a higher **node**"
+            "⬆️ **Select Second Station**\n\n"
+            "- 👆 Click terrain or a **node** for the other station\n"
+            "- ↕️ The lift auto-orients low → high (always goes up)"
         )
 
 
 @dataclass(frozen=True)
-class ImportActionMessage(Message):
+class ImportActionMessage(WarningMessage):
     """RIGHT panel: action instruction while placing an OSM import box."""
-
-    @property
-    def level(self) -> MessageLevel:
-        return MessageLevel.WARNING
 
     @property
     def message(self) -> str:
@@ -585,32 +602,28 @@ class ImportActionMessage(Message):
             "🗺️ **Confirm the Import Area**\n\n"
             "- ↔️ Resize with the **half-width slider** (left)\n"
             "- 👆 Click terrain to **re-place** the center\n"
-            "- ✅ Click the **center dot** or **Confirm Import** to fetch"
+            "- ✅ Click **Import lifts + slopes** or **Import lifts only** to fetch"
         )
 
 
 @dataclass(frozen=True)
-class MergeActionMessage(Message):
+class MergeActionMessage(WarningMessage):
     """RIGHT panel: action instruction while selecting nodes to merge."""
 
     selected_count: int = 0
 
     @property
-    def level(self) -> MessageLevel:
-        return MessageLevel.WARNING
-
-    @property
     def message(self) -> str:
         if self.selected_count < 2:
             return (
-                "🔗 **Select Nodes to Merge**\n\n"
-                "- 👆 Click **node markers** to select (click again to deselect)\n"
-                "- Select at least **2 nodes** to merge them into one"
+                "🔗 **Select Nodes** — merge, delete, or click a path\n\n"
+                "- 👆 Click **node markers** to select (again to deselect)\n"
+                "- 🗑️ **Delete** trims 1 node • 🔗 **Merge** needs 2 • or click a **path** to add a node"
             )
         return (
-            "🔗 **Merge the Selected Nodes**\n\n"
+            "🔗 **Merge or Delete the Selected Nodes**\n\n"
             "- 👆 Click more **node markers** to add/remove\n"
-            "- ✅ Click **Confirm Merge** to collapse them to their median position"
+            "- ✅ **Confirm Merge** to collapse them • 🗑️ **Delete** to remove them"
         )
 
 
@@ -620,15 +633,26 @@ class MergeActionMessage(Message):
 
 
 @dataclass(frozen=True)
-class SegmentWarningMessage(Message):
+class SegmentWarningMessage(WarningMessage):
     """Warning in slope stats panel about segment issues."""
 
     warning_text: str
 
     @property
-    def level(self) -> MessageLevel:
-        return MessageLevel.WARNING
+    def message(self) -> str:
+        return f"⚠️ {self.warning_text}"
+
+
+@dataclass(frozen=True)
+class DisconnectedEntityMessage(WarningMessage):
+    """Warning that the viewed slope/lift can't be reached from the core resort."""
+
+    entity_noun: str  # "slope" / "lift"
+    core_lift_name: str  # longest lift in the core area — orients the user
 
     @property
     def message(self) -> str:
-        return f"⚠️ {self.warning_text}"
+        return (
+            f"⚠️ This {self.entity_noun} is disconnected from the core area (with {self.core_lift_name}) — "
+            "it can't be reached by skiing slopes or taking lifts."
+        )

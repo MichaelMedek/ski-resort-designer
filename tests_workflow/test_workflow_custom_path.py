@@ -154,11 +154,11 @@ class TestSelectCustomTargetWorkflow:
 
         sm.select_custom_target(target_location=(0.0, -500 / M, dem.get_elevation_or_raise(lon=0.0, lat=-500 / M)))  # type: ignore[attr-defined]  # dynamic python-statemachine event
         assert sm.current_state_value == "slope_custom_path"
-        assert ctx.deferred.custom_connect, "entering custom path arms deferred generation"
+        assert ctx.pending.custom_connect, "entering custom path arms deferred generation"
 
         sm.cancel_custom()  # type: ignore[attr-defined]  # dynamic python-statemachine event
         assert sm.current_state_value == "slope_starting", "no segments → back to fan-out"
-        assert not ctx.deferred.custom_connect, "cancel_custom clears the deferred flag"
+        assert not ctx.pending.custom_connect, "cancel_custom clears the deferred flag"
 
 
 class TestCancelCustomConnect:

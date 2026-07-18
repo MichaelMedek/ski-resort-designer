@@ -42,6 +42,12 @@ class MarkerType(StrEnum):
     IMPORT_CENTER = "import_center"
 
 
+# The path-body (belt / center-line) marker MAY carry the click's lat/lon (the coordinate deck.gl
+# resolved on the ribbon) so a path click can add a node at that point.
+POSITIONED_MARKER_TYPES = frozenset({MarkerType.SEGMENT})
+assert set(MarkerType) >= POSITIONED_MARKER_TYPES, "POSITIONED_MARKER_TYPES must be a subset of MarkerType"
+
+
 @dataclass(frozen=True)
 class ClickInfo:
     """Unified click information - the ONLY output from click detection.
@@ -49,7 +55,8 @@ class ClickInfo:
     STRICT CONTRACT:
     - click_type is ALWAYS set (MARKER or TERRAIN)
     - For TERRAIN: lat/lon are REQUIRED
-    - For MARKER: lat/lon are None (position not needed)
+    - For MARKER: lat/lon are None, EXCEPT path-body markers (POSITIONED_MARKER_TYPES) which MAY
+      carry the click's lat/lon so a path click can add a node at that point
     - marker_type is set IFF click_type == MARKER
     - Exactly ONE ID field is set for each marker type
 
@@ -86,8 +93,9 @@ class ClickInfo:
         elif self.click_type == MapClickType.MARKER:
             if self.marker_type is None:
                 raise ValueError("MARKER click must have marker_type set")
-            if self.lat is not None or self.lon is not None:
-                raise ValueError("MARKER click must NOT have lat/lon set")
+            # Path-body markers MAY carry the click's lat/lon (to add a node there).
+            if (self.marker_type not in POSITIONED_MARKER_TYPES) and (self.lat is not None or self.lon is not None):
+                raise ValueError(f"{self.marker_type} marker must NOT have lat/lon set")
             self._validate_marker_ids()
         else:
             raise RuntimeError(f"Unknown click_type: {self.click_type}")

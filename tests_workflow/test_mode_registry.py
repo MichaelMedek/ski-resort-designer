@@ -181,7 +181,7 @@ class TestGreyoutRule:
         slope = empty_graph.finish_slope(segment_ids=list(empty_graph.segments.keys()))
         assert slope is not None
         sm = self._sm(empty_graph)
-        sm.show_slope_info_panel(slope_id=slope.id)
+        sm.view_slope(slope_id=slope.id)
 
         # Import + Merge now grey out while viewing (close the panel first) …
         assert not OPERATIONS[BuildMode.IMPORT].enabled(sm), "Import must grey out while viewing a slope"

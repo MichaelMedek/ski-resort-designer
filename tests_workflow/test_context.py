@@ -137,17 +137,17 @@ class TestClickDeduplicationContext:
 
 
 class TestLiftContextClear:
-    """LiftContext.clear() resets the placement scratch (start node/location) to a fresh state.
+    """LiftContext.clear() resets the placement scratch (first node/location) to a fresh state.
 
     The selected lift TYPE is deliberately NOT stored here — it lives in BuildModeContext.mode (the
-    single source of truth), so clear() must restore only the start endpoint fields.
+    single source of truth), so clear() must restore only the first-endpoint fields.
     """
 
     def test_clear_resets_placement_fields(self) -> None:
         ctx = LiftContext()
-        ctx.start_node_id = "N1"
+        ctx.first_node_id = "N1"
         ctx.clear()
-        assert ctx == LiftContext(), "clear() must restore a fresh context (start_node_id/start_location cleared)"
+        assert ctx == LiftContext(), "clear() must restore a fresh context (first_node_id/first_location cleared)"
 
 
 class TestCustomConnectForceModeIsDerived:

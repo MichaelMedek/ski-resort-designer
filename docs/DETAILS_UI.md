@@ -107,7 +107,7 @@ Click on any **finished slope** (the colored ribbon or its icon) to open the sta
 | **Overall Gradient** | Average slope percentage |
 | **Steepest Section** | Maximum gradient in any 300m window (determines difficulty) |
 
-Expand **📋 Segment Details** to see per-segment breakdown with warnings.
+Expand **📋 Segment Details** to see per-segment breakdown with warnings. A **⚠️ disconnected** note also appears here if the slope (or lift) can't be reached from the resort's core network — connect it via slopes or lifts to clear it.
 
 ### 3D View
 
@@ -196,7 +196,7 @@ In the sidebar, click one of the lift buttons:
 | Icon | Type | Best For |
 |------|------|----------|
 | 🎿 | **Surface Lift** | Short beginner areas, max ~100m spans |
-| 🪑 | **Chairlift** | Standard mountain transport, up to ~200m spans |
+| 💺 | **Chairlift** | Standard mountain transport, up to ~200m spans |
 | 🚡 | **Gondola** | Longer distances, weather protection, up to ~300m spans |
 | 🚠 | **Aerial Tram** | Very long spans over difficult terrain |
 
@@ -310,12 +310,12 @@ As with slopes and lifts, you can view the road's elevation profile, switch to *
 
 - **⛷️ Slope** — Click terrain to start a new ski slope
 - **🛣️ Road** — Build a gentle car road segment by segment
-- **🎿🪑🚡🚠 Lift buttons** — Click terrain to place a lift (Surface, Chair, Gondola, Aerial Tram)
+- **🎿💺🚡🚠 Lift buttons** — Click terrain to place a lift (Surface, Chair, Gondola, Aerial Tram)
 
 Below a divider sit two **utility** buttons:
 
 - **🗺️ Import** — load real lifts & pistes from OpenStreetMap for an area.
-- **🔗 Node Merge** — collapse selected junction nodes into one
+- **🔗 Node Merge** — merge junction nodes, delete a node, or add a node on a path.
 
 The currently active mode is highlighted.
 
@@ -339,6 +339,14 @@ The currently active mode is highlighted.
 |---------|--------|
 | **🏁 Finish Committed Road** | Finalize the road (enabled after ≥1 segment) |
 | **✖️ Cancel Full Road** | Discard the whole in-progress road, return to idle |
+
+### During Node Editing
+
+| Control | Action |
+|---------|--------|
+| **🔗 Confirm Merge** | Collapse the selected nodes to their median (enabled at ≥2) |
+| **🗑️ Delete Node(s)** | Delete the selected interior / end nodes (enabled at ≥1) |
+| **✖️ Cancel Merge** | Clear the selection, return to idle |
 
 ### Search for a Place
 
@@ -413,6 +421,39 @@ canvas, then keep editing with the normal tools.
 - **Trivial runs are ignored.** Lifts shorter than 300 m and pistes shorter than 200 m are skipped.
 - **Re-importing won't duplicate.** If you import an overlapping area again, runs already in the resort are recognised and skipped.
 - **One Undo removes the whole import**, so you can undo and import a different area.
+
+---
+
+## Editing Nodes
+
+Slopes, roads, and lifts all meet at **nodes** (the junction markers on the map). The **🔗 Node Merge** utility is where you clean those up. Select **🔗 Node Merge** in the build-mode selector to enter it.
+
+### Merge nodes into one
+
+Use this when several junctions that should be one point sit slightly apart (common right after an OpenStreetMap import, where a station splits into a cluster).
+
+1. **Click node markers** to select them (click a selected node again to deselect). Selected nodes are highlighted, and the right panel shows the count and the **span** (largest gap between any two).
+2. Click **🔗 Confirm Merge**. The selected nodes collapse to their **median position**, every slope/road/lift attached to them is repointed onto the survivor.
+
+### Delete a node
+
+1. Select **one or more** node markers.
+2. Click **🗑️ Delete Node(s)**.
+
+Only nodes that can be removed cleanly are deleted:
+
+- An **interior node** of a path — its two segments fuse into one.
+- A **clean endpoint** of a path with more than one segment — its end segment is trimmed off and the rest of the path is kept.
+
+Deletion is **refused with a message** when a selected node is:
+
+- a **lift station** — delete the lift first;
+- a **junction shared with another path** — delete that path first;
+- the **only segment of its path** — delete the whole path instead.
+
+### Add a node on a path
+
+While in Node Merge mode, **click anywhere on an existing path** to drop a new node on the centerline at that point, splitting the segment in two. Use this to create a junction to branch a new slope or road off later.
 
 ---
 

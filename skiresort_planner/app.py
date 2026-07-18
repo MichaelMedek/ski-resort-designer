@@ -8,9 +8,11 @@ Run: streamlit run skiresort_planner/app.py
 
 import traceback
 import uuid
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import pydeck as pdk
+import requests
 import streamlit as st
 
 from skiresort_planner.constants import (
@@ -19,9 +21,20 @@ from skiresort_planner.constants import (
     MapConfig,
 )
 from skiresort_planner.core.dem_service import DEMService, download_dem_from_huggingface
+from skiresort_planner.generators.osm_importer import ProgressFn
 from skiresort_planner.generators.path_factory import PathFactory
 from skiresort_planner.logging_setup import configure_logging
-from skiresort_planner.model.message import DEMLoadingMessage
+from skiresort_planner.model.message import (
+    ClickingDisabledIn3DToast,
+    CustomPathComputingToast,
+    DEMLoadingMessage,
+    Message,
+    OSMImportErrorMessage,
+    OSMImportLoadingMessage,
+    SizingMapMessage,
+    ToastMessage,
+    WarningToast,
+)
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.persistence import backup_store
 from skiresort_planner.ui import (
@@ -34,9 +47,10 @@ from skiresort_planner.ui import (
     cancel_custom_path,
     commit_selected_path,
     dispatch_click,
-    process_custom_connect_deferred,
-    process_osm_import_deferred,
-    process_path_generation_deferred,
+    process_custom_connect_pending,
+    process_osm_import_pending,
+    process_path_generation_pending,
+    reload_map,
     render_control_panel,
     trigger_rerun,
     viewport_map_height,
@@ -174,43 +188,85 @@ def _handle_error_with_recovery(e: Exception, context_tag: str) -> None:
         trigger_rerun()
 
 
-def load_dem_data() -> bool:
-    """Load DEM data. Returns True when loaded, False while loading.
+def run_pending_action(cue: ToastMessage | None, work: Callable[[], object]) -> None:
+    """FAST in-render pending action: optional transient toast cue, then run. No spinner, no reframe.
+    Used for the light in-memory work (custom-connect, fan generation).
+    """
+    if cue is not None:
+        cue.display()
+    work()
 
-    Downloads from Hugging Face if not present locally. Uses DEMService.is_loaded to survive
-    Streamlit module reloads that reset class-level singleton state.
+
+def run_pending_load(
+    message: Message,
+    work: Callable[[ProgressFn], object],
+    *,
+    reset_center: tuple[float, float],
+    reset_zoom: int,
+    catch: type[Exception] | tuple[type[Exception], ...] | None = None,
+    failure_message: WarningToast | None = None,
+) -> None:
+    """SLOW pending action: blocking loading message + mandatory progress bar around `work`, then EITHER
+    reframe the map to (reset_center, reset_zoom) on success OR, if `work` raises one of `catch`, show
+    `failure_message` and rerun WITHOUT reframing (so the warning isn't buried by a camera remount).
+    reset_center/reset_zoom are always required (discarded on failure). `catch` names EXACTLY the
+    exception type(s) to soft-handle — anything else always propagates; None catches nothing (hard fail).
+    `catch` and `failure_message` are given together or not at all.
+    """
+    assert (catch is None) == (failure_message is None), "pass both `catch` and `failure_message`, or neither"
+    assert (failure_message is None) or isinstance(failure_message, WarningToast), (
+        "failure_message must be a WarningToast (a yellow toast), not an info/inline message"
+    )
+    message.display()
+    bar = st.progress(0.0, text="Starting…")
+
+    def report(frac: float, text: str) -> None:
+        bar.progress(frac, text=text)
+
+    caught: tuple[type[Exception], ...] = () if catch is None else (catch if isinstance(catch, tuple) else (catch,))
+    try:
+        work(report)
+    except caught as exc:  # only the named type(s); () catches nothing → any exception propagates
+        logger.warning(f"pending load failed: {exc}")
+        assert failure_message is not None  # paired with `catch` by the assert above
+        failure_message.display()
+        trigger_rerun()  # rerun WITHOUT reframing so the warning survives
+        return
+    reload_map(center=reset_center, zoom=reset_zoom, pitch=MapConfig.VIEWING_PITCH)  # success: reframe + rerun
+
+
+def load_dem_data() -> None:
+    """Return early once DEM data is loaded; otherwise load it and reframe to the start view (which
+    reruns), so control never returns here after loading. Downloads from Hugging Face if absent. Uses
+    DEMService.is_loaded to survive Streamlit module reloads that reset class-level singleton state.
     """
     # Check if DEM service exists AND is actually loaded (handles module reimport)
     dem_service = st.session_state.get("dem_service")
     if dem_service is not None and dem_service.is_loaded:
-        return True
+        return
 
-    # Show loading screen with centered message
-    DEMLoadingMessage().display()
+    def _load(report: ProgressFn) -> None:
+        dem_path = DEMConfig.EURODEM_PATH
+        # dem_path.exists() is legitimate external-file handling: download only when missing.
+        if not dem_path.exists():
+            logger.info(f"Downloading DEM from Hugging Face to {dem_path}")
+            download_dem_from_huggingface(
+                target_path=dem_path, progress_callback=lambda f: report(f, f"Downloading terrain… {f * 100:.0f}%")
+            )
+        report(1.0, "Loading terrain…")
+        svc = DEMService(dem_path=dem_path)
+        _ = svc.get_elevation(lon=10.0, lat=47.0)  # force _ensure_loaded now
+        st.session_state.dem_service = svc
+        st.session_state.path_factory = PathFactory(dem_service=svc)
 
-    dem_path = DEMConfig.EURODEM_PATH
-
-    # Download from Hugging Face if not present locally
-    if not dem_path.exists():
-        st.info("🗺️ Downloading Alps terrain data from Hugging Face (~285MB)...")
-        progress_bar = st.progress(0, text="Starting download...")
-
-        def update_progress(progress: float) -> None:
-            progress_bar.progress(progress, text=f"Downloading... {progress * 100:.0f}%")
-
-        logger.info(f"Downloading DEM from Hugging Face to {dem_path}")
-        download_dem_from_huggingface(target_path=dem_path, progress_callback=update_progress)
-        progress_bar.progress(1.0, text="Download complete!")
-
-    with st.spinner("Loading terrain elevation data..."):
-        dem_service = DEMService(dem_path=dem_path)
-        # Force immediate loading by querying a point (triggers _ensure_loaded)
-        _ = dem_service.get_elevation(lon=10.0, lat=47.0)
-        st.session_state.dem_service = dem_service
-        st.session_state.path_factory = PathFactory(dem_service=dem_service)
-
-    trigger_rerun()  # Raises StopExecution in production; returns in tests
-    return False  # Reached only under a mocked rerun: DEM not ready yet
+    run_pending_load(
+        message=DEMLoadingMessage(),
+        work=_load,
+        reset_center=(MapConfig.START_CENTER_LON, MapConfig.START_CENTER_LAT),
+        reset_zoom=MapConfig.DEFAULT_ZOOM,
+        catch=None,  # DEM load has no soft-failure — any error is a hard fail
+        failure_message=None,
+    )
 
 
 # =============================================================================
@@ -306,7 +362,7 @@ def _render_map_fragment_inner() -> None:
     # None only on first load, before the js-eval round-trip resolves (cached thereafter, so reruns keep the size).
     height = viewport_map_height()
     if height is None:
-        st.info("📐 Sizing map to your window…")
+        SizingMapMessage().display()
         return
 
     # force_remount_key AND height are in the key: st_deckgl only applies height on first mount, so
@@ -327,7 +383,7 @@ def _render_map_fragment_inner() -> None:
     if use_3d:
         # 3D mode: show warning if user clicks terrain
         if click_result.clicked_coordinate:
-            st.toast("Clicking disabled in 3D view. Return to 2D to interact with the map.", icon="⚠️")
+            ClickingDisabledIn3DToast().display()
     else:
         detector = ClickDetector(dedup=ctx.click_dedup)
         click_info = detector.detect(
@@ -351,9 +407,9 @@ def main() -> None:
     # Streamlit has no API to reclaim vertical chrome, so a full-height map needs CSS.
     st.markdown(_FULLSCREEN_CSS, unsafe_allow_html=True)
 
-    # Block until DEM is loaded - shows loading message and prevents map interaction
-    if not load_dem_data():
-        return
+    # Block until DEM is loaded: returns early if already loaded, else shows the loading screen and
+    # reruns (never returns here), so control only continues once the DEM is ready.
+    load_dem_data()
 
     try:
         _run_app_ui()
@@ -373,21 +429,31 @@ def _run_app_ui() -> None:
     logger.debug(
         f"[MAIN] ===== rerun ===== state={sm.get_state_name()} camera_epoch={camera_epoch} "
         f"dedup_epoch={st.session_state.get('dedup_epoch', 0)} "
-        f"deferred(osm={ctx.deferred.osm_import},custom={ctx.deferred.custom_connect},"
-        f"fan={bool(ctx.deferred.fan_generation)})"
+        f"deferred(osm={ctx.pending.osm_import_mode},custom={ctx.pending.custom_connect},"
+        f"fan={bool(ctx.pending.fan_generation)})"
     )
 
-    # Deferred actions (once per render). Progress uses st.toast, NOT st.spinner: a body spinner
-    # shifts the body element order between reruns, re-creating the map iframe (flash + camera reset);
-    # a toast is a transient overlay that never touches the layout. Fan is fast (no cue).
-    if ctx.deferred.osm_import:
-        st.toast("🗺️ Importing lifts & pistes from OpenStreetMap…")
-        process_osm_import_deferred()
-    elif ctx.deferred.custom_connect:
-        st.toast("🎯 Computing custom path options…")
-        process_custom_connect_deferred()
-    elif ctx.deferred.fan_generation:
-        process_path_generation_deferred()  # fast — no cue needed
+    # Pending actions (once per render). OSM import is heavy (network + graph build): the slow helper
+    # shows a blocking loading message + progress bar and returns early (no map iframe this pass, so the
+    # bar is layout-safe), then reframes on the import box center on success — or shows a warning toast
+    # WITHOUT reframing on failure. Custom/fan are fast: the fast helper just runs them.
+    if ctx.pending.osm_import_mode is not None:
+        # Capture the box center BEFORE process_* consumes (nulls) it — the reframe target on success.
+        lon, lat = ctx.pending.osm_import_center_lon, ctx.pending.osm_import_center_lat
+        assert lon is not None and lat is not None, "a pending OSM import always has a placed center"
+        run_pending_load(
+            message=OSMImportLoadingMessage(mode=ctx.pending.osm_import_mode),
+            work=process_osm_import_pending,
+            reset_center=(lon, lat),
+            reset_zoom=MapConfig.IMPORT_OVERVIEW_ZOOM,
+            catch=requests.RequestException,  # only a network failure is soft; a parse/logic bug must raise
+            failure_message=OSMImportErrorMessage(error="the area could not be imported — network error"),
+        )
+        return  # slow helper reframed/warned + reran; skip the normal UI this render
+    if ctx.pending.custom_connect:
+        run_pending_action(cue=CustomPathComputingToast(), work=process_custom_connect_pending)
+    elif ctx.pending.fan_generation:
+        run_pending_action(cue=None, work=process_path_generation_pending)  # fast — no cue needed
 
     # Sidebar (fire-and-forget: its panels call actions directly on button clicks)
     sidebar = SidebarRenderer(state_machine=sm, context=ctx, graph=graph)

@@ -6,6 +6,8 @@ _render_map_fragment_inner) is driven end-to-end with a seeded session and a
 stubbed st_deckgl so the deck.gl component call returns no event.
 """
 
+import pytest
+
 import skiresort_planner.ui.pydeck_click_handler as pch
 from skiresort_planner import app
 from skiresort_planner.constants import ChartConfig, DEMConfig
@@ -79,14 +81,20 @@ class TestSessionHelpers:
         assert fake_st.session_state["state_machine"] is not None
         assert fake_st.session_state["camera_epoch"] == 1
 
-    def test_load_dem_data_returns_true_when_loaded(self, fake_st, mock_dem_blue_slope) -> None:
+    def test_load_dem_data_returns_early_when_loaded(self, fake_st, mock_dem_blue_slope, monkeypatch) -> None:
         fake_st.session_state["dem_service"] = mock_dem_blue_slope  # already loaded
-        assert app.load_dem_data() is True
+        reframed: list[object] = []
+        monkeypatch.setattr(app, "reload_map", lambda **k: reframed.append(k))
 
-    def test_load_dem_data_builds_services_and_reruns_while_loading(self, fake_st, monkeypatch) -> None:
+        app.load_dem_data()  # already loaded → returns early, no work
+        assert reframed == [], "no reframe/rerun when the DEM is already loaded"
+
+    def test_load_dem_data_builds_services_and_reframes_while_loading(self, fake_st, monkeypatch) -> None:
         # No dem_service in session and the DEM file already present locally: skip download,
-        # build DEMService + PathFactory, request a rerun, and report "still loading" (False).
+        # build DEMService + PathFactory, then reframe to the start view (which reruns).
         from pathlib import Path
+
+        from skiresort_planner.constants import MapConfig
 
         class _FakeDEM:
             is_loaded = True
@@ -105,15 +113,27 @@ class TestSessionHelpers:
         monkeypatch.setattr(DEMConfig, "EURODEM_PATH", _PresentPath("/tmp/fake_eurodem.tif"))
         monkeypatch.setattr(app, "DEMService", lambda *a, **k: _FakeDEM())
         monkeypatch.setattr(app, "PathFactory", lambda *a, **k: object())
-        rerun_calls: list[int] = []
-        monkeypatch.setattr(app, "trigger_rerun", lambda *a, **k: rerun_calls.append(1))
+        # reload_map reruns in prod (StopExecution); here it records the frame and raises so the flow
+        # stops exactly where the real rerun would — load_dem_data never returns after loading.
+        reframes: list[tuple[tuple[float, float], int]] = []
 
-        result = app.load_dem_data()
+        class _Rerun(Exception):
+            pass
 
-        assert result is False  # DEM not ready this pass; caller returns to show loading screen
+        def _fake_reload(*, center: tuple[float, float], zoom: int, pitch: float) -> None:
+            reframes.append((center, zoom))
+            raise _Rerun
+
+        monkeypatch.setattr(app, "reload_map", _fake_reload)
+
+        with pytest.raises(_Rerun):
+            app.load_dem_data()
+
         assert isinstance(fake_st.session_state["dem_service"], _FakeDEM)
         assert fake_st.session_state["path_factory"] is not None
-        assert rerun_calls == [1]  # a rerun was requested once the services were installed
+        assert reframes == [((MapConfig.START_CENTER_LON, MapConfig.START_CENTER_LAT), MapConfig.DEFAULT_ZOOM)], (
+            "DEM load reframes to the start view via the shared slow-load helper"
+        )
 
 
 class TestReloadMapSignature:
@@ -144,6 +164,152 @@ class TestReloadMapSignature:
         assert (ctx.map.lon, ctx.map.lat) == (10.5, 46.5)
         assert ctx.map.zoom == 13
         assert fake_st.session_state["camera_epoch"] == 1  # remount so deck re-reads the frame
+
+
+class TestPendingOSMImportGate:
+    """The pending OSM import shows a blocking loading message + progress bar, returns early (no map
+    this pass), and ALWAYS reframes on the placed import box center at the import-overview zoom.
+    """
+
+    def test_pending_import_gates_and_recenters(self, fake_st, monkeypatch, mock_dem_blue_slope) -> None:
+        from skiresort_planner.constants import MapConfig, OSMImportMode
+        from skiresort_planner.generators.osm_importer import ProgressFn
+
+        graph, _sm, ctx = _seed_full_session(fake_st, mock_dem_blue_slope)
+        ctx.pending.osm_import_mode = OSMImportMode.LIFTS_AND_SLOPES
+        ctx.pending.osm_import_center_lon = 10.5  # the placed box center — reframe target
+        ctx.pending.osm_import_center_lat = 46.5
+
+        # Stub the heavy import: no network; it must receive the progress reporter and drive it.
+        reported: list[float] = []
+
+        def _fake_import(report: ProgressFn) -> bool:
+            report(0.5, "working…")
+            reported.append(0.5)
+            return True
+
+        monkeypatch.setattr(app, "process_osm_import_pending", _fake_import)
+        monkeypatch.setattr(infra, "trigger_rerun", lambda *a, **k: None)
+        rendered: list[bool] = []
+        monkeypatch.setattr(app, "_render_map_fragment", lambda: rendered.append(True))
+
+        app._run_app_ui()
+
+        assert reported == [0.5], "the import work was driven with the progress reporter"
+        assert rendered == [], "returns before the normal UI renders (no frozen map)"
+        assert (ctx.map.lon, ctx.map.lat) == (10.5, 46.5), "reframed on the placed import box center"
+        assert ctx.map.zoom == MapConfig.IMPORT_OVERVIEW_ZOOM, "one step further out than building zoom"
+        assert fake_st.session_state["camera_epoch"] == 1, "remount so deck re-reads the frame"
+
+
+class TestRunPendingLoadFailure:
+    """run_pending_load's strict contract: success reframes; a CAUGHT exception shows a pre-given
+    WarningToast WITHOUT reframing; an uncaught type always propagates; `catch`+`failure_message` pair.
+    """
+
+    def _seed_ctx(self, fake_st):
+        _sm, ctx = PlannerStateMachine.create(graph=ResortGraph(), add_ui_listener=False)
+        fake_st.session_state["context"] = ctx
+        fake_st.session_state["camera_epoch"] = 0
+        return ctx
+
+    def test_caught_failure_shows_warning_and_does_not_reframe(self, fake_st, monkeypatch) -> None:
+        from skiresort_planner.model.message import DEMLoadingMessage, OSMImportErrorMessage
+
+        ctx = self._seed_ctx(fake_st)
+        reframed: list[object] = []
+        reran: list[int] = []
+        monkeypatch.setattr(app, "reload_map", lambda **k: reframed.append(k))
+        monkeypatch.setattr(app, "trigger_rerun", lambda *a, **k: reran.append(1))
+
+        def boom(_report):
+            raise RuntimeError("kaput")
+
+        app.run_pending_load(
+            message=DEMLoadingMessage(),
+            work=boom,
+            reset_center=(1.0, 2.0),
+            reset_zoom=12,
+            catch=RuntimeError,
+            failure_message=OSMImportErrorMessage(error="nope"),
+        )
+
+        assert reframed == [], "a caught failure must NOT reframe (would bury the warning)"
+        assert reran == [1], "it still reruns so the warning toast paints"
+        assert ctx.map.zoom != 12, "the reset frame was discarded on failure"
+
+    def test_uncaught_exception_type_propagates(self, fake_st, monkeypatch) -> None:
+        import pytest
+
+        from skiresort_planner.model.message import DEMLoadingMessage, OSMImportErrorMessage
+
+        self._seed_ctx(fake_st)
+        monkeypatch.setattr(app, "reload_map", lambda **k: None)
+
+        def boom(_report):
+            raise KeyError("not the caught type")
+
+        # catch=ValueError only → a KeyError is NOT soft-handled, it propagates.
+        with pytest.raises(KeyError):
+            app.run_pending_load(
+                message=DEMLoadingMessage(),
+                work=boom,
+                reset_center=(1.0, 2.0),
+                reset_zoom=12,
+                catch=ValueError,
+                failure_message=OSMImportErrorMessage(error="nope"),
+            )
+
+    def test_no_catch_hard_fails(self, fake_st, monkeypatch) -> None:
+        import pytest
+
+        from skiresort_planner.model.message import DEMLoadingMessage
+
+        self._seed_ctx(fake_st)
+        monkeypatch.setattr(app, "reload_map", lambda **k: None)
+
+        def boom(_report):
+            raise RuntimeError("kaput")
+
+        # No catch/failure_message → nothing soft-handled (DEM-style hard fail).
+        with pytest.raises(RuntimeError, match="kaput"):
+            app.run_pending_load(message=DEMLoadingMessage(), work=boom, reset_center=(1.0, 2.0), reset_zoom=12)
+
+    def test_catch_and_failure_message_must_be_paired(self, fake_st, monkeypatch) -> None:
+        import pytest
+
+        from skiresort_planner.model.message import DEMLoadingMessage
+
+        self._seed_ctx(fake_st)
+        monkeypatch.setattr(app, "reload_map", lambda **k: None)
+
+        # catch given but no failure_message → the pairing assert fires.
+        with pytest.raises(AssertionError, match="both"):
+            app.run_pending_load(
+                message=DEMLoadingMessage(),
+                work=lambda _r: None,
+                reset_center=(1.0, 2.0),
+                reset_zoom=12,
+                catch=RuntimeError,
+            )
+
+    def test_failure_message_must_be_a_warning_toast(self, fake_st, monkeypatch) -> None:
+        import pytest
+
+        from skiresort_planner.model.message import CustomPathComputingToast, DEMLoadingMessage
+
+        self._seed_ctx(fake_st)
+        monkeypatch.setattr(app, "reload_map", lambda **k: None)
+
+        with pytest.raises(AssertionError, match="WarningToast"):
+            app.run_pending_load(
+                message=DEMLoadingMessage(),
+                work=lambda _r: None,
+                reset_center=(1.0, 2.0),
+                reset_zoom=12,
+                catch=RuntimeError,
+                failure_message=CustomPathComputingToast(),  # type: ignore[arg-type]  # an InfoToast — must be rejected
+            )
 
 
 class TestMapHeight:
@@ -216,7 +382,7 @@ class TestRenderLoop:
         graph, sm, ctx = _seed_full_session(fake_st, mock_dem_blue_slope)
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
-        sm.show_slope_info_panel(slope_id=slope.id)
+        sm.view_slope(slope_id=slope.id)
         keys: list[str] = []
         fake_st.plotly_chart = lambda *a, **k: keys.append(k.get("key"))
 
@@ -231,7 +397,7 @@ class TestRenderLoop:
         proposal = ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)
         graph.commit_paths(paths=[proposal], record_undo=False)
         road = graph.finish_road(segment_ids=[list(graph.segments.keys())[-1]])
-        sm.show_road_info_panel(road_id=road.id)
+        sm.view_road(road_id=road.id)
         keys: list[str] = []
         fake_st.plotly_chart = lambda *a, **k: keys.append(k.get("key"))
 

@@ -69,7 +69,7 @@ class TestIdleSidebarPanel:
 
 class TestViewingSidebarPanel:
     def test_close_button_hides_the_info_panel(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
-        # The one control is "Close Right Panel" → sm.hide_info_panel() → back to idle_ready.
+        # The one control is "Close Right Panel" → sm.close_panel() → back to idle_ready.
         graph = ResortGraph()
         graph.commit_paths(
             paths=[
@@ -85,7 +85,7 @@ class TestViewingSidebarPanel:
         slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
         assert slope is not None
         sm, ctx = _session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
-        sm.show_slope_info_panel(slope_id=slope.id)
+        sm.view_slope(slope_id=slope.id)
         assert sm.is_idle_viewing_slope
 
         fake_st.clicked_keys = {"close_panel_btn"}
@@ -98,7 +98,7 @@ class TestViewingSidebarPanel:
         slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
         assert slope is not None
         sm, ctx = _session(fake_st, graph, path_factory, mock_dem_blue_slope)
-        sm.show_slope_info_panel(slope_id=slope.id)
+        sm.view_slope(slope_id=slope.id)
 
         ViewingSidebarPanel(sm=sm, ctx=ctx, graph=graph).controls()  # no clicked_keys → button not fired
         assert sm.is_idle_viewing_slope, "rendering without a click does not close the panel"
@@ -117,9 +117,9 @@ class TestPathBuildSidebarPanel:
         ctx.build_mode.mode = BuildMode.SLOPE if kind == SegmentKind.SLOPE else BuildMode.ROAD
         elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
         if kind == SegmentKind.SLOPE:
-            sm.start_building(lon=0.0, lat=0.0, elevation=elev)
+            sm.start_slope(lon=0.0, lat=0.0, elevation=elev)
         else:
-            sm.select_road_start(location=PathPoint(lon=0.0, lat=0.0, elevation=elev))
+            sm.start_road(location=PathPoint(lon=0.0, lat=0.0, elevation=elev))
         return sm, ctx, graph
 
     def test_finish_disabled_with_no_committed_segments(self, fake_st, path_factory, mock_dem_blue_slope, kind) -> None:
@@ -213,11 +213,11 @@ class TestImportSidebarPanel:
         sm, ctx = _session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
         ctx.build_mode.mode = BuildMode.IMPORT
         sm.start_import(lon=0.0, lat=0.0)
-        new_half_width = ctx.deferred.osm_import_half_width_km + 1.5
+        new_half_width = ctx.pending.osm_import_half_width_km + 1.5
         fake_st.slider = lambda *a, **k: new_half_width
 
         ImportSidebarPanel(sm=sm, ctx=ctx, graph=ResortGraph()).controls()
-        assert ctx.deferred.osm_import_half_width_km == new_half_width, "slider change resizes the import box"
+        assert ctx.pending.osm_import_half_width_km == new_half_width, "slider change resizes the import box"
 
     def test_renders_without_confirming(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         sm, ctx = _session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
@@ -225,7 +225,7 @@ class TestImportSidebarPanel:
         sm.start_import(lon=0.0, lat=0.0)
 
         ImportSidebarPanel(sm=sm, ctx=ctx, graph=ResortGraph()).controls()  # no button fired
-        assert sm.is_import_placing and ctx.deferred.osm_import is False, "rendering does not confirm the import"
+        assert sm.is_import_placing and ctx.pending.osm_import_mode is None, "rendering does not confirm the import"
 
 
 class TestMergeSidebarPanel:

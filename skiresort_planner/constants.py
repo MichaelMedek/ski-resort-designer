@@ -74,6 +74,7 @@ class MapConfig:
     VIEW_3D_ZOOM = 14  # 3D side view - balanced zoom
     VIEW_3D_MIN_ZOOM = 12  # Minimum zoom for high elevation (prevents camera under terrain)
     DEFAULT_ZOOM = VIEWING_ZOOM  # Start zoomed out to prevent camera clipping terrain
+    IMPORT_OVERVIEW_ZOOM = 12  # Post-import overview: one step further out than building zoom
 
     # Pitch angles for different modes
     # Use 0 (top-down) for all modes to ensure accurate terrain clicks
@@ -374,6 +375,22 @@ class LiftType(StrEnum):
     AERIAL_TRAM = "aerial_tram"
 
 
+class EntitySource(StrEnum):
+    """Provenance tag for an imported entity. A StrEnum, so a member IS its string value — it stores
+    directly on Lift/Slope/PathSegment.source and JSON round-trips transparently. Hidden from the
+    user; used to recognise (and skip re-importing) OSM-sourced lifts/slopes.
+    """
+
+    OSM = "OSM"
+
+
+class OSMImportMode(StrEnum):
+    """Which OSM import the user requested: lifts only (raw, fast) or the full connected graph."""
+
+    LIFTS_ONLY = "lifts_only"
+    LIFTS_AND_SLOPES = "lifts_and_slopes"
+
+
 class LiftConfig:
     """Lift types and catenary/pylon parameters."""
 
@@ -418,6 +435,15 @@ class LiftConfig:
     # are str-Enum so this list also behaves as plain strings for callers that compare/serialize.
     TYPES = [t.value for t in LiftType]
 
+    # Whether a lift type carries riders one way (uphill only) or both ways. The single source the
+    # directed ski-graph reads for edge direction — gondolas and trams run both ways, drags/chairs up.
+    UPHILL_ONLY = {
+        LiftType.SURFACE_LIFT: True,
+        LiftType.CHAIRLIFT: True,
+        LiftType.GONDOLA: False,
+        LiftType.AERIAL_TRAM: False,
+    }
+
     # Every lift type must define the full set of pylon-placement knobs the builder reads.
     assert all(
         set(v.keys())
@@ -426,6 +452,8 @@ class LiftConfig:
     ), "each PYLON_CONFIG entry must define exactly the 6 pylon-placement keys"
     # PYLON_CONFIG must be keyed by every LiftType member (bijection: no type missing, none stray).
     assert set(PYLON_CONFIG) == set(LiftType), "PYLON_CONFIG must have one entry per LiftType member"
+    # UPHILL_ONLY must cover every LiftType member (same bijection guarantee as PYLON_CONFIG).
+    assert set(UPHILL_ONLY) == set(LiftType), "UPHILL_ONLY must have one entry per LiftType member"
 
 
 class StyleConfig:
@@ -482,7 +510,7 @@ class StyleConfig:
     # Lift icons for map display
     LIFT_ICONS = {
         "surface_lift": "🎿",
-        "chairlift": "🪑",
+        "chairlift": "💺",
         "gondola": "🚡",
         "aerial_tram": "🚠",
     }
@@ -681,6 +709,14 @@ class MergeConfig:
     MAX_SPAN_M = 500.0
 
 
+class ConnectivityConfig:
+    """Core-resort connectivity thresholds (model/connectivity.py, ResortGraph.get_core_resort)."""
+
+    # A strongly-connected component must hold at least this many lifts before it counts as the
+    # core resort — below it we assume the resort is still being started and flag nothing.
+    MIN_CORE_LIFTS = 5
+
+
 class OSMConfig:
     """OpenStreetMap import (generators/osm_importer.py).
 
@@ -716,7 +752,7 @@ class OSMConfig:
 
     # Minimum imported length: shorter entities are ignored (nursery/kiddie lifts, stub runs).
     MIN_LIFT_LENGTH_M = 300.0
-    MIN_PISTE_LENGTH_M = 200.0
+    MIN_PISTE_LENGTH_M = 30.0
 
     # OSM aerialway value → our LiftConfig.TYPES. ONLY these values import; every other aerialway
     # value (station, pylon, zip_line, magic_carpet, rope_tow, yes, …) is silently ignored.
@@ -733,3 +769,34 @@ class OSMConfig:
 
     # piste:type value marking an alpine downhill run — the only kind we import.
     PISTE_TYPE_DOWNHILL = "downhill"
+    # piste:type value for a connector run — kept for connectivity, not difficulty-filtered.
+    PISTE_TYPE_CONNECTION = "connection"
+
+    # Standard groomed downhill grades we import (green→black).
+    PISTE_DIFFICULTY_ALLOWED = frozenset({"novice", "easy", "intermediate", "advanced", "expert"})
+
+    # Re-import dedup radius: an incoming entity whose endpoints match an existing one within this is skipped.
+    OSM_DEDUP_TOL_M = 100.0
+
+    # --- Connected-graph build (generators/osm_graph_builder.py). Distances in metres. ---
+    DEDUP_TOL_M = 18.0  # near-coincidence band for the duplicate-piste test
+    PARALLEL_TOL_M = 60.0  # near-but-offset band for the redundant-parallel
+    PARALLEL_TWIN_FRAC = 0.70  # a same-name run parallel to a longer sibling ≥this of ITS length is a twin
+    DEDUP_COVER_FRAC = 0.78  # covered fraction to call a piste a duplicate
+    MIN_NODE_DIST_M = 100.0  # min hub spacing (closer nodes merge)
+    RELAXED_MERGE_DIST_M = 200.0  # slope-node→lift pull radius
+    MAX_BACKCLIMB_M = 30.0  # max uphill RISE over any BACKCLIMB_WINDOW_M span (60m-DEM sampling-noise tolerance)
+    BACKCLIMB_WINDOW_M = 80.0  # window for the strict per-span uphill check
+    SLOPE_ON_SOURCE_TOL_M = 30.0  # strict on-piste band (slope body hugs OSM)
+    PISTE_TOL_M = 40.0  # off-piste threshold (~a wide piste's half-width)
+    MAX_PULL_M = 300.0  # max straight hub connector (longer → drop the segment)
+    MAX_STRAIGHT_M = 100.0  # max single straight leg between consecutive points
+    TRIM_END_M = 50.0  # trim off each slope end before the hub connector
+    SNAP_GRID_M = 12.0  # snap-round grid before noding (collapse near-coincident ends)
+    NODE_TERRAIN_TOL_M = 10.0  # max node vs DEM deviation; also the carve depth + descent-carry cap
+    SLOPE_TERRAIN_TOL_M = 50.0  # max slope-point vs DEM deviation
+
+    # Consistency
+    assert SLOPE_ON_SOURCE_TOL_M < PISTE_TOL_M <= SLOPE_TERRAIN_TOL_M
+    assert NODE_TERRAIN_TOL_M < SLOPE_TERRAIN_TOL_M
+    assert DEDUP_TOL_M < PARALLEL_TOL_M < MIN_NODE_DIST_M < RELAXED_MERGE_DIST_M

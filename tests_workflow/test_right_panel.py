@@ -219,7 +219,7 @@ class TestInfoPanelButtonClicks:
     def test_enable_3d_from_slope_panel(self, fake_st, empty_graph, path_points_blue) -> None:
         slope_id = _build_slope(empty_graph, path_points_blue)
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        sm.show_slope_info_panel(slope_id=slope_id)
+        sm.view_slope(slope_id=slope_id)
         self._bump_ready(fake_st, sm, ctx, empty_graph)
 
         assert not ctx.viewing.view_3d
@@ -230,7 +230,7 @@ class TestInfoPanelButtonClicks:
     def test_disable_3d_from_slope_panel(self, fake_st, empty_graph, path_points_blue) -> None:
         slope_id = _build_slope(empty_graph, path_points_blue)
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        sm.show_slope_info_panel(slope_id=slope_id)
+        sm.view_slope(slope_id=slope_id)
         ctx.viewing.enable_3d()
         self._bump_ready(fake_st, sm, ctx, empty_graph)
 
@@ -241,7 +241,7 @@ class TestInfoPanelButtonClicks:
     def test_disable_3d_from_road_panel(self, fake_st, empty_graph, path_points_blue) -> None:
         road_id = _build_road(empty_graph, path_points_blue)
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        sm.show_road_info_panel(road_id=road_id)
+        sm.view_road(road_id=road_id)
         ctx.viewing.enable_3d()
         self._bump_ready(fake_st, sm, ctx, empty_graph)
 
@@ -257,7 +257,7 @@ class TestInfoPanelButtonClicks:
 
         slope_id = _build_slope(empty_graph, path_points_blue)
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        sm.show_slope_info_panel(slope_id=slope_id)
+        sm.view_slope(slope_id=slope_id)
         self._bump_ready(fake_st, sm, ctx, empty_graph)
 
         calls: list[dict[str, object]] = []
@@ -302,7 +302,7 @@ class TestInfoPanelButtonClicks:
     def test_enable_3d_from_lift_panel(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         lift_id = _build_lift(empty_graph, mock_dem_blue_slope)
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        sm.show_lift_info_panel(lift_id=lift_id)
+        sm.view_lift(lift_id=lift_id)
         self._bump_ready(fake_st, sm, ctx, empty_graph)
 
         fake_st.clicked_keys = {"lift_3d_view"}
@@ -312,7 +312,7 @@ class TestInfoPanelButtonClicks:
     def test_enable_3d_from_road_panel(self, fake_st, empty_graph, path_points_blue) -> None:
         road_id = _build_road(empty_graph, path_points_blue)
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        sm.show_road_info_panel(road_id=road_id)
+        sm.view_road(road_id=road_id)
         self._bump_ready(fake_st, sm, ctx, empty_graph)
 
         assert not ctx.viewing.view_3d
@@ -323,7 +323,7 @@ class TestInfoPanelButtonClicks:
     def test_disable_3d_from_lift_panel(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         lift_id = _build_lift(empty_graph, mock_dem_blue_slope)
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        sm.show_lift_info_panel(lift_id=lift_id)
+        sm.view_lift(lift_id=lift_id)
         ctx.viewing.enable_3d()
         self._bump_ready(fake_st, sm, ctx, empty_graph)
 
@@ -334,7 +334,7 @@ class TestInfoPanelButtonClicks:
     def test_close_slope_panel_returns_to_idle(self, fake_st, empty_graph, path_points_blue) -> None:
         slope_id = _build_slope(empty_graph, path_points_blue)
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        sm.show_slope_info_panel(slope_id=slope_id)
+        sm.view_slope(slope_id=slope_id)
         self._bump_ready(fake_st, sm, ctx, empty_graph)
 
         assert sm.is_idle_viewing_slope
@@ -365,17 +365,17 @@ class TestInfoPanelButtonClicks:
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         self._bump_ready(fake_st, sm, ctx, empty_graph)
 
-        sm.show_slope_info_panel(slope_id=slope_id)
+        sm.view_slope(slope_id=slope_id)
         _info_panel(EntityKind.SLOPE, sm, ctx, empty_graph)
         assert "rename_slope" in keys
 
-        sm.hide_info_panel()
-        sm.show_road_info_panel(road_id=road_id)
+        sm.close_panel()  # type: ignore[attr-defined]  # dynamic python-statemachine event
+        sm.view_road(road_id=road_id)
         _info_panel(EntityKind.ROAD, sm, ctx, empty_graph)
         assert "rename_road" in keys
 
-        sm.hide_info_panel()
-        sm.show_lift_info_panel(lift_id=lift_id)
+        sm.close_panel()  # type: ignore[attr-defined]  # dynamic python-statemachine event
+        sm.view_lift(lift_id=lift_id)
         _info_panel(EntityKind.LIFT, sm, ctx, empty_graph)
         assert "rename_lift" in keys
 
@@ -393,19 +393,19 @@ class TestControlPanelDispatch:
     def test_viewing_slope_panel_runs(self, fake_st, empty_graph, path_points_blue) -> None:
         slope_id = _build_slope(empty_graph, path_points_blue)
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        sm.show_slope_info_panel(slope_id=slope_id)
+        sm.view_slope(slope_id=slope_id)
         _dispatch(sm, ctx, empty_graph)
 
     def test_viewing_road_panel_runs(self, fake_st, empty_graph, path_points_blue) -> None:
         road_id = _build_road(empty_graph, path_points_blue)
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        sm.show_road_info_panel(road_id=road_id)
+        sm.view_road(road_id=road_id)
         _dispatch(sm, ctx, empty_graph)
 
     def test_viewing_lift_panel_runs(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         lift_id = _build_lift(empty_graph, mock_dem_blue_slope)
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        sm.show_lift_info_panel(lift_id=lift_id)
+        sm.view_lift(lift_id=lift_id)
         _dispatch(sm, ctx, empty_graph)
 
     def test_road_starting_panel_runs(self, fake_st, empty_graph, path_points_blue) -> None:
@@ -452,7 +452,7 @@ class TestControlPanelDispatch:
 
     def test_slope_starting_panel_runs(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        sm.start_building(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
+        sm.start_slope(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
         assert sm.is_slope_starting
         _dispatch(sm, ctx, empty_graph)
 
@@ -476,7 +476,7 @@ class TestControlPanelDispatch:
         )
 
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        sm.start_building(
+        sm.start_slope(
             lon=path_points_blue[0].lon, lat=path_points_blue[0].lat, elevation=path_points_blue[0].elevation
         )
         empty_graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
@@ -611,30 +611,31 @@ class TestMergeAndImportPanels:
         return ImportPlacingControlPanel(sm=sm, ctx=ctx, graph=graph, on_commit=_noop, on_cancel_connection=_noop)
 
     def test_confirm_merge_disabled_below_two_nodes(self, fake_st, empty_graph, monkeypatch) -> None:
-        # Confirm Merge is disabled with 0 or 1 selected nodes, enabled at 2 (see buttons()).
+        # Confirm Merge is disabled with 0 or 1 selected nodes, enabled at 2; Delete needs only 1.
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        seen: dict[str, object] = {}
-
-        def _btn(label: str, **kwargs: object) -> bool:
-            seen["label"] = label
-            seen["disabled"] = kwargs.get("disabled")
-            return False
-
-        monkeypatch.setattr("skiresort_planner.ui.right_panel.st.button", _btn)
         panel = self._merge_panel(sm, ctx, empty_graph)
 
-        ctx.merge.node_ids = []
-        panel.buttons()
-        assert seen["label"] == "🔗 Confirm Merge"
-        assert seen["disabled"] is True
+        def _disabled_for(node_ids: list[str]) -> dict[str, bool]:
+            captured: dict[str, bool] = {}
 
-        ctx.merge.node_ids = ["A"]
-        panel.buttons()
-        assert seen["disabled"] is True
+            def _btn(label: str, **k: object) -> bool:
+                captured[label] = bool(k.get("disabled"))
+                return False
 
-        ctx.merge.node_ids = ["A", "B"]
-        panel.buttons()
-        assert seen["disabled"] is False, "two selected nodes must enable Confirm Merge"
+            monkeypatch.setattr("skiresort_planner.ui.right_panel.st.button", _btn)
+            ctx.merge.node_ids = node_ids
+            panel.buttons()
+            return captured
+
+        at_zero = _disabled_for([])
+        assert at_zero["🔗 Confirm Merge"] and at_zero["🗑️ Delete Node(s)"], "both disabled at 0 selected"
+
+        at_one = _disabled_for(["A"])
+        assert at_one["🔗 Confirm Merge"], "Confirm Merge still disabled at 1 selected"
+        assert not at_one["🗑️ Delete Node(s)"], "one node enables Delete"
+
+        at_two = _disabled_for(["A", "B"])
+        assert not at_two["🔗 Confirm Merge"], "two selected nodes must enable Confirm Merge"
 
     def test_confirm_merge_fires_action(self, fake_st, empty_graph, monkeypatch) -> None:
         from skiresort_planner.ui import right_panel
@@ -642,23 +643,44 @@ class TestMergeAndImportPanels:
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         fired: list[bool] = []
         monkeypatch.setattr(right_panel, "confirm_merge_action", lambda: fired.append(True))
-        # Fire only the enabled button (mirror the real disabled guard).
+        monkeypatch.setattr(right_panel, "delete_nodes_action", lambda: None)  # only assert the merge button
+        # Fire only the enabled Confirm Merge button (mirror the real disabled guard).
         monkeypatch.setattr(
-            "skiresort_planner.ui.right_panel.st.button", lambda label, **k: not bool(k.get("disabled", False))
+            "skiresort_planner.ui.right_panel.st.button",
+            lambda label, **k: label == "🔗 Confirm Merge" and not bool(k.get("disabled", False)),
         )
         ctx.merge.node_ids = ["A", "B"]
         self._merge_panel(sm, ctx, empty_graph).buttons()
         assert fired == [True], "clicking Confirm Merge must invoke confirm_merge_action"
 
-    def test_confirm_import_fires_action(self, fake_st, empty_graph, monkeypatch) -> None:
+    def test_delete_button_fires_action(self, fake_st, empty_graph, monkeypatch) -> None:
         from skiresort_planner.ui import right_panel
 
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         fired: list[bool] = []
-        monkeypatch.setattr(right_panel, "confirm_import_action", lambda: fired.append(True))
+        monkeypatch.setattr(right_panel, "delete_nodes_action", lambda: fired.append(True))
+        monkeypatch.setattr(right_panel, "confirm_merge_action", lambda: None)  # only assert the delete button
+        monkeypatch.setattr(
+            "skiresort_planner.ui.right_panel.st.button",
+            lambda label, **k: label == "🗑️ Delete Node(s)" and not bool(k.get("disabled", False)),
+        )
+        ctx.merge.node_ids = ["A"]
+        self._merge_panel(sm, ctx, empty_graph).buttons()
+        assert fired == [True], "clicking Delete Node(s) must invoke delete_nodes_action"
+
+    def test_confirm_import_fires_action(self, fake_st, empty_graph, monkeypatch) -> None:
+        from skiresort_planner.constants import OSMImportMode
+        from skiresort_planner.ui import right_panel
+
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        fired: list[OSMImportMode] = []
+        monkeypatch.setattr(right_panel, "confirm_import_action", lambda mode: fired.append(mode))
         monkeypatch.setattr("skiresort_planner.ui.right_panel.st.button", lambda label, **k: True)
         self._import_panel(sm, ctx, empty_graph).buttons()
-        assert fired == [True], "clicking Confirm Import must invoke confirm_import_action"
+        # Both buttons render True here, so both modes fire — proving each is wired to its mode.
+        assert fired == [OSMImportMode.LIFTS_AND_SLOPES, OSMImportMode.LIFTS_ONLY], (
+            "the two import buttons must invoke confirm_import_action with their modes"
+        )
 
     def test_import_context_message_requires_placed_center(self, fake_st, empty_graph) -> None:
         # A fresh context has no osm_import_center_* → context_message() raises the guard.
@@ -666,6 +688,6 @@ class TestMergeAndImportPanels:
 
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         panel = self._import_panel(sm, ctx, empty_graph)
-        assert ctx.deferred.osm_import_center_lon is None
+        assert ctx.pending.osm_import_center_lon is None
         with pytest.raises(RuntimeError, match="requires a placed box center"):
             panel.context_message()

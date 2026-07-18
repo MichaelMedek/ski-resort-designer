@@ -68,7 +68,7 @@ class TestSidebarRuns:
     def test_sidebar_during_slope_building(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         # Building state renders the building controls + undo/reset buttons.
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        sm.start_building(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
+        sm.start_slope(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
         SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
 
     def test_sidebar_during_road_building(self, fake_st, empty_graph) -> None:
@@ -94,11 +94,11 @@ class TestSidebarRuns:
         # generic idle text (the drift that once left the road body wrong).
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         if kind == "slope":
-            sm.show_slope_info_panel(slope_id=_build_slope(empty_graph, path_points_blue))
+            sm.view_slope(slope_id=_build_slope(empty_graph, path_points_blue))
         elif kind == "road":
-            sm.show_road_info_panel(road_id=_build_road(empty_graph, path_points_blue))
+            sm.view_road(road_id=_build_road(empty_graph, path_points_blue))
         elif kind == "lift":
-            sm.show_lift_info_panel(lift_id=_build_lift(empty_graph, mock_dem_blue_slope))
+            sm.view_lift(lift_id=_build_lift(empty_graph, mock_dem_blue_slope))
         else:
             raise ValueError
 
@@ -163,7 +163,7 @@ class TestImportOSMButton:
         # Selecting Import only arms the click-to-place mode; it stays idle and does NOT flag a fetch.
         assert ctx.build_mode.mode == BuildMode.IMPORT, "clicking Import must select import mode"
         assert sm.is_idle_ready, "selecting a mode must not leave idle"
-        assert ctx.deferred.osm_import is False, "import is not flagged until the box is placed + confirmed"
+        assert ctx.pending.osm_import_mode is None, "import is not flagged until the box is placed + confirmed"
 
 
 class TestPathSettingsVisibility:
@@ -179,14 +179,14 @@ class TestPathSettingsVisibility:
 
     def test_path_settings_shown_in_fan_out(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        sm.start_building(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
+        sm.start_slope(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
         seen = self._capture_markdown(fake_st)
         SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
         assert any("Path Settings" in m for m in seen), "fan-out mode shows the Path Settings block"
 
     def test_path_settings_hidden_in_custom_mode(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        sm.start_building(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
+        sm.start_slope(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
         ctx.custom_connect.target_location = (0.0, 0.0, 2000.0)  # showing custom-connect proposals (force_mode)
         seen = self._capture_markdown(fake_st)
         SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
@@ -243,16 +243,15 @@ class TestDescribeUndoAction:
         assert "Restore deleted road" in self._describe_top(empty_graph)
 
     def test_import_osm_label(self, empty_graph, mock_dem_blue_slope) -> None:
+        from skiresort_planner.generators.osm_importer import ImportResult
+
         dem = mock_dem_blue_slope
         m = 111320.0
-        piste = (
-            [
-                PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
-                PathPoint(lon=0.0, lat=-500 / m, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / m)),
-            ],
-            "Run",
-        )
-        empty_graph.import_osm(pistes=[piste], lifts=[], dem=dem)
+        slope_points = [
+            PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
+            PathPoint(lon=0.0, lat=-500 / m, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / m)),
+        ]
+        empty_graph.import_osm(ImportResult(slope_chains=[([slope_points], "Run")]), dem=dem)
         assert "OSM import" in self._describe_top(empty_graph)
 
     def test_merge_nodes_label(self, empty_graph, mock_dem_blue_slope) -> None:
@@ -280,7 +279,7 @@ class TestDescribeUndoAction:
         _build_slope(empty_graph, path_points_blue)
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         # Now START a new slope build with no committed segments yet.
-        sm.start_building(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
+        sm.start_slope(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
         assert sm.is_slope_starting
 
         assert _next_undo_skips_confirm(sm=sm, ctx=ctx, graph=empty_graph), (
@@ -312,7 +311,7 @@ class TestNextUndoSkipsConfirm:
 
         _build_slope(empty_graph, path_points_blue)  # a stale FinishSlopeAction sits on the stack
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        sm.start_building(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
+        sm.start_slope(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
         # No committed segments yet → undo cancels the build, a routine one-tap step.
         assert _next_undo_skips_confirm(sm=sm, ctx=ctx, graph=empty_graph)
 
@@ -349,3 +348,63 @@ class TestDialogHelpers:
         assert fake_st.query_params["resort"] == "fresh999", "a fresh resort id is routed"
         for key in ("resort_id", "graph", "state_machine", "context", "map_renderer", "_saved_token"):
             assert key not in fake_st.session_state, f"{key} must be dropped so init rebuilds fresh"
+
+
+# =============================================================================
+# Load-from-file guard: only an empty resort may be overwritten by an upload
+# =============================================================================
+
+
+class _FakeUpload:
+    """Minimal stand-in for Streamlit's UploadedFile: a JSON-readable, named handle."""
+
+    def __init__(self, payload: dict[str, object]) -> None:
+        import io
+        import json
+
+        self._buf = io.StringIO(json.dumps(payload))
+        self.name = "uploaded.json"
+
+    def read(self, size: int = -1) -> str:
+        return self._buf.read(size)
+
+
+class TestLoadFromFileGuard:
+    def _render(self, fake_st, monkeypatch, graph, upload) -> list[str]:
+        """Render the sidebar with `upload` returned by the file uploader; capture toasts."""
+        import streamlit
+
+        toasts: list[str] = []
+        monkeypatch.setattr(streamlit, "toast", lambda text, *a, **k: toasts.append(text))
+        fake_st.file_uploader = lambda *a, **k: upload
+        fake_st.session_state["resort_id"] = "r1"
+
+        sm, ctx = PlannerStateMachine.create(graph=graph, add_ui_listener=False)
+        fake_st.session_state["graph"] = graph
+        SidebarRenderer(state_machine=sm, context=ctx, graph=graph).render()
+        return toasts
+
+    def test_upload_rejected_when_resort_has_content(self, fake_st, monkeypatch, empty_graph, path_points_blue) -> None:
+        # Regression: a non-empty resort must NOT be overwritten by an upload. It stays intact and
+        # the user is told to clear first.
+        _build_slope(empty_graph, path_points_blue)
+        payload = ResortGraph().to_dict()  # a valid but empty file — still refused
+
+        toasts = self._render(fake_st, monkeypatch, empty_graph, _FakeUpload(payload))
+
+        assert fake_st.session_state["graph"] is empty_graph, "current resort must be untouched"
+        assert empty_graph.slopes, "the existing slope must survive"
+        assert any("Clear the resort first" in t for t in toasts), "must warn to clear first"
+
+    def test_upload_loads_into_empty_resort(self, fake_st, monkeypatch, empty_graph, path_points_blue) -> None:
+        # Happy path: an empty resort accepts the upload and is replaced by the file's content.
+        source = ResortGraph()
+        _build_slope(source, path_points_blue)
+        payload = source.to_dict()
+
+        toasts = self._render(fake_st, monkeypatch, empty_graph, _FakeUpload(payload))
+
+        loaded = fake_st.session_state["graph"]
+        assert loaded is not empty_graph, "the empty graph is replaced by the loaded one"
+        assert loaded.slopes, "loaded resort carries the file's slope"
+        assert not any("Clear the resort first" in t for t in toasts), "no rejection on empty resort"

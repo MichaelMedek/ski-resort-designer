@@ -73,6 +73,7 @@ class PathSegment(Path):
     side_slope_pct: float = 0.0
     side_slope_dir: SideDirection = SideDirection.FLAT
     kind: SegmentKind = SegmentKind.SLOPE
+    source: str | None = None  # provenance tag (e.g. EntitySource.OSM)
 
     @property
     def warnings(self) -> list[Warning]:
@@ -246,6 +247,7 @@ class PathSegment(Path):
             side_slope_dir=SideDirection(cast(str, data.get("side_slope_dir", SideDirection.FLAT.value))),
             # Pre-enum saves have no "kind" → default to SLOPE.
             kind=SegmentKind(cast(str, data.get("kind", SegmentKind.SLOPE.value))),
+            source=cast("str | None", data.get("source")),
         )
 
     def __repr__(self) -> str:
