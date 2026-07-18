@@ -210,15 +210,15 @@ def run_pending_load(
     reload_map(center=reset_center, zoom=reset_zoom, pitch=MapConfig.VIEWING_PITCH)  # reframes + reruns
 
 
-def load_dem_data() -> bool:
-    """Return True once DEM data is loaded; otherwise load it (reframing to the start view, which
-    reruns) and never return. Downloads from Hugging Face if absent. Uses DEMService.is_loaded to
-    survive Streamlit module reloads that reset class-level singleton state.
+def load_dem_data() -> None:
+    """Return early once DEM data is loaded; otherwise load it and reframe to the start view (which
+    reruns), so control never returns here after loading. Downloads from Hugging Face if absent. Uses
+    DEMService.is_loaded to survive Streamlit module reloads that reset class-level singleton state.
     """
     # Check if DEM service exists AND is actually loaded (handles module reimport)
     dem_service = st.session_state.get("dem_service")
     if dem_service is not None and dem_service.is_loaded:
-        return True
+        return
 
     def _load(report: ProgressFn) -> None:
         dem_path = DEMConfig.EURODEM_PATH
@@ -240,7 +240,6 @@ def load_dem_data() -> bool:
         reset_center=(MapConfig.START_CENTER_LON, MapConfig.START_CENTER_LAT),
         reset_zoom=MapConfig.DEFAULT_ZOOM,
     )
-    raise RuntimeError("load_dem_data: run_pending_load must rerun before returning")
 
 
 # =============================================================================
@@ -381,9 +380,9 @@ def main() -> None:
     # Streamlit has no API to reclaim vertical chrome, so a full-height map needs CSS.
     st.markdown(_FULLSCREEN_CSS, unsafe_allow_html=True)
 
-    # Block until DEM is loaded - shows loading message and prevents map interaction
-    if not load_dem_data():
-        return
+    # Block until DEM is loaded: returns early if already loaded, else shows the loading screen and
+    # reruns (never returns here), so control only continues once the DEM is ready.
+    load_dem_data()
 
     try:
         _run_app_ui()

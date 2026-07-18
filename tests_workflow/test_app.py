@@ -81,9 +81,13 @@ class TestSessionHelpers:
         assert fake_st.session_state["state_machine"] is not None
         assert fake_st.session_state["camera_epoch"] == 1
 
-    def test_load_dem_data_returns_true_when_loaded(self, fake_st, mock_dem_blue_slope) -> None:
+    def test_load_dem_data_returns_early_when_loaded(self, fake_st, mock_dem_blue_slope, monkeypatch) -> None:
         fake_st.session_state["dem_service"] = mock_dem_blue_slope  # already loaded
-        assert app.load_dem_data() is True
+        reframed: list[object] = []
+        monkeypatch.setattr(app, "reload_map", lambda **k: reframed.append(k))
+
+        assert app.load_dem_data() is None, "already-loaded path returns early (no value)"
+        assert reframed == [], "no reframe/rerun when the DEM is already loaded"
 
     def test_load_dem_data_builds_services_and_reframes_while_loading(self, fake_st, monkeypatch) -> None:
         # No dem_service in session and the DEM file already present locally: skip download,
@@ -109,8 +113,8 @@ class TestSessionHelpers:
         monkeypatch.setattr(DEMConfig, "EURODEM_PATH", _PresentPath("/tmp/fake_eurodem.tif"))
         monkeypatch.setattr(app, "DEMService", lambda *a, **k: _FakeDEM())
         monkeypatch.setattr(app, "PathFactory", lambda *a, **k: object())
-        # reload_map reruns in prod (StopExecution); here it records the frame and stops the flow so the
-        # unreachable hard-raise after it is never hit.
+        # reload_map reruns in prod (StopExecution); here it records the frame and raises so the flow
+        # stops exactly where the real rerun would — load_dem_data never returns after loading.
         reframes: list[tuple[tuple[float, float], int]] = []
 
         class _Rerun(Exception):
