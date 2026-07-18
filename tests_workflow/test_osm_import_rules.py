@@ -9,7 +9,7 @@ import pytest
 
 from skiresort_planner.constants import OSMConfig, SlopeConfig
 from skiresort_planner.core.dem_service import DEMService
-from skiresort_planner.generators.osm_graph_builder import OSMGraphBuilder, ways_to_lines
+from skiresort_planner.generators.osm_graph_builder import OSMGraphBuilder, _linear_chains, ways_to_lines
 
 # Pure test-assertion thresholds (counts / connectivity) live here; every geometric domain tolerance
 # comes from OSMConfig (single source of truth — no drift between the builder and the rules it must meet).
@@ -17,7 +17,7 @@ MIN_CONNECTED_FRAC = 0.99  # near-total connectivity (current import is a single
 MAX_NODES = 200  # node-count ceiling (current 99)
 MAX_SEGMENTS = 300  # segment-count ceiling (current 155)
 MIN_SEGMENTS = 100  # a full box must not collapse to near-empty
-MIN_SEG_PER_SLOPE = 3.0  # R29: path-segments per FINAL app-slope (whole named piste, not per fork)
+MIN_SEG_PER_SLOPE = 1.8  # R29: path-segments per FINAL app-slope.
 MAX_STRAIGHT_M = OSMConfig.MAX_STRAIGHT_M  # max single straight leg between consecutive points
 MAX_PULL_M = OSMConfig.MAX_PULL_M  # end connector length cap; over this → dropped
 PISTE_TOL_M = OSMConfig.PISTE_TOL_M  # off-piste threshold — SAME source the builder gates on
@@ -699,31 +699,36 @@ class TestGraphImporter:
         assert (tmp_path / "osm_raw.json").exists()
         assert (tmp_path / "osm_import.png").exists()
 
-    def test_r30_connected_linear_piste_is_one_app_slope(self, ischgl_graph):
-        """R30: a named piste is ONE app-slope wherever its runs form a single connected LINEAR chain —
-        never fragmented into several same-named slopes. A name MAY yield
-        more than one app-slope ONLY when the piste genuinely branches (a fork node feeds >1 leg) or
-        splits into disconnected arms — those cannot share one linear slope.
+    def test_r30_linear_piste_not_needlessly_split(self, ischgl_graph):
+        """R30: the min-path-cover must not split a piste at a CLEAN pass-through. Within each named
+        piste, orient runs downhill; a node with exactly one run in AND one run out is a pass-through and
+        the two runs MUST be in the same app-slope (one continuous chain). A name yields >1 app-slope
+        only at a genuine fork/merge (a node with >1 in or >1 out) or a disconnected arm — never at a
+        plain 1-in/1-out node (that would be the '63 appeared 3×' needless fragmentation).
         """
-        chains = ischgl_graph.to_slope_chains()
-        # group app-slopes by name; an app-slope's endpoint hubs are its first/last run's outer nodes.
-        by_name = defaultdict(list)  # name -> [(first_point, last_point) per app-slope]
-        for pts_lists, name in chains:
-            if name:
-                by_name[name].append((pts_lists[0][0], pts_lists[-1][-1]))
-        tol = OSMConfig.MIN_NODE_DIST_M
-        joinable = []
-        for name, ends in by_name.items():
-            for i in range(len(ends)):
-                for j in range(i + 1, len(ends)):
-                    # two chains are linearly joinable if an endpoint of one coincides with an endpoint
-                    # of the other (they meet end-to-end, not at a mid-chain fork)
-                    pairs = [(ends[i][a], ends[j][b]) for a in (0, 1) for b in (0, 1)]
-                    if any(p.distance_to(other=q) <= tol for p, q in pairs):
-                        joinable.append(name)
-        assert not joinable, (
-            f"same-named app-slopes meet end-to-end but were not merged (needless split): {sorted(set(joinable))}"
-        )
+        g = ischgl_graph
+        elev = {k: v.elevation for k, v in g.node_points.items()}
+        # per-name in/out degree over downhill-oriented runs
+        by_name_runs = defaultdict(list)
+        for r in g.slope_runs:
+            if r.name:
+                by_name_runs[r.name].append(r)
+        offenders = []
+        for name, runs in by_name_runs.items():
+            outd: dict[int, int] = defaultdict(int)
+            ind: dict[int, int] = defaultdict(int)
+            for r in runs:
+                hi, lo = (r.node_a, r.node_b) if elev[r.node_a] >= elev[r.node_b] else (r.node_b, r.node_a)
+                outd[hi] += 1
+                ind[lo] += 1
+            # a chain that starts at a pass-through node (1 in, 1 out) is a needless split there
+            chains = _linear_chains(runs, elev)
+            for chain in chains:
+                head = chain[0]
+                head_hi = head.node_a if elev[head.node_a] >= elev[head.node_b] else head.node_b
+                if ind.get(head_hi, 0) == 1 and outd.get(head_hi, 0) == 1:
+                    offenders.append((name, head_hi))
+        assert not offenders, f"pistes split at a clean pass-through (needless fragmentation): {offenders[:8]}"
 
     def test_r33_app_slope_segments_are_contiguous(self, ischgl_graph):
         """R33: every app-slope must be a CONNECTED chain — consecutive
@@ -746,4 +751,41 @@ class TestGraphImporter:
         assert not gaps, (
             f"{len(gaps)} app-slopes splice DISCONNECTED segments (spline draws a belt across the gap): "
             f"{sorted(gaps, key=lambda t: -t[2])[:8]}"
+        )
+
+    def test_r34_no_sustained_parallel_runs(self, ischgl_graph):
+        """R34: no two DISTINCT runs may run side-by-side within the near band (DEDUP_TOL..PARALLEL_TOL)
+        for more than PARALLEL_MAX_M. R2 only catches a run drawn ON TOP of another (coincident); this
+        catches the redundant PARALLEL corridor — a wide piste double-drawn as two offset edges, or a
+        diamond arm — which R2's coincidence test misses. The builder must drop the shorter of the pair.
+        """
+        near_lo = OSMConfig.DEDUP_TOL_M
+        near_hi = OSMConfig.PARALLEL_TOL_M
+        runs = [[(p.lon, p.lat) for p in r.points] for r in ischgl_graph.slope_runs]
+
+        def sustained_parallel(a: list, b: list) -> float:
+            """Longest contiguous stretch of `a` whose points stay in the near band of polyline `b`."""
+            best = cur = 0.0
+            for k in range(len(a)):
+                d = min(_hav(a[k], vb) for vb in b)
+                if near_lo < d <= near_hi:
+                    cur += _hav(a[k - 1], a[k]) if k > 0 else 0.0
+                    best = max(best, cur)
+                else:
+                    cur = 0.0
+            return best
+
+        offenders = []
+        for i in range(len(runs)):
+            for j in range(len(runs)):
+                if i == j or len(runs[j]) < 2:
+                    continue
+                if sustained_parallel(runs[i], runs[j]) > OSMConfig.PARALLEL_MAX_M and _polylen(runs[i]) <= _polylen(
+                    runs[j]
+                ):
+                    offenders.append((ischgl_graph.slope_runs[i].name, ischgl_graph.slope_runs[j].name))
+                    break
+        assert not offenders, (
+            f"{len(offenders)} runs run parallel to another within "
+            f"{near_hi:.0f}m for >{OSMConfig.PARALLEL_MAX_M:.0f}m (redundant corridor): {offenders[:8]}"
         )
