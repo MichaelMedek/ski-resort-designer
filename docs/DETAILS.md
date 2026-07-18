@@ -465,7 +465,9 @@ Spacing pylons may affect adjacent spans. Re-run Phase 1 to fix new violations.
 
 ## 9. OpenStreetMap Import
 
-Two **Import from OpenStreetMap** buttons (sidebar, idle only) fetch the real lifts & pistes in a square area around the map center: **Lifts only** (raw OSM lifts) and **Lifts + slopes** (the connected-graph builder). **Geometry only** — we take the lon/lat polylines and lift stations; elevation, difficulty, pylons, and **belt width** are recomputed by our pipeline. OSM attributes (including `piste:width`) are ignored.
+Two **Import from OpenStreetMap** buttons (sidebar, idle only) fetch the real lifts & pistes in a square area around the map center: **Lifts only** (raw OSM lifts) and **Lifts + slopes** (the connected-graph builder). **Geometry only** — we take the lon/lat polylines and lift stations; elevation, difficulty, pylons, and **belt width** are recomputed by our pipeline. OSM attributes (including `piste:width`) are ignored. Example graph structure our builder produces (slopes blue, lifts purple):
+
+![OSM Import](images/9-OSMImport.png)
 
 ### 9.1 Region + single-query fetch
 
