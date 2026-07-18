@@ -766,7 +766,7 @@ class TestGraphImporter:
         sruns = ischgl_graph.slope_runs
         runs = [[(p.lon, p.lat) for p in r.points] for r in sruns]
 
-        def sustained_parallel(a: list, b: list) -> float:
+        def sustained_parallel(a: list[tuple[float, float]], b: list[tuple[float, float]]) -> float:
             """Longest contiguous stretch of `a` whose points stay in the near band of polyline `b`."""
             best = cur = 0.0
             for k in range(len(a)):
