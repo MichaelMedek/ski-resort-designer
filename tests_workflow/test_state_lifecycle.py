@@ -23,8 +23,8 @@ def _dirty_ctx() -> PlannerContext:
     ctx.build(SegmentKind.SLOPE).segments = ["S1"]
     ctx.build(SegmentKind.SLOPE).name = "Slope 3"
     ctx.build(SegmentKind.ROAD).segments = ["R1"]
-    ctx.lift.start_node_id = "N9"
-    ctx.lift.start_location = PathPoint(lon=0.0, lat=0.0, elevation=2000.0)
+    ctx.lift.first_node_id = "N9"
+    ctx.lift.first_location = PathPoint(lon=0.0, lat=0.0, elevation=2000.0)
     ctx.custom_connect.target_location = (0.0, 0.0, 2100.0)  # force_mode derives from this
     ctx.custom_connect.start_node = "N1"
     ctx.selection.set(lon=5.0, lat=6.0, elevation=2100.0)
@@ -41,7 +41,7 @@ class TestEnterIdleReady:
         sl.enter_idle_ready(ctx)
         assert ctx.build(SegmentKind.SLOPE).segments == [], "building segments cleared"
         assert ctx.build(SegmentKind.ROAD).segments == [], "road segments cleared"
-        assert ctx.lift.start_node_id is None and ctx.lift.start_location is None, "lift placement cleared"
+        assert ctx.lift.first_node_id is None and ctx.lift.first_location is None, "lift placement cleared"
         assert ctx.custom_connect.force_mode is False, "custom-connect cleared"
         assert not ctx.selection.has_selection(), "selection coordinates cleared"
         assert ctx.viewing.panel_visible is False, "viewing panel hidden"
@@ -63,7 +63,7 @@ class TestEnterViewingStates:
         sl.enter_idle_viewing_slope(ctx)
         assert ctx.viewing.panel_visible is True, "single point of truth: enter guarantees panel visible"
         assert ctx.build(SegmentKind.SLOPE).segments == [], "stale building state cleared defensively"
-        assert ctx.lift.start_node_id is None
+        assert ctx.lift.first_node_id is None
 
     def test_enter_viewing_lift_shows_panel(self) -> None:
         ctx = _dirty_ctx()
@@ -162,7 +162,7 @@ class TestExitHandlersCleanUpScratch:
     def test_exit_lift_placing_clears_lift_context(self) -> None:
         ctx = _dirty_ctx()
         sl.exit_lift_placing(ctx)
-        assert ctx.lift.start_node_id is None and ctx.lift.start_location is None, "lift scratch cleared on exit"
+        assert ctx.lift.first_node_id is None and ctx.lift.first_location is None, "lift scratch cleared on exit"
 
     def test_exit_import_placing_clears_placed_center(self) -> None:
         ctx = _dirty_ctx()

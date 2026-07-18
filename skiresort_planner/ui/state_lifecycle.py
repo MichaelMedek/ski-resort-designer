@@ -164,9 +164,9 @@ def enter_slope_custom_path(ctx: PlannerContext) -> None:
 
 
 def enter_lift_placing(ctx: PlannerContext) -> None:
-    """Enter LIFT_PLACING: hide panel, clear marker dedup, ready for the top-station click.
+    """Enter LIFT_PLACING: hide panel, clear marker dedup, ready for the second-station click.
 
-    The before-hook set lift.start_node_id/start_location.
+    The before-hook set lift.first_node_id/first_location.
     """
     logger.debug("[LIFECYCLE] ENTER: lift_placing - hiding panel")
     _enter_placement_mode(ctx)

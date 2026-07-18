@@ -451,13 +451,11 @@ class _LiftPlacingState(BuildState):
         *,
         use_3d: bool,
     ) -> list[pdk.Layer]:
-        if ctx.lift.start_node_id:
-            node = graph.nodes.get(ctx.lift.start_node_id)
-            if node is None:
-                raise ValueError(f"Lift start node {ctx.lift.start_node_id} not found in graph")
+        if ctx.lift.first_node_id:
+            node = graph.nodes[ctx.lift.first_node_id]  # live node (never dangling)
             lat, lon, elevation = node.lat, node.lon, node.elevation
-        elif ctx.lift.start_location:
-            loc = ctx.lift.start_location
+        elif ctx.lift.first_location:
+            loc = ctx.lift.first_location
             lat, lon, elevation = loc.lat, loc.lon, loc.elevation
         else:
             return []
@@ -720,7 +718,7 @@ class _LiftOperation(BuilderOperation):
     """The four lift-type buttons: enabled off a slope/road view, and re-typing the viewed lift."""
 
     group = OperationGroup.BUILDER
-    first_instruction = "🗺️ Click terrain or a node to place the bottom station."
+    first_instruction = "🗺️ Click terrain or a node to place the first station."
 
     def __init__(self, mode: str) -> None:
         self.mode = mode

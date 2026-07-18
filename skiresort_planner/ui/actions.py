@@ -32,7 +32,6 @@ from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.message import (
     InvalidClickMessage,
     MergeTooFarMessage,
-    OSMImportErrorMessage,
     UnableToDeleteMessage,
 )
 from skiresort_planner.model.path_segment import SegmentKind
@@ -223,8 +222,8 @@ def process_osm_import_pending(report: ProgressFn) -> bool:
     The area is the square box the user placed and confirmed (ctx.pending.osm_import_center_*
     + half-width). The pending mode picks the importer: lifts only (raw OSM) or lifts + slopes
     (connected-graph algorithm). `report` drives the loading progress bar. Returns True if it handled
-    a pending import. Any network/parse error shows a warning toast and imports nothing. Reference
-    artifacts (raw fetch + built-graph PNG) are written to OUTPUT_DIR for inspection; never read back.
+    a pending import; a network/parse failure propagates to run_pending_load (which shows its warning
+    toast). Reference artifacts (raw fetch + built-graph PNG) are written to OUTPUT_DIR; never read back.
     """
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
@@ -255,14 +254,9 @@ def process_osm_import_pending(report: ProgressFn) -> bool:
     else:
         raise ValueError(f"Unknown {mode=}")
     t0 = time.perf_counter()
-    try:
-        # Fetch+build own the first 95% of the bar; materialization is the fast tail.
-        result = importer_cls(dem=dem, bbox=bbox).run(on_progress=sub_progress(report, 0.0, 0.95), dump_dir=OUTPUT_DIR)
-    except Exception as exc:  # network / HTTP / parse — report, import nothing
-        logger.warning(f"OSM import failed: {exc}")
-        OSMImportErrorMessage(error=str(exc)).display()
-        return True
-
+    # Fetch+build own the first 95% of the bar; materialization is the fast tail. A network/parse
+    # failure propagates to run_pending_load, which shows its pre-given warning toast (no reframe).
+    result = importer_cls(dem=dem, bbox=bbox).run(on_progress=sub_progress(report, 0.0, 0.95), dump_dir=OUTPUT_DIR)
     report(0.97, "Adding to the resort…")
     graph.import_osm(result, dem=dem)
     logger.info(

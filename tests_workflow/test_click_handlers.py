@@ -22,6 +22,7 @@ from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.context import BuildMode
 from skiresort_planner.ui.state_machine import PlannerStateMachine
+from tests_workflow.conftest import MockDEMService
 
 M = 111320.0  # metres per degree near the equator
 
@@ -264,7 +265,7 @@ class TestIdleClickRouting:
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id), elevation=None
         )
         assert sm.is_lift_placing
-        assert ctx.lift.start_node_id == node.id
+        assert ctx.lift.first_node_id == node.id
 
     def test_click_pylon_opens_parent_lift_panel(self, fake_st, path_factory, mock_dem_blue_slope) -> None:
         from skiresort_planner.ui.click_handlers import handle_idle_click
@@ -899,19 +900,68 @@ class TestLiftPlacingClick:
         assert len(graph.lifts) == 1
         assert sm.is_idle_viewing_lift
 
-    def test_downhill_end_is_rejected(self, fake_st, path_factory, mock_dem_blue_slope) -> None:
+    def test_low_second_click_auto_orients_bottom_to_top(self, fake_st, path_factory, mock_dem_blue_slope) -> None:
+        # Click order is free: a LOWER second click no longer fails — it becomes the bottom station,
+        # the higher first point becomes the top, so the lift still goes up.
+        from skiresort_planner.ui.click_handlers import handle_lift_placing_click
+
+        dem = mock_dem_blue_slope  # drops going south → lat=-2000 is BELOW the lat=-1000 first point
+        sm, _ctx, graph = self._placing(fake_st, dem, path_factory)
+
+        low_lat = -2000 / M
+        handle_lift_placing_click(
+            ClickInfo(click_type=MapClickType.TERRAIN, lat=low_lat, lon=0.0),
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=low_lat),
+        )
+        assert len(graph.lifts) == 1
+        assert sm.is_idle_viewing_lift
+        lift = next(iter(graph.lifts.values()))
+        assert graph.nodes[lift.start_node_id].elevation < graph.nodes[lift.end_node_id].elevation, (
+            "the lower second click is oriented as the bottom station"
+        )
+        assert graph.nodes[lift.start_node_id].lat == low_lat, "bottom is the lower (southern) point"
+
+    def test_high_then_low_builds_bottom_to_top(self, fake_st, path_factory, mock_dem_blue_slope) -> None:
+        # Mirror of the uphill case: start from a HIGH first point, click a LOWER second point →
+        # the lift auto-orients so start = the lower node (regression for order-agnostic clicking).
         from skiresort_planner.ui.click_handlers import handle_lift_placing_click
 
         dem = mock_dem_blue_slope
-        sm, _ctx, graph = self._placing(fake_st, dem, path_factory)
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st, graph, path_factory, dem)
+        ctx.build_mode.mode = BuildMode.CHAIRLIFT
+        high = PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
+        sm.start_lift(node_id=None, location=high)  # first click is the HIGH point
 
-        # lat=-2000 is downhill of the lat=-1000 bottom → lift must go uphill → rejected.
+        low_lat = -1000 / M
         handle_lift_placing_click(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=-2000 / M, lon=0.0),
-            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-2000 / M),
+            ClickInfo(click_type=MapClickType.TERRAIN, lat=low_lat, lon=0.0),
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=low_lat),
         )
-        assert len(graph.lifts) == 0
-        assert sm.is_lift_placing
+        assert len(graph.lifts) == 1
+        lift = next(iter(graph.lifts.values()))
+        assert graph.nodes[lift.start_node_id].lat == low_lat, "bottom is the lower second point, not the first"
+        assert graph.nodes[lift.start_node_id].elevation < graph.nodes[lift.end_node_id].elevation
+
+    def test_equal_elevation_distinct_points_orients_by_latlon(self, fake_st, path_factory) -> None:
+        # Flat DEM: both stations share an elevation, so orientation falls back to the (lat, lon)
+        # tiebreak — deterministic, never a rejection. Bottom = the smaller (lat, lon).
+        from skiresort_planner.ui.click_handlers import handle_lift_placing_click
+
+        dem = MockDEMService(base_elevation=2500.0, slope_ns_pct=0.0, slope_ew_pct=0.0)
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st, graph, path_factory, dem)
+        ctx.build_mode.mode = BuildMode.CHAIRLIFT
+        first = PathPoint(lon=0.0, lat=0.01, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.01))
+        sm.start_lift(node_id=None, location=first)  # higher lat → should become the TOP
+
+        handle_lift_placing_click(
+            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0),
+        )
+        assert len(graph.lifts) == 1
+        lift = next(iter(graph.lifts.values()))
+        assert graph.nodes[lift.start_node_id].lat == 0.0, "on an elevation tie, the smaller lat is the bottom"
 
     def test_slope_marker_click_while_placing_is_rejected(self, fake_st, path_factory, mock_dem_blue_slope) -> None:
         from skiresort_planner.ui.click_handlers import handle_lift_placing_click
@@ -962,13 +1012,13 @@ class TestLiftPlacingClick:
 class TestLiftPlacingEdgeCases:
     """Reject, validation, and node-reuse branches of handle_lift_placing_click.
 
-    A lift needs two DISTINCT stations and must go uphill; a start from an existing node must be
-    reused (never duplicated) on completion, and stray entity markers must be politely rejected
-    (correct verb) without touching the in-progress placement.
+    A lift needs two DISTINCT stations (orientation low→high is automatic); a start from an
+    existing node must be reused (never duplicated) on completion, and stray entity markers must
+    be politely rejected (correct verb) without touching the in-progress placement.
     """
 
     def _placing_from_node(self, fake_st, dem, factory):
-        """Enter lift_placing with the bottom station being an EXISTING node (start_node_id set)."""
+        """Enter lift_placing with the first station being an EXISTING node (first_node_id set)."""
         graph = ResortGraph()
         sm, ctx = _session(fake_st, graph, factory, dem)
         ctx.build_mode.mode = BuildMode.CHAIRLIFT  # lift type is selected before entering LIFT_PLACING
@@ -979,10 +1029,8 @@ class TestLiftPlacingEdgeCases:
         return sm, ctx, graph, bottom
 
     def test_same_node_start_and_end_is_rejected(self, fake_st, monkeypatch, path_factory, mock_dem_blue_slope) -> None:
-        # Clicking the SAME node as both stations is refused. NOTE: the handler's uphill check runs
-        # BEFORE its same-node check, and one node has equal start==end elevation, so the refusal
-        # that actually fires is "Lift Must Go Uphill" (the dedicated same-node guard is unreachable
-        # via this path — asserting SameNodeLift here would be a lie). Either way: no lift, still placing.
+        # Clicking the SAME node for both stations is a lift-to-itself → refused by the
+        # distinct-stations guard (elevation orientation can't rescue coincident points).
         from skiresort_planner.ui.click_handlers import handle_lift_placing_click
 
         dem = mock_dem_blue_slope
@@ -994,7 +1042,7 @@ class TestLiftPlacingEdgeCases:
         )
         assert len(graph.lifts) == 0, "a same-node lift is not built"
         assert sm.is_lift_placing, "rejection keeps us placing"
-        assert any("Uphill" in t for t in toasts), "a zero-rise (same-node) lift is refused as not uphill"
+        assert any("Same Location" in t for t in toasts), "a point-to-itself lift is refused as the same location"
 
     def test_node_end_from_existing_node_start_reuses_both_nodes(
         self, fake_st, path_factory, mock_dem_blue_slope
@@ -1020,8 +1068,8 @@ class TestLiftPlacingEdgeCases:
     def test_terrain_end_from_pending_start_location_materialises_start_node(
         self, fake_st, path_factory, mock_dem_blue_slope
     ) -> None:
-        # Bottom is a PENDING location (start_node_id None): completing via terrain must create BOTH
-        # nodes and clear start_location — the "fresh point" origin path, distinct from node-reuse.
+        # First station is a PENDING location (first_node_id None): completing via terrain must
+        # create BOTH nodes and clear first_location — the "fresh point" origin path.
         from skiresort_planner.ui.click_handlers import handle_lift_placing_click
 
         dem = mock_dem_blue_slope
@@ -1029,7 +1077,7 @@ class TestLiftPlacingEdgeCases:
         sm, ctx = _session(fake_st, graph, path_factory, dem)
         ctx.build_mode.mode = BuildMode.CHAIRLIFT  # lift type selected before entering LIFT_PLACING
         loc = PathPoint(lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M))
-        sm.start_lift(node_id=None, location=loc)  # pending-location start: no start node materialised yet
+        sm.start_lift(node_id=None, location=loc)  # pending-location start: no node materialised yet
 
         handle_lift_placing_click(
             ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
@@ -1040,8 +1088,8 @@ class TestLiftPlacingEdgeCases:
         # The bottom station was materialised from the pending location: the built lift references a
         # real graph node for its start (ctx.lift itself is reset on the transition to viewing).
         lift = next(iter(graph.lifts.values()))
-        assert lift.start_node_id in graph.nodes, "the pending start location became a real graph node"
-        assert ctx.lift.start_location is None, "the pending start location is consumed, not left dangling"
+        assert lift.start_node_id in graph.nodes, "the pending first location became a real graph node"
+        assert ctx.lift.first_location is None, "the pending first location is consumed, not left dangling"
         assert sm.is_idle_viewing_lift
 
     def test_road_marker_click_while_placing_is_rejected_with_view_road_verb(
@@ -1068,7 +1116,7 @@ class TestLiftPlacingEdgeCases:
 
         dem = mock_dem_blue_slope
         _sm, _ctx, _graph, _bottom = self._placing_from_node(fake_st, dem, path_factory)
-        with pytest.raises(RuntimeError, match="End node GHOST must exist but was not found"):
+        with pytest.raises(KeyError, match="GHOST"):
             handle_lift_placing_click(
                 ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id="GHOST"), elevation=None
             )
@@ -1672,13 +1720,13 @@ class TestBuildStateMarkerCompleteness:
         for marker_type, ci in self._entity_marker_clicks():
             graph = ResortGraph()
             sm, ctx = _session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
-            ctx.lift.start_location = PathPoint(lon=0.0, lat=-0.01, elevation=2400.0)
-            sm.start_lift(location=ctx.lift.start_location)
+            ctx.lift.first_location = PathPoint(lon=0.0, lat=-0.01, elevation=2400.0)
+            sm.start_lift(location=ctx.lift.first_location)
             handle_lift_placing_click(click_info=ci, elevation=2000.0)
             # Politely rejected: no lift built, still placing, and the pending start is preserved.
             assert len(graph.lifts) == 0, f"{marker_type.name} must not build a lift"
             assert sm.is_lift_placing, f"{marker_type.name} must not abandon lift placement"
-            assert ctx.lift.start_location is not None, f"{marker_type.name} must not clear the pending start"
+            assert ctx.lift.first_location is not None, f"{marker_type.name} must not clear the pending start"
 
     def test_road_building_rejects_every_entity_marker(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal

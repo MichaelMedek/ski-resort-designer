@@ -1097,8 +1097,8 @@ class PlannerStateMachine(StateMachine):
 
     def before_start_lift(self, node_id: str | None = None, location: PathPoint | None = None) -> None:
         """Action before starting lift placement."""
-        self.context.lift.start_node_id = node_id
-        self.context.lift.start_location = location
+        self.context.lift.first_node_id = node_id
+        self.context.lift.first_location = location
 
     # Reuse start_lift logic for other entry points
     before_start_lift_from_slope_view = before_start_lift

@@ -183,17 +183,17 @@ class TestForceStateMethods:
         # Enter lift placing mode
         sm.start_lift(node_id=None, location=None)
         # Manually set some lift state to verify it gets cleared
-        ctx.lift.start_node_id = "test_node"
+        ctx.lift.first_node_id = "test_node"
 
         assert sm.current_state_value == "lift_placing"
-        assert ctx.lift.start_node_id == "test_node"
+        assert ctx.lift.first_node_id == "test_node"
 
         # Force to idle - exit_lift_placing should clear lift context
         with sm.undo_running():
             sm.force_idle()
 
         assert sm.current_state_value == "idle_ready"
-        assert ctx.lift.start_node_id is None, "Lift context should be cleared by exit hook"
+        assert ctx.lift.first_node_id is None, "Lift context should be cleared by exit hook"
 
 
 class TestCancelSlope:

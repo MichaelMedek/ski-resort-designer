@@ -400,39 +400,29 @@ class PathBuildingControlPanel(ControlPanel):
 
 
 class LiftPlacingControlPanel(ControlPanel):
-    """LIFT_PLACING: bottom-station context + 'select top station' action (no buttons)."""
-
-    def _start_elevation(self) -> float:
-        if self.ctx.lift.start_node_id:
-            return self.graph.nodes[self.ctx.lift.start_node_id].elevation
-        if self.ctx.lift.start_location:
-            return self.ctx.lift.start_location.elevation
-        raise RuntimeError("LiftPlacing state requires start_node_id or start_location to be set")
+    """LIFT_PLACING: first-station context + 'select second station' action (no buttons)."""
 
     def context_message(self) -> "Message | None":
         lift_type = self.ctx.build_mode.mode  # single source of truth for the selected lift type
-        lift_icon = StyleConfig.LIFT_ICONS[lift_type]
-        if self.ctx.lift.start_node_id:
-            node = self.graph.nodes[self.ctx.lift.start_node_id]
+        if self.ctx.lift.first_node_id:
+            node = self.graph.nodes[self.ctx.lift.first_node_id]
             return LiftPlacingContextMessage(
                 lift_type=lift_type,
-                lift_icon=lift_icon,
-                bottom_node_id=self.ctx.lift.start_node_id,
-                bottom_elevation_m=node.elevation,
+                first_node_id=self.ctx.lift.first_node_id,
+                first_elevation_m=node.elevation,
             )
-        if self.ctx.lift.start_location:
-            loc = self.ctx.lift.start_location
+        if self.ctx.lift.first_location:
+            loc = self.ctx.lift.first_location
             return LiftPlacingContextMessage(
                 lift_type=lift_type,
-                lift_icon=lift_icon,
-                bottom_lat=loc.lat,
-                bottom_lon=loc.lon,
-                bottom_elevation_m=loc.elevation,
+                first_lat=loc.lat,
+                first_lon=loc.lon,
+                first_elevation_m=loc.elevation,
             )
-        raise RuntimeError("LiftPlacing state requires start_node_id or start_location to be set")
+        raise RuntimeError("LiftPlacing state requires first_node_id or first_location to be set")
 
     def action_message(self) -> "Message | None":
-        return LiftActionMessage(bottom_elevation_m=self._start_elevation())
+        return LiftActionMessage()
 
     def buttons(self) -> None:
         return None

@@ -165,14 +165,14 @@ class SegmentBuildContext(BaseContext):
 
 @dataclass
 class LiftContext(BaseContext):
-    """Lift placement state (start endpoint only)."""
+    """Lift placement state (first-clicked endpoint; orientation decided at completion)."""
 
-    start_node_id: str | None = None
-    start_location: PathPoint | None = None  # For new node creation
+    first_node_id: str | None = None
+    first_location: PathPoint | None = None  # For new node creation
 
     def clear(self) -> None:
-        self.start_node_id = None
-        self.start_location = None
+        self.first_node_id = None
+        self.first_location = None
 
 
 class BuildMode:
@@ -787,7 +787,7 @@ class PlannerContext:
             f"PlannerContext(state={self.state}, "
             f"coordinate={self.selection.coordinate}, "
             f"segments={segments}, "
-            f"lift_start={self.lift.start_node_id})"
+            f"lift_first={self.lift.first_node_id})"
         )
 
     def has_selection(self) -> bool:

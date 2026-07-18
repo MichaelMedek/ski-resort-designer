@@ -166,28 +166,12 @@ class OutsideTerrainMessage(WarningToast):
 
 
 @dataclass(frozen=True)
-class LiftMustGoUphillMessage(WarningToast):
-    """User clicked downhill for lift top station."""
-
-    start_elevation_m: float
-    end_elevation_m: float
-
-    @property
-    def message(self) -> str:
-        # Fires only when end <= start. Show 1-decimal elevations so a sub-metre downhill is
-        # visible (integer metres would render an identical-looking "2500m → 2500m") and the
-        # diff stays arithmetically consistent with the two shown numbers.
-        start, end = round(self.start_elevation_m, 1), round(self.end_elevation_m, 1)
-        return f"Lift Must Go Uphill — {start:.1f}m → {end:.1f}m ({end - start:+.1f}m)"
-
-
-@dataclass(frozen=True)
 class SameNodeLiftMessage(WarningToast):
-    """User clicked same location for lift start and end."""
+    """User clicked the same location for both lift stations."""
 
     @property
     def message(self) -> str:
-        return "Same Location — Top station cannot be at the same point as bottom station."
+        return "Same Location — a lift needs two different stations."
 
 
 @dataclass(frozen=True)
@@ -389,15 +373,19 @@ class PathBuildingContextMessage(InfoMessage):
 class LiftPlacingContextMessage(InfoMessage):
     """RIGHT panel: Lift placing progress message.
 
-    Shows bottom station info while awaiting top station selection.
+    Shows the first-station info while awaiting the second station selection.
     """
 
     lift_type: str = "chairlift"
-    lift_icon: str = "🚡"
-    bottom_node_id: str | None = None
-    bottom_lat: float | None = None
-    bottom_lon: float | None = None
-    bottom_elevation_m: float = 0.0
+    first_node_id: str | None = None
+    first_lat: float | None = None
+    first_lon: float | None = None
+    first_elevation_m: float = 0.0
+
+    @property
+    def lift_icon(self) -> str:
+        # Derive from StyleConfig (the single source the type buttons use) so the two never drift.
+        return StyleConfig.LIFT_ICONS[self.lift_type]
 
     @property
     def lift_name(self) -> str:
@@ -405,16 +393,16 @@ class LiftPlacingContextMessage(InfoMessage):
 
     @property
     def message(self) -> str:
-        if self.bottom_node_id:
-            location = f"Node **{self.bottom_node_id}**"
-        elif self.bottom_lat is not None and self.bottom_lon is not None:
-            location = f"({self.bottom_lat:.4f}, {self.bottom_lon:.4f})"
+        if self.first_node_id:
+            location = f"Node **{self.first_node_id}**"
+        elif self.first_lat is not None and self.first_lon is not None:
+            location = f"({self.first_lat:.4f}, {self.first_lon:.4f})"
         else:
-            raise ValueError("LiftPlacingContextMessage requires bottom_node_id or bottom_lat/lon")
+            raise ValueError("LiftPlacingContextMessage requires first_node_id or first_lat/lon")
         return (
             f"{self.lift_icon} **{self.lift_name}** — Placing\n\n"
-            f"- 🚉 Bottom station: {location}\n"
-            f"- 📍 Elevation: {self.bottom_elevation_m:.0f}m"
+            f"- 🚉 First station: {location}\n"
+            f"- 📍 Elevation: {self.first_elevation_m:.0f}m"
         )
 
 
@@ -575,16 +563,14 @@ class PathActionMessage(WarningMessage):
 
 @dataclass(frozen=True)
 class LiftActionMessage(WarningMessage):
-    """RIGHT panel: instruction to select the top station during lift placement."""
-
-    bottom_elevation_m: float = 0.0
+    """RIGHT panel: instruction to select the second station during lift placement."""
 
     @property
     def message(self) -> str:
         return (
-            "⬆️ **Select Top Station**\n\n"
-            f"- 👆 Click terrain **above {self.bottom_elevation_m:.0f}m**\n"
-            "- ⚪ Or click a higher **node**"
+            "⬆️ **Select Second Station**\n\n"
+            "- 👆 Click terrain or a **node** for the other station\n"
+            "- ↕️ The lift auto-orients low → high (always goes up)"
         )
 
 

@@ -12,6 +12,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import pydeck as pdk
+import requests
 import streamlit as st
 
 from skiresort_planner.constants import (
@@ -28,8 +29,10 @@ from skiresort_planner.model.message import (
     CustomPathComputingToast,
     DEMLoadingMessage,
     Message,
+    OSMImportErrorMessage,
     OSMImportLoadingMessage,
     ToastMessage,
+    WarningToast,
 )
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.persistence import backup_store
@@ -194,20 +197,41 @@ def run_pending_action(cue: ToastMessage | None, work: Callable[[], object]) -> 
 
 
 def run_pending_load(
-    message: Message, work: Callable[[ProgressFn], object], *, reset_center: tuple[float, float], reset_zoom: int
+    message: Message,
+    work: Callable[[ProgressFn], object],
+    *,
+    reset_center: tuple[float, float],
+    reset_zoom: int,
+    catch: type[Exception] | tuple[type[Exception], ...] | None = None,
+    failure_message: WarningToast | None = None,
 ) -> None:
-    """SLOW pending action: blocking loading message + a mandatory progress bar around `work` (which
-    reports stages via the injected callback), then ALWAYS reframe the map to (reset_center, reset_zoom)
-    and rerun. Early return by the caller means no map iframe renders this pass, so the bar is layout-safe.
+    """SLOW pending action: blocking loading message + mandatory progress bar around `work`, then EITHER
+    reframe the map to (reset_center, reset_zoom) on success OR, if `work` raises one of `catch`, show
+    `failure_message` and rerun WITHOUT reframing (so the warning isn't buried by a camera remount).
+    reset_center/reset_zoom are always required (discarded on failure). `catch` names EXACTLY the
+    exception type(s) to soft-handle — anything else always propagates; None catches nothing (hard fail).
+    `catch` and `failure_message` are given together or not at all.
     """
+    assert (catch is None) == (failure_message is None), "pass both `catch` and `failure_message`, or neither"
+    assert (failure_message is None) or isinstance(failure_message, WarningToast), (
+        "failure_message must be a WarningToast (a yellow toast), not an info/inline message"
+    )
     message.display()
     bar = st.progress(0.0, text="Starting…")
 
     def report(frac: float, text: str) -> None:
         bar.progress(frac, text=text)
 
-    work(report)
-    reload_map(center=reset_center, zoom=reset_zoom, pitch=MapConfig.VIEWING_PITCH)  # reframes + reruns
+    caught: tuple[type[Exception], ...] = () if catch is None else (catch if isinstance(catch, tuple) else (catch,))
+    try:
+        work(report)
+    except caught as exc:  # only the named type(s); () catches nothing → any exception propagates
+        logger.warning(f"pending load failed: {exc}")
+        assert failure_message is not None  # paired with `catch` by the assert above
+        failure_message.display()
+        trigger_rerun()  # rerun WITHOUT reframing so the warning survives
+        return
+    reload_map(center=reset_center, zoom=reset_zoom, pitch=MapConfig.VIEWING_PITCH)  # success: reframe + rerun
 
 
 def load_dem_data() -> None:
@@ -239,6 +263,7 @@ def load_dem_data() -> None:
         work=_load,
         reset_center=(MapConfig.START_CENTER_LON, MapConfig.START_CENTER_LAT),
         reset_zoom=MapConfig.DEFAULT_ZOOM,
+        failure_message=None,  # No error handling, fail fast
     )
 
 
@@ -408,10 +433,10 @@ def _run_app_ui() -> None:
 
     # Pending actions (once per render). OSM import is heavy (network + graph build): the slow helper
     # shows a blocking loading message + progress bar and returns early (no map iframe this pass, so the
-    # bar is layout-safe), then ALWAYS reframes on the import box center. Custom/fan are fast: the fast
-    # helper just runs them (custom shows an info toast, fan is silent).
+    # bar is layout-safe), then reframes on the import box center on success — or shows a warning toast
+    # WITHOUT reframing on failure. Custom/fan are fast: the fast helper just runs them.
     if ctx.pending.osm_import_mode is not None:
-        # Capture the box center BEFORE process_* consumes (nulls) it; reframe there whether or not it succeeded.
+        # Capture the box center BEFORE process_* consumes (nulls) it — the reframe target on success.
         lon, lat = ctx.pending.osm_import_center_lon, ctx.pending.osm_import_center_lat
         assert lon is not None and lat is not None, "a pending OSM import always has a placed center"
         run_pending_load(
@@ -419,8 +444,10 @@ def _run_app_ui() -> None:
             work=process_osm_import_pending,
             reset_center=(lon, lat),
             reset_zoom=MapConfig.IMPORT_OVERVIEW_ZOOM,
+            catch=requests.RequestException,  # only a network failure is soft; a parse/logic bug must raise
+            failure_message=OSMImportErrorMessage(error="the area could not be imported — network error"),
         )
-        return  # slow helper reframed + reran; skip the normal UI this render
+        return  # slow helper reframed/warned + reran; skip the normal UI this render
     if ctx.pending.custom_connect:
         run_pending_action(cue=CustomPathComputingToast(), work=process_custom_connect_pending)
     elif ctx.pending.fan_generation:

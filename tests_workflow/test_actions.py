@@ -908,11 +908,13 @@ class TestOSMImport:
         seen: dict[str, tuple[float, float, float, float]] = {}
 
         # The base __init__ stores self.bbox; capture it in _assemble (no network, no __init__ patch).
-        def _record_assemble(self: LiftOnlyImporter, elements: list[object]) -> ImportResult:
+        def _record_assemble(self: LiftOnlyImporter, elements: list[object], on_progress) -> ImportResult:
             seen["bbox"] = self.bbox
             return ImportResult()
 
-        monkeypatch.setattr("skiresort_planner.generators.osm_importer.BaseOSMImporter.fetch", lambda self: [])
+        monkeypatch.setattr(
+            "skiresort_planner.generators.osm_importer.BaseOSMImporter.fetch", lambda self, on_progress: []
+        )
         monkeypatch.setattr(
             "skiresort_planner.generators.osm_lift_importer.LiftOnlyImporter._assemble", _record_assemble
         )
@@ -966,9 +968,13 @@ class TestOSMImport:
         assert ctx.pending.osm_import_mode is None, "mode consumed"
         assert ctx.pending.osm_import_center_lon is None, "placed center consumed"
 
-    def test_process_import_network_error_reports_and_imports_nothing(
+    def test_process_import_network_error_propagates_and_imports_nothing(
         self, fake_st, mock_dem_blue_slope, monkeypatch
     ) -> None:
+        # The processor no longer swallows failures — the exception propagates to run_pending_load,
+        # which shows its pre-given warning toast. Here we assert it raises and imports nothing.
+        import pytest
+
         from skiresort_planner.constants import OSMImportMode
         from skiresort_planner.ui import actions
 
@@ -978,14 +984,14 @@ class TestOSMImport:
         ctx.pending.osm_import_center_lon = 0.0
         ctx.pending.osm_import_center_lat = 0.0
 
-        def boom(self):
+        def boom(self, on_progress):
             raise RuntimeError("overpass down")
 
         monkeypatch.setattr("skiresort_planner.generators.osm_importer.BaseOSMImporter.fetch", boom)
 
-        handled = actions.process_osm_import_pending(report=_noop_report)
+        with pytest.raises(RuntimeError, match="overpass down"):
+            actions.process_osm_import_pending(report=_noop_report)
 
-        assert handled is True
         assert len(graph.slopes) == 0 and len(graph.lifts) == 0
         assert len(graph.undo_stack) == 0, "a network error imports nothing"
 

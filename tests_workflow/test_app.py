@@ -86,7 +86,7 @@ class TestSessionHelpers:
         reframed: list[object] = []
         monkeypatch.setattr(app, "reload_map", lambda **k: reframed.append(k))
 
-        assert app.load_dem_data() is None, "already-loaded path returns early (no value)"
+        app.load_dem_data()  # already loaded → returns early, no work
         assert reframed == [], "no reframe/rerun when the DEM is already loaded"
 
     def test_load_dem_data_builds_services_and_reframes_while_loading(self, fake_st, monkeypatch) -> None:
@@ -200,6 +200,116 @@ class TestPendingOSMImportGate:
         assert (ctx.map.lon, ctx.map.lat) == (10.5, 46.5), "reframed on the placed import box center"
         assert ctx.map.zoom == MapConfig.IMPORT_OVERVIEW_ZOOM, "one step further out than building zoom"
         assert fake_st.session_state["camera_epoch"] == 1, "remount so deck re-reads the frame"
+
+
+class TestRunPendingLoadFailure:
+    """run_pending_load's strict contract: success reframes; a CAUGHT exception shows a pre-given
+    WarningToast WITHOUT reframing; an uncaught type always propagates; `catch`+`failure_message` pair.
+    """
+
+    def _seed_ctx(self, fake_st):
+        _sm, ctx = PlannerStateMachine.create(graph=ResortGraph(), add_ui_listener=False)
+        fake_st.session_state["context"] = ctx
+        fake_st.session_state["camera_epoch"] = 0
+        return ctx
+
+    def test_caught_failure_shows_warning_and_does_not_reframe(self, fake_st, monkeypatch) -> None:
+        from skiresort_planner.model.message import DEMLoadingMessage, OSMImportErrorMessage
+
+        ctx = self._seed_ctx(fake_st)
+        reframed: list[object] = []
+        reran: list[int] = []
+        monkeypatch.setattr(app, "reload_map", lambda **k: reframed.append(k))
+        monkeypatch.setattr(app, "trigger_rerun", lambda *a, **k: reran.append(1))
+
+        def boom(_report):
+            raise RuntimeError("kaput")
+
+        app.run_pending_load(
+            message=DEMLoadingMessage(),
+            work=boom,
+            reset_center=(1.0, 2.0),
+            reset_zoom=12,
+            catch=RuntimeError,
+            failure_message=OSMImportErrorMessage(error="nope"),
+        )
+
+        assert reframed == [], "a caught failure must NOT reframe (would bury the warning)"
+        assert reran == [1], "it still reruns so the warning toast paints"
+        assert ctx.map.zoom != 12, "the reset frame was discarded on failure"
+
+    def test_uncaught_exception_type_propagates(self, fake_st, monkeypatch) -> None:
+        import pytest
+
+        from skiresort_planner.model.message import DEMLoadingMessage, OSMImportErrorMessage
+
+        self._seed_ctx(fake_st)
+        monkeypatch.setattr(app, "reload_map", lambda **k: None)
+
+        def boom(_report):
+            raise KeyError("not the caught type")
+
+        # catch=ValueError only → a KeyError is NOT soft-handled, it propagates.
+        with pytest.raises(KeyError):
+            app.run_pending_load(
+                message=DEMLoadingMessage(),
+                work=boom,
+                reset_center=(1.0, 2.0),
+                reset_zoom=12,
+                catch=ValueError,
+                failure_message=OSMImportErrorMessage(error="nope"),
+            )
+
+    def test_no_catch_hard_fails(self, fake_st, monkeypatch) -> None:
+        import pytest
+
+        from skiresort_planner.model.message import DEMLoadingMessage
+
+        self._seed_ctx(fake_st)
+        monkeypatch.setattr(app, "reload_map", lambda **k: None)
+
+        def boom(_report):
+            raise RuntimeError("kaput")
+
+        # No catch/failure_message → nothing soft-handled (DEM-style hard fail).
+        with pytest.raises(RuntimeError, match="kaput"):
+            app.run_pending_load(message=DEMLoadingMessage(), work=boom, reset_center=(1.0, 2.0), reset_zoom=12)
+
+    def test_catch_and_failure_message_must_be_paired(self, fake_st, monkeypatch) -> None:
+        import pytest
+
+        from skiresort_planner.model.message import DEMLoadingMessage
+
+        self._seed_ctx(fake_st)
+        monkeypatch.setattr(app, "reload_map", lambda **k: None)
+
+        # catch given but no failure_message → the pairing assert fires.
+        with pytest.raises(AssertionError, match="both"):
+            app.run_pending_load(
+                message=DEMLoadingMessage(),
+                work=lambda _r: None,
+                reset_center=(1.0, 2.0),
+                reset_zoom=12,
+                catch=RuntimeError,
+            )
+
+    def test_failure_message_must_be_a_warning_toast(self, fake_st, monkeypatch) -> None:
+        import pytest
+
+        from skiresort_planner.model.message import CustomPathComputingToast, DEMLoadingMessage
+
+        self._seed_ctx(fake_st)
+        monkeypatch.setattr(app, "reload_map", lambda **k: None)
+
+        with pytest.raises(AssertionError, match="WarningToast"):
+            app.run_pending_load(
+                message=DEMLoadingMessage(),
+                work=lambda _r: None,
+                reset_center=(1.0, 2.0),
+                reset_zoom=12,
+                catch=RuntimeError,
+                failure_message=CustomPathComputingToast(),  # type: ignore[arg-type]  # an InfoToast — must be rejected
+            )
 
 
 class TestMapHeight:

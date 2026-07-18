@@ -1169,12 +1169,12 @@ class MapRenderer:
         *,
         use_3d: bool = False,
     ) -> list[pdk.Layer]:
-        """Create marker for pending lift placement with uphill arrow.
+        """Create marker for pending lift placement with terrain fall-line arrow.
 
         Args:
-            lat, lon: Bottom station location
+            lat, lon: First station location
             elevation: Ground elevation
-            fall_line_bearing: Downhill direction (arrow shows opposite)
+            fall_line_bearing: Downhill direction (arrow shows the uphill terrain, opposite)
             use_3d: If True, render at terrain elevation. If False, render flat.
         """
         layers = []
@@ -1190,7 +1190,7 @@ class MapRenderer:
             {
                 "position": [lon, lat, marker_z],
                 "elevation": elevation,
-                "name": f"Bottom Station ({elevation:.0f}m)",
+                "name": f"First Station ({elevation:.0f}m)",
             }
         ]
 

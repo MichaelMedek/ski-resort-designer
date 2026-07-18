@@ -37,8 +37,7 @@ from skiresort_planner.ui.kind_spec import KIND_SPECS
 from skiresort_planner.ui.validators import (
     validate_custom_target_distance,
     validate_custom_target_downhill,
-    validate_lift_different_nodes,
-    validate_lift_goes_uphill,
+    validate_lift_stations_differ,
 )
 
 if TYPE_CHECKING:
@@ -48,6 +47,9 @@ if TYPE_CHECKING:
     from skiresort_planner.ui.state_machine import PlannerStateMachine
 
 logger = logging.getLogger(__name__)
+
+# Shown when a stray marker is clicked mid-lift-placement — one string, four call sites.
+_LIFT_PLACING_BUSY_REASON = "Finish placing the lift first (click the second station)."
 
 
 # =============================================================================
@@ -458,14 +460,14 @@ def _handle_custom_connect_click(click_info: ClickInfo, elevation: float | None)
 def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) -> None:
     """Handle click in LIFT_PLACING state - complete lift placement.
 
-    Pattern: Validate with elevations BEFORE creating nodes.
-    - For terrain clicks: use elevation directly, create node only after validation passes
-    - For node clicks: use existing node
-    This prevents orphan nodes from failed validation attempts.
+    The two stations may be clicked in either order: elevations are compared here and the
+    LOWER point becomes the bottom (lift start), the HIGHER the top (end), so a lift always
+    goes up regardless of click order. Nodes are created only after the same-station guard
+    passes, so a rejected click leaves no orphan nodes.
 
     Valid Click Types:
-        NODE → Complete lift to existing node
-        TERRAIN → Create new node and complete lift
+        NODE → complete lift to an existing node
+        TERRAIN → create a new node and complete lift
 
     Invalid Click Types (during placement):
         SLOPE → Cannot view while placing
@@ -484,34 +486,22 @@ def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) ->
 
         # SLOPE during placement = user error
         if marker_type == MarkerType.SLOPE:
-            InvalidClickMessage(
-                action="view slope",
-                reason="Finish placing the lift first (click uphill for top station).",
-            ).display()
+            InvalidClickMessage(action="view slope", reason=_LIFT_PLACING_BUSY_REASON).display()
             return
 
         # SEGMENT during placement = user error (same as SLOPE)
         if marker_type == MarkerType.SEGMENT:
-            InvalidClickMessage(
-                action="view segment",
-                reason="Finish placing the lift first (click uphill for top station).",
-            ).display()
+            InvalidClickMessage(action="view segment", reason=_LIFT_PLACING_BUSY_REASON).display()
             return
 
         # LIFT/PYLON during placement = user error
         if marker_type in {MarkerType.LIFT, MarkerType.PYLON}:
-            InvalidClickMessage(
-                action="view lift",
-                reason="Finish placing the lift first (click uphill for top station).",
-            ).display()
+            InvalidClickMessage(action="view lift", reason=_LIFT_PLACING_BUSY_REASON).display()
             return
 
         # ROAD during placement = user error
         if marker_type == MarkerType.ROAD:
-            InvalidClickMessage(
-                action="view road",
-                reason="Finish placing the lift first (click uphill for top station).",
-            ).display()
+            InvalidClickMessage(action="view road", reason=_LIFT_PLACING_BUSY_REASON).display()
             return
 
         # PROPOSAL during lift placement = programming error (no proposals exist)
@@ -522,97 +512,80 @@ def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) ->
             )
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Determine START: existing node or pending location
+    # Gather the FIRST station (from context): existing node or pending location.
     # ─────────────────────────────────────────────────────────────────────────
-    if ctx.lift.start_node_id is not None:
-        start_node = graph.nodes.get(ctx.lift.start_node_id)
-        if start_node is None:
-            raise RuntimeError(f"Start node {ctx.lift.start_node_id} must exist but was not found")
-        start_elevation = start_node.elevation
-    elif ctx.lift.start_location is not None:
-        start_elevation = ctx.lift.start_location.elevation
-        start_node = None  # Will create after validation
+    if ctx.lift.first_node_id is not None:
+        first_node = graph.nodes[ctx.lift.first_node_id]
+        first_lon, first_lat, first_elevation = first_node.lon, first_node.lat, first_node.elevation
+    elif ctx.lift.first_location is not None:
+        first_node = None  # materialised only after the same-station guard passes
+        loc = ctx.lift.first_location
+        first_lon, first_lat, first_elevation = loc.lon, loc.lat, loc.elevation
     else:
-        raise RuntimeError("Neither start_node_id nor start_location is set in lift context")
+        raise RuntimeError("Neither first_node_id nor first_location is set in lift context")
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Determine END: existing node or terrain click
+    # Gather the SECOND station (this click): existing node or fresh terrain point.
     # ─────────────────────────────────────────────────────────────────────────
     if click_info.click_type == MapClickType.MARKER and click_info.marker_type == MarkerType.NODE:
         assert click_info.node_id is not None
-        end_node_existing = graph.nodes.get(click_info.node_id)
-        if end_node_existing is None:
-            raise RuntimeError(f"End node {click_info.node_id} must exist but was not found")
-        end_node_id = end_node_existing.id
-        end_elevation = end_node_existing.elevation
-        end_lon = end_node_existing.lon
-        end_lat = end_node_existing.lat
-        logger.debug(f"[LIFT_PLACING] Node click: completing lift to {end_node_id}")
+        second_node = graph.nodes[click_info.node_id]
+        second_lon, second_lat, second_elevation = second_node.lon, second_node.lat, second_node.elevation
+        logger.debug(f"[LIFT_PLACING] Node click: second station is {second_node.id}")
     elif click_info.click_type == MapClickType.TERRAIN:
         assert click_info.lat is not None and click_info.lon is not None
         if elevation is None:
             OutsideTerrainMessage(lat=click_info.lat, lon=click_info.lon).display()
             return
-        end_node_id = None  # No existing node for terrain clicks
-        end_elevation = elevation
-        end_lon = click_info.lon
-        end_lat = click_info.lat
+        second_node = None  # No existing node for terrain clicks
+        second_lon, second_lat, second_elevation = click_info.lon, click_info.lat, elevation
     else:
         raise RuntimeError(f"Expected NODE or TERRAIN click but got {click_info.click_type}")
 
     # ─────────────────────────────────────────────────────────────────────────
-    # VALIDATION: Using elevations only - no nodes created yet for terrain clicks
+    # Reject a lift from a point to itself — the only geometric failure left now that
+    # orientation is decided by elevation, not click order. No nodes created yet.
     # ─────────────────────────────────────────────────────────────────────────
-    if error := validate_lift_goes_uphill(start_elevation=start_elevation, end_elevation=end_elevation):
-        logger.warning(
-            f"Lift uphill validation failed: start={start_elevation:.0f}m, end={end_elevation:.0f}m: {error.message}"
-        )
+    if error := validate_lift_stations_differ(
+        first_lon=first_lon, first_lat=first_lat, second_lon=second_lon, second_lat=second_lat
+    ):
+        logger.info(f"Lift station validation failed: {error.message}")
         error.display()
         return  # No orphan nodes - nothing was created
 
-    # Same-node check only applies if both are existing nodes
-    if (
-        ctx.lift.start_node_id is not None
-        and end_node_id is not None
-        and (error := validate_lift_different_nodes(start_node_id=ctx.lift.start_node_id, end_node_id=end_node_id))
-    ):
-        logger.info(
-            f"Lift same-node validation failed: start_node={ctx.lift.start_node_id}, "
-            f"end_node={end_node_id}: {error.message}"
-        )
-        error.display()
-        return
+    # ─────────────────────────────────────────────────────────────────────────
+    # Orient low → high: lower station is the bottom (start), higher is the top (end).
+    # On an exact elevation tie, break deterministically by lat then lon (rare with floats).
+    # ─────────────────────────────────────────────────────────────────────────
+    first_is_bottom = (first_elevation, first_lat, first_lon) <= (second_elevation, second_lat, second_lon)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # NODE CREATION: Validation passed - now create nodes if needed
+    # NODE CREATION: guard passed - materialise both stations if needed.
     # ─────────────────────────────────────────────────────────────────────────
-    if start_node is None:
-        assert ctx.lift.start_location is not None
-        start_node, _ = graph.get_or_create_node(
-            lon=ctx.lift.start_location.lon,
-            lat=ctx.lift.start_location.lat,
-            elevation=ctx.lift.start_location.elevation,
-        )
-        ctx.lift.start_node_id = start_node.id
-        ctx.lift.start_location = None
-        logger.info(f"Created start node {start_node.id}")
+    if first_node is None:
+        first_node, _ = graph.get_or_create_node(lon=first_lon, lat=first_lat, elevation=first_elevation)
+        logger.info(f"Created first station node {first_node.id}")
+    # First station's identity is now fixed — record it and consume the pending location.
+    ctx.lift.first_node_id = first_node.id
+    ctx.lift.first_location = None
 
-    if end_node_id is not None:
-        end_node = graph.nodes[end_node_id]
-    else:
-        end_node, _ = graph.get_or_create_node(lon=end_lon, lat=end_lat, elevation=end_elevation)
-        logger.info(f"Created end node {end_node.id}")
+    if second_node is None:
+        second_node, _ = graph.get_or_create_node(lon=second_lon, lat=second_lat, elevation=second_elevation)
+        logger.info(f"Created second station node {second_node.id}")
+
+    bottom_node, top_node = (first_node, second_node) if first_is_bottom else (second_node, first_node)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Create lift
+    # Create lift (always bottom → top)
     # ─────────────────────────────────────────────────────────────────────────
     logger.info(
-        f"Creating lift from {start_node.id} ({start_node.elevation:.0f}m) to {end_node.id} ({end_node.elevation:.0f}m)"
+        f"Creating lift from {bottom_node.id} ({bottom_node.elevation:.0f}m) to "
+        f"{top_node.id} ({top_node.elevation:.0f}m)"
     )
 
     lift = graph.add_lift(
-        start_node_id=start_node.id,
-        end_node_id=end_node.id,
+        start_node_id=bottom_node.id,
+        end_node_id=top_node.id,
         lift_type=ctx.build_mode.mode,
         dem=dem,
     )
