@@ -193,7 +193,7 @@ class ImportSidebarPanel(SidebarPanel):
             value=self.ctx.pending.osm_import_half_width_km,
             step=0.5,
             key="import_osm_half_width",
-            help="Lifts & pistes fully inside the box (this far from the center in each direction) are imported.",
+            help="Lifts + slopes fully inside the box (this far from the center in each direction) are imported.",
         )
         if half_width_km != self.ctx.pending.osm_import_half_width_km:
             self.ctx.pending.osm_import_half_width_km = half_width_km

@@ -304,7 +304,7 @@ class DEMLoadingMessage(InfoMessage):
 
     @property
     def message(self) -> str:
-        return "🗺️ **Loading Terrain Data** — This takes a few seconds on first load..."
+        return "🗺️ **Loading Terrain Data** — This takes a few seconds on first load…"
 
 
 @dataclass(frozen=True)
@@ -329,7 +329,7 @@ class OSMImportLoadingMessage(InfoMessage):
     def message(self) -> str:
         if self.mode == OSMImportMode.LIFTS_ONLY:
             return f"{StyleConfig.LIFT_ICONS[LiftType.GONDOLA]} Importing lifts from OpenStreetMap…"
-        return f"{StyleConfig.LIFT_ICONS[LiftType.GONDOLA]}{StyleConfig.SLOPE_ICON} Importing lifts & slopes from OpenStreetMap…"
+        return f"{StyleConfig.LIFT_ICONS[LiftType.GONDOLA]}{StyleConfig.SLOPE_ICON} Importing lifts + slopes from OpenStreetMap…"
 
 
 # =============================================================================

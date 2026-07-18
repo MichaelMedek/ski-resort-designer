@@ -53,7 +53,7 @@ class ExcavatorWarning(Warning):
     def message(self) -> str:
         return (
             f"🚜 Excavator Warning: {self.vertical_cut_m:.1f}m vertical side cut required "
-            f"across {self.belt_width_m:.0f}m piste width. Cross-slope {self.side_slope_pct:.0f}% "
+            f"across {self.belt_width_m:.0f}m belt width. Cross-grade {self.side_slope_pct:.0f}% "
             f"(terrain leans {self.side_slope_dir.value})"
         )
 
@@ -74,7 +74,7 @@ class TooSteepWarning(Warning):
     def message(self) -> str:
         return (
             f"⚠️ Too Steep Warning: Gradient {self.slope_pct:.0f}% exceeds maximum "
-            f"safe slope of {self.max_threshold_pct:.0f}% - may require terrain modification"
+            f"safe slope of {self.max_threshold_pct:.0f}% — may require terrain modification"
         )
 
 
@@ -94,5 +94,5 @@ class TooFlatWarning(Warning):
     def message(self) -> str:
         return (
             f"📐 Too Flat Warning: Gradient {self.slope_pct:.0f}% is below minimum "
-            f"skiable slope of {self.min_threshold_pct:.0f}% - skiers may need to push"
+            f"skiable slope of {self.min_threshold_pct:.0f}% — skiers may need to push"
         )

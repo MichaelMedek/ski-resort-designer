@@ -169,7 +169,7 @@ class SidebarRenderer:
         if BuildMode.is_lift(mode):
             return f"Select, then click on map to start placing a {label}"
         if BuildMode.is_import(mode):
-            return "Select, then click the map to place an Open Street Map import area."
+            return "Select, then click the map to place an OpenStreetMap import area."
         if BuildMode.is_merge(mode):
             return "Select, then click node markers to merge them into one."
         raise ValueError(f"Button {mode} has no help text (is_disabled={is_disabled})")

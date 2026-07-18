@@ -410,7 +410,7 @@ class _PathBuildingState(BuildState):
     def info_block(self, ctx: PlannerContext) -> InfoBlock:
         return InfoBlock(
             icon=StyleConfig.BUILDING_ICON,
-            label=f"Building {KIND_SPECS[self.kind].display_noun}...",
+            label=f"Building {KIND_SPECS[self.kind].display_noun}…",
             bullets=["⏳ Complete or cancel current build to change type"],
         )
 
@@ -479,7 +479,7 @@ class _LiftPlacingState(BuildState):
     def info_block(self, ctx: PlannerContext) -> InfoBlock:
         return InfoBlock(
             icon=StyleConfig.BUILDING_ICON,
-            label="Placing Lift...",
+            label="Placing Lift…",
             bullets=["⏳ Complete or cancel current build to change type"],
         )
 
@@ -548,7 +548,7 @@ class _ImportPlacingState(BuildState):
     def info_block(self, ctx: PlannerContext) -> InfoBlock:
         return InfoBlock(
             icon=StyleConfig.BUILDING_ICON,
-            label="Importing Area...",
+            label="Importing Area…",
             bullets=["⏳ Complete or cancel current build to change type"],
         )
 
@@ -606,7 +606,7 @@ class _MergePlacingState(BuildState):
     def info_block(self, ctx: PlannerContext) -> InfoBlock:
         return InfoBlock(
             icon=StyleConfig.BUILDING_ICON,
-            label="Merging Nodes...",
+            label="Merging Nodes…",
             bullets=["⏳ Complete or cancel current build to change type"],
         )
 
