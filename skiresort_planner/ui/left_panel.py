@@ -437,7 +437,7 @@ class SidebarRenderer:
         """Render save/load resort functionality."""
         with st.expander("💾 Resort Data", expanded=False):
             stats = self.graph.get_stats()
-            can_save_or_upload = stats["total_slopes"] > 0 or stats["total_lifts"] > 0 or stats["total_roads"] > 0
+            has_content = stats["total_slopes"] > 0 or stats["total_lifts"] > 0 or stats["total_roads"] > 0
 
             # Load from File
             uploaded_file = st.file_uploader(
@@ -449,7 +449,7 @@ class SidebarRenderer:
             )
 
             if uploaded_file is not None:
-                if can_save_or_upload:
+                if has_content:
                     # Resort still has content — refuse to overwrite it silently.
                     UploadBlockedMessage().display()
                     st.session_state._upload_counter = st.session_state.get("_upload_counter", 0) + 1
@@ -484,7 +484,7 @@ class SidebarRenderer:
                 ("📥 Export GPX", "gpx", "application/gpx+xml", "Export for GPS devices and mapping apps"),
             )
             for label, ext, mime, help_text in downloads:
-                if can_save_or_upload:
+                if has_content:
                     payload = json.dumps(self.graph.to_dict(), indent=2) if ext == "json" else self.graph.to_gpx()
                     st.download_button(
                         label,
@@ -505,7 +505,7 @@ class SidebarRenderer:
                 "🗑️ Reset to Empty",
                 width="stretch",
                 help="Clear the current resort and start a new empty one",
-                disabled=not can_save_or_upload,
+                disabled=not has_content,
                 key="reset_resort_button",
             ):
                 _confirm_reset_resort_dialog()
