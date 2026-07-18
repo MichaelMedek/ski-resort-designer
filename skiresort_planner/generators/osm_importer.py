@@ -222,7 +222,7 @@ def extract_lift_sections(elements: list[OverpassElement], bbox: BBox) -> list[L
         parts = split_lift_way_at_stations(verts, el.get("nodes", []), station_ids)
         name = _lift_name(tags)
         for i, part in enumerate(parts):
-            sections.append((part, str(lift_type), suffixed_lift_name(name, i, len(parts))))
+            sections.append((part, str(lift_type), suffixed_name(name, i, len(parts))))
     return sections
 
 
@@ -280,9 +280,9 @@ def split_lift_way_at_stations(
     return [vertices[bounds[k] : bounds[k + 1] + 1] for k in range(len(bounds) - 1)]
 
 
-def suffixed_lift_name(name: str | None, index: int, total: int) -> str | None:
-    """Per-section display name: `"<name> (k)"` (1-based, bottom→top) when a lift splits into
-    `total` > 1 sections; the bare name when it stays whole (single-section lifts unchanged).
+def suffixed_name(name: str | None, index: int, total: int) -> str | None:
+    """Per-section display name: `"<name> (k)"` (1-based) when a name splits into `total` > 1 sections
+    (lift mid-stations, or slope pieces sharing an OSM name); the bare name when it stays whole.
     """
     if name is None or total <= 1:
         return name
