@@ -7,7 +7,7 @@ the connected-graph preprocessing.
 
 import logging
 
-from skiresort_planner.generators.osm_importer import BaseOSMImporter, ImportResult, OverpassElement
+from skiresort_planner.generators.osm_importer import BaseOSMImporter, ImportResult, OverpassElement, ProgressFn
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +15,8 @@ logger = logging.getLogger(__name__)
 class LiftOnlyImporter(BaseOSMImporter):
     """Imports ONLY lifts, as raw OSM geometry (the two stations). No pistes, no graph build."""
 
-    def _assemble(self, elements: list[OverpassElement]) -> ImportResult:
+    def _assemble(self, elements: list[OverpassElement], on_progress: ProgressFn) -> ImportResult:
+        on_progress(0.0, "Extracting lifts…")  # lift-only build is fast — one marker is enough
         lifts, skipped = self.extract_lifts(elements)
         logger.info(f"OSM lift-only import: {len(lifts)} lifts, {skipped} skipped")
         return ImportResult(

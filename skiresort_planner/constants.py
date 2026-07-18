@@ -750,6 +750,11 @@ class OSMConfig:
 
     # piste:type value marking an alpine downhill run — the only kind we import.
     PISTE_TYPE_DOWNHILL = "downhill"
+    # piste:type value for a connector run — kept for connectivity, not difficulty-filtered.
+    PISTE_TYPE_CONNECTION = "connection"
+
+    # Standard groomed downhill grades we import (green→black).
+    PISTE_DIFFICULTY_ALLOWED = frozenset({"novice", "easy", "intermediate", "advanced", "expert"})
 
     # Re-import dedup radius: an incoming entity whose endpoints match an existing one within this is skipped.
     OSM_DEDUP_TOL_M = 100.0

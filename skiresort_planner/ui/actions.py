@@ -13,7 +13,7 @@ import streamlit as st
 
 from skiresort_planner.constants import OUTPUT_DIR, MapConfig, MergeConfig, OSMImportMode
 from skiresort_planner.generators.osm_graph_builder import GraphImporter
-from skiresort_planner.generators.osm_importer import BaseOSMImporter, ProgressFn, bbox_around
+from skiresort_planner.generators.osm_importer import BaseOSMImporter, ProgressFn, bbox_around, sub_progress
 from skiresort_planner.generators.osm_lift_importer import LiftOnlyImporter
 from skiresort_planner.generators.path_factory import PathFactory
 from skiresort_planner.model.actions import (
@@ -256,12 +256,14 @@ def process_osm_import_pending(report: ProgressFn) -> bool:
         raise ValueError(f"Unknown {mode=}")
     t0 = time.perf_counter()
     try:
-        result = importer_cls(dem=dem, bbox=bbox).run(on_progress=report, dump_dir=OUTPUT_DIR)
+        # Fetch+build own the first 95% of the bar; materialization is the fast tail.
+        result = importer_cls(dem=dem, bbox=bbox).run(on_progress=sub_progress(report, 0.0, 0.95), dump_dir=OUTPUT_DIR)
     except Exception as exc:  # network / HTTP / parse — report, import nothing
         logger.warning(f"OSM import failed: {exc}")
         OSMImportErrorMessage(error=str(exc)).display()
         return True
 
+    report(0.97, "Adding to the resort…")
     graph.import_osm(result, dem=dem)
     logger.info(
         f"OSM import ({mode}): {len(result.slope_chains)} slope chains + {len(result.lifts)} lifts "

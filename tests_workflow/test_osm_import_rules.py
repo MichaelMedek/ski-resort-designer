@@ -18,7 +18,7 @@ MIN_CONNECTED_FRAC = 0.99  # near-total connectivity (current import is a single
 MAX_NODES = 200  # node-count ceiling (current 99)
 MAX_SEGMENTS = 300  # segment-count ceiling (current 155)
 MIN_SEGMENTS = 100  # a full box must not collapse to near-empty
-MIN_SEG_PER_SLOPE = 1.8  # R29: path-segments per FINAL app-slope.
+MIN_SEG_PER_SLOPE = 1.7  # R29: path-segments per FINAL app-slope.
 MAX_STRAIGHT_M = OSMConfig.MAX_STRAIGHT_M  # max single straight leg between consecutive points
 MAX_PULL_M = OSMConfig.MAX_PULL_M  # end connector length cap; over this → dropped
 PISTE_TOL_M = OSMConfig.PISTE_TOL_M  # off-piste threshold — SAME source the builder gates on
@@ -122,7 +122,7 @@ def ischgl_graph():
     els = _load_fixture()
     dem = DEMService()  # REAL EuroDEM Alps terrain (data/alps_dem.tif)
     pistes, lifts = ways_to_lines(els, ISCHGL_BBOX)
-    return OSMGraphBuilder(dem=dem, bbox=ISCHGL_BBOX).build(pistes, lifts)
+    return OSMGraphBuilder(dem=dem, bbox=ISCHGL_BBOX).build(pistes, lifts, on_progress=lambda f, t: None)
 
 
 class TestImportRules:
@@ -678,7 +678,7 @@ class TestGraphImporter:
         from skiresort_planner.generators.osm_graph_builder import GraphImporter
 
         importer = GraphImporter(dem=DEMService(), bbox=ISCHGL_BBOX)
-        monkeypatch.setattr(importer, "fetch", lambda: _load_fixture())  # no network — use the fixture
+        monkeypatch.setattr(importer, "fetch", lambda on_progress: _load_fixture())  # no network — use the fixture
 
         result = importer.run(on_progress=lambda f, t: None, dump_dir=tmp_path)
 

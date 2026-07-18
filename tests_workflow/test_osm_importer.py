@@ -36,14 +36,50 @@ class _FakeDEM(DEMService):
 BBOX = (-0.1, -0.11, 0.1, 0.09)
 
 
-def _way(tags: dict[str, str], verts: list[tuple[float, float]]) -> OverpassElement:
-    """Build a synthetic Overpass way element with inline geometry."""
-    return {"type": "way", "tags": tags, "geometry": [{"lon": x, "lat": y} for x, y in verts]}
+def _noop_progress(frac: float, text: str) -> None:
+    """No-op ProgressFn for importer tests that don't assert on progress."""
+
+
+class _RawStream:
+    """Minimal urllib3-raw stand-in: .stream() yields the (uncompressed) body in chunks."""
+
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def stream(self, chunk: int, decode_content: bool = False):  # noqa: ARG002,FBT001,FBT002 — mirrors urllib3 signature
+        for i in range(0, len(self._body), chunk):
+            yield self._body[i : i + chunk]
+
+
+def _ok_response(body: bytes):
+    """A 200 requests.Response whose .raw streams `body` (uncompressed, no Content-Encoding)."""
+    import requests
+
+    resp = requests.Response()
+    resp.status_code = 200
+    resp.headers["Content-Length"] = str(len(body))
+    resp.raw = _RawStream(body)
+    return resp
+
+
+def _way(tags: dict[str, str], verts: list[tuple[float, float]], node_ids: list[int] | None = None) -> OverpassElement:
+    """Build a synthetic Overpass way element with inline geometry + a parallel `nodes` id array.
+
+    Real `out geom;` ways always carry `nodes` aligned 1:1 with geometry; default to auto-numbered
+    ids so tests mirror that invariant. Pass explicit `node_ids` to reference a station node.
+    """
+    ids = node_ids if node_ids is not None else list(range(len(verts)))
+    return {"type": "way", "tags": tags, "geometry": [{"lon": x, "lat": y} for x, y in verts], "nodes": ids}
+
+
+def _station(node_id: int, lon: float, lat: float) -> OverpassElement:
+    """Build a synthetic Overpass `aerialway=station` node element (lat/lon directly on it)."""
+    return {"type": "node", "id": node_id, "lon": lon, "lat": lat, "tags": {"aerialway": "station"}}
 
 
 def _lifts(elements: list[OverpassElement], dem: _FakeDEM | None = None) -> ImportResult:
     """Assemble a lift-only import (no network) from synthetic elements."""
-    return LiftOnlyImporter(dem=dem or _FakeDEM(), bbox=BBOX)._assemble(elements)
+    return LiftOnlyImporter(dem=dem or _FakeDEM(), bbox=BBOX)._assemble(elements, on_progress=_noop_progress)
 
 
 class TestLiftOnlyResult:
@@ -83,19 +119,14 @@ class TestFetch:
         assert not _is_transient(_err(406)), "missing User-Agent (406) is not retryable"
 
     def test_single_query_no_retry_on_success(self, monkeypatch) -> None:
-        import requests
-
         calls = {"n": 0}
 
         def fake_post(*_args, **_kwargs):
             calls["n"] += 1
-            resp = requests.Response()
-            resp.status_code = 200
-            resp._content = b'{"elements": [{"id": 1}]}'
-            return resp
+            return _ok_response(b'{"elements": [{"id": 1}]}')
 
         monkeypatch.setattr("skiresort_planner.generators.osm_importer.requests.post", fake_post)
-        elements = LiftOnlyImporter(dem=_FakeDEM(), bbox=BBOX).fetch()
+        elements = LiftOnlyImporter(dem=_FakeDEM(), bbox=BBOX).fetch(on_progress=_noop_progress)
         assert elements == [{"id": 1}] and calls["n"] == 1, "one query, no retry when it succeeds"
 
     def test_transient_error_waits_then_retries_once(self, monkeypatch) -> None:
@@ -108,16 +139,14 @@ class TestFetch:
 
         def fake_post(*_args, **_kwargs):
             calls["n"] += 1
-            resp = requests.Response()
             if calls["n"] == 1:
+                resp = requests.Response()
                 resp.status_code = 504  # first attempt: busy
-            else:
-                resp.status_code = 200
-                resp._content = b'{"elements": [{"id": 2}]}'
-            return resp
+                return resp
+            return _ok_response(b'{"elements": [{"id": 2}]}')
 
         monkeypatch.setattr("skiresort_planner.generators.osm_importer.requests.post", fake_post)
-        elements = LiftOnlyImporter(dem=_FakeDEM(), bbox=BBOX).fetch()
+        elements = LiftOnlyImporter(dem=_FakeDEM(), bbox=BBOX).fetch(on_progress=_noop_progress)
         assert elements == [{"id": 2}] and calls["n"] == 2, "one retry after a transient failure"
 
     def test_non_transient_error_not_retried(self, monkeypatch) -> None:
@@ -134,7 +163,7 @@ class TestFetch:
 
         monkeypatch.setattr("skiresort_planner.generators.osm_importer.requests.post", fake_post)
         with pytest.raises(requests.HTTPError):
-            LiftOnlyImporter(dem=_FakeDEM(), bbox=BBOX).fetch()
+            LiftOnlyImporter(dem=_FakeDEM(), bbox=BBOX).fetch(on_progress=_noop_progress)
         assert calls["n"] == 1, "a non-transient error is raised at once, not retried"
 
     def test_seconds_until_free_slot_parsing(self, monkeypatch) -> None:
@@ -194,8 +223,8 @@ class TestLifts:
         assert result.lifts == [] and result.skipped == 0
 
     def test_short_lift_skipped(self) -> None:
-        # A named gondola under MIN_LIFT_LENGTH_M (300 m) is a nursery lift → skipped and counted.
-        result = _lifts([_way({"aerialway": "gondola", "name": "Baby"}, [(0.0, 0.0), (0.0, -0.002)])])  # ~223 m
+        # A named gondola under MIN_LIFT_LENGTH_M (200 m) is a nursery lift → skipped and counted.
+        result = _lifts([_way({"aerialway": "gondola", "name": "Baby"}, [(0.0, 0.0), (0.0, -0.0015)])])  # ~167 m
         assert result.lifts == [] and result.skipped == 1
 
     def test_truncated_lift_skipped_entirely(self) -> None:
@@ -219,21 +248,32 @@ class TestLifts:
 
 
 class TestDedupeByName:
-    """OSM sometimes maps the same lift twice (an outdated way + a re-drawn one, same name), which
-    import as two identical entities. We keep the LONGEST per name and count the shorter duplicates.
+    """OSM sometimes maps the same lift twice (an outdated way + a re-drawn one, same name). We keep
+    the LONGEST and count the shorter ONLY when they are geometrically COINCIDENT (both endpoints
+    match) — a mere name clash between distinct lifts is not a duplicate.
     """
 
     def test_shorter_same_name_lift_dropped(self) -> None:
+        # Same name AND (near-)coincident endpoints — a redraw of the SAME lift. Keep the longest.
         elements = [
             _way({"aerialway": "gondola", "name": "Gipfelbahn"}, [(0.0, 0.0), (0.0, -0.02)]),
-            _way({"aerialway": "gondola", "name": "Gipfelbahn"}, [(0.0, 0.0), (0.0, -0.006)]),
+            _way({"aerialway": "gondola", "name": "Gipfelbahn"}, [(0.0, 0.0), (0.0, -0.0195)]),  # top ~56 m off
         ]
         result = _lifts(elements)
         assert len(result.lifts) == 1
         bottom, top, _lt, name = result.lifts[0]
         assert name == "Gipfelbahn"
-        assert bottom.distance_to(other=top) > 1000.0, "kept the longer lift"
+        assert bottom.distance_to(other=top) > 2000.0, "kept the longer lift"
         assert result.skipped == 1
+
+    def test_same_name_distinct_geometry_both_kept(self) -> None:
+        # Same name but far-apart endpoints — two DIFFERENT lifts that happen to share a name. Keep both.
+        elements = [
+            _way({"aerialway": "gondola", "name": "Dorfbahn"}, [(0.0, 0.0), (0.0, -0.02)]),
+            _way({"aerialway": "gondola", "name": "Dorfbahn"}, [(0.05, 0.0), (0.05, -0.02)]),
+        ]
+        result = _lifts(elements)
+        assert len(result.lifts) == 2 and result.skipped == 0
 
     def test_distinct_names_all_kept(self) -> None:
         elements = [
@@ -243,6 +283,114 @@ class TestDedupeByName:
         result = _lifts(elements)
         assert {name for _b, _t, _lt, name in result.lifts} == {"Gipfelbahn", "Talbahn"}
         assert result.skipped == 0
+
+
+class TestMidStationSplit:
+    """A lift way whose INTERIOR carries an `aerialway=station` node splits into per-section lifts:
+    bottom→mid, mid→top (N interior stations → N+1 sections). Matching is by exact OSM node id.
+    """
+
+    def test_one_mid_station_splits_into_two(self) -> None:
+        # 3-vertex gondola; the middle vertex (node id 200) is a station → two ~1.1 km sections.
+        way = _way(
+            {"aerialway": "gondola", "name": "Silvrettabahn"},
+            [(0.0, 0.0), (0.0, -0.01), (0.0, -0.02)],
+            node_ids=[100, 200, 300],
+        )
+        result = _lifts([way, _station(200, 0.0, -0.01)])
+        assert len(result.lifts) == 2
+        lifts = sorted(result.lifts, key=lambda lf: lf[3] or "")
+        (b1, t1, _lt1, n1), (b2, t2, _lt2, n2) = lifts
+        assert n1 == "Silvrettabahn (1)" and n2 == "Silvrettabahn (2)"
+        assert all(b.elevation < t.elevation for b, t in ((b1, t1), (b2, t2))), "each section oriented up"
+        # Sections meet at the shared mid-station coordinate (top of one == bottom of the other).
+        assert t1.distance_to(other=b2) < 1.0 or t2.distance_to(other=b1) < 1.0
+
+    def test_station_at_endpoint_no_split(self) -> None:
+        # Station node id matches an ENDPOINT vertex (not interior) → normal two-station lift, no split.
+        way = _way(
+            {"aerialway": "gondola", "name": "Endbahn"},
+            [(0.0, 0.0), (0.0, -0.02)],
+            node_ids=[100, 200],
+        )
+        result = _lifts([way, _station(200, 0.0, -0.02)])
+        assert len(result.lifts) == 1
+        assert result.lifts[0][3] == "Endbahn", "single-section lift keeps its bare name"
+
+    def test_two_mid_stations_split_into_three(self) -> None:
+        way = _way(
+            {"aerialway": "gondola", "name": "Dreibahn"},
+            [(0.0, 0.0), (0.0, -0.01), (0.0, -0.02), (0.0, -0.03)],
+            node_ids=[100, 200, 300, 400],
+        )
+        result = _lifts([way, _station(200, 0.0, -0.01), _station(300, 0.0, -0.02)])
+        assert len(result.lifts) == 3
+        assert {lf[3] for lf in result.lifts} == {"Dreibahn (1)", "Dreibahn (2)", "Dreibahn (3)"}
+
+    def test_short_section_skipped_other_kept(self) -> None:
+        # A mid-station near the bottom makes the lower section ~167 m (< 200 m min) → dropped+counted;
+        # the long upper section survives.
+        way = _way(
+            {"aerialway": "gondola", "name": "Kurzbahn"},
+            [(0.0, 0.0), (0.0, -0.0015), (0.0, -0.02)],
+            node_ids=[100, 200, 300],
+        )
+        result = _lifts([way, _station(200, 0.0, -0.0015)])
+        assert len(result.lifts) == 1 and result.skipped == 1
+        assert result.lifts[0][3] == "Kurzbahn (2)", "kept the long upper section"
+
+    def test_station_id_not_on_any_way_no_split(self) -> None:
+        way = _way(
+            {"aerialway": "gondola", "name": "Solobahn"},
+            [(0.0, 0.0), (0.0, -0.01), (0.0, -0.02)],
+            node_ids=[100, 200, 300],
+        )
+        result = _lifts([way, _station(999, 0.05, 0.05)])  # station id present but on no way vertex
+        assert len(result.lifts) == 1 and result.lifts[0][3] == "Solobahn"
+
+
+class TestSplitHelpers:
+    """Direct unit tests for the pure split/naming helpers."""
+
+    def test_split_at_interior_station(self) -> None:
+        from skiresort_planner.generators.osm_importer import split_lift_way_at_stations
+
+        verts = [(0.0, 0.0), (0.0, 1.0), (0.0, 2.0)]
+        sections = split_lift_way_at_stations(vertices=verts, node_ids=[1, 2, 3], station_ids={2})
+        assert sections == [[(0.0, 0.0), (0.0, 1.0)], [(0.0, 1.0), (0.0, 2.0)]]
+
+    def test_no_interior_station_returns_whole(self) -> None:
+        from skiresort_planner.generators.osm_importer import split_lift_way_at_stations
+
+        verts = [(0.0, 0.0), (0.0, 1.0), (0.0, 2.0)]
+        # Endpoints are stations, but never split points.
+        assert split_lift_way_at_stations(vertices=verts, node_ids=[1, 2, 3], station_ids={1, 3}) == [verts]
+
+    def test_misaligned_lengths_raise(self) -> None:
+        import pytest
+
+        from skiresort_planner.generators.osm_importer import split_lift_way_at_stations
+
+        with pytest.raises(AssertionError):
+            split_lift_way_at_stations(vertices=[(0.0, 0.0), (0.0, 1.0)], node_ids=[1], station_ids={9})
+
+    def test_suffixed_name(self) -> None:
+        from skiresort_planner.generators.osm_importer import suffixed_lift_name
+
+        assert suffixed_lift_name("Bahn", 0, 1) == "Bahn", "single section keeps bare name"
+        assert suffixed_lift_name("Bahn", 0, 2) == "Bahn (1)"
+        assert suffixed_lift_name("Bahn", 1, 2) == "Bahn (2)"
+        assert suffixed_lift_name(None, 0, 2) is None
+
+    def test_station_node_ids(self) -> None:
+        from skiresort_planner.generators.osm_importer import station_node_ids
+
+        elements: list[OverpassElement] = [
+            _station(5, 0.0, 0.0),
+            {"type": "node", "id": 6, "lon": 0.0, "lat": 0.0, "tags": {"aerialway": "pylon"}},
+            _way({"aerialway": "gondola", "name": "X"}, [(0.0, 0.0), (0.0, -0.02)]),
+        ]
+        assert station_node_ids(elements) == {5}
 
 
 class TestEndpointsMatch:
@@ -300,3 +448,93 @@ class TestBBoxAround:
         assert (max_lon - min_lon) / 2 == pytest.approx(dlon)
         # Lon span is wider than lat span by 1/cos(lat) to stay square on the ground.
         assert (max_lon - min_lon) / (max_lat - min_lat) == pytest.approx(1.0 / math.cos(math.radians(47.0)))
+
+
+class TestProgress:
+    """Real progress reporting: fetch fills the first half, assemble the second; monotonic to 1.0."""
+
+    def test_sub_progress_maps_child_range_onto_slice(self) -> None:
+        from skiresort_planner.generators.osm_importer import sub_progress
+
+        seen: list[float] = []
+        child = sub_progress(lambda frac, _t: seen.append(frac), 0.5, 1.0)
+        child(0.0, "start")
+        child(0.5, "mid")
+        child(1.0, "end")
+        assert seen == [0.5, 0.75, 1.0], "child 0..1 maps exactly onto [lo, hi]"
+
+    def test_sub_progress_clamps_out_of_range(self) -> None:
+        from skiresort_planner.generators.osm_importer import sub_progress
+
+        seen: list[float] = []
+        child = sub_progress(lambda frac, _t: seen.append(frac), 0.0, 0.5)
+        child(-1.0, "under")
+        child(2.0, "over")
+        assert seen == [0.0, 0.5], "child fractions clamped to [0, 1] before mapping"
+
+    def test_run_reports_monotonic_progress_across_fetch_and_assemble(self, monkeypatch) -> None:
+        # Full lift-only run() with a mocked network: assert progress is non-decreasing, ends at 1.0,
+        # and spans BOTH halves (a fetch point in [0, 0.5], an assemble/finish point in (0.5, 1.0]).
+        def fake_post(*_args, **_kwargs):
+            return _ok_response(
+                b'{"elements": [{"type": "way", "tags": {"aerialway": "gondola", '
+                b'"name": "G"}, "geometry": [{"lon": 0.0, "lat": 0.0}, {"lon": 0.0, "lat": -0.02}], '
+                b'"nodes": [1, 2]}]}'
+            )
+
+        monkeypatch.setattr("skiresort_planner.generators.osm_importer.requests.post", fake_post)
+        seen: list[float] = []
+        LiftOnlyImporter(dem=_FakeDEM(), bbox=BBOX).run(on_progress=lambda frac, _t: seen.append(frac))
+
+        assert seen == sorted(seen), f"progress must be monotonic non-decreasing: {seen}"
+        assert seen[-1] == 1.0, "progress ends at 1.0"
+        assert any(f <= 0.5 for f in seen), "at least one fetch-half report"
+        assert any(f > 0.5 for f in seen), "at least one assemble-half report"
+
+
+class TestPisteFilter:
+    """`_is_importable_piste` is the piste allow-list (counterpart to the lift aerialway map): only
+    standard groomed downhill grades import; off-piste variants (freeride/extreme, backcountry) and
+    non-downhill types are excluded; connectors are always kept.
+    """
+
+    def test_standard_downhill_grades_kept(self) -> None:
+        from skiresort_planner.generators.osm_graph_builder import _is_importable_piste
+
+        for diff in ("novice", "easy", "intermediate", "advanced", "expert"):
+            assert _is_importable_piste({"piste:type": "downhill", "piste:difficulty": diff}), diff
+
+    def test_offpiste_variants_excluded(self) -> None:
+        from skiresort_planner.generators.osm_graph_builder import _is_importable_piste
+
+        assert not _is_importable_piste({"piste:type": "downhill", "piste:difficulty": "freeride"})
+        assert not _is_importable_piste({"piste:type": "downhill", "piste:difficulty": "extreme"})
+        # A backcountry-groomed freeride run — the tag combo that marks off-piste in real data.
+        assert not _is_importable_piste(
+            {"piste:type": "downhill", "piste:difficulty": "freeride", "piste:grooming": "backcountry"}
+        )
+
+    def test_downhill_without_difficulty_excluded(self) -> None:
+        from skiresort_planner.generators.osm_graph_builder import _is_importable_piste
+
+        assert not _is_importable_piste({"piste:type": "downhill"}), "untagged difficulty is not a standard run"
+
+    def test_non_downhill_types_excluded(self) -> None:
+        from skiresort_planner.generators.osm_graph_builder import _is_importable_piste
+
+        for ptype in ("skitour", "nordic", "sled", "hike", "snow_park"):
+            assert not _is_importable_piste({"piste:type": ptype}), ptype
+
+    def test_connection_always_kept(self) -> None:
+        from skiresort_planner.generators.osm_graph_builder import _is_importable_piste
+
+        assert _is_importable_piste({"piste:type": "connection"}), "connectors kept for connectivity"
+        assert _is_importable_piste({"piste:type": "connection", "piste:difficulty": "freeride"})
+
+    def test_importable_lift_map(self) -> None:
+        from skiresort_planner.generators.osm_graph_builder import _is_importable_lift
+
+        assert _is_importable_lift({"aerialway": "gondola"})
+        assert not _is_importable_lift({"aerialway": "station"})
+        assert not _is_importable_lift({"aerialway": "pylon"})
+        assert not _is_importable_lift({})
