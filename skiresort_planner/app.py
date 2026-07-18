@@ -263,7 +263,8 @@ def load_dem_data() -> None:
         work=_load,
         reset_center=(MapConfig.START_CENTER_LON, MapConfig.START_CENTER_LAT),
         reset_zoom=MapConfig.DEFAULT_ZOOM,
-        failure_message=None,  # No error handling, fail fast
+        catch=None,  # DEM load has no soft-failure — any error is a hard fail
+        failure_message=None,
     )
 
 

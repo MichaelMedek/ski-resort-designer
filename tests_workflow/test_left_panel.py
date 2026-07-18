@@ -348,3 +348,63 @@ class TestDialogHelpers:
         assert fake_st.query_params["resort"] == "fresh999", "a fresh resort id is routed"
         for key in ("resort_id", "graph", "state_machine", "context", "map_renderer", "_saved_token"):
             assert key not in fake_st.session_state, f"{key} must be dropped so init rebuilds fresh"
+
+
+# =============================================================================
+# Load-from-file guard: only an empty resort may be overwritten by an upload
+# =============================================================================
+
+
+class _FakeUpload:
+    """Minimal stand-in for Streamlit's UploadedFile: a JSON-readable, named handle."""
+
+    def __init__(self, payload: dict[str, object]) -> None:
+        import io
+        import json
+
+        self._buf = io.StringIO(json.dumps(payload))
+        self.name = "uploaded.json"
+
+    def read(self, size: int = -1) -> str:
+        return self._buf.read(size)
+
+
+class TestLoadFromFileGuard:
+    def _render(self, fake_st, monkeypatch, graph, upload) -> list[str]:
+        """Render the sidebar with `upload` returned by the file uploader; capture toasts."""
+        import streamlit
+
+        toasts: list[str] = []
+        monkeypatch.setattr(streamlit, "toast", lambda text, *a, **k: toasts.append(text))
+        fake_st.file_uploader = lambda *a, **k: upload
+        fake_st.session_state["resort_id"] = "r1"
+
+        sm, ctx = PlannerStateMachine.create(graph=graph, add_ui_listener=False)
+        fake_st.session_state["graph"] = graph
+        SidebarRenderer(state_machine=sm, context=ctx, graph=graph).render()
+        return toasts
+
+    def test_upload_rejected_when_resort_has_content(self, fake_st, monkeypatch, empty_graph, path_points_blue) -> None:
+        # Regression: a non-empty resort must NOT be overwritten by an upload. It stays intact and
+        # the user is told to clear first.
+        _build_slope(empty_graph, path_points_blue)
+        payload = ResortGraph().to_dict()  # a valid but empty file — still refused
+
+        toasts = self._render(fake_st, monkeypatch, empty_graph, _FakeUpload(payload))
+
+        assert fake_st.session_state["graph"] is empty_graph, "current resort must be untouched"
+        assert empty_graph.slopes, "the existing slope must survive"
+        assert any("Clear the resort first" in t for t in toasts), "must warn to clear first"
+
+    def test_upload_loads_into_empty_resort(self, fake_st, monkeypatch, empty_graph, path_points_blue) -> None:
+        # Happy path: an empty resort accepts the upload and is replaced by the file's content.
+        source = ResortGraph()
+        _build_slope(source, path_points_blue)
+        payload = source.to_dict()
+
+        toasts = self._render(fake_st, monkeypatch, empty_graph, _FakeUpload(payload))
+
+        loaded = fake_st.session_state["graph"]
+        assert loaded is not empty_graph, "the empty graph is replaced by the loaded one"
+        assert loaded.slopes, "loaded resort carries the file's slope"
+        assert not any("Clear the resort first" in t for t in toasts), "no rejection on empty resort"

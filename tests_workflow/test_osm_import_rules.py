@@ -678,7 +678,7 @@ class TestGraphImporter:
         from skiresort_planner.generators.osm_graph_builder import GraphImporter
 
         importer = GraphImporter(dem=DEMService(), bbox=ISCHGL_BBOX)
-        monkeypatch.setattr(importer, "fetch", lambda on_progress: _load_fixture())  # no network — use the fixture
+        monkeypatch.setattr(importer, "fetch", lambda: _load_fixture())  # no network — use the fixture
 
         result = importer.run(on_progress=lambda f, t: None, dump_dir=tmp_path)
 

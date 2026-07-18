@@ -40,25 +40,13 @@ def _noop_progress(frac: float, text: str) -> None:
     """No-op ProgressFn for importer tests that don't assert on progress."""
 
 
-class _RawStream:
-    """Minimal urllib3-raw stand-in: .stream() yields the (uncompressed) body in chunks."""
-
-    def __init__(self, body: bytes) -> None:
-        self._body = body
-
-    def stream(self, chunk: int, decode_content: bool = False):  # noqa: ARG002,FBT001,FBT002 — mirrors urllib3 signature
-        for i in range(0, len(self._body), chunk):
-            yield self._body[i : i + chunk]
-
-
 def _ok_response(body: bytes):
-    """A 200 requests.Response whose .raw streams `body` (uncompressed, no Content-Encoding)."""
+    """A 200 requests.Response with `body` as its (JSON) content — what response.json() reads."""
     import requests
 
     resp = requests.Response()
     resp.status_code = 200
-    resp.headers["Content-Length"] = str(len(body))
-    resp.raw = _RawStream(body)
+    resp._content = body
     return resp
 
 
@@ -126,7 +114,7 @@ class TestFetch:
             return _ok_response(b'{"elements": [{"id": 1}]}')
 
         monkeypatch.setattr("skiresort_planner.generators.osm_importer.requests.post", fake_post)
-        elements = LiftOnlyImporter(dem=_FakeDEM(), bbox=BBOX).fetch(on_progress=_noop_progress)
+        elements = LiftOnlyImporter(dem=_FakeDEM(), bbox=BBOX).fetch()
         assert elements == [{"id": 1}] and calls["n"] == 1, "one query, no retry when it succeeds"
 
     def test_transient_error_waits_then_retries_once(self, monkeypatch) -> None:
@@ -146,7 +134,7 @@ class TestFetch:
             return _ok_response(b'{"elements": [{"id": 2}]}')
 
         monkeypatch.setattr("skiresort_planner.generators.osm_importer.requests.post", fake_post)
-        elements = LiftOnlyImporter(dem=_FakeDEM(), bbox=BBOX).fetch(on_progress=_noop_progress)
+        elements = LiftOnlyImporter(dem=_FakeDEM(), bbox=BBOX).fetch()
         assert elements == [{"id": 2}] and calls["n"] == 2, "one retry after a transient failure"
 
     def test_non_transient_error_not_retried(self, monkeypatch) -> None:
@@ -163,7 +151,7 @@ class TestFetch:
 
         monkeypatch.setattr("skiresort_planner.generators.osm_importer.requests.post", fake_post)
         with pytest.raises(requests.HTTPError):
-            LiftOnlyImporter(dem=_FakeDEM(), bbox=BBOX).fetch(on_progress=_noop_progress)
+            LiftOnlyImporter(dem=_FakeDEM(), bbox=BBOX).fetch()
         assert calls["n"] == 1, "a non-transient error is raised at once, not retried"
 
     def test_seconds_until_free_slot_parsing(self, monkeypatch) -> None:

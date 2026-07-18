@@ -16,7 +16,6 @@ extraction both children reuse. Slope geometry is the connected-graph builder's 
 `LiftOnlyImporter` (lifts only, raw OSM) and `GraphImporter` (lifts + slopes) children.
 """
 
-import gzip
 import json
 import logging
 import math
@@ -141,11 +140,13 @@ class BaseOSMImporter(ABC):
     # -- public entry point ---------------------------------------------------
 
     def run(self, *, on_progress: ProgressFn, dump_dir: Path | None = None) -> ImportResult:
-        """Fetch the box and assemble the import, reporting real progress via `on_progress`: the fetch
-        streams into the first half of the bar, the assemble/build into the second half. If `dump_dir`
-        is given, write reference artifacts (raw fetch, and — for the graph importer — a PNG) there.
+        """Fetch the box and assemble the import, reporting progress via `on_progress`: 0.1 before the
+        (single, blocking) fetch so the bar moves immediately, 0.5 once it returns, then the assemble/build
+        fills 0.5→1.0. If `dump_dir` is given, write reference artifacts (raw fetch + PNG) there.
         """
-        elements = self.fetch(on_progress=sub_progress(on_progress, 0.0, 0.5))
+        on_progress(0.1, "Fetching from OpenStreetMap…")
+        elements = self.fetch()
+        on_progress(0.5, "Building…")
         result = self._assemble(elements, on_progress=sub_progress(on_progress, 0.5, 1.0))
         if dump_dir is not None:
             self._dump(elements, dump_dir)
@@ -167,30 +168,28 @@ class BaseOSMImporter(ABC):
 
     # -- fetch ----------------------------------------------------------------
 
-    def fetch(self, on_progress: ProgressFn) -> list[OverpassElement]:
-        """Fetch all OSM lift/piste ways in the box with ONE Overpass query, streaming progress.
+    def fetch(self) -> list[OverpassElement]:
+        """Fetch all OSM lift/piste ways in the box with ONE Overpass query.
 
         On a transient 429/504 we wait for a free slot and retry once, then give up.
         """
         try:
-            return self._query(self.bbox, on_progress=on_progress)
+            return self._query(self.bbox)
         except requests.RequestException as exc:
             if not _is_transient(exc):
                 raise
             wait_s = _seconds_until_free_slot()
             logger.info(f"Overpass busy ({exc}); waiting {wait_s:.0f}s for a free slot, then retrying once")
             time.sleep(wait_s)
-            return self._query(self.bbox, on_progress=on_progress)
+            return self._query(self.bbox)
 
-    def _query(self, bbox: BBox, on_progress: ProgressFn) -> list[OverpassElement]:
+    def _query(self, bbox: BBox) -> list[OverpassElement]:
         """POST one Overpass query for the box and return its ways (inline geometry) + station nodes.
 
         The `aerialway=station` nodes come back alongside the ways so a lift way with an interior
-        station node can be split into per-section lifts (see `split_lift_way_at_stations`).
-
-        Streams the response so a real byte-progress bar can advance. The Content-Length header is the
-        GZIPPED size, so we read the RAW compressed bytes (matching that header) for the fraction, then
-        decompress once — reading auto-decoded bytes would overshoot 100%. Raises on any non-200.
+        station node can be split into per-section lifts (see `split_lift_way_at_stations`). One
+        blocking POST (the response isn't streamed — see run() for the coarse fetch progress). Raises
+        on any non-200.
         """
         min_lon, min_lat, max_lon, max_lat = bbox
         # Overpass bbox filter order is (south, west, north, east).
@@ -207,23 +206,9 @@ class BaseOSMImporter(ABC):
             data=urlencode({"data": query}),
             headers={"User-Agent": OSMConfig.USER_AGENT, "Content-Type": "application/x-www-form-urlencoded"},
             timeout=OSMConfig.OVERPASS_TIMEOUT_S,
-            stream=True,
         )
         response.raise_for_status()
-        total = int(response.headers.get("content-length", 0))
-        chunks: list[bytes] = []
-        downloaded = 0
-        for chunk in response.raw.stream(8192, decode_content=False):
-            chunks.append(chunk)
-            downloaded += len(chunk)
-            if total > 0:
-                on_progress(downloaded / total, "Fetching from OpenStreetMap…")
-        if total <= 0:  # no Content-Length (some mirrors) → one honest marker, no faked percentage
-            on_progress(1.0, "Fetching from OpenStreetMap…")
-        raw = b"".join(chunks)
-        # decode_content=False left the body compressed per Content-Encoding — decompress it ourselves.
-        body = gzip.decompress(raw) if response.headers.get("content-encoding") == "gzip" else raw
-        elements = cast(list[OverpassElement], json.loads(body)["elements"])
+        elements = cast(list[OverpassElement], response.json()["elements"])
         logger.info(f"Overpass returned {len(elements)} elements for bbox {bbox}")
         return elements
 

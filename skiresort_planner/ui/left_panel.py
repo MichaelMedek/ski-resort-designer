@@ -27,6 +27,7 @@ from skiresort_planner.model.actions import UndoAction
 from skiresort_planner.model.message import (
     FileLoadErrorMessage,
     PlaceNotFoundMessage,
+    UploadBlockedMessage,
 )
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.model.undo_handlers import UNDO_HANDLERS
@@ -436,44 +437,49 @@ class SidebarRenderer:
         """Render save/load resort functionality."""
         with st.expander("💾 Resort Data", expanded=False):
             stats = self.graph.get_stats()
-            can_save = stats["total_slopes"] > 0 or stats["total_lifts"] > 0 or stats["total_roads"] > 0
+            can_save_or_upload = stats["total_slopes"] > 0 or stats["total_lifts"] > 0 or stats["total_roads"] > 0
 
             # Load from File
             uploaded_file = st.file_uploader(
                 "📂 Load from File",
                 type=["json"],
-                help="Load a previously saved resort design",
+                help="Load a previously saved resort design (only into an empty resort)",
                 label_visibility="collapsed",
                 key=f"resort_uploader_{st.session_state.get('_upload_counter', 0)}",
             )
 
             if uploaded_file is not None:
-                try:
-                    data = json.load(uploaded_file)
-                    loaded_graph = ResortGraph.from_dict(data=data)
-                    st.session_state.graph = loaded_graph
-
-                    logger.info(f"Loaded resort from file: {uploaded_file.name}")
+                if can_save_or_upload:
+                    # Resort still has content — refuse to overwrite it silently.
+                    UploadBlockedMessage().display()
                     st.session_state._upload_counter = st.session_state.get("_upload_counter", 0) + 1
-                    # Persist as the session's working backup so an F5 restores it
-                    resort_id = st.session_state.get("resort_id")
-                    if resort_id:
-                        backup_store.save(graph=loaded_graph, resort_id=resort_id)
-                        st.session_state._saved_token = loaded_graph.change_token()
-                    # Frame the loaded resort; empty graph → bare remount.
-                    center = loaded_graph.get_center()
-                    if center is not None:
-                        logger.info(f"Centered map on mean: ({center[1]:.5f}, {center[0]:.5f})")
-                        reload_map(center=center, zoom=MapConfig.DEFAULT_ZOOM)
-                    else:
-                        bump_camera_epoch()
-                        trigger_rerun()
-                except Exception as e:
-                    FileLoadErrorMessage(error=str(e)).display()
-                    logger.error(f"Failed to load resort file: {e}")
+                else:
+                    try:
+                        data = json.load(uploaded_file)
+                        loaded_graph = ResortGraph.from_dict(data=data)
+                        st.session_state.graph = loaded_graph
+
+                        logger.info(f"Loaded resort from file: {uploaded_file.name}")
+                        st.session_state._upload_counter = st.session_state.get("_upload_counter", 0) + 1
+                        # Persist as the session's working backup so an F5 restores it
+                        resort_id = st.session_state.get("resort_id")
+                        if resort_id:
+                            backup_store.save(graph=loaded_graph, resort_id=resort_id)
+                            st.session_state._saved_token = loaded_graph.change_token()
+                        # Frame the loaded resort; empty graph → bare remount.
+                        center = loaded_graph.get_center()
+                        if center is not None:
+                            logger.info(f"Centered map on mean: ({center[1]:.5f}, {center[0]:.5f})")
+                            reload_map(center=center, zoom=MapConfig.DEFAULT_ZOOM)
+                        else:
+                            bump_camera_epoch()
+                            trigger_rerun()
+                    except Exception as e:
+                        FileLoadErrorMessage(error=str(e)).display()
+                        logger.error(f"Failed to load resort file: {e}")
 
             # Save to File
-            if can_save:
+            if can_save_or_upload:
                 resort_json = json.dumps(self.graph.to_dict(), indent=2)
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 json_filename = f"alpin_resort_{timestamp}.json"
@@ -494,7 +500,7 @@ class SidebarRenderer:
                 )
 
             # Export GPX - always show, disable if no data
-            if can_save:
+            if can_save_or_upload:
                 gpx = self.graph.to_gpx()
                 gpx_filename = f"alpin_resort_{datetime.now().strftime('%Y%m%d_%H%M%S')}.gpx"
                 st.download_button(
@@ -521,7 +527,7 @@ class SidebarRenderer:
                 "🗑️ Reset to Empty",
                 width="stretch",
                 help="Clear the current resort and start a new empty one",
-                disabled=not can_save,
+                disabled=not can_save_or_upload,
                 key="reset_resort_button",
             ):
                 _confirm_reset_resort_dialog()

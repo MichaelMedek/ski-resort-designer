@@ -912,9 +912,7 @@ class TestOSMImport:
             seen["bbox"] = self.bbox
             return ImportResult()
 
-        monkeypatch.setattr(
-            "skiresort_planner.generators.osm_importer.BaseOSMImporter.fetch", lambda self, on_progress: []
-        )
+        monkeypatch.setattr("skiresort_planner.generators.osm_importer.BaseOSMImporter.fetch", lambda self: [])
         monkeypatch.setattr(
             "skiresort_planner.generators.osm_lift_importer.LiftOnlyImporter._assemble", _record_assemble
         )
@@ -984,7 +982,7 @@ class TestOSMImport:
         ctx.pending.osm_import_center_lon = 0.0
         ctx.pending.osm_import_center_lat = 0.0
 
-        def boom(self, on_progress):
+        def boom(self):
             raise RuntimeError("overpass down")
 
         monkeypatch.setattr("skiresort_planner.generators.osm_importer.BaseOSMImporter.fetch", boom)

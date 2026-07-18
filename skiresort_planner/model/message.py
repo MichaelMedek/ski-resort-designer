@@ -219,6 +219,15 @@ class FileLoadErrorMessage(WarningToast):
 
 
 @dataclass(frozen=True)
+class UploadBlockedMessage(WarningToast):
+    """Upload attempted while the resort still has content."""
+
+    @property
+    def message(self) -> str:
+        return "Clear the resort first — use “🗑️ Reset to Empty” before loading a file."
+
+
+@dataclass(frozen=True)
 class PlaceNotFoundMessage(WarningToast):
     """The sidebar place search returned no match (or the lookup failed)."""
 
