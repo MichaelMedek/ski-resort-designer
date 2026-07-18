@@ -364,12 +364,12 @@ class TestSplitHelpers:
             split_lift_way_at_stations(vertices=[(0.0, 0.0), (0.0, 1.0)], node_ids=[1], station_ids={9})
 
     def test_suffixed_name(self) -> None:
-        from skiresort_planner.generators.osm_importer import suffixed_lift_name
+        from skiresort_planner.generators.osm_importer import suffixed_name
 
-        assert suffixed_lift_name("Bahn", 0, 1) == "Bahn", "single section keeps bare name"
-        assert suffixed_lift_name("Bahn", 0, 2) == "Bahn (1)"
-        assert suffixed_lift_name("Bahn", 1, 2) == "Bahn (2)"
-        assert suffixed_lift_name(None, 0, 2) is None
+        assert suffixed_name("Bahn", 0, 1) == "Bahn", "single section keeps bare name"
+        assert suffixed_name("Bahn", 0, 2) == "Bahn (1)"
+        assert suffixed_name("Bahn", 1, 2) == "Bahn (2)"
+        assert suffixed_name(None, 0, 2) is None
 
     def test_station_node_ids(self) -> None:
         from skiresort_planner.generators.osm_importer import station_node_ids

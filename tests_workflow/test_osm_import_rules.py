@@ -3,7 +3,7 @@
 import json
 import math
 import os
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
 
 import pytest
@@ -45,7 +45,7 @@ DATASETS = [
         min_segments=100,
         max_segments=300,
         max_nodes=200,
-        min_seg_per_slope=1.7,
+        min_seg_per_slope=1.4,
     ),
     Dataset(
         name="scuol",
@@ -54,7 +54,7 @@ DATASETS = [
         min_segments=30,
         max_segments=120,
         max_nodes=90,
-        min_seg_per_slope=1.5,
+        min_seg_per_slope=1.2,
     ),
 ]
 
@@ -849,6 +849,44 @@ class TestImportRules:
         assert not offenders, (
             f"{len(offenders)} doubled ribbons left un-forked (should be split into trunk+branches): {offenders[:8]}"
         )
+
+    def test_r36_no_needless_degree2_node(self, ds):
+        """R36: every non-lift node must be a real junction (run-degree ≥3) — a degree-2 pass-through
+        node (one run in, one out, nothing branching) must have been collapsed, its two runs merged.
+        """
+        deg = defaultdict(int)
+        for r in ds.graph.slope_runs:
+            deg[r.node_a] += 1
+            deg[r.node_b] += 1
+        lift_nodes = {n for lf in ds.graph.lifts for n in (lf.node_a, lf.node_b)}
+        offenders = [n for n, d in deg.items() if d == 2 and n not in lift_nodes]
+        assert offenders == [], f"{len(offenders)} degree-2 non-lift pass-through nodes must collapse: {offenders[:8]}"
+
+    def test_r37_no_app_slope_crosses_a_lift(self, ds):
+        """R37: no app-slope may span a lift station — a slope ends where you enter/exit a lift. For each
+        chain from to_slope_chains, the shared node between consecutive segments must not be a lift node.
+        """
+        lift_nodes = {n for lf in ds.graph.lifts for n in (lf.node_a, lf.node_b)}
+        node_pt = ds.graph.node_points
+        lift_xy = [(node_pt[n].lon, node_pt[n].lat) for n in lift_nodes]
+        offenders = []
+        for pts_lists, name in ds.graph.to_slope_chains():
+            for k in range(len(pts_lists) - 1):
+                junction = pts_lists[k][-1]  # shared endpoint with the next segment
+                if any(_hav((junction.lon, junction.lat), lx) < 1.0 for lx in lift_xy):
+                    offenders.append((name, k))
+        assert offenders == [], f"{len(offenders)} app-slopes span a lift station (must split there): {offenders[:8]}"
+
+    def test_r38_unique_app_names(self, ds):
+        """R38: every app-slope name and every app-lift name is unique across the import — duplicates
+        sharing an OSM name are disambiguated with a 1-based `(k)` suffix (the lift mid-station rule).
+        """
+        slope_names = [nm for _pts, nm in ds.graph.to_slope_chains() if nm]
+        lift_names = [lf.name for lf in ds.graph.lifts if lf.name]
+        dup_slopes = [nm for nm, c in Counter(slope_names).items() if c > 1]
+        dup_lifts = [nm for nm, c in Counter(lift_names).items() if c > 1]
+        assert dup_slopes == [], f"{len(dup_slopes)} app-slope names are not unique: {dup_slopes[:8]}"
+        assert dup_lifts == [], f"{len(dup_lifts)} app-lift names are not unique: {dup_lifts[:8]}"
 
 
 class TestGraphImporter:
