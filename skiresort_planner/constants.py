@@ -732,7 +732,7 @@ class OSMConfig:
     HALF_WIDTH_DEFAULT_KM = 2.0
 
     # Minimum imported length: shorter entities are ignored (nursery/kiddie lifts, stub runs).
-    MIN_LIFT_LENGTH_M = 200.0
+    MIN_LIFT_LENGTH_M = 300.0
     MIN_PISTE_LENGTH_M = 30.0
 
     # OSM aerialway value → our LiftConfig.TYPES. ONLY these values import; every other aerialway
