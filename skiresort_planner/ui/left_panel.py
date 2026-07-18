@@ -82,7 +82,7 @@ class _UndoDialog(ConfirmDialog):
         return "↩️ Confirm Undo"
 
     def _body(self) -> None:
-        st.write("**Action to undo:**")
+        st.write("**Undoing will:**")
         st.write(_describe_next_undo(graph=self.graph))
 
     def _on_confirm(self) -> None:
