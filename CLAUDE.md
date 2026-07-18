@@ -36,6 +36,7 @@ not suggestions.
   restating the code in prose. Max 2 or 3 liens of comments and docstring text blocks, but still Args in Google style.
 - Explicit `if/else` blocks over nested/clever ternaries when there's real branching logic.
 - Match the surrounding code's naming, structure, and comment density.
+- Every custom function must be called with complete explicit arguments by all callers.
 
 ## Workflow
 

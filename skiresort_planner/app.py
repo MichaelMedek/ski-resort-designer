@@ -17,12 +17,11 @@ from skiresort_planner.constants import (
     AppConfig,
     DEMConfig,
     MapConfig,
-    OSMImportMode,
 )
 from skiresort_planner.core.dem_service import DEMService, download_dem_from_huggingface
 from skiresort_planner.generators.path_factory import PathFactory
 from skiresort_planner.logging_setup import configure_logging
-from skiresort_planner.model.message import DEMLoadingMessage
+from skiresort_planner.model.message import DEMLoadingMessage, OSMImportLoadingMessage
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.persistence import backup_store
 from skiresort_planner.ui import (
@@ -38,6 +37,7 @@ from skiresort_planner.ui import (
     process_custom_connect_deferred,
     process_osm_import_deferred,
     process_path_generation_deferred,
+    reload_map,
     render_control_panel,
     trigger_rerun,
     viewport_map_height,
@@ -378,19 +378,18 @@ def _run_app_ui() -> None:
         f"fan={bool(ctx.deferred.fan_generation)})"
     )
 
-    # Deferred actions (once per render). Progress uses st.toast, NOT st.spinner: a body spinner
-    # shifts the body element order between reruns, re-creating the map iframe (flash + camera reset);
-    # a toast is a transient overlay that never touches the layout. Fan is fast (no cue).
+    # Deferred actions (once per render). OSM import is heavy (network + graph build): it shows a
+    # blocking loading message + spinner and returns early so the map never renders frozen behind it,
+    # then recenters on the imported geometry. Custom/fan are fast — a transient toast.
     if ctx.deferred.osm_import_mode is not None:
-        mode = ctx.deferred.osm_import_mode
-        if mode == OSMImportMode.LIFTS_ONLY:
-            st.toast("🚡 Importing lifts from OpenStreetMap…")
-        elif mode == OSMImportMode.LIFTS_AND_SLOPES:
-            st.toast("🗺️ Importing lifts & slopes from OpenStreetMap…")
-        else:
-            raise ValueError(f"Unknown {mode=}")
-        process_osm_import_deferred()
-    elif ctx.deferred.custom_connect:
+        OSMImportLoadingMessage(mode=ctx.deferred.osm_import_mode).display()
+        with st.spinner("Fetching & building from OpenStreetMap…"):
+            process_osm_import_deferred()
+        center = graph.get_center()
+        if center is not None:  # empty graph (import failed / nothing in box) → leave the camera put
+            reload_map(center=center, zoom=MapConfig.IMPORT_OVERVIEW_ZOOM)
+        return  # loading pass done; the recenter/rerun above skips the normal UI this render
+    if ctx.deferred.custom_connect:
         st.toast("🎯 Computing custom path options…")
         process_custom_connect_deferred()
     elif ctx.deferred.fan_generation:

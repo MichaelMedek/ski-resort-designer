@@ -146,6 +146,35 @@ class TestReloadMapSignature:
         assert fake_st.session_state["camera_epoch"] == 1  # remount so deck re-reads the frame
 
 
+class TestPendingOSMImportGate:
+    """The deferred OSM import shows a blocking loading message, returns early (no map this pass),
+    and recenters on the imported geometry at the import-overview zoom.
+    """
+
+    def test_pending_import_gates_and_recenters(self, fake_st, monkeypatch, mock_dem_blue_slope) -> None:
+        from skiresort_planner.constants import MapConfig, OSMImportMode
+
+        graph, _sm, ctx = _seed_full_session(fake_st, mock_dem_blue_slope)
+        ctx.deferred.osm_import_mode = OSMImportMode.LIFTS_AND_SLOPES
+
+        # Stub the heavy import: no network; instead drop one node so graph.get_center() has a point.
+        def _fake_import() -> bool:
+            graph.get_or_create_node(lon=10.5, lat=46.5, elevation=2000.0)
+            return True
+
+        monkeypatch.setattr(app, "process_osm_import_deferred", _fake_import)
+        monkeypatch.setattr(infra, "trigger_rerun", lambda *a, **k: None)
+        rendered: list[bool] = []
+        monkeypatch.setattr(app, "_render_map_fragment", lambda: rendered.append(True))
+
+        app._run_app_ui()
+
+        assert rendered == [], "gate returns before the normal UI renders (no frozen map)"
+        assert (ctx.map.lon, ctx.map.lat) == (10.5, 46.5), "recentered on the imported geometry"
+        assert ctx.map.zoom == MapConfig.IMPORT_OVERVIEW_ZOOM, "one step further out than building zoom"
+        assert fake_st.session_state["camera_epoch"] == 1, "remount so deck re-reads the frame"
+
+
 class TestMapHeight:
     """viewport_map_height: js-eval read + session_state cache + reserve/floor math."""
 

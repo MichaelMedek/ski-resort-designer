@@ -141,6 +141,15 @@ class TestOSMImportMessages:
         assert "OSM import failed" in msg
         assert "outside the terrain coverage" in msg
 
+    def test_loading_message_branches_by_mode(self) -> None:
+        from skiresort_planner.constants import OSMImportMode
+        from skiresort_planner.model.message import OSMImportLoadingMessage
+
+        lifts = OSMImportLoadingMessage(mode=OSMImportMode.LIFTS_ONLY).message
+        both = OSMImportLoadingMessage(mode=OSMImportMode.LIFTS_AND_SLOPES).message
+        assert "lifts" in lifts.lower() and "slopes" not in lifts.lower(), "lifts-only text"
+        assert "slopes" in both.lower(), "lifts+slopes text mentions slopes"
+
 
 class TestImportPlacingMessages:
     def test_context_shows_center_and_area(self) -> None:

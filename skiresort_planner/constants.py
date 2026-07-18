@@ -74,6 +74,7 @@ class MapConfig:
     VIEW_3D_ZOOM = 14  # 3D side view - balanced zoom
     VIEW_3D_MIN_ZOOM = 12  # Minimum zoom for high elevation (prevents camera under terrain)
     DEFAULT_ZOOM = VIEWING_ZOOM  # Start zoomed out to prevent camera clipping terrain
+    IMPORT_OVERVIEW_ZOOM = 12  # Post-import overview: one step further out than building zoom
 
     # Pitch angles for different modes
     # Use 0 (top-down) for all modes to ensure accurate terrain clicks

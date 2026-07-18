@@ -20,6 +20,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
 
+from skiresort_planner.constants import LiftType, OSMImportMode, StyleConfig
 from skiresort_planner.model.path_segment import SegmentKind
 
 
@@ -302,6 +303,26 @@ class DEMLoadingMessage(Message):
     @property
     def message(self) -> str:
         return "🗺️ **Loading Terrain Data** — This takes a few seconds on first load..."
+
+
+@dataclass(frozen=True)
+class OSMImportLoadingMessage(Message):
+    """Shown while an OSM import fetches + builds (blocks the whole render; no map this pass).
+
+    Icons come from StyleConfig (the single source the import buttons use) so the two never drift.
+    """
+
+    mode: OSMImportMode
+
+    @property
+    def level(self) -> MessageLevel:
+        return MessageLevel.INFO
+
+    @property
+    def message(self) -> str:
+        if self.mode == OSMImportMode.LIFTS_ONLY:
+            return f"{StyleConfig.LIFT_ICONS[LiftType.GONDOLA]} **Importing lifts from OpenStreetMap** — fetching the area…"
+        return f"{StyleConfig.LIFT_ICONS[LiftType.GONDOLA]}{StyleConfig.SLOPE_ICON} **Importing lifts & slopes from OpenStreetMap** — building the graph…"
 
 
 # =============================================================================
