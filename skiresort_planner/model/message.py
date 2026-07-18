@@ -328,8 +328,8 @@ class OSMImportLoadingMessage(InfoMessage):
     @property
     def message(self) -> str:
         if self.mode == OSMImportMode.LIFTS_ONLY:
-            return f"{StyleConfig.LIFT_ICONS[LiftType.GONDOLA]} **Importing lifts from OpenStreetMap** — fetching the area…"
-        return f"{StyleConfig.LIFT_ICONS[LiftType.GONDOLA]}{StyleConfig.SLOPE_ICON} **Importing lifts & slopes from OpenStreetMap** — building the graph…"
+            return f"{StyleConfig.LIFT_ICONS[LiftType.GONDOLA]} Importing lifts from OpenStreetMap…"
+        return f"{StyleConfig.LIFT_ICONS[LiftType.GONDOLA]}{StyleConfig.SLOPE_ICON} Importing lifts & slopes from OpenStreetMap…"
 
 
 # =============================================================================
@@ -602,7 +602,7 @@ class ImportActionMessage(WarningMessage):
             "🗺️ **Confirm the Import Area**\n\n"
             "- ↔️ Resize with the **half-width slider** (left)\n"
             "- 👆 Click terrain to **re-place** the center\n"
-            "- ✅ Click the **center dot** or **Confirm Import** to fetch"
+            "- ✅ Click **Import lifts + slopes** or **Import lifts only** to fetch"
         )
 
 
