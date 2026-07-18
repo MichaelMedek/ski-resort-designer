@@ -478,46 +478,24 @@ class SidebarRenderer:
                         FileLoadErrorMessage(error=str(e)).display()
                         logger.error(f"Failed to load resort file: {e}")
 
-            # Save to File
-            if can_save_or_upload:
-                resort_json = json.dumps(self.graph.to_dict(), indent=2)
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                json_filename = f"alpin_resort_{timestamp}.json"
-                st.download_button(
-                    "💾 Save to File",
-                    data=resort_json,
-                    file_name=json_filename,
-                    mime="application/json",
-                    width="stretch",
-                    help="Download resort design as JSON file",
-                )
-            else:
-                st.button(
-                    "💾 Save to File",
-                    width="stretch",
-                    disabled=True,
-                    help="Build some slopes, lifts or roads first",
-                )
-
-            # Export GPX - always show, disable if no data
-            if can_save_or_upload:
-                gpx = self.graph.to_gpx()
-                gpx_filename = f"alpin_resort_{datetime.now().strftime('%Y%m%d_%H%M%S')}.gpx"
-                st.download_button(
-                    "📥 Export GPX",
-                    gpx,
-                    gpx_filename,
-                    "application/gpx+xml",
-                    width="stretch",
-                    help="Export for GPS devices and mapping apps",
-                )
-            else:
-                st.button(
-                    "📥 Export GPX",
-                    width="stretch",
-                    disabled=True,
-                    help="Build some slopes, lifts or roads first",
-                )
+            # Save to File + Export GPX: same button, disabled while the resort is empty.
+            downloads = (
+                ("💾 Save to File", "json", "application/json", "Download resort design as JSON file"),
+                ("📥 Export GPX", "gpx", "application/gpx+xml", "Export for GPS devices and mapping apps"),
+            )
+            for label, ext, mime, help_text in downloads:
+                if can_save_or_upload:
+                    payload = json.dumps(self.graph.to_dict(), indent=2) if ext == "json" else self.graph.to_gpx()
+                    st.download_button(
+                        label,
+                        data=payload,
+                        file_name=f"alpin_resort_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{ext}",
+                        mime=mime,
+                        width="stretch",
+                        help=help_text,
+                    )
+                else:
+                    st.button(label, width="stretch", disabled=True, help="Build some slopes, lifts or roads first")
 
             st.divider()
 
