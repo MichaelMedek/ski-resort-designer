@@ -21,6 +21,7 @@ MIN_SEG_PER_SLOPE = 1.8  # R29: path-segments per FINAL app-slope.
 MAX_STRAIGHT_M = OSMConfig.MAX_STRAIGHT_M  # max single straight leg between consecutive points
 MAX_PULL_M = OSMConfig.MAX_PULL_M  # end connector length cap; over this → dropped
 PISTE_TOL_M = OSMConfig.PISTE_TOL_M  # off-piste threshold — SAME source the builder gates on
+PARALLEL_MAX_M = OSMConfig.RELAXED_MERGE_DIST_M  # R34: max sustained same-name parallel length
 MAX_TERRAIN_DEVIATION_M = OSMConfig.SLOPE_TERRAIN_TOL_M  # R23: slope point vs real DEM
 MAX_NODE_TERRAIN_DEVIATION_M = OSMConfig.NODE_TERRAIN_TOL_M  # R25: node vs real DEM (strict)
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "ischgl_osm.json")
@@ -780,12 +781,10 @@ class TestGraphImporter:
             for j in range(len(runs)):
                 if i == j or len(runs[j]) < 2:
                     continue
-                if sustained_parallel(runs[i], runs[j]) > OSMConfig.PARALLEL_MAX_M and _polylen(runs[i]) <= _polylen(
-                    runs[j]
-                ):
+                if sustained_parallel(runs[i], runs[j]) > PARALLEL_MAX_M and _polylen(runs[i]) <= _polylen(runs[j]):
                     offenders.append((ischgl_graph.slope_runs[i].name, ischgl_graph.slope_runs[j].name))
                     break
         assert not offenders, (
             f"{len(offenders)} runs run parallel to another within "
-            f"{near_hi:.0f}m for >{OSMConfig.PARALLEL_MAX_M:.0f}m (redundant corridor): {offenders[:8]}"
+            f"{near_hi:.0f}m for >{PARALLEL_MAX_M:.0f}m (redundant corridor): {offenders[:8]}"
         )

@@ -755,9 +755,10 @@ class OSMConfig:
 
     # --- Connected-graph build (generators/osm_graph_builder.py). Distances in metres. ---
     DEDUP_TOL_M = 18.0  # near-coincidence band for the duplicate-piste test
+    PARALLEL_TOL_M = 60.0  # near-but-offset band for the redundant-parallel
     DEDUP_COVER_FRAC = 0.78  # covered fraction to call a piste a duplicate
     MIN_NODE_DIST_M = 100.0  # min hub spacing (closer nodes merge)
-    RELAXED_MERGE_DIST_M = 200.0  # slope-node→lift pull radius
+    RELAXED_MERGE_DIST_M = 200.0  # slope-node→lift pull radius; also the max sustained same-name parallel length
     MAX_BACKCLIMB_M = 35.0  # max smoothed uphill on a descending run
     BACKCLIMB_WINDOW_M = 80.0  # rolling window for the uphill check (step scale)
     SLOPE_ON_SOURCE_TOL_M = 30.0  # strict on-piste band (slope body hugs OSM)
@@ -772,4 +773,4 @@ class OSMConfig:
     # Consistency
     assert SLOPE_ON_SOURCE_TOL_M < PISTE_TOL_M <= SLOPE_TERRAIN_TOL_M
     assert NODE_TERRAIN_TOL_M < SLOPE_TERRAIN_TOL_M
-    assert DEDUP_TOL_M < MIN_NODE_DIST_M < RELAXED_MERGE_DIST_M
+    assert DEDUP_TOL_M < PARALLEL_TOL_M < MIN_NODE_DIST_M < RELAXED_MERGE_DIST_M
