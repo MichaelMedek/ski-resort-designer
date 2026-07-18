@@ -31,6 +31,7 @@ from skiresort_planner.model.message import (
     Message,
     OSMImportErrorMessage,
     OSMImportLoadingMessage,
+    SizingMapMessage,
     ToastMessage,
     WarningToast,
 )
@@ -361,7 +362,7 @@ def _render_map_fragment_inner() -> None:
     # None only on first load, before the js-eval round-trip resolves (cached thereafter, so reruns keep the size).
     height = viewport_map_height()
     if height is None:
-        st.info("📐 Sizing map to your window…")
+        SizingMapMessage().display()
         return
 
     # force_remount_key AND height are in the key: st_deckgl only applies height on first mount, so

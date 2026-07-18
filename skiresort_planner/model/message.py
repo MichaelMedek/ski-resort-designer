@@ -308,6 +308,15 @@ class DEMLoadingMessage(InfoMessage):
 
 
 @dataclass(frozen=True)
+class SizingMapMessage(InfoMessage):
+    """Shown once on first load while the browser viewport height resolves (no map this pass)."""
+
+    @property
+    def message(self) -> str:
+        return "📐 Sizing map to your window…"
+
+
+@dataclass(frozen=True)
 class OSMImportLoadingMessage(InfoMessage):
     """Shown while an OSM import fetches + builds (blocks the whole render; no map this pass).
 
