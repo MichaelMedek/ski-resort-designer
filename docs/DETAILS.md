@@ -465,21 +465,20 @@ Spacing pylons may affect adjacent spans. Re-run Phase 1 to fix new violations.
 
 ## 9. OpenStreetMap Import
 
-An **Import from OpenStreetMap** control (sidebar, idle only) fetches the real lifts & pistes within a square area around the map center and adds them to the graph. **Geometry only** — we take just the lon/lat polylines and lift stations; elevation, difficulty, pylons, and **belt width** are all recomputed by our own pipeline. OSM's own attributes (including `piste:width`) are ignored.
+Two **Import from OpenStreetMap** buttons (sidebar, idle only) fetch the real lifts & pistes in a square area around the map center: **Lifts only** (raw OSM lifts) and **Lifts + slopes** (the connected-graph builder). **Geometry only** — we take the lon/lat polylines and lift stations; elevation, difficulty, pylons, and **belt width** are recomputed by our pipeline. OSM attributes (including `piste:width`) are ignored.
 
 ### 9.1 Region + single-query fetch
 
-A **square bounding box**: the current map center + a half-width from a slider (`HALF_WIDTH_MIN/MAX/DEFAULT_KM`). A lift/piste-only query is **light** — even a full-size box returns in a few seconds.
-
+A **square bounding box**: map center + a half-width slider (`HALF_WIDTH_MIN/MAX/DEFAULT_KM`). One lift/piste-only Overpass query is **light** — even a full box returns in seconds.
 
 ### 9.2 Mapping OSM → graph
 
-- **Pistes** — `piste:type=downhill` only. The polyline is linearly resampled every `RESAMPLE_STEP_M` (~30 m, no cubic spline — OSM pistes are already smooth) with DEM elevation, then `commit_paths` → `finish_slope`. Difficulty comes from the DEM `max_slope_pct`; name from `name → piste:name → piste:ref → ref`.
-- **Lifts** — import ONLY `aerialway` values defined by us (drag/t-bar/j-bar/platter → surface_lift, chair_lift → chairlift, gondola/mixed_lift → gondola, cable_car → aerial_tram). Any other value is ignored.
+- **Lifts** — only `aerialway` types we map (drag/t-bar/j-bar/platter → surface_lift, chair_lift → chairlift, gondola/mixed_lift → gondola, cable_car → aerial_tram); others ignored. A way with interior `aerialway=station` nodes splits into per-section lifts.
+- **Pistes** (Lifts + slopes only) — standard groomed `downhill` + `connection`. The connected-graph builder planar-splits every crossing, merges endpoints/stations into shared hubs (lift-authoritative, no two nodes < `MIN_NODE_DIST_M`), DEM-drapes each run on the real OSM line, and groups segments into named slopes. Difficulty comes from the DEM `max_slope_pct`.
 
-### 9.3 Only full, non-trivial, NAMED entities; one undoable batch
+### 9.3 Only full, non-trivial entities; one undoable batch
 
-Every element that is not imported is logged with its reason. A way with any vertex outside the box, or over a DEM nodata hole, is skipped entirely (never half-imported). **Unnamed** lifts/pistes are skipped — they are frequently outdated or duplicate, so only named entities import. Lifts under `MIN_LIFT_LENGTH_M` (300 m) and pistes under `MIN_PISTE_LENGTH_M` (200 m) are skipped as trivial. The whole import is one `ImportOSMAction` — a single Undo removes it all.
+A way with any vertex outside the box, or over a DEM nodata hole, is skipped whole (never half-imported); skips are logged. Lifts under `MIN_LIFT_LENGTH_M` and pistes under `MIN_PISTE_LENGTH_M` are dropped as trivial; **Lifts only** also drops unnamed lifts and coincident same-name duplicates. The whole import is one `ImportOSMAction` — one Undo removes it all.
 
 ### 9.4 Idempotent re-import
 
