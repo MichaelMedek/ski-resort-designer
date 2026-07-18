@@ -30,7 +30,9 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from shapely import set_precision
+import numpy as np
+import numpy.typing as npt
+from shapely import STRtree, set_precision
 from shapely.geometry import LineString, MultiLineString, Point
 from shapely.ops import substring, unary_union
 
@@ -328,13 +330,16 @@ class OSMGraphBuilder:
         for i in order:
             ls = lines[i]
             n = max(2, int(ls.length // 15))
-            if any(
-                sum(1 for t in range(n + 1) if kl.distance(ls.interpolate(t / n, normalized=True)) < tol) / (n + 1)
-                >= cover
-                for kl in kept
-            ):
-                continue
-            kept.append(ls)
+            samples = [ls.interpolate(t / n, normalized=True) for t in range(n + 1)]
+            # STRtree dwithin: count each kept line's samples within tol in one query; drop if any covers.
+            covered = False
+            if kept:
+                tree = STRtree(kept)
+                _, kept_idx = tree.query(samples, predicate="dwithin", distance=tol)
+                counts = np.bincount(kept_idx, minlength=len(kept))
+                covered = bool((counts / (n + 1) >= cover).any())
+            if not covered:
+                kept.append(ls)
         return kept, len(lines) - len(kept)
 
     # -- step 3: full-split (planar-node at every crossing) ---------------------------------------
@@ -685,8 +690,6 @@ class OSMGraphBuilder:
         self._source_lines = [s for s in source if s.length > 0]  # for piste-following connectors
         # R12 measures a run point's distance to the nearest source-piste VERTEX (not the line). Build a
         # vertex STRtree of ALL piste vertices so the builder's final gate matches R12 exactly.
-        from shapely import STRtree
-
         self._piste_vertices = [Point(c) for s in self._source_lines for c in s.coords]
         self._vtree = STRtree(self._piste_vertices) if self._piste_vertices else None
 
@@ -789,15 +792,19 @@ class OSMGraphBuilder:
         if not self._named_sources:
             return
         tol = OSMConfig.SLOPE_ON_SOURCE_TOL_M + 10.0
+        lines = [ln for ln, _nm in self._named_sources]
+        names = [nm for _ln, nm in self._named_sources]
+        tree = STRtree(lines)
         for r in graph.slope_runs:
             samples = [Point(self._to_m(p.lon, p.lat)) for p in r.points]
-            best_name, best_cover = None, 0.0
-            for line, name in self._named_sources:
-                cover = sum(1 for q in samples if line.distance(q) <= tol) / len(samples)
-                if cover > best_cover:
-                    best_cover, best_name = cover, name
-            if best_cover >= 0.5:
-                r.name = best_name
+            # STRtree dwithin: for each source line, how many of the run's samples fall within tol.
+            _, line_idx = tree.query(samples, predicate="dwithin", distance=tol)
+            if line_idx.size == 0:
+                continue
+            cover = np.bincount(line_idx, minlength=len(lines)) / len(samples)
+            best = int(cover.argmax())  # argmax returns the FIRST max → matches the original `>` scan
+            if cover[best] >= 0.5:
+                r.name = names[best]
 
     def _run_max_slope_pct(self, run: SlopeRun) -> float:
         """Steepest-section slope magnitude (%) of a run, rolled over ROLLING_WINDOW_M — the same metric
@@ -1219,14 +1226,14 @@ class OSMGraphBuilder:
             return None
         return SlopeRun(points=pts, node_a=a, node_b=b)
 
-    def _runs_in_metres(self, runs: list[SlopeRun]) -> list[list[Point]]:
-        """Each run's points projected to local-metre shapely Points (for distance/parallel checks)."""
-        return [[Point(self._to_m(p.lon, p.lat)) for p in r.points] for r in runs]
+    def _runs_in_metres(self, runs: list[SlopeRun]) -> list[npt.NDArray[np.float64]]:
+        """Each run's points as a local-metre (n,2) array (for vectorized distance/parallel checks)."""
+        return [np.array([self._to_m(p.lon, p.lat) for p in r.points], dtype=float) for r in runs]
 
     def _drop_guarded_fixpoint(
         self,
         graph: ImportGraph,
-        find_victim: Callable[[list[SlopeRun], list[list[Point]], list[float], set[int]], int | None],
+        find_victim: Callable[[list[SlopeRun], list[npt.NDArray[np.float64]], list[float], set[int]], int | None],
         label: str,
     ) -> None:
         """Repeatedly drop the run `find_victim` picks, UNLESS the drop strands a node (R22 wins) — then
@@ -1234,11 +1241,11 @@ class OSMGraphBuilder:
         coverage-duplicate (R2) drops; they differ only in `find_victim`.
         """
         keep_unsafe: set[int] = set()
+        runs = graph.slope_runs
+        pm = self._runs_in_metres(runs)  # rebuilt only after an actual drop (run set unchanged otherwise)
+        plen = [self._polylen_m(r.points) for r in runs]
         while True:
-            runs = graph.slope_runs
-            victim = find_victim(
-                runs, self._runs_in_metres(runs), [self._polylen_m(r.points) for r in runs], keep_unsafe
-            )
+            victim = find_victim(runs, pm, plen, keep_unsafe)
             if victim is None:
                 return
             cand = ImportGraph(
@@ -1250,6 +1257,9 @@ class OSMGraphBuilder:
             logger.debug(f"[IMPORT] drop {label} '{runs[victim].name}'")
             graph.slope_runs = cand.slope_runs
             graph.dropped_isolated += 1
+            runs = graph.slope_runs
+            pm = pm[:victim] + pm[victim + 1 :]  # surviving runs keep identity → keep_unsafe ids stay valid
+            plen = plen[:victim] + plen[victim + 1 :]
 
     def _drop_parallel_twins(self, graph: ImportGraph) -> None:
         """R34: drop a run that is a redundant parallel TWIN of a longer same-named sibling — hugging it
@@ -1259,15 +1269,25 @@ class OSMGraphBuilder:
         """
         lo, hi, frac = OSMConfig.DEDUP_TOL_M, OSMConfig.PARALLEL_TOL_M, OSMConfig.PARALLEL_TWIN_FRAC
 
-        def find(runs: list[SlopeRun], pm: list[list[Point]], plen: list[float], keep_unsafe: set[int]) -> int | None:
+        def find(
+            runs: list[SlopeRun], pm: list[npt.NDArray[np.float64]], plen: list[float], keep_unsafe: set[int]
+        ) -> int | None:
             return self._find_parallel_twin(runs, pm, plen, lo, hi, frac, keep_unsafe)
 
         self._drop_guarded_fixpoint(graph, find, "redundant parallel twin")
 
     @staticmethod
+    def _min_dist2_per_point(a: npt.NDArray[np.float64], b: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+        """Squared distance from every point of `a` (n,2) to its NEAREST point of `b` (m,2). Comparing
+        against tol² is identical to comparing distance against tol (sqrt is monotonic).
+        """
+        d2 = (a[:, 0, None] - b[:, 0]) ** 2 + (a[:, 1, None] - b[:, 1]) ** 2
+        return d2.min(axis=1)  # type: ignore[no-any-return]
+
+    @staticmethod
     def _find_parallel_twin(
         runs: list[SlopeRun],
-        pm: list[list[Point]],
+        pm: list[npt.NDArray[np.float64]],
         plen: list[float],
         lo: float,
         hi: float,
@@ -1275,17 +1295,21 @@ class OSMGraphBuilder:
         keep_unsafe: set[int],
     ) -> int | None:
         """Index of a run that is a redundant parallel twin of a longer same-named sibling, else None."""
+        lo2, hi2 = lo * lo, hi * hi
         for i in range(len(runs)):
             if id(runs[i]) in keep_unsafe or plen[i] == 0 or not runs[i].name:
                 continue
+            ai = pm[i]
+            seglen = np.hypot(np.diff(ai[:, 0]), np.diff(ai[:, 1])) if len(ai) > 1 else np.empty(0)
             for j in range(len(runs)):
                 if i == j or len(pm[j]) < 2 or runs[i].name != runs[j].name or plen[i] > plen[j]:
                     continue
+                d2 = OSMGraphBuilder._min_dist2_per_point(ai, pm[j])
+                inband = (d2 > lo2) & (d2 <= hi2)  # lo < d <= hi
                 best = cur = 0.0  # longest contiguous stretch of i inside j's near band
-                for k in range(len(pm[i])):
-                    d = min(pm[i][k].distance(q) for q in pm[j])
-                    if lo < d <= hi:
-                        cur += pm[i][k - 1].distance(pm[i][k]) if k > 0 else 0.0
+                for k in range(len(ai)):
+                    if inband[k]:
+                        cur += float(seglen[k - 1]) if k > 0 else 0.0
                         best = max(best, cur)
                     else:
                         cur = 0.0
@@ -1301,7 +1325,9 @@ class OSMGraphBuilder:
         """
         tol, cover = OSMConfig.DEDUP_TOL_M, OSMConfig.DEDUP_COVER_FRAC
 
-        def find(runs: list[SlopeRun], pm: list[list[Point]], plen: list[float], keep_unsafe: set[int]) -> int | None:
+        def find(
+            runs: list[SlopeRun], pm: list[npt.NDArray[np.float64]], plen: list[float], keep_unsafe: set[int]
+        ) -> int | None:
             return self._find_covered_run(runs, pm, plen, tol, cover, keep_unsafe)
 
         self._drop_guarded_fixpoint(graph, find, "near-duplicate run")
@@ -1309,7 +1335,7 @@ class OSMGraphBuilder:
     def _find_covered_run(
         self,
         runs: list[SlopeRun],
-        pm: list[list[Point]],
+        pm: list[npt.NDArray[np.float64]],
         plen: list[float],
         tol: float,
         cover: float,
@@ -1319,23 +1345,27 @@ class OSMGraphBuilder:
         short shared-hub coincident prefix ≤ MAX_PULL_M (a mere pull artifact, not a double-draw).
         """
         max_pull = OSMConfig.MAX_PULL_M
+        tol2 = tol * tol
         for i in range(len(runs)):
             if id(runs[i]) in keep_unsafe or len(pm[i]) < 2:
                 continue
+            ai = pm[i]
             for j in range(len(runs)):
                 if i == j or len(pm[j]) < 2 or plen[i] > plen[j]:
                     continue
+                bj = pm[j]
                 shared = {runs[i].node_a, runs[i].node_b} & {runs[j].node_a, runs[j].node_b}
                 if shared:
-                    seq = pm[i] if runs[i].node_a in shared else pm[i][::-1]
+                    seq = ai if runs[i].node_a in shared else ai[::-1]
+                    seq_d2 = OSMGraphBuilder._min_dist2_per_point(seq, bj)
                     coincident = 0.0
                     for k in range(1, len(seq)):
-                        if min(seq[k].distance(vb) for vb in pm[j]) > tol:
+                        if seq_d2[k] > tol2:
                             break
-                        coincident += seq[k - 1].distance(seq[k])
+                        coincident += float(np.hypot(*(seq[k] - seq[k - 1])))
                     if coincident <= max_pull:
                         continue  # short coincidence at a shared hub → pull artifact, not a duplicate
-                near = sum(1 for va in pm[i] if any(va.distance(vb) < tol for vb in pm[j]))
+                near = int((OSMGraphBuilder._min_dist2_per_point(ai, bj) < tol2).sum())
                 if near / len(pm[i]) >= cover:
                     return i
         return None
