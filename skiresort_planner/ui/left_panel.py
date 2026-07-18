@@ -497,8 +497,6 @@ class SidebarRenderer:
                 else:
                     st.button(label, width="stretch", disabled=True, help="Build some slopes, lifts or roads first")
 
-            st.divider()
-
             # Reset to a fresh empty resort. Needed because the bare link always
             # reloads the biggest existing backup, so empty must be requested.
             if st.button(

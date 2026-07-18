@@ -216,9 +216,10 @@ class TestLifts:
         assert result.lifts == [] and result.skipped == 1
 
     def test_truncated_lift_skipped_entirely(self) -> None:
-        # A lift with a vertex outside the box (far east) is dropped whole, not clipped.
+        # A lift with a vertex outside the box (far east) is dropped whole by the shared in-box filter,
+        # not clipped (and not counted — out-of-box ways never enter the lift-only skip tally).
         result = _lifts([_way({"aerialway": "gondola", "name": "Out"}, [(0.0, 0.0), (0.5, 0.0)])])
-        assert result.lifts == [] and result.skipped == 1
+        assert result.lifts == []
 
     def test_nodata_lift_skipped_entirely(self) -> None:
         # Fully inside the box but a station over a DEM nodata hole → not sampleable → skipped.
@@ -520,9 +521,11 @@ class TestPisteFilter:
         assert _is_importable_piste({"piste:type": "connection", "piste:difficulty": "freeride"})
 
     def test_importable_lift_map(self) -> None:
-        from skiresort_planner.generators.osm_graph_builder import _is_importable_lift
+        """extract_lift_sections keeps only MAPPED aerialway types; station/pylon/unmapped ways yield no section."""
+        from skiresort_planner.generators.osm_importer import extract_lift_sections
 
-        assert _is_importable_lift({"aerialway": "gondola"})
-        assert not _is_importable_lift({"aerialway": "station"})
-        assert not _is_importable_lift({"aerialway": "pylon"})
-        assert not _is_importable_lift({})
+        line = [(0.0, 0.0), (0.0, -0.02)]
+        assert extract_lift_sections([_way({"aerialway": "gondola", "name": "G"}, line)], BBOX), "gondola kept"
+        assert not extract_lift_sections([_way({"aerialway": "station", "name": "S"}, line)], BBOX), "station dropped"
+        assert not extract_lift_sections([_way({"aerialway": "pylon", "name": "P"}, line)], BBOX), "pylon dropped"
+        assert not extract_lift_sections([_way({"highway": "path", "name": "X"}, line)], BBOX), "non-aerialway dropped"

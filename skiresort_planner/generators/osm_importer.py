@@ -11,9 +11,10 @@ few slots per IP; on a transient 429 (no slot) / 504 (busy) we wait for a free s
 box, or crossing a DEM nodata hole, is skipped entirely (counted), never half-imported. Only NAMED
 lifts import: unnamed OSM ways are frequently outdated or duplicate, so we skip them (logged).
 
-This module holds the SHARED importer base (`BaseOSMImporter`): the Overpass fetch and the lift
-extraction both children reuse. Slope geometry is the connected-graph builder's job — see the
-`LiftOnlyImporter` (lifts only, raw OSM) and `GraphImporter` (lifts + slopes) children.
+This module holds the SHARED importer base (`BaseOSMImporter`: Overpass fetch) plus `extract_lift_sections`
+— the raw lift-section core (mid-station split incl.) both children reuse. Slope geometry is the
+connected-graph builder's job — see the `LiftOnlyImporter` (lifts only, raw OSM) and `GraphImporter`
+(lifts + slopes) children.
 """
 
 import json
@@ -33,7 +34,7 @@ import requests
 from skiresort_planner.constants import EntitySource, OSMConfig
 from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.core.geo_calculator import GeoCalculator
-from skiresort_planner.model.path_point import PathPoint, endpoints_match
+from skiresort_planner.model.path_point import PathPoint
 
 logger = logging.getLogger(__name__)
 
@@ -93,21 +94,6 @@ def _is_transient(exc: BaseException) -> bool:
     return response.status_code in (429, 504)
 
 
-@dataclass(frozen=True)
-class LiftImport:
-    """One lift ready to add: its two stations (DEM-sampled), lift-type, + optional OSM name."""
-
-    bottom: PathPoint
-    top: PathPoint
-    lift_type: str
-    name: str | None
-
-    @property
-    def length_m(self) -> float:
-        """Ground length of the lift line (bottom station to top station)."""
-        return self.bottom.distance_to(other=self.top)
-
-
 @dataclass
 class ImportResult:
     """What an OSM import produced, in the ONE shape every importer returns and the graph consumes.
@@ -124,11 +110,11 @@ class ImportResult:
 
 
 class BaseOSMImporter(ABC):
-    """Shared OSM importer: fetches lifts & pistes in a bbox and extracts lifts. Never used alone —
-    a concrete subclass supplies `_assemble` (lift-only vs the connected slope graph).
+    """Shared OSM importer: fetches lifts & pistes in a bbox. Never used alone — a concrete subclass
+    supplies `_assemble` (lift-only vs the connected slope graph).
 
-    Pure fetch + parse + DEM-drape; it does NOT mutate the resort graph (the caller does, so the
-    whole import is one undoable batch).
+    Pure fetch + parse; it does NOT mutate the resort graph (the caller does, so the whole import is
+    one undoable batch).
     """
 
     SOURCE: ClassVar[str] = EntitySource.OSM
@@ -212,93 +198,32 @@ class BaseOSMImporter(ABC):
         logger.info(f"Overpass returned {len(elements)} elements for bbox {bbox}")
         return elements
 
-    # -- lift extraction (shared by every child) ------------------------------
 
-    def extract_lifts(self, elements: list[OverpassElement]) -> tuple[list[LiftImport], int]:
-        """Extract skiable lifts from raw Overpass elements: (lifts, skipped count).
+# -- lift-section extraction (shared core: both importers reuse it) -----------
 
-        Keeps named aerialways of a mapped type, fully in-box, ≥ MIN_LIFT_LENGTH_M, with both
-        stations on DEM data; a way with interior `aerialway=station` nodes splits into per-section
-        lifts. Dedupes coincident same-name duplicates. Every skip is logged with its reason.
-        """
-        station_ids = station_node_ids(elements)
-        lifts: list[LiftImport] = []
-        skipped = 0
-        for el in elements:
-            tags = el.get("tags", {})
-            if "aerialway" not in tags:
-                continue
-            aerialway = tags["aerialway"]
-            lift_type = OSMConfig.AERIALWAY_TO_LIFT_TYPE.get(aerialway)
-            osm_id = el.get("id", 0)
-            if lift_type is None:
-                # station/pylon/zip_line/magic_carpet/rope_tow/yes/… are not skiable lifts — not counted.
-                logger.debug(f"Ignored lift way/{osm_id}: unmapped aerialway='{aerialway}' (not a skiable lift)")
-                continue
-            vertices = [(v["lon"], v["lat"]) for v in el.get("geometry", [])]
-            sections = split_lift_way_at_stations(vertices, el.get("nodes", []), station_ids)
-            for i, section in enumerate(sections):
-                lift = self._lift_import(
-                    lift_type=str(lift_type),
-                    tags=tags,
-                    vertices=section,
-                    osm_id=osm_id,
-                    section=(i, len(sections)),
-                )
-                if lift is None:
-                    skipped += 1
-                else:
-                    lifts.append(lift)
-        lifts, dropped = _dedupe_coincident_per_name(lifts)
-        return lifts, skipped + dropped
+LiftSection = tuple[list[Vertex], str, str | None]  # (vertices lon/lat, lift_type, name-or-None)
 
-    def _lift_import(
-        self,
-        lift_type: str,
-        tags: dict[str, str],
-        vertices: list[Vertex],
-        osm_id: int,
-        section: tuple[int, int],
-    ) -> LiftImport | None:
-        """One lift (or one mid-station section) → LiftImport, or None (logged) if it must be skipped.
 
-        `section` is (index, total): a display suffix is added only when a way split into >1 section.
-        """
-        index, total = section
-        name = suffixed_lift_name(name=_lift_name(tags), index=index, total=total)
-        if name is None:
-            logger.debug(
-                f"Skipped {tags['aerialway']} way/{osm_id}: unnamed "
-                f"(potentially outdated/duplicate — only named lifts import)"
-            )
-            return None
-        if len(vertices) < 2 or not _fully_inside(vertices=vertices, bbox=self.bbox):
-            logger.debug(f"Skipped lift '{name}' (way/{osm_id}): reaches outside the import area")
-            return None
-        length = _polyline_length_m(vertices)
-        if length < OSMConfig.MIN_LIFT_LENGTH_M:
-            logger.debug(
-                f"Skipped lift '{name}' (way/{osm_id}): {length:.0f}m < {OSMConfig.MIN_LIFT_LENGTH_M:.0f}m min"
-            )
-            return None
-        # A lift section's two stations are its endpoints; OSM intermediate pylons are dropped (we
-        # regenerate them). Interior mid-STATIONS were already split out into their own sections.
-        bottom = self._point(vertices[0])
-        top = self._point(vertices[-1])
-        if bottom is None or top is None:
-            logger.debug(f"Skipped lift '{name}' (way/{osm_id}): a station is over a DEM nodata hole")
-            return None
-        # A lift runs valley→mountain; orient bottom = lower station.
-        if bottom.elevation > top.elevation:
-            bottom, top = top, bottom
-        return LiftImport(bottom=bottom, top=top, lift_type=lift_type, name=name)
-
-    def _point(self, vertex: Vertex) -> PathPoint | None:
-        lon, lat = vertex
-        elev = self.dem.get_elevation(lon=lon, lat=lat)
-        if elev is None:
-            return None
-        return PathPoint(lon=lon, lat=lat, elevation=elev)
+def extract_lift_sections(elements: list[OverpassElement], bbox: BBox) -> list[LiftSection]:
+    """Raw skiable-lift sections shared by BOTH importers: keep mapped-aerialway ways fully in-box,
+    split each at interior `aerialway=station` nodes, carry the per-section name. No DEM / min-length /
+    dedup — those are each caller's policy (lift-only drops unnamed + DEM-drapes; graph hub-merges).
+    """
+    station_ids = station_node_ids(elements)
+    sections: list[LiftSection] = []
+    for el in elements:
+        tags = el.get("tags", {})
+        lift_type = OSMConfig.AERIALWAY_TO_LIFT_TYPE.get(tags.get("aerialway", ""))
+        if lift_type is None:  # not a mapped skiable aerialway (station/pylon/zip_line/…)
+            continue
+        verts = [(v["lon"], v["lat"]) for v in el.get("geometry", [])]
+        if len(verts) < 2 or not _fully_inside(vertices=verts, bbox=bbox):
+            continue  # truncated by the box → skip the whole way (never half-import)
+        parts = split_lift_way_at_stations(verts, el.get("nodes", []), station_ids)
+        name = _lift_name(tags)
+        for i, part in enumerate(parts):
+            sections.append((part, str(lift_type), suffixed_lift_name(name, i, len(parts))))
+    return sections
 
 
 def _fully_inside(vertices: list[Vertex], bbox: BBox) -> bool:
@@ -324,16 +249,6 @@ def _seconds_until_free_slot() -> float:
     waits = [int(m) for m in re.findall(r"in (\d+) seconds", text)]
     wait = min(waits) if waits else OSMConfig.SLOT_WAIT_FALLBACK_S
     return float(min(wait, OSMConfig.SLOT_WAIT_MAX_S))
-
-
-def _polyline_length_m(vertices: list[Vertex]) -> float:
-    """Total ground length of the raw lon/lat polyline in metres (sum of haversine legs)."""
-    return sum(
-        GeoCalculator.haversine_distance_m(
-            lat1=vertices[i][1], lon1=vertices[i][0], lat2=vertices[i + 1][1], lon2=vertices[i + 1][0]
-        )
-        for i in range(len(vertices) - 1)
-    )
 
 
 def station_node_ids(elements: list[OverpassElement]) -> set[int]:
@@ -372,37 +287,6 @@ def suffixed_lift_name(name: str | None, index: int, total: int) -> str | None:
     if name is None or total <= 1:
         return name
     return f"{name} ({index + 1})"
-
-
-def _dedupe_coincident_per_name(items: list[LiftImport]) -> tuple[list[LiftImport], int]:
-    """Drop same-name lifts that are GEOMETRICALLY COINCIDENT with a longer one (an old + a re-drawn
-    OSM way share a name AND both endpoints); keep the longest of each such duplicate group.
-
-    A same name alone is NOT a duplicate: consecutive mid-station sections (and separate same-named
-    ways meeting end-to-end) share only ONE endpoint, so they are kept as distinct lifts.
-    """
-    kept: list[LiftImport] = []
-    dropped = 0
-    for item in sorted(items, key=lambda lf: lf.length_m, reverse=True):
-        twin = next(
-            (
-                k
-                for k in kept
-                if k.name == item.name
-                and endpoints_match(
-                    pair_a=(k.bottom, k.top), pair_b=(item.bottom, item.top), tol_m=OSMConfig.OSM_DEDUP_TOL_M
-                )
-            ),
-            None,
-        )
-        if twin is None:
-            kept.append(item)
-        else:
-            dropped += 1
-            logger.debug(
-                f"Skipped lift '{item.name}': coincident duplicate, {item.length_m:.0f}m ≤ kept {twin.length_m:.0f}m"
-            )
-    return kept, dropped
 
 
 def _lift_name(tags: dict[str, str]) -> str | None:
