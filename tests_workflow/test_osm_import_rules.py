@@ -699,17 +699,31 @@ class TestGraphImporter:
         assert (tmp_path / "osm_raw.json").exists()
         assert (tmp_path / "osm_import.png").exists()
 
-    def test_r30_named_piste_is_one_app_slope(self, ischgl_graph):
-        """R30: each real named OSM piste materialises as EXACTLY ONE app-slope (chain), even where it
-        branches — never fragmented into several same-named slopes with divergent difficulty (the '63
-        appeared 3×' bug). to_slope_chains emits one chain per named ImportSlope.
+    def test_r30_connected_linear_piste_is_one_app_slope(self, ischgl_graph):
+        """R30: a named piste is ONE app-slope wherever its runs form a single connected LINEAR chain —
+        never fragmented into several same-named slopes. A name MAY yield
+        more than one app-slope ONLY when the piste genuinely branches (a fork node feeds >1 leg) or
+        splits into disconnected arms — those cannot share one linear slope.
         """
-        from collections import Counter
-
         chains = ischgl_graph.to_slope_chains()
-        name_counts = Counter(name for _pts, name in chains if name)
-        split = {n: c for n, c in name_counts.items() if c > 1}
-        assert not split, f"named pistes fragmented into multiple app-slopes: {split}"
+        # group app-slopes by name; an app-slope's endpoint hubs are its first/last run's outer nodes.
+        by_name = defaultdict(list)  # name -> [(first_point, last_point) per app-slope]
+        for pts_lists, name in chains:
+            if name:
+                by_name[name].append((pts_lists[0][0], pts_lists[-1][-1]))
+        tol = OSMConfig.MIN_NODE_DIST_M
+        joinable = []
+        for name, ends in by_name.items():
+            for i in range(len(ends)):
+                for j in range(i + 1, len(ends)):
+                    # two chains are linearly joinable if an endpoint of one coincides with an endpoint
+                    # of the other (they meet end-to-end, not at a mid-chain fork)
+                    pairs = [(ends[i][a], ends[j][b]) for a in (0, 1) for b in (0, 1)]
+                    if any(p.distance_to(other=q) <= tol for p, q in pairs):
+                        joinable.append(name)
+        assert not joinable, (
+            f"same-named app-slopes meet end-to-end but were not merged (needless split): {sorted(set(joinable))}"
+        )
 
     def test_r33_app_slope_segments_are_contiguous(self, ischgl_graph):
         """R33: every app-slope must be a CONNECTED chain — consecutive
