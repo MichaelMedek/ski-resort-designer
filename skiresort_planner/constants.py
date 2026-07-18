@@ -499,7 +499,7 @@ class StyleConfig:
     # Lift icons for map display
     LIFT_ICONS = {
         "surface_lift": "🎿",
-        "chairlift": "🪑",
+        "chairlift": "💺",
         "gondola": "🚡",
         "aerial_tram": "🚠",
     }

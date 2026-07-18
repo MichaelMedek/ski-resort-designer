@@ -196,7 +196,7 @@ In the sidebar, click one of the lift buttons:
 | Icon | Type | Best For |
 |------|------|----------|
 | 🎿 | **Surface Lift** | Short beginner areas, max ~100m spans |
-| 🪑 | **Chairlift** | Standard mountain transport, up to ~200m spans |
+| 💺 | **Chairlift** | Standard mountain transport, up to ~200m spans |
 | 🚡 | **Gondola** | Longer distances, weather protection, up to ~300m spans |
 | 🚠 | **Aerial Tram** | Very long spans over difficult terrain |
 
@@ -310,7 +310,7 @@ As with slopes and lifts, you can view the road's elevation profile, switch to *
 
 - **⛷️ Slope** — Click terrain to start a new ski slope
 - **🛣️ Road** — Build a gentle car road segment by segment
-- **🎿🪑🚡🚠 Lift buttons** — Click terrain to place a lift (Surface, Chair, Gondola, Aerial Tram)
+- **🎿💺🚡🚠 Lift buttons** — Click terrain to place a lift (Surface, Chair, Gondola, Aerial Tram)
 
 Below a divider sit two **utility** buttons:
 
