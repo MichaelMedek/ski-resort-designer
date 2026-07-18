@@ -502,13 +502,19 @@ class TestImportRules:
         )
 
     def test_r22_no_slope_dead_ends(self, ischgl_graph):
-        """No slope may dead-end where a skier gets STRANDED. STRICT, traced:
+        """No slope may strand a skier — the single authoritative bidirectional reachability check
+        (subsumes "every top reachable" + "every bottom drains"). STRICT, traced over DESCENDING slope
+        edges only (no lift-up shortcut — a node reachable only via a connecting lift still counts as a
+        dead-end here; that is the stricter, intended guarantee):
 
-        (a) DOWN — from EVERY slope node, following descending edges must reach a LIFT STATION (a node
-            you can ride back up). A node all of whose slopes arrive from above and none continue down,
-            and which is not a lift base, is a stranding dead-end — fail loudly.
-        (b) UP  — every slope node must be reachable, following descending edges FROM some lift station
-            (you must be able to get onto the slope by riding a lift up, then skiing down to it).
+        (a) DOWN — from EVERY slope node, descending edges must reach a LIFT STATION (a node you can ride
+            back up). A node all of whose slopes arrive from above and none continue down, and which is
+            not a lift base, strands the skier.
+        (b) UP — every slope node must be reachable, following descending edges FROM some lift station
+            (you can get onto it by riding a lift up then skiing down to it).
+
+        EXCEPTION: a node BELOW the lowest lift base is a genuine VALLEY TERMINUS (ski out of the box to
+        a return lift whose base is outside the bbox) — exempt from the DOWN check only.
         """
         elev = {k: v.elevation for k, v in ischgl_graph.node_points.items()}
         lift_nodes = {n for lf in ischgl_graph.lifts for n in (lf.node_a, lf.node_b)}
@@ -545,7 +551,7 @@ class TestImportRules:
         )
         assert stranded_up == [], (
             f"{len(stranded_up)} slope nodes cannot be reached from a lift going down (unreachable): "
-            f"{stranded_up[:8]} — a dropped/truncated slope"
+            f"{stranded_up[:8]} — a dropped feeder piste"
         )
 
     def test_r23_slope_points_hug_terrain(self, ischgl_graph):
@@ -705,31 +711,25 @@ class TestGraphImporter:
         split = {n: c for n, c in name_counts.items() if c > 1}
         assert not split, f"named pistes fragmented into multiple app-slopes: {split}"
 
-    def test_r31_every_slope_top_is_skier_reachable(self, ischgl_graph):
-        """R31: no phantom slope — every slope's HIGH node is reachable by a skier (stand on a lift top,
-        ski DOWN, ride lifts UP). An unreachable top means the feeder piste into it was dropped; the
-        uphill-feeder reconnect must have rebuilt it (from real OSM) or the slope must not exist.
+    def test_r33_app_slope_segments_are_contiguous(self, ischgl_graph):
+        """R33: every app-slope must be a CONNECTED chain — consecutive
+        segments must share an endpoint (touch within MIN_NODE_DIST_M). A gap means the slope splices
+        two disconnected arms into one ordered point-list, and finish_slope's spline then draws a
+        straight belt across the void (the red-fan artifact). One real piste = one connected chain;
+        genuinely disconnected same-name arms must be SEPARATE app-slopes, never bridged.
         """
-        g = ischgl_graph
-        elev = {k: v.elevation for k, v in g.node_points.items()}
-        down = defaultdict(set)
-        for r in g.slope_runs:
-            hi, lo = (r.node_a, r.node_b) if elev[r.node_a] >= elev[r.node_b] else (r.node_b, r.node_a)
-            down[hi].add(lo)
-        lift_up = defaultdict(set)
-        seeds = set()
-        for lf in g.lifts:
-            base, top = (lf.node_a, lf.node_b) if elev[lf.node_a] <= elev[lf.node_b] else (lf.node_b, lf.node_a)
-            lift_up[base].add(top)
-            seeds.add(top)
-        reach = set(seeds)
-        q = deque(seeds)
-        while q:
-            x = q.popleft()
-            for y in list(down.get(x, ())) + list(lift_up.get(x, ())):
-                if y not in reach:
-                    reach.add(y)
-                    q.append(y)
-        tops = {(r.node_a if elev[r.node_a] >= elev[r.node_b] else r.node_b) for r in g.slope_runs}
-        unreachable = tops - reach
-        assert not unreachable, f"slope tops no skier can reach (phantom entries): {sorted(unreachable)}"
+        chains = ischgl_graph.to_slope_chains()
+        tol = OSMConfig.MIN_NODE_DIST_M
+        gaps = []
+        for pts_lists, name in chains:
+            for k in range(len(pts_lists) - 1):
+                a_end = pts_lists[k][-1]
+                nxt = pts_lists[k + 1]
+                # consecutive segments touch iff a's end coincides with the next segment's start OR end
+                d = min(a_end.distance_to(other=nxt[0]), a_end.distance_to(other=nxt[-1]))
+                if d > tol:
+                    gaps.append((name, k, round(d)))
+        assert not gaps, (
+            f"{len(gaps)} app-slopes splice DISCONNECTED segments (spline draws a belt across the gap): "
+            f"{sorted(gaps, key=lambda t: -t[2])[:8]}"
+        )
