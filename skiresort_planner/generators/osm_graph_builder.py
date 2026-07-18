@@ -1135,8 +1135,6 @@ class OSMGraphBuilder:
                 continue  # never re-add a run that climbs (R3) — the pre-merge arc dips then rises
             if any(pts[k].distance_to(other=pts[k + 1]) > OSMConfig.MAX_STRAIGHT_M for k in range(len(pts) - 1)):
                 continue  # a long straight chord would tunnel through terrain (R7)
-            if any(pts[k].distance_to(other=pts[k + 1]) > OSMConfig.MAX_STRAIGHT_M for k in range(len(pts) - 1)):
-                continue  # a long straight chord would tunnel through terrain (R7)
             logger.debug(f"[IMPORT] reconnect: sub-run {na}→{nb}, {len(pts)} pts")
             graph.slope_runs.append(SlopeRun(points=pts, node_a=na, node_b=nb))
             added = True
