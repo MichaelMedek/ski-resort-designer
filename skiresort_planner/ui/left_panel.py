@@ -34,6 +34,7 @@ from skiresort_planner.model.undo_handlers import UNDO_HANDLERS
 from skiresort_planner.persistence import backup_store
 from skiresort_planner.ui.actions import undo_cancels_current_build, undo_last_action
 from skiresort_planner.ui.context import BuildMode, PlannerContext
+from skiresort_planner.ui.dialogs import ConfirmDialog
 from skiresort_planner.ui.infra import bump_camera_epoch, reload_map, trigger_rerun
 from skiresort_planner.ui.mode_registry import BUILD_STATES, OPERATIONS, BuilderOperation, OperationGroup
 from skiresort_planner.ui.state_machine import PlannerStateMachine
@@ -70,20 +71,22 @@ def _request_pending_undo() -> None:
     st.session_state._pending_undo = True
 
 
-@st.dialog("Confirm Undo")
-def _confirm_undo_dialog(graph: ResortGraph) -> None:
-    """Show confirmation dialog before undoing an action."""
-    st.write("**Action to undo:**")
-    st.write(_describe_next_undo(graph=graph))
+class _UndoDialog(ConfirmDialog):
+    """Confirm undoing the next action on the stack."""
 
-    col_yes, col_no = st.columns(2)
-    with col_yes:
-        if st.button("↩️ Yes, Undo", type="primary", use_container_width=True):
-            _request_pending_undo()
-            trigger_rerun()
-    with col_no:
-        if st.button("✖️ Cancel", use_container_width=True):
-            trigger_rerun()
+    def __init__(self, graph: ResortGraph) -> None:
+        self.graph = graph
+
+    @property
+    def title(self) -> str:
+        return "↩️ Confirm Undo"
+
+    def _body(self) -> None:
+        st.write("**Action to undo:**")
+        st.write(_describe_next_undo(graph=self.graph))
+
+    def _on_confirm(self) -> None:
+        _request_pending_undo()
 
 
 def _perform_reset_resort() -> None:
@@ -101,23 +104,23 @@ def _perform_reset_resort() -> None:
         st.session_state.pop(key, None)
 
 
-@st.dialog("🗑️ Reset to Empty")
-def _confirm_reset_resort_dialog() -> None:
+class _ResetResortDialog(ConfirmDialog):
     """Confirm resetting to a fresh empty resort.
 
     Deletes the current resort's backup and starts a brand-new empty one.
     Needed because the bare link always reloads the biggest existing backup,
     so an empty start must be requested explicitly.
     """
-    st.warning("This clears the current resort and starts empty. The current backup is deleted. Cannot be undone.")
-    col_yes, col_no = st.columns(2)
-    with col_yes:
-        if st.button("🆕 Yes, Start Empty", type="primary", use_container_width=True):
-            _perform_reset_resort()
-            trigger_rerun()
-    with col_no:
-        if st.button("✖️ Cancel", use_container_width=True):
-            trigger_rerun()
+
+    @property
+    def title(self) -> str:
+        return "🗑️ Reset to Empty"
+
+    def _body(self) -> None:
+        st.write("This clears the current resort and starts empty. The current backup is deleted. Cannot be undone.")
+
+    def _on_confirm(self) -> None:
+        _perform_reset_resort()
 
 
 class SidebarRenderer:
@@ -260,7 +263,7 @@ class SidebarRenderer:
                 _request_pending_undo()
                 trigger_rerun()
             else:
-                _confirm_undo_dialog(graph=self.graph)
+                _UndoDialog(graph=self.graph).show()
 
     def _render_reset_view_button(self) -> None:
         """Render the reset-view button (recenters camera to defaults, cleans orphan nodes)."""
@@ -506,4 +509,4 @@ class SidebarRenderer:
                 disabled=not has_content,
                 key="reset_resort_button",
             ):
-                _confirm_reset_resort_dialog()
+                _ResetResortDialog().show()

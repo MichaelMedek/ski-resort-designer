@@ -42,6 +42,7 @@ from skiresort_planner.ui.actions import (
     rename_entity_action,
 )
 from skiresort_planner.ui.context import EntityKind, PlannerContext
+from skiresort_planner.ui.dialogs import ConfirmDialog, InputDialog
 from skiresort_planner.ui.infra import bump_camera_epoch, bump_dedup_epoch, reload_map, trigger_rerun
 from skiresort_planner.ui.kind_spec import KIND_SPECS
 from skiresort_planner.ui.state_machine import PlannerStateMachine
@@ -73,41 +74,50 @@ def _commit_button_label(path: "ProposedPathSegment", *, continue_label: str, co
 # =============================================================================
 
 
-@st.dialog("Confirm Delete")
-def _confirm_delete_dialog(
-    kind: EntityKind,
-    entity_name: str,
-    entity_id: str,
-    delete_fn: Callable[[str], bool],
-) -> None:
-    """Show confirmation dialog before deleting a slope, road, or lift."""
-    st.write(f"Are you sure you want to delete **{entity_name}**?")
-    st.caption("This action can be undone using the Undo button.")
+class _DeleteEntityDialog(ConfirmDialog):
+    """Confirm deleting a slope, road, or lift."""
 
-    col_yes, col_no = st.columns(2)
-    with col_yes:
-        if st.button("🗑️ Yes, Delete", type="primary", use_container_width=True):
-            if delete_fn(entity_id):
-                logger.info(f"Deleted {kind.value} {entity_name} (id={entity_id})")
-            # Action functions handle state transition and map version bump
-            trigger_rerun()
-    with col_no:
-        if st.button("✖️ Cancel", use_container_width=True):
-            trigger_rerun()
+    def __init__(
+        self,
+        kind: EntityKind,
+        entity_name: str,
+        entity_id: str,
+        delete_fn: Callable[[str], bool],
+    ) -> None:
+        self.kind = kind
+        self.entity_name = entity_name
+        self.entity_id = entity_id
+        self.delete_fn = delete_fn
+
+    @property
+    def title(self) -> str:
+        return "🗑️ Confirm Delete"
+
+    def _body(self) -> None:
+        st.write(f"Are you sure you want to delete **{self.entity_name}**?")
+        st.caption("This action can be undone using the Undo button.")
+
+    def _on_confirm(self) -> None:
+        if self.delete_fn(self.entity_id):
+            logger.info(f"Deleted {self.kind.value} {self.entity_name} (id={self.entity_id})")
 
 
-@st.dialog("Rename")
-def _rename_dialog(entity_id: str, current_name: str) -> None:
+class _RenameDialog(InputDialog):
     """Prompt for a new name for a slope, road, or lift and apply it on Save."""
-    new_name = st.text_input("Name", value=current_name)
-    col_save, col_cancel = st.columns(2)
-    with col_save:
-        if st.button("💾 Save", type="primary", use_container_width=True):
-            rename_entity_action(entity_id=entity_id, new_name=new_name)
-            trigger_rerun()
-    with col_cancel:
-        if st.button("✖️ Cancel", use_container_width=True):
-            trigger_rerun()
+
+    def __init__(self, entity_id: str, current_name: str) -> None:
+        self.entity_id = entity_id
+        self.current_name = current_name
+
+    @property
+    def title(self) -> str:
+        return "✏️ Rename"
+
+    def _input(self) -> str:
+        return st.text_input("Name", value=self.current_name)
+
+    def _on_save(self, value: str) -> None:
+        rename_entity_action(entity_id=self.entity_id, new_name=value)
 
 
 # =============================================================================
@@ -174,7 +184,7 @@ def _render_entity_actions(
     # Top-right: Rename.
     with top_right:
         if _action_button("✏️ Rename", key=f"rename_{noun}", help=f"Give this {noun} a custom name"):
-            _rename_dialog(entity_id=entity_id, current_name=entity.name)
+            _RenameDialog(entity_id=entity_id, current_name=entity.name).show()
 
     # Bottom-left: Close.
     with bottom_left:
@@ -192,12 +202,12 @@ def _render_entity_actions(
     # Bottom-right: Delete.
     with bottom_right:
         if _action_button("🗑️ Delete", key=f"delete_{noun}", help=f"Permanently remove this {noun}"):
-            _confirm_delete_dialog(
+            _DeleteEntityDialog(
                 kind=kind,
                 entity_name=entity.name,
                 entity_id=entity_id,
                 delete_fn=delete_fn,
-            )
+            ).show()
 
 
 # =============================================================================
