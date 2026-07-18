@@ -511,6 +511,45 @@ class OSMGraphBuilder:
                 padj[b].append((a, i))
         return pn_xy, pn_hub, pn_elev, padj
 
+    @staticmethod
+    def _min_climb_walk(
+        starts: list[int],
+        padj: dict[int, list[tuple[int, int]]],
+        pn_elev: list[float],
+        record: Callable[[int], bool],
+        *,
+        want_higher: bool,
+        max_records: int | None = None,
+    ) -> tuple[dict[int, tuple[int, int]], list[int]]:
+        """Min-AGAINST-grade Dijkstra over the pre-merge node graph from `starts`. Cost is movement
+        against the wanted direction (uphill when descending, downhill when `want_higher`), each hop
+        capped at NODE_TERRAIN_TOL_M (a DEM-sampling dip, not a real wall). `record(x)` is called on each
+        popped node: if it returns True the node is recorded (and the walk does NOT expand past it, but
+        keeps going for other records). Returns (par edges, recorded nodes in ascending-cost order).
+        """
+        best: dict[int, float] = dict.fromkeys(starts, 0.0)
+        par: dict[int, tuple[int, int]] = {}
+        pq: list[tuple[float, int]] = [(0.0, p) for p in starts]
+        heapq.heapify(pq)
+        recorded: list[int] = []
+        while pq and (max_records is None or len(recorded) < max_records):
+            c, x = heapq.heappop(pq)
+            if c > best.get(x, 1e18):
+                continue
+            if record(x):
+                recorded.append(x)
+                continue  # record but don't expand past a goal node; keep walking for others
+            for y, si in padj[x]:
+                against = max(0.0, pn_elev[x] - pn_elev[y]) if want_higher else max(0.0, pn_elev[y] - pn_elev[x])
+                if against > OSMConfig.NODE_TERRAIN_TOL_M:  # nodata (inf) rejected here
+                    continue
+                nc = c + against
+                if nc < best.get(y, 1e18):
+                    best[y] = nc
+                    par[y] = (x, si)
+                    heapq.heappush(pq, (nc, y))
+        return par, recorded
+
     def _contract_collapsed_descents(
         self,
         segments: list[LineString],
@@ -559,34 +598,18 @@ class OSMGraphBuilder:
             starts = [p for p in range(len(pn_xy)) if pn_hub[p] == top]
             if not starts:
                 continue
-            # min-climb walk (≤NODE_TERRAIN_TOL per hop) over ALL reachable pre-merge nodes; collect valid exit
-            # hubs (distinct, strictly lower, non-lift) and pick the one nearest the aim point.
-            best: dict[int, float] = dict.fromkeys(starts, 0.0)
-            par: dict[int, tuple[int, int]] = {}
-            pq: list[tuple[float, int]] = [(0.0, p) for p in starts]
-            heapq.heapify(pq)
+            # min-climb walk over the pre-merge geometry; collect valid exit hubs (distinct, strictly
+            # lower, non-lift) and pick the one nearest the aim point.
             aim_xy = hubs[base_hub] if base_hub is not None else hubs[top]
-            exits: list[tuple[float, int]] = []
-            while pq:
-                c, x = heapq.heappop(pq)
-                if c > best.get(x, 1e18):
-                    continue
+
+            def is_exit(x: int, top: int = top) -> bool:
                 xh = pn_hub[x]
-                if xh != top and xh not in lift_hubs and xh in helev and helev[xh] < helev[top]:
-                    exits.append((math.dist(hubs[xh], aim_xy), x))
-                    continue  # record, but keep walking for exits nearer the aim
-                for y, si in padj[x]:
-                    climb = max(0.0, pn_elev[y] - pn_elev[x])
-                    if climb > OSMConfig.NODE_TERRAIN_TOL_M:  # nodata (inf) rejected here
-                        continue
-                    nc = c + climb
-                    if nc < best.get(y, 1e18):
-                        best[y] = nc
-                        par[y] = (x, si)
-                        heapq.heappush(pq, (nc, y))
+                return xh != top and xh not in lift_hubs and xh in helev and helev[xh] < helev[top]
+
+            par, exits = self._min_climb_walk(starts, padj, pn_elev, is_exit, want_higher=False)
             if not exits:
                 continue
-            target = min(exits, key=lambda t: t[0])[1]
+            target = min(exits, key=lambda x: math.dist(hubs[pn_hub[x]], aim_xy))
             exit_hub = pn_hub[target]
             chain: list[int] = [target]
             n = target
@@ -597,10 +620,7 @@ class OSMGraphBuilder:
             clean = self._concat_chain_geometry(chain, hubs[top], hubs[exit_hub], segments, padj, pn_xy)
             if len(clean) < 2:
                 continue
-            logger.debug(
-                f"[IMPORT] contract: stranded hub {top} → through-run to hub {exit_hub}, "
-                f"{len(clean)} pts, min-climb {best[target]:.1f}m"
-            )
+            logger.debug(f"[IMPORT] contract: stranded hub {top} → through-run to hub {exit_hub}, {len(clean)} pts")
             out.append((LineString(clean), top, exit_hub))
         return out
 
@@ -887,64 +907,69 @@ class OSMGraphBuilder:
         terminus, return lift out of bbox) is left alone. Iterated to a fixpoint.
         """
         segments, seg_ab, hubs = self._pre_segments, self._pre_seg_ab, self._pre_hubs
-        elev = self._node_elevations(graph)
         lift_nodes = {n for lf in graph.lifts for n in (lf.node_a, lf.node_b)}
         if not lift_nodes:
             return
-        min_lift_base = min(elev[n] for n in lift_nodes)
+        min_lift_base = min(self._node_elevations(graph)[n] for n in lift_nodes)
+        premerge = self._build_premerge_graph(segments, seg_ab)
 
-        pn_xy, pn_hub, pn_elev, padj = self._build_premerge_graph(segments, seg_ab)
-
-        for _ in range(20):
-            good = self._hubs_reaching_lift(graph, lift_nodes)
-            sinks = [
-                n
-                for n in {a for r in graph.slope_runs for a in (r.node_a, r.node_b)}
+        def down_sinks(g: ImportGraph, elev: dict[int, float]) -> list[tuple[int, set[int]]]:
+            """Sinks above a lift base that can't reach a lift going down → walk down to a hub that can."""
+            good = self._hubs_reaching_lift(g, lift_nodes)
+            return [
+                (n, good)
+                for n in {a for r in g.slope_runs for a in (r.node_a, r.node_b)}
                 if n not in good and n not in lift_nodes and elev[n] > min_lift_base
             ]
-            if not sinks:
-                break
-            added = False
-            for sink in sinks:
-                if self._reconnect_one_sink(sink, good, graph, elev, segments, hubs, pn_xy, pn_hub, pn_elev, padj):
-                    added = True
-            if not added:
-                break
 
-        # Per-lift OWN-base descent (R21): a lift top may reach SOME lift going down yet not its own
-        # base. Walk the pre-merge OSM geometry from the top to a node that strict-descends to its base
-        # and add the missing runs (raw OSM proven to have such a path). Iterated to a fixpoint.
-        for _ in range(20):
-            added = False
-            for lf in graph.lifts:
-                elev = self._node_elevations(graph)
+        def own_base(g: ImportGraph, elev: dict[int, float]) -> list[tuple[int, set[int]]]:
+            """R21: a lift top that reaches SOME lift but not its OWN base → walk down toward its base."""
+            seeds = []
+            for lf in g.lifts:
                 top = lf.node_a if elev[lf.node_a] >= elev[lf.node_b] else lf.node_b
                 base = lf.node_b if top == lf.node_a else lf.node_a
-                reach_base = self._down_reaches(graph, {base}, elev)  # nodes that strict-descend to base
-                if top in reach_base:
-                    continue
-                if self._reconnect_one_sink(top, reach_base, graph, elev, segments, hubs, pn_xy, pn_hub, pn_elev, padj):
-                    added = True
-            if not added:
-                break
+                reach_base = self._down_reaches(g, {base}, elev)
+                if top not in reach_base:
+                    seeds.append((top, reach_base))
+            return seeds
 
-        # Unreachable slope TOPS (mirror of sinks): a slope whose high node no skier can reach — no lift
-        # arrives and no piste descends INTO it — is a phantom (you can't get onto it). Walk the pre-merge
-        # OSM geometry UP a real descending feeder to a reachable higher node and add it. Iterated.
+        def unreachable_tops(g: ImportGraph, elev: dict[int, float]) -> list[tuple[int, set[int]]]:
+            """Mirror of sinks: a slope top no skier can reach → walk UP a real feeder to a reachable node."""
+            reachable = self._skier_reachable(g, elev)
+            tops = {(r.node_a if elev[r.node_a] >= elev[r.node_b] else r.node_b) for r in g.slope_runs} - reachable
+            return [(t, reachable) for t in tops]
+
+        self._reconnect_pass(graph, down_sinks, segments, hubs, premerge, want_higher=False)
+        self._reconnect_pass(graph, own_base, segments, hubs, premerge, want_higher=False)
+        self._reconnect_pass(graph, unreachable_tops, segments, hubs, premerge, want_higher=True)
+
+    def _reconnect_pass(
+        self,
+        graph: ImportGraph,
+        seeds_fn: Callable[[ImportGraph, dict[int, float]], list[tuple[int, set[int]]]],
+        segments: list[LineString],
+        hubs: list[XY],
+        premerge: tuple[list[XY], list[int], list[float], dict[int, list[tuple[int, int]]]],
+        *,
+        want_higher: bool,
+    ) -> None:
+        """Iterate to a fixpoint: recompute (stranded node, allowed-target set) via `seeds_fn`, reconnect
+        each over the pre-merge OSM geometry; stop when nothing is stranded or nothing new was added.
+        """
+        pn_xy, pn_hub, pn_elev, padj = premerge
         for _ in range(20):
             elev = self._node_elevations(graph)
-            reachable = self._skier_reachable(graph, elev)
-            tops = {(r.node_a if elev[r.node_a] >= elev[r.node_b] else r.node_b) for r in graph.slope_runs} - reachable
-            if not tops:
-                break
+            seeds = seeds_fn(graph, elev)
+            if not seeds:
+                return
             added = False
-            for top in tops:
+            for sink, good in seeds:
                 if self._reconnect_one_sink(
-                    top, reachable, graph, elev, segments, hubs, pn_xy, pn_hub, pn_elev, padj, want_higher=True
+                    sink, good, graph, elev, segments, hubs, pn_xy, pn_hub, pn_elev, padj, want_higher=want_higher
                 ):
                     added = True
             if not added:
-                break
+                return
 
     @staticmethod
     def _node_elevations(graph: ImportGraph) -> dict[int, float]:
@@ -1022,34 +1047,15 @@ class OSMGraphBuilder:
         starts = [p for p in range(len(pn_xy)) if pn_hub[p] == sink]
         if not starts:
             return False
-        best: dict[int, float] = dict.fromkeys(starts, 0.0)
-        par: dict[int, tuple[int, int]] = {}
-        pq: list[tuple[float, int]] = [(0.0, p) for p in starts]
-        heapq.heapify(pq)
-        # Collect candidate targets in ascending min-climb order (do NOT stop at the first): the nearest
-        # good hub may fail the R3 backclimb gate below (its real OSM arc dips then rises), while a
-        # slightly farther one descends cleanly. Try each until one yields runs that all pass.
-        candidates: list[int] = []
-        while pq and len(candidates) < 8:
-            c, x = heapq.heappop(pq)
-            if c > best.get(x, 1e18):
-                continue
-            hub_ok = pn_hub[x] in good and (
-                elev[pn_hub[x]] > elev[sink] if want_higher else elev[pn_hub[x]] < elev[sink]
-            )
-            if hub_ok:  # `good ⊆ node_points`, so elev[..] is present
-                candidates.append(x)
-                continue  # record, but keep walking for other reachable good hubs
-            for y, si in padj[x]:
-                # cost = movement AGAINST the desired direction (down when climbing a feeder up, else up)
-                against = max(0.0, pn_elev[x] - pn_elev[y]) if want_higher else max(0.0, pn_elev[y] - pn_elev[x])
-                if against > OSMConfig.NODE_TERRAIN_TOL_M:
-                    continue
-                nc = c + against
-                if nc < best.get(y, 1e18):
-                    best[y] = nc
-                    par[y] = (x, si)
-                    heapq.heappush(pq, (nc, y))
+
+        # Collect candidate targets in ascending against-grain order (do NOT stop at the first): the
+        # nearest good hub may fail the R3 backclimb gate in _try_add_sink_run (its real OSM arc dips then
+        # rises), while a slightly farther one descends cleanly. Try each until one yields passing runs.
+        def is_target(x: int) -> bool:
+            h = pn_hub[x]
+            return h in good and (elev[h] > elev[sink] if want_higher else elev[h] < elev[sink])
+
+        par, candidates = self._min_climb_walk(starts, padj, pn_elev, is_target, want_higher=want_higher, max_records=8)
         for target in candidates:
             if self._try_add_sink_run(target, par, graph, segments, hubs, pn_hub, pn_xy, padj):
                 return True
