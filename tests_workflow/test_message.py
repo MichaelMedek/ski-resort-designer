@@ -280,11 +280,13 @@ class TestImportPlacingMessages:
         assert "47.05" in msg and "10.32" in msg, "center coordinates shown"
         assert "4.0 × 4.0 km" in msg, "half-width 2.0 → 4×4 km area"
 
-    def test_action_message_mentions_confirm(self) -> None:
+    def test_action_message_names_the_import_buttons(self) -> None:
+        # The center dot is inert; only the panel buttons confirm, so the guidance must name them.
         from skiresort_planner.model.message import ImportActionMessage
 
         msg = ImportActionMessage().message
-        assert "Confirm" in msg or "center dot" in msg
+        assert "Import lifts + slopes" in msg and "Import lifts only" in msg
+        assert "center dot" not in msg, "center dot no longer confirms — must not be advertised"
 
 
 class TestMergePlacingMessages:
