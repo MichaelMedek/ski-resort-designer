@@ -163,7 +163,7 @@ class TestImportOSMButton:
         # Selecting Import only arms the click-to-place mode; it stays idle and does NOT flag a fetch.
         assert ctx.build_mode.mode == BuildMode.IMPORT, "clicking Import must select import mode"
         assert sm.is_idle_ready, "selecting a mode must not leave idle"
-        assert ctx.deferred.osm_import_mode is None, "import is not flagged until the box is placed + confirmed"
+        assert ctx.pending.osm_import_mode is None, "import is not flagged until the box is placed + confirmed"
 
 
 class TestPathSettingsVisibility:

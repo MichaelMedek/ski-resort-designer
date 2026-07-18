@@ -493,7 +493,7 @@ class TestImportPlacing:
         _force_state(sm=sm, state_name=idle_state)
         sm.start_import(lon=10.3, lat=47.0)
         assert sm.is_import_placing
-        assert ctx.deferred.osm_import_center_lon == 10.3 and ctx.deferred.osm_import_center_lat == 47.0
+        assert ctx.pending.osm_import_center_lon == 10.3 and ctx.pending.osm_import_center_lat == 47.0
 
     def test_retarget_keeps_placing(self) -> None:
         sm, ctx = self._sm()
@@ -506,8 +506,8 @@ class TestImportPlacing:
         sm.start_import(lon=1.0, lat=2.0)
         sm.cancel_import()
         assert sm.is_idle_ready
-        assert ctx.deferred.osm_import_center_lon is None and ctx.deferred.osm_import_center_lat is None
-        assert ctx.deferred.osm_import_mode is None
+        assert ctx.pending.osm_import_center_lon is None and ctx.pending.osm_import_center_lat is None
+        assert ctx.pending.osm_import_mode is None
 
     def test_complete_returns_to_idle(self) -> None:
         sm, ctx = self._sm()
@@ -526,14 +526,14 @@ class TestImportPlacing:
         # the placed box center, or a stale box resurfaces. Guards the force/undo exit dispatch.
         sm, ctx = self._sm()
         sm.start_import(lon=1.0, lat=2.0)
-        assert ctx.deferred.osm_import_center_lon == 1.0
+        assert ctx.pending.osm_import_center_lon == 1.0
 
         with sm.undo_running():  # force_* is undo-only
             sm.force_idle()
 
         assert sm.is_idle_ready
-        assert ctx.deferred.osm_import_center_lon is None, "force_idle must run exit_import_placing (clears center)"
-        assert ctx.deferred.osm_import_center_lat is None
+        assert ctx.pending.osm_import_center_lon is None, "force_idle must run exit_import_placing (clears center)"
+        assert ctx.pending.osm_import_center_lat is None
 
 
 class TestViewSwitching:

@@ -29,7 +29,7 @@ def _node_at(dem: MockDEMService, node_id: str, lon: float, lat: float) -> Node:
 
 def _fake_import_result(dem: MockDEMService):
     """An ImportResult with one slope chain + one lift, all DEM-sampled inside MockDEM bounds — the
-    payload the mocked GraphImporter returns so process_osm_import_deferred can materialise it.
+    payload the mocked GraphImporter returns so process_osm_import_pending can materialise it.
     """
     from skiresort_planner.generators.osm_importer import ImportResult
 
@@ -44,6 +44,10 @@ def _fake_import_result(dem: MockDEMService):
         "Gipfelbahn",
     )
     return ImportResult(lifts=[lift], slope_chains=[([slope_points], "Imported Run")])
+
+
+def _noop_report(frac: float, text: str) -> None:
+    """A no-op ProgressFn for tests that call process_osm_import_pending directly (no progress bar)."""
 
 
 def _session(fake_st, graph, factory=None, dem=None):
@@ -633,7 +637,7 @@ class TestSlopeBuildingActionFlow:
         from skiresort_planner.ui.actions import (
             commit_selected_path,
             finish_current_slope,
-            process_path_generation_deferred,
+            process_path_generation_pending,
             recompute_paths,
             undo_last_action,
         )
@@ -650,7 +654,7 @@ class TestSlopeBuildingActionFlow:
         assert sm.is_slope_building_only, "undo of finish returns to slope building"
         assert ctx.build(SegmentKind.SLOPE).segments == [seg_id], "segments are restored"
         # force_building arms the fan on the deferred pass (unified with the live flow).
-        process_path_generation_deferred()
+        process_path_generation_pending()
         assert ctx.proposals.paths, "the fan is regenerated from the restored endpoint"
 
 
@@ -747,21 +751,21 @@ class TestRoadBuildingActionFlow:
 
 
 class TestDeferredProcessing:
-    """Deferred-action processors read/clear ctx.deferred flags and act on them."""
+    """Deferred-action processors read/clear ctx.pending flags and act on them."""
 
     def test_process_path_generation_noop_when_not_pending(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
     ) -> None:
-        from skiresort_planner.ui.actions import process_path_generation_deferred
+        from skiresort_planner.ui.actions import process_path_generation_pending
 
         _sm, ctx = _session(fake_st, ResortGraph(), factory=path_factory, dem=mock_dem_red_slope_diagonal)
-        ctx.deferred.fan_generation.discard(SegmentKind.SLOPE)
-        assert process_path_generation_deferred() is False
+        ctx.pending.fan_generation.discard(SegmentKind.SLOPE)
+        assert process_path_generation_pending() is False
 
     def test_process_path_generation_builds_fan_when_pending(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
     ) -> None:
-        from skiresort_planner.ui.actions import process_path_generation_deferred
+        from skiresort_planner.ui.actions import process_path_generation_pending
 
         dem = mock_dem_red_slope_diagonal
         graph = ResortGraph()
@@ -769,20 +773,20 @@ class TestDeferredProcessing:
         start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
         sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
         ctx.selection.set(lon=0.0, lat=0.0, elevation=start_elev)
-        ctx.deferred.fan_generation.add(SegmentKind.SLOPE)
+        ctx.pending.fan_generation.add(SegmentKind.SLOPE)
 
-        assert process_path_generation_deferred() is True
-        assert SegmentKind.SLOPE not in ctx.deferred.fan_generation, "flag cleared after processing"
+        assert process_path_generation_pending() is True
+        assert SegmentKind.SLOPE not in ctx.pending.fan_generation, "flag cleared after processing"
         assert ctx.proposals.paths, "fan proposals generated for the building state"
 
     def test_process_custom_connect_noop_when_not_pending(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
     ) -> None:
-        from skiresort_planner.ui.actions import process_custom_connect_deferred
+        from skiresort_planner.ui.actions import process_custom_connect_pending
 
         _sm, ctx = _session(fake_st, ResortGraph(), factory=path_factory, dem=mock_dem_red_slope_diagonal)
-        ctx.deferred.custom_connect = False
-        assert process_custom_connect_deferred() is False
+        ctx.pending.custom_connect = False
+        assert process_custom_connect_pending() is False
 
     def test_custom_connect_orders_shortest_first_straight_last(
         self, fake_st, monkeypatch, path_factory, mock_dem_red_slope_diagonal
@@ -808,9 +812,9 @@ class TestDeferredProcessing:
         monkeypatch.setattr(path_factory, "straight_line", lambda **_: straight)
 
         ctx.custom_connect.target_location = (0.0, -500 / M, dem.get_elevation_or_raise(lon=0.0, lat=-500 / M))
-        ctx.deferred.gradient_target = 99.0  # a stale fan target must be IGNORED by custom-connect
-        ctx.deferred.custom_connect = True
-        assert actions.process_custom_connect_deferred() is True
+        ctx.pending.gradient_target = 99.0  # a stale fan target must be IGNORED by custom-connect
+        ctx.pending.custom_connect = True
+        assert actions.process_custom_connect_pending() is True
 
         paths = ctx.proposals.paths
         lengths = [p.length_m for p in paths]
@@ -818,7 +822,7 @@ class TestDeferredProcessing:
         assert paths[0] is short_route, "shortest route is first"
         assert paths[-1] is straight, "straight line appended last"
         assert ctx.proposals.selected_idx == 0, "shortest route pre-selected (not gradient-closest)"
-        assert ctx.deferred.gradient_target is None, "stale fan gradient target consumed/ignored"
+        assert ctx.pending.gradient_target is None, "stale fan gradient target consumed/ignored"
 
 
 class TestGradientPreselection:
@@ -840,16 +844,16 @@ class TestGradientPreselection:
 
         _sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
         paths = self._paths(5.0, 18.0, 30.0)
-        ctx.deferred.gradient_target = 17.0  # closest to the 18% path (index 1)
+        ctx.pending.gradient_target = 17.0  # closest to the 18% path (index 1)
         _preselect_by_rule(ctx=ctx, paths=paths, rule=_closest_gradient_rule(ctx))
         assert ctx.proposals.selected_idx == 1, "pre-selects the proposal nearest the last committed grade"
-        assert ctx.deferred.gradient_target is None, "one-shot: the target is consumed"
+        assert ctx.pending.gradient_target is None, "one-shot: the target is consumed"
 
     def test_gradient_rule_defaults_to_first_without_target(self, fake_st, mock_dem_blue_slope) -> None:
         from skiresort_planner.ui.actions import _closest_gradient_rule, _preselect_by_rule
 
         _sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
-        ctx.deferred.gradient_target = None
+        ctx.pending.gradient_target = None
         _preselect_by_rule(ctx=ctx, paths=self._paths(5.0, 18.0), rule=_closest_gradient_rule(ctx))
         assert ctx.proposals.selected_idx == 0, "no target → first proposal"
 
@@ -857,23 +861,23 @@ class TestGradientPreselection:
         from skiresort_planner.ui.actions import _preselect_by_rule, _shortest_rule
 
         _sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
-        ctx.deferred.gradient_target = 17.0  # a stale fan target must still be consumed
+        ctx.pending.gradient_target = 17.0  # a stale fan target must still be consumed
         _preselect_by_rule(ctx=ctx, paths=self._paths(5.0, 18.0), rule=_shortest_rule)
         assert ctx.proposals.selected_idx == 0, "custom-connect shortest-first → index 0"
-        assert ctx.deferred.gradient_target is None, "stale fan target consumed even for the shortest rule"
+        assert ctx.pending.gradient_target is None, "stale fan target consumed even for the shortest rule"
 
     def test_none_when_no_paths(self, fake_st, mock_dem_blue_slope) -> None:
         from skiresort_planner.ui.actions import _closest_gradient_rule, _preselect_by_rule
 
         _sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
-        ctx.deferred.gradient_target = 17.0
+        ctx.pending.gradient_target = 17.0
         _preselect_by_rule(ctx=ctx, paths=[], rule=_closest_gradient_rule(ctx))
         assert ctx.proposals.selected_idx is None, "empty proposals → no selection"
 
 
 class TestOSMImport:
     """Click-to-place import: start_import stores the box center; confirm_import_action flags the
-    deferred fetch + returns to idle; process_osm_import_deferred runs it (mocked network) as one
+    deferred fetch + returns to idle; process_osm_import_pending runs it (mocked network) as one
     undoable batch centered on the placed box; undo removes the batch; re-import dedups.
     """
 
@@ -884,10 +888,10 @@ class TestOSMImport:
         sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
         sm.start_import(lon=0.1, lat=0.3)  # first map click places the box center
         assert sm.is_import_placing
-        assert ctx.deferred.osm_import_center_lon == 0.1 and ctx.deferred.osm_import_center_lat == 0.3
+        assert ctx.pending.osm_import_center_lon == 0.1 and ctx.pending.osm_import_center_lat == 0.3
 
         confirm_import_action(OSMImportMode.LIFTS_AND_SLOPES)  # center-dot click / import button
-        assert ctx.deferred.osm_import_mode == OSMImportMode.LIFTS_AND_SLOPES
+        assert ctx.pending.osm_import_mode == OSMImportMode.LIFTS_AND_SLOPES
         assert sm.is_idle_ready, "confirm returns to idle so the deferred fetch runs under the spinner"
 
     def test_placed_center_reaches_fetch_as_bbox(self, fake_st, mock_dem_blue_slope, monkeypatch) -> None:
@@ -914,9 +918,9 @@ class TestOSMImport:
         )
 
         sm.start_import(lon=0.1, lat=0.3)  # placed center
-        ctx.deferred.osm_import_half_width_km = 3.5
+        ctx.pending.osm_import_half_width_km = 3.5
         confirm_import_action(OSMImportMode.LIFTS_ONLY)
-        actions.process_osm_import_deferred()
+        actions.process_osm_import_pending(report=_noop_report)
 
         min_lon, min_lat, max_lon, max_lat = seen["bbox"]
         assert (min_lon + max_lon) / 2 == 0.1 and (min_lat + max_lat) / 2 == 0.3, "box centered on the PLACED center"
@@ -928,9 +932,9 @@ class TestOSMImport:
         from skiresort_planner.ui import actions
 
         _sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
-        ctx.deferred.osm_import_mode = OSMImportMode.LIFTS_AND_SLOPES  # flagged, but no center placed
+        ctx.pending.osm_import_mode = OSMImportMode.LIFTS_AND_SLOPES  # flagged, but no center placed
         with pytest.raises(RuntimeError, match="no placed center"):
-            actions.process_osm_import_deferred()
+            actions.process_osm_import_pending(report=_noop_report)
 
     def test_process_import_adds_entities_and_bumps_map(self, fake_st, mock_dem_blue_slope, monkeypatch) -> None:
         from skiresort_planner.constants import OSMImportMode
@@ -939,27 +943,28 @@ class TestOSMImport:
         dem = mock_dem_blue_slope
         graph = ResortGraph()
         _sm, ctx = _session(fake_st, graph, dem=dem)
-        ctx.deferred.osm_import_mode = OSMImportMode.LIFTS_AND_SLOPES
-        ctx.deferred.osm_import_center_lon = 0.0  # inside MockDEM bounds (-1..1)
-        ctx.deferred.osm_import_center_lat = 0.0
+        ctx.pending.osm_import_mode = OSMImportMode.LIFTS_AND_SLOPES
+        ctx.pending.osm_import_center_lon = 0.0  # inside MockDEM bounds (-1..1)
+        ctx.pending.osm_import_center_lat = 0.0
 
         result = _fake_import_result(dem)
 
         # Mock the importer so no network happens: fetch returns nothing, _assemble returns our result.
         # Mock run() so no network/plot happens: the importer just returns our prepared result.
         monkeypatch.setattr(
-            "skiresort_planner.generators.osm_graph_builder.GraphImporter.run", lambda self, *, dump_dir=None: result
+            "skiresort_planner.generators.osm_graph_builder.GraphImporter.run",
+            lambda self, *, on_progress, dump_dir=None: result,
         )
         epoch_before = fake_st.session_state["dedup_epoch"]
 
-        handled = actions.process_osm_import_deferred()
+        handled = actions.process_osm_import_pending(report=_noop_report)
 
         assert handled is True
         assert len(graph.slopes) == 1 and len(graph.lifts) == 1
         assert len(graph.undo_stack) == 1, "import is one undoable batch"
         assert fake_st.session_state["dedup_epoch"] > epoch_before, "import redraws new geometry (no recenter)"
-        assert ctx.deferred.osm_import_mode is None, "mode consumed"
-        assert ctx.deferred.osm_import_center_lon is None, "placed center consumed"
+        assert ctx.pending.osm_import_mode is None, "mode consumed"
+        assert ctx.pending.osm_import_center_lon is None, "placed center consumed"
 
     def test_process_import_network_error_reports_and_imports_nothing(
         self, fake_st, mock_dem_blue_slope, monkeypatch
@@ -969,16 +974,16 @@ class TestOSMImport:
 
         graph = ResortGraph()
         _sm, ctx = _session(fake_st, graph, dem=mock_dem_blue_slope)
-        ctx.deferred.osm_import_mode = OSMImportMode.LIFTS_AND_SLOPES
-        ctx.deferred.osm_import_center_lon = 0.0
-        ctx.deferred.osm_import_center_lat = 0.0
+        ctx.pending.osm_import_mode = OSMImportMode.LIFTS_AND_SLOPES
+        ctx.pending.osm_import_center_lon = 0.0
+        ctx.pending.osm_import_center_lat = 0.0
 
         def boom(self):
             raise RuntimeError("overpass down")
 
         monkeypatch.setattr("skiresort_planner.generators.osm_importer.BaseOSMImporter.fetch", boom)
 
-        handled = actions.process_osm_import_deferred()
+        handled = actions.process_osm_import_pending(report=_noop_report)
 
         assert handled is True
         assert len(graph.slopes) == 0 and len(graph.lifts) == 0
@@ -996,17 +1001,18 @@ class TestOSMImport:
         dem = mock_dem_blue_slope
         graph = ResortGraph()
         _sm, ctx = _session(fake_st, graph, dem=dem)
-        ctx.deferred.osm_import_mode = OSMImportMode.LIFTS_AND_SLOPES
-        ctx.deferred.osm_import_center_lon = 0.0
-        ctx.deferred.osm_import_center_lat = 0.0
+        ctx.pending.osm_import_mode = OSMImportMode.LIFTS_AND_SLOPES
+        ctx.pending.osm_import_center_lon = 0.0
+        ctx.pending.osm_import_center_lat = 0.0
 
         result = _fake_import_result(dem)
         # Mock run() so no network/plot happens: the importer just returns our prepared result.
         monkeypatch.setattr(
-            "skiresort_planner.generators.osm_graph_builder.GraphImporter.run", lambda self, *, dump_dir=None: result
+            "skiresort_planner.generators.osm_graph_builder.GraphImporter.run",
+            lambda self, *, on_progress, dump_dir=None: result,
         )
 
-        actions.process_osm_import_deferred()
+        actions.process_osm_import_pending(report=_noop_report)
         assert len(graph.slopes) == 1 and len(graph.lifts) == 1
 
         undo_last_action()  # dispatch IMPORT_OSM — must not raise, must wipe the batch
@@ -1027,20 +1033,21 @@ class TestOSMImport:
         result = _fake_import_result(dem)
         # Mock run() so no network/plot happens: the importer just returns our prepared result.
         monkeypatch.setattr(
-            "skiresort_planner.generators.osm_graph_builder.GraphImporter.run", lambda self, *, dump_dir=None: result
+            "skiresort_planner.generators.osm_graph_builder.GraphImporter.run",
+            lambda self, *, on_progress, dump_dir=None: result,
         )
 
         def _flag_import() -> None:
-            ctx.deferred.osm_import_mode = OSMImportMode.LIFTS_AND_SLOPES
-            ctx.deferred.osm_import_center_lon = 0.0
-            ctx.deferred.osm_import_center_lat = 0.0
+            ctx.pending.osm_import_mode = OSMImportMode.LIFTS_AND_SLOPES
+            ctx.pending.osm_import_center_lon = 0.0
+            ctx.pending.osm_import_center_lat = 0.0
 
         _flag_import()
-        actions.process_osm_import_deferred()
+        actions.process_osm_import_pending(report=_noop_report)
         assert len(graph.slopes) == 1 and len(graph.lifts) == 1
 
         _flag_import()
-        actions.process_osm_import_deferred()  # same area again
+        actions.process_osm_import_pending(report=_noop_report)  # same area again
         assert len(graph.slopes) == 1 and len(graph.lifts) == 1, "no duplicates on re-import"
 
 
@@ -1122,7 +1129,7 @@ class TestUndoToZeroAfterFinish:
         self, fake_st, empty_graph, path_factory, mock_dem_red_slope_diagonal
     ) -> None:
         from skiresort_planner.ui.actions import (
-            process_path_generation_deferred,
+            process_path_generation_pending,
             resolve_build_origin,
             undo_last_action,
         )
@@ -1155,7 +1162,7 @@ class TestUndoToZeroAfterFinish:
         build = ctx.build(SegmentKind.ROAD)
         if build.segments or build.start_location or build.start_node_id:
             resolve_build_origin(build=build, graph=empty_graph)  # must not raise
-        process_path_generation_deferred()  # the deferred fan pass must not raise either
+        process_path_generation_pending()  # the deferred fan pass must not raise either
 
 
 class TestMapEpochs:

@@ -33,7 +33,7 @@ def _enter_fan_state(ctx: PlannerContext, kind: SegmentKind) -> None:
     """
     ctx.viewing.hide_panel()
     ctx.click_dedup.clear_marker()
-    ctx.deferred.fan_generation.add(kind)
+    ctx.pending.fan_generation.add(kind)
 
 
 def _enter_custom_path(ctx: PlannerContext) -> None:
@@ -41,7 +41,7 @@ def _enter_custom_path(ctx: PlannerContext) -> None:
     deferred custom-connect generation to the stored target. Kind-agnostic.
     """
     ctx.click_dedup.clear_marker()
-    ctx.deferred.custom_connect = True
+    ctx.pending.custom_connect = True
 
 
 def _enter_viewing_panel(ctx: PlannerContext) -> None:
@@ -187,8 +187,8 @@ def exit_import_placing(ctx: PlannerContext) -> None:
     Leaves the osm_import_mode fetch flag alone — a confirmed import sets it just before this runs.
     """
     logger.debug("[LIFECYCLE] EXIT: import_placing - clearing placed import-box center")
-    ctx.deferred.osm_import_center_lon = None
-    ctx.deferred.osm_import_center_lat = None
+    ctx.pending.osm_import_center_lon = None
+    ctx.pending.osm_import_center_lat = None
 
 
 def exit_merge_placing(ctx: PlannerContext) -> None:

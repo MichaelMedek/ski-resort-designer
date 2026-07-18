@@ -641,8 +641,8 @@ def handle_import_placing_click(click_info: ClickInfo, elevation: float | None) 
     if click_info.click_type == MapClickType.TERRAIN:
         assert click_info.lat is not None and click_info.lon is not None
         logger.debug(f"[IMPORT] Terrain click: re-placing box center at ({click_info.lat:.6f}, {click_info.lon:.6f})")
-        ctx.deferred.osm_import_center_lon = click_info.lon
-        ctx.deferred.osm_import_center_lat = click_info.lat
+        ctx.pending.osm_import_center_lon = click_info.lon
+        ctx.pending.osm_import_center_lat = click_info.lat
         sm.retarget_import()
         trigger_rerun()  # redraw the box at the clicked point (already on-screen — no recenter)
         return

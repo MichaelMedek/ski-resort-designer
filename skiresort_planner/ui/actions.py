@@ -13,7 +13,7 @@ import streamlit as st
 
 from skiresort_planner.constants import OUTPUT_DIR, MapConfig, MergeConfig, OSMImportMode
 from skiresort_planner.generators.osm_graph_builder import GraphImporter
-from skiresort_planner.generators.osm_importer import BaseOSMImporter, bbox_around
+from skiresort_planner.generators.osm_importer import BaseOSMImporter, ProgressFn, bbox_around
 from skiresort_planner.generators.osm_lift_importer import LiftOnlyImporter
 from skiresort_planner.generators.path_factory import PathFactory
 from skiresort_planner.model.actions import (
@@ -109,7 +109,7 @@ def center_on_lift(
 # =============================================================================
 
 
-def process_custom_connect_deferred() -> bool:
+def process_custom_connect_pending() -> bool:
     """Process pending custom connect path generation.
 
     Returns:
@@ -117,10 +117,10 @@ def process_custom_connect_deferred() -> bool:
     """
     ctx: PlannerContext = st.session_state.context
 
-    if not ctx.deferred.custom_connect:
+    if not ctx.pending.custom_connect:
         return False
 
-    ctx.deferred.custom_connect = False
+    ctx.pending.custom_connect = False
     _generate_custom_connect_paths()
     # New proposals were generated → bump dedup_epoch so re-clicking the same index registers. This
     # runs inside the current render cycle from app.py, so the natural render shows the new proposals.
@@ -133,12 +133,12 @@ def confirm_import_action(mode: OSMImportMode) -> None:
 
     Called by both the right-panel import buttons and the center-dot click. `mode` selects which
     importer runs (lifts only vs lifts + slopes). The box center is already stored in
-    ctx.deferred.osm_import_center_lon/lat. The slow network fetch + graph mutation happen in
-    process_osm_import_deferred() under a spinner after we return to idle.
+    ctx.pending.osm_import_center_lon/lat. The slow network fetch + graph mutation happen in
+    process_osm_import_pending() under a spinner after we return to idle.
     """
     ctx: PlannerContext = st.session_state.context
     sm: PlannerStateMachine = st.session_state.state_machine
-    ctx.deferred.osm_import_mode = mode
+    ctx.pending.osm_import_mode = mode
     bump_dedup_epoch()
     sm.complete_import()  # → idle_ready; listener triggers the rerun that runs the deferred fetch
 
@@ -217,35 +217,35 @@ def add_node_on_path_action(segment_id: str, lon: float, lat: float) -> bool:
     return True
 
 
-def process_osm_import_deferred() -> bool:
+def process_osm_import_pending(report: ProgressFn) -> bool:
     """Process a pending OSM import: fetch the chosen area, build, add as one undoable batch.
 
-    The area is the square box the user placed and confirmed (ctx.deferred.osm_import_center_*
-    + half-width). The deferred mode picks the importer: lifts only (raw OSM) or lifts + slopes
-    (connected-graph algorithm). Returns True if it handled a pending import. Any network/parse
-    error shows an error toast and imports nothing. Reference artifacts (raw fetch + built-graph PNG)
-    are written to OUTPUT_DIR for inspection; they are never read back.
+    The area is the square box the user placed and confirmed (ctx.pending.osm_import_center_*
+    + half-width). The pending mode picks the importer: lifts only (raw OSM) or lifts + slopes
+    (connected-graph algorithm). `report` drives the loading progress bar. Returns True if it handled
+    a pending import. Any network/parse error shows a warning toast and imports nothing. Reference
+    artifacts (raw fetch + built-graph PNG) are written to OUTPUT_DIR for inspection; never read back.
     """
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
 
-    mode = ctx.deferred.osm_import_mode
+    mode = ctx.pending.osm_import_mode
     if mode is None:
         return False
-    ctx.deferred.osm_import_mode = None
+    ctx.pending.osm_import_mode = None
 
     dem = st.session_state.dem_service
     # The box center is always placed before confirm (start_import stores it)
-    center_lon = ctx.deferred.osm_import_center_lon
-    center_lat = ctx.deferred.osm_import_center_lat
+    center_lon = ctx.pending.osm_import_center_lon
+    center_lat = ctx.pending.osm_import_center_lat
     if center_lon is None or center_lat is None:
         raise RuntimeError("Pending OSM import has no placed center — start_import must set it before confirm.")
     bbox = bbox_around(
-        center_lon=center_lon, center_lat=center_lat, half_width_m=ctx.deferred.osm_import_half_width_km * 1000.0
+        center_lon=center_lon, center_lat=center_lat, half_width_m=ctx.pending.osm_import_half_width_km * 1000.0
     )
     # Consume the placed center so a later import can't reuse a stale box.
-    ctx.deferred.osm_import_center_lon = None
-    ctx.deferred.osm_import_center_lat = None
+    ctx.pending.osm_import_center_lon = None
+    ctx.pending.osm_import_center_lat = None
 
     importer_cls: type[BaseOSMImporter]
     if mode == OSMImportMode.LIFTS_ONLY:
@@ -256,7 +256,7 @@ def process_osm_import_deferred() -> bool:
         raise ValueError(f"Unknown {mode=}")
     t0 = time.perf_counter()
     try:
-        result = importer_cls(dem=dem, bbox=bbox).run(dump_dir=OUTPUT_DIR)
+        result = importer_cls(dem=dem, bbox=bbox).run(on_progress=report, dump_dir=OUTPUT_DIR)
     except Exception as exc:  # network / HTTP / parse — report, import nothing
         logger.warning(f"OSM import failed: {exc}")
         OSMImportErrorMessage(error=str(exc)).display()
@@ -271,7 +271,7 @@ def process_osm_import_deferred() -> bool:
     return True
 
 
-def process_path_generation_deferred() -> bool:
+def process_path_generation_pending() -> bool:
     """Process pending path generation.
 
     Returns:
@@ -280,17 +280,17 @@ def process_path_generation_deferred() -> bool:
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
 
-    if not ctx.deferred.fan_generation:
+    if not ctx.pending.fan_generation:
         return False
 
     # Regenerate the fan for each pending kind that is actually the active build.
-    if sm.active_build_kind in ctx.deferred.fan_generation:
+    if sm.active_build_kind in ctx.pending.fan_generation:
         _generate_fan_for_building_state(kind=sm.active_build_kind)
         # New proposals → bump dedup_epoch (NOT the camera). Runs inside the current render cycle
         # from app.py, so the following natural render shows the new proposals in place.
         bump_dedup_epoch()
 
-    ctx.deferred.fan_generation.clear()
+    ctx.pending.fan_generation.clear()
     return True
 
 
@@ -473,11 +473,11 @@ def _preselect_by_rule(
     """Set the pre-selected proposal index from `rule`, or None when there are no paths.
 
     Shared by the fan (closest-gradient rule) and custom-connect (shortest = index 0). Always
-    consumes the one-shot ctx.deferred.gradient_target so a stale fan target can't leak into the
+    consumes the one-shot ctx.pending.gradient_target so a stale fan target can't leak into the
     next generation.
     """
     ctx.proposals.selected_idx = rule(paths) if paths else None
-    ctx.deferred.gradient_target = None
+    ctx.pending.gradient_target = None
 
 
 def _shortest_rule(paths: "list[ProposedPathSegment]") -> int:
@@ -489,7 +489,7 @@ def _closest_gradient_rule(ctx: "PlannerContext") -> "Callable[[list[ProposedPat
     """Fan rule: the proposal whose gradient is closest to the last committed segment's, for grade
     continuity across segments; falls back to the shortest rule when no target is pending.
     """
-    target = ctx.deferred.gradient_target
+    target = ctx.pending.gradient_target
     if target is None:
         return _shortest_rule
     return lambda paths: _find_closest_gradient_path(paths=paths, target_gradient=target)
@@ -606,8 +606,8 @@ def commit_selected_path(path_idx: int) -> None:
     # custom-continue in the custom-path state). Do NOT recenter — the user keeps their current pan;
     # only finish/show-view/reset/3D re-frame the camera.
     ctx.clear_proposals()
-    ctx.deferred.fan_generation.add(kind)
-    ctx.deferred.gradient_target = committed_gradient
+    ctx.pending.fan_generation.add(kind)
+    ctx.pending.gradient_target = committed_gradient
     bump_dedup_epoch()
 
     sm.commit_active_segment(segment_id=segment_id, endpoint_node_id=endpoint_node_id)

@@ -122,7 +122,7 @@ class TestIdleClickRouting:
             elevation=dem.get_elevation_or_raise(lon=0.02, lat=0.01),
         )
         assert sm.is_import_placing
-        assert ctx.deferred.osm_import_center_lon == 0.02 and ctx.deferred.osm_import_center_lat == 0.01
+        assert ctx.pending.osm_import_center_lon == 0.02 and ctx.pending.osm_import_center_lat == 0.01
 
     def test_import_mode_node_click_places_box_at_node(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
@@ -138,7 +138,7 @@ class TestIdleClickRouting:
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id), elevation=None
         )
         assert sm.is_import_placing
-        assert ctx.deferred.osm_import_center_lon == 0.03 and ctx.deferred.osm_import_center_lat == 0.04
+        assert ctx.pending.osm_import_center_lon == 0.03 and ctx.pending.osm_import_center_lat == 0.04
 
     def test_merge_mode_node_click_starts_merge_and_selects(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
@@ -701,7 +701,7 @@ class TestSlopeBuildingEdgeCases:
     ) -> None:
         # Drive the real connector flow: click a downhill NODE target → custom-path →
         # generate proposals → commit the (connector) proposal → it auto-finishes the slope.
-        from skiresort_planner.ui.actions import commit_selected_path, process_custom_connect_deferred
+        from skiresort_planner.ui.actions import commit_selected_path, process_custom_connect_pending
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
         sm, ctx, graph = self._building(fake_st, mock_dem_red_slope_diagonal, path_factory)
@@ -710,7 +710,7 @@ class TestSlopeBuildingEdgeCases:
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id), elevation=None
         )
         assert sm.is_slope_custom_path, "node click auto-enters custom path"
-        process_custom_connect_deferred()  # generate the connector proposal(s)
+        process_custom_connect_pending()  # generate the connector proposal(s)
         assert ctx.proposals.paths, "a downhill node target yields a connector proposal"
         assert all(p.is_connector for p in ctx.proposals.paths), "targeting a node makes the proposal a connector"
 
@@ -725,7 +725,7 @@ class TestSlopeBuildingEdgeCases:
         not pre-selected), when both the planner routes and the straight line are within cap.
         Slopes previously had no straight-line option at all — this is the new capability.
         """
-        from skiresort_planner.ui.actions import process_custom_connect_deferred
+        from skiresort_planner.ui.actions import process_custom_connect_pending
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
         dem = mock_dem_red_slope_diagonal
@@ -735,7 +735,7 @@ class TestSlopeBuildingEdgeCases:
             ClickInfo(click_type=MapClickType.TERRAIN, lat=-300 / M, lon=0.0),
             elevation=dem.get_elevation_or_raise(lon=0.0, lat=-300 / M),
         )
-        process_custom_connect_deferred()
+        process_custom_connect_pending()
 
         assert sm.is_slope_custom_path
         assert len(ctx.proposals.paths) >= 2, "planner route(s) PLUS the straight line"
@@ -749,7 +749,7 @@ class TestSlopeBuildingEdgeCases:
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
     ) -> None:
         """If the straight line is over cap but planner routes fit, only planner routes show."""
-        from skiresort_planner.ui.actions import process_custom_connect_deferred
+        from skiresort_planner.ui.actions import process_custom_connect_pending
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
         dem = mock_dem_red_slope_diagonal
@@ -772,7 +772,7 @@ class TestSlopeBuildingEdgeCases:
         handle_path_building_click(
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id), elevation=None
         )
-        process_custom_connect_deferred()
+        process_custom_connect_pending()
         mp.undo()
 
         assert sm.is_slope_custom_path
@@ -1111,11 +1111,11 @@ class TestRoadBuildingClick:
         (mirrors slope custom-connect); the proposals appear when the deferred pass runs.
         This helper does both so tests can assert on the resulting proposals.
         """
-        from skiresort_planner.ui.actions import process_custom_connect_deferred
+        from skiresort_planner.ui.actions import process_custom_connect_pending
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
         handle_path_building_click(click_info, elevation=elevation)
-        process_custom_connect_deferred()
+        process_custom_connect_pending()
 
     def test_terrain_click_generates_proposals_without_committing(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
@@ -1318,11 +1318,11 @@ class TestRoadBuildingEdgeCases:
 
     def _target(self, click_info: ClickInfo, elevation: float | None = None) -> None:
         """Click a road target, then run the deferred custom-connect generation (see sibling class)."""
-        from skiresort_planner.ui.actions import process_custom_connect_deferred
+        from skiresort_planner.ui.actions import process_custom_connect_pending
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
         handle_path_building_click(click_info, elevation=elevation)
-        process_custom_connect_deferred()
+        process_custom_connect_pending()
 
     def test_target_too_far_is_refused_via_handler(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         # The 1000 m click-distance cap has an isolated validator test; drive it THROUGH the handler
@@ -1428,7 +1428,7 @@ class TestRoadBuildingEdgeCases:
         The grid planner is forced to yield only an over-cap serpentine; the endpoint-to-endpoint
         grade is gentle, so the straight line (≤15%) is the sole surviving proposal.
         """
-        from skiresort_planner.ui.actions import process_custom_connect_deferred
+        from skiresort_planner.ui.actions import process_custom_connect_pending
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
         dem = mock_dem_red_slope_diagonal
@@ -1451,7 +1451,7 @@ class TestRoadBuildingEdgeCases:
             ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=15 / M),
             elevation=dem.get_elevation_or_raise(lon=15 / M, lat=0.0),
         )
-        process_custom_connect_deferred()
+        process_custom_connect_pending()
         mp.undo()
 
         assert len(ctx.proposals.paths) == 1, "only the in-cap straight line survives"
@@ -1501,7 +1501,7 @@ class TestRoadBuildingEdgeCases:
         Guards the 'fall through, don't early-return' design: after building the fallback,
         the connector loop and start-node loop must still run on it.
         """
-        from skiresort_planner.ui.actions import process_custom_connect_deferred
+        from skiresort_planner.ui.actions import process_custom_connect_pending
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
         dem = mock_dem_red_slope_diagonal
@@ -1529,7 +1529,7 @@ class TestRoadBuildingEdgeCases:
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=target.id),
             elevation=None,
         )
-        process_custom_connect_deferred()
+        process_custom_connect_pending()
         mp.undo()
 
         assert len(ctx.proposals.paths) == 1
@@ -1543,16 +1543,16 @@ class TestRoadBuildingEdgeCases:
     ) -> None:
         """Entering road build triggers the road fan, hard-capped at ±15%.
 
-        The enter hook sets the deferred flag; process_path_generation_deferred fills
+        The enter hook sets the deferred flag; process_path_generation_pending fills
         ctx.proposals with a fan whose every member is within the band.
         """
-        from skiresort_planner.ui.actions import process_path_generation_deferred
+        from skiresort_planner.ui.actions import process_path_generation_pending
 
         dem = mock_dem_red_slope_diagonal
         sm, ctx, _graph = self._building(fake_st, path_factory, dem)
-        assert SegmentKind.ROAD in ctx.deferred.fan_generation, "entering road build queues the road fan"
+        assert SegmentKind.ROAD in ctx.pending.fan_generation, "entering road build queues the road fan"
 
-        process_path_generation_deferred()
+        process_path_generation_pending()
         assert ctx.proposals.paths, "the road fan proposes routes from the origin on gentle-enough terrain"
         assert all(p.max_slope_pct <= float(PathConfig.ROAD_MAX_GRADIENT_PCT) for p in ctx.proposals.paths), (
             "every road-fan proposal is within the ±15% band"
@@ -1569,7 +1569,7 @@ class TestRoadBuildingEdgeCases:
         from skiresort_planner.core.path_tracer import PathTracer
         from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
         from skiresort_planner.generators.path_factory import PathFactory
-        from skiresort_planner.ui.actions import process_path_generation_deferred
+        from skiresort_planner.ui.actions import process_path_generation_pending
 
         dem = mock_dem_black_slope
         analyzer = TerrainAnalyzer(dem=dem)
@@ -1586,7 +1586,7 @@ class TestRoadBuildingEdgeCases:
         over_cap = [p for p in raw if p.max_slope_pct > float(PathConfig.ROAD_MAX_GRADIENT_PCT)]
         assert over_cap, "on 45% terrain the steep-green routes exceed the cap (filter must have something to drop)"
 
-        process_path_generation_deferred()
+        process_path_generation_pending()
         assert ctx.proposals.paths, "gentle green traverses still hold an in-band grade on steep ground"
         assert len(ctx.proposals.paths) < len(raw), "the ±15% filter drops the over-cap routes"
         assert all(p.max_slope_pct <= float(PathConfig.ROAD_MAX_GRADIENT_PCT) for p in ctx.proposals.paths)
@@ -1723,8 +1723,8 @@ class TestBuildStateMarkerCompleteness:
             sm.start_import(lon=0.02, lat=0.03)  # a distinctive placed center, so a stray re-place shows
             handle_import_placing_click(click_info=ci, elevation=None)
             assert sm.is_import_placing, f"{marker_type.name} must not leave import placing"
-            assert ctx.deferred.osm_import_mode is None, f"{marker_type.name} must not confirm the import"
-            assert (ctx.deferred.osm_import_center_lon, ctx.deferred.osm_import_center_lat) == (0.02, 0.03), (
+            assert ctx.pending.osm_import_mode is None, f"{marker_type.name} must not confirm the import"
+            assert (ctx.pending.osm_import_center_lon, ctx.pending.osm_import_center_lat) == (0.02, 0.03), (
                 f"{marker_type.name} must not move the placed box center"
             )
 
@@ -1750,7 +1750,7 @@ class TestImportPlacingClick:
         handle_import_placing_click(
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.IMPORT_CENTER), elevation=None
         )
-        assert ctx.deferred.osm_import_mode is None, "a center-dot click must NOT confirm any import"
+        assert ctx.pending.osm_import_mode is None, "a center-dot click must NOT confirm any import"
         assert sm.is_import_placing, "still placing — confirm is done by the panel buttons"
 
     def test_terrain_click_replaces_center_and_keeps_placing(
@@ -1761,8 +1761,8 @@ class TestImportPlacingClick:
         sm, ctx = self._placing(fake_st, path_factory, mock_dem_red_slope_diagonal)
         handle_import_placing_click(ClickInfo(click_type=MapClickType.TERRAIN, lat=0.05, lon=0.06), elevation=2000.0)
         assert sm.is_import_placing, "re-placing keeps us in import mode"
-        assert ctx.deferred.osm_import_center_lon == 0.06 and ctx.deferred.osm_import_center_lat == 0.05
-        assert ctx.deferred.osm_import_mode is None, "re-placing does not confirm"
+        assert ctx.pending.osm_import_center_lon == 0.06 and ctx.pending.osm_import_center_lat == 0.05
+        assert ctx.pending.osm_import_mode is None, "re-placing does not confirm"
 
     def test_repeated_terrain_clicks_track_the_last_center(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
@@ -1774,7 +1774,7 @@ class TestImportPlacingClick:
         handle_import_placing_click(ClickInfo(click_type=MapClickType.TERRAIN, lat=0.01, lon=0.02), elevation=2000.0)
         handle_import_placing_click(ClickInfo(click_type=MapClickType.TERRAIN, lat=0.05, lon=0.06), elevation=2000.0)
         assert sm.is_import_placing
-        assert ctx.deferred.osm_import_center_lon == 0.06 and ctx.deferred.osm_import_center_lat == 0.05, (
+        assert ctx.pending.osm_import_center_lon == 0.06 and ctx.pending.osm_import_center_lat == 0.05, (
             "the last-placed center wins"
         )
 

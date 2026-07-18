@@ -20,7 +20,7 @@ Sub-contexts:
     CustomConnectContext: Custom target connection mode
     MapContext: Map center and zoom
     ClickDeduplicationContext: Click deduplication tracking
-    DeferredContext: Flags for deferred actions
+    PendingContext: Flags for deferred actions
     UIMessagesContext: User-facing messages/errors
 """
 
@@ -621,10 +621,10 @@ class ClickDeduplicationContext(BaseContext):
 
 
 @dataclass
-class DeferredContext(BaseContext):
+class PendingContext(BaseContext):
     """Deferred action flags for work that runs after st.rerun().
 
-    When set, process_path_generation_deferred() (called from app.py) performs the work on the
+    When set, process_path_generation_pending() (called from app.py) performs the work on the
     next render cycle. This ensures expensive operations (path generation)
     run with full access to session state after the UI refresh.
     """
@@ -730,7 +730,7 @@ class PlannerContext:
     custom_connect: CustomConnectContext = field(default_factory=CustomConnectContext)
     map: MapContext = field(default_factory=MapContext)
     click_dedup: ClickDeduplicationContext = field(default_factory=ClickDeduplicationContext)
-    deferred: DeferredContext = field(default_factory=DeferredContext)
+    pending: PendingContext = field(default_factory=PendingContext)
     merge: MergeContext = field(default_factory=MergeContext)
     messages: UIMessagesContext = field(default_factory=UIMessagesContext)
     build_mode: BuildModeContext = field(default_factory=BuildModeContext)
@@ -765,7 +765,7 @@ class PlannerContext:
     def clear_custom_connect(self) -> None:
         """Clear custom connect mode."""
         self.custom_connect.clear()
-        self.deferred.clear_custom_connect()
+        self.pending.clear_custom_connect()
 
     def clear_merge(self) -> None:
         """Clear the node-merge selection."""

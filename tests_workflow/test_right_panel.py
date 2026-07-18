@@ -688,6 +688,6 @@ class TestMergeAndImportPanels:
 
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         panel = self._import_panel(sm, ctx, empty_graph)
-        assert ctx.deferred.osm_import_center_lon is None
+        assert ctx.pending.osm_import_center_lon is None
         with pytest.raises(RuntimeError, match="requires a placed box center"):
             panel.context_message()

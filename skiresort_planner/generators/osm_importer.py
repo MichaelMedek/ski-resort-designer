@@ -22,6 +22,7 @@ import math
 import re
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar, TypedDict, cast
@@ -40,6 +41,8 @@ logger = logging.getLogger(__name__)
 BBox = tuple[float, float, float, float]
 # An OSM way vertex as (lon, lat).
 Vertex = tuple[float, float]
+# Progress reporter for a slow blocking action: (fraction 0..1, status text).
+ProgressFn = Callable[[float, str], None]
 
 
 class OverpassVertex(TypedDict):
@@ -127,14 +130,18 @@ class BaseOSMImporter(ABC):
 
     # -- public entry point ---------------------------------------------------
 
-    def run(self, *, dump_dir: Path | None = None) -> ImportResult:
-        """Fetch the box and assemble the import. If `dump_dir` is given, write reference artifacts
-        (raw fetch, and — for the graph importer — a PNG) there; those are never read back.
+    def run(self, *, on_progress: ProgressFn, dump_dir: Path | None = None) -> ImportResult:
+        """Fetch the box and assemble the import, reporting staged progress via `on_progress`. If
+        `dump_dir` is given, write reference artifacts (raw fetch, and — for the graph importer — a
+        PNG) there; those are never read back.
         """
+        on_progress(0.1, "Fetching from OpenStreetMap…")
         elements = self.fetch()
+        on_progress(0.6, "Building the graph…")
         result = self._assemble(elements)
         if dump_dir is not None:
             self._dump(elements, dump_dir)
+        on_progress(1.0, "Done")
         return result
 
     @abstractmethod

@@ -522,15 +522,15 @@ class _ImportPlacingState(BuildState):
         *,
         use_3d: bool,
     ) -> list[pdk.Layer]:
-        center_lon = ctx.deferred.osm_import_center_lon
-        center_lat = ctx.deferred.osm_import_center_lat
+        center_lon = ctx.pending.osm_import_center_lon
+        center_lat = ctx.pending.osm_import_center_lat
         if center_lon is None or center_lat is None:
             return []
         center_elev = dem.get_elevation(lon=center_lon, lat=center_lat) or 0.0
         return renderer.create_import_bbox_layers(
             center_lon=center_lon,
             center_lat=center_lat,
-            half_width_m=ctx.deferred.osm_import_half_width_km * 1000.0,
+            half_width_m=ctx.pending.osm_import_half_width_km * 1000.0,
             elevation=center_elev,
             use_3d=use_3d,
         )

@@ -213,11 +213,11 @@ class TestImportSidebarPanel:
         sm, ctx = _session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
         ctx.build_mode.mode = BuildMode.IMPORT
         sm.start_import(lon=0.0, lat=0.0)
-        new_half_width = ctx.deferred.osm_import_half_width_km + 1.5
+        new_half_width = ctx.pending.osm_import_half_width_km + 1.5
         fake_st.slider = lambda *a, **k: new_half_width
 
         ImportSidebarPanel(sm=sm, ctx=ctx, graph=ResortGraph()).controls()
-        assert ctx.deferred.osm_import_half_width_km == new_half_width, "slider change resizes the import box"
+        assert ctx.pending.osm_import_half_width_km == new_half_width, "slider change resizes the import box"
 
     def test_renders_without_confirming(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         sm, ctx = _session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
@@ -225,7 +225,7 @@ class TestImportSidebarPanel:
         sm.start_import(lon=0.0, lat=0.0)
 
         ImportSidebarPanel(sm=sm, ctx=ctx, graph=ResortGraph()).controls()  # no button fired
-        assert sm.is_import_placing and ctx.deferred.osm_import_mode is None, "rendering does not confirm the import"
+        assert sm.is_import_placing and ctx.pending.osm_import_mode is None, "rendering does not confirm the import"
 
 
 class TestMergeSidebarPanel:

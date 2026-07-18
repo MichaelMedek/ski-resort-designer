@@ -190,13 +190,13 @@ class ImportSidebarPanel(SidebarPanel):
             "Import area half-width (km)",
             min_value=OSMConfig.HALF_WIDTH_MIN_KM,
             max_value=OSMConfig.HALF_WIDTH_MAX_KM,
-            value=self.ctx.deferred.osm_import_half_width_km,
+            value=self.ctx.pending.osm_import_half_width_km,
             step=0.5,
             key="import_osm_half_width",
             help="Lifts & pistes fully inside the box (this far from the center in each direction) are imported.",
         )
-        if half_width_km != self.ctx.deferred.osm_import_half_width_km:
-            self.ctx.deferred.osm_import_half_width_km = half_width_km
+        if half_width_km != self.ctx.pending.osm_import_half_width_km:
+            self.ctx.pending.osm_import_half_width_km = half_width_km
             trigger_rerun()  # redraw the box at the new size (no recenter)
         _cancel_button(
             label="✖️ Cancel Import",

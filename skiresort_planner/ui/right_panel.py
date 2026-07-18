@@ -442,14 +442,14 @@ class ImportPlacingControlPanel(ControlPanel):
     """IMPORT_PLACING: box context + confirm-area action + Confirm Import button."""
 
     def context_message(self) -> "Message | None":
-        center_lon = self.ctx.deferred.osm_import_center_lon
-        center_lat = self.ctx.deferred.osm_import_center_lat
+        center_lon = self.ctx.pending.osm_import_center_lon
+        center_lat = self.ctx.pending.osm_import_center_lat
         if center_lon is None or center_lat is None:
             raise RuntimeError("ImportPlacing state requires a placed box center")
         return ImportPlacingContextMessage(
             center_lat=center_lat,
             center_lon=center_lon,
-            half_width_km=self.ctx.deferred.osm_import_half_width_km,
+            half_width_km=self.ctx.pending.osm_import_half_width_km,
         )
 
     def action_message(self) -> "Message | None":

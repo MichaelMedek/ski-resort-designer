@@ -680,7 +680,7 @@ class TestGraphImporter:
         importer = GraphImporter(dem=DEMService(), bbox=ISCHGL_BBOX)
         monkeypatch.setattr(importer, "fetch", lambda: _load_fixture())  # no network — use the fixture
 
-        result = importer.run(dump_dir=tmp_path)
+        result = importer.run(on_progress=lambda f, t: None, dump_dir=tmp_path)
 
         assert result.source == "OSM"
         assert result.lifts, "the graph importer must report the hub-aligned lifts"

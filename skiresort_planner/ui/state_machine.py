@@ -1124,8 +1124,8 @@ class PlannerStateMachine(StateMachine):
 
     def before_start_import(self, lon: float, lat: float) -> None:
         """Action before starting import placement: store the first clicked center."""
-        self.context.deferred.osm_import_center_lon = lon
-        self.context.deferred.osm_import_center_lat = lat
+        self.context.pending.osm_import_center_lon = lon
+        self.context.pending.osm_import_center_lat = lat
 
     # Reuse start_import logic for the other idle entry points
     before_start_import_from_slope_view = before_start_import
@@ -1139,9 +1139,9 @@ class PlannerStateMachine(StateMachine):
 
     def before_cancel_import(self) -> None:
         """Discard a placed-but-unconfirmed import: clear the box center and the pending mode."""
-        self.context.deferred.osm_import_mode = None
-        self.context.deferred.osm_import_center_lon = None
-        self.context.deferred.osm_import_center_lat = None
+        self.context.pending.osm_import_mode = None
+        self.context.pending.osm_import_center_lon = None
+        self.context.pending.osm_import_center_lat = None
 
     def before_toggle_merge_node(self, node_id: str) -> None:
         """Self-loop in merge_placing: add/remove the clicked node from the selection."""
@@ -1218,7 +1218,7 @@ class PlannerStateMachine(StateMachine):
 
     def before_cancel_custom(self) -> None:
         """Event hook for cancel_custom (any kind). Clears custom state and regenerates the fan."""
-        self.context.deferred.fan_generation.add(self.active_build_kind)
+        self.context.pending.fan_generation.add(self.active_build_kind)
         self.context.clear_custom_connect()
         self.context.clear_proposals()
 

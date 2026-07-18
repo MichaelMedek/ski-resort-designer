@@ -6,6 +6,8 @@ _render_map_fragment_inner) is driven end-to-end with a seeded session and a
 stubbed st_deckgl so the deck.gl component call returns no event.
 """
 
+import pytest
+
 import skiresort_planner.ui.pydeck_click_handler as pch
 from skiresort_planner import app
 from skiresort_planner.constants import ChartConfig, DEMConfig
@@ -83,10 +85,12 @@ class TestSessionHelpers:
         fake_st.session_state["dem_service"] = mock_dem_blue_slope  # already loaded
         assert app.load_dem_data() is True
 
-    def test_load_dem_data_builds_services_and_reruns_while_loading(self, fake_st, monkeypatch) -> None:
+    def test_load_dem_data_builds_services_and_reframes_while_loading(self, fake_st, monkeypatch) -> None:
         # No dem_service in session and the DEM file already present locally: skip download,
-        # build DEMService + PathFactory, request a rerun, and report "still loading" (False).
+        # build DEMService + PathFactory, then reframe to the start view (which reruns).
         from pathlib import Path
+
+        from skiresort_planner.constants import MapConfig
 
         class _FakeDEM:
             is_loaded = True
@@ -105,15 +109,27 @@ class TestSessionHelpers:
         monkeypatch.setattr(DEMConfig, "EURODEM_PATH", _PresentPath("/tmp/fake_eurodem.tif"))
         monkeypatch.setattr(app, "DEMService", lambda *a, **k: _FakeDEM())
         monkeypatch.setattr(app, "PathFactory", lambda *a, **k: object())
-        rerun_calls: list[int] = []
-        monkeypatch.setattr(app, "trigger_rerun", lambda *a, **k: rerun_calls.append(1))
+        # reload_map reruns in prod (StopExecution); here it records the frame and stops the flow so the
+        # unreachable hard-raise after it is never hit.
+        reframes: list[tuple[tuple[float, float], int]] = []
 
-        result = app.load_dem_data()
+        class _Rerun(Exception):
+            pass
 
-        assert result is False  # DEM not ready this pass; caller returns to show loading screen
+        def _fake_reload(*, center: tuple[float, float], zoom: int, pitch: float) -> None:
+            reframes.append((center, zoom))
+            raise _Rerun
+
+        monkeypatch.setattr(app, "reload_map", _fake_reload)
+
+        with pytest.raises(_Rerun):
+            app.load_dem_data()
+
         assert isinstance(fake_st.session_state["dem_service"], _FakeDEM)
         assert fake_st.session_state["path_factory"] is not None
-        assert rerun_calls == [1]  # a rerun was requested once the services were installed
+        assert reframes == [((MapConfig.START_CENTER_LON, MapConfig.START_CENTER_LAT), MapConfig.DEFAULT_ZOOM)], (
+            "DEM load reframes to the start view via the shared slow-load helper"
+        )
 
 
 class TestReloadMapSignature:
@@ -147,30 +163,37 @@ class TestReloadMapSignature:
 
 
 class TestPendingOSMImportGate:
-    """The deferred OSM import shows a blocking loading message, returns early (no map this pass),
-    and recenters on the imported geometry at the import-overview zoom.
+    """The pending OSM import shows a blocking loading message + progress bar, returns early (no map
+    this pass), and ALWAYS reframes on the placed import box center at the import-overview zoom.
     """
 
     def test_pending_import_gates_and_recenters(self, fake_st, monkeypatch, mock_dem_blue_slope) -> None:
         from skiresort_planner.constants import MapConfig, OSMImportMode
+        from skiresort_planner.generators.osm_importer import ProgressFn
 
         graph, _sm, ctx = _seed_full_session(fake_st, mock_dem_blue_slope)
-        ctx.deferred.osm_import_mode = OSMImportMode.LIFTS_AND_SLOPES
+        ctx.pending.osm_import_mode = OSMImportMode.LIFTS_AND_SLOPES
+        ctx.pending.osm_import_center_lon = 10.5  # the placed box center — reframe target
+        ctx.pending.osm_import_center_lat = 46.5
 
-        # Stub the heavy import: no network; instead drop one node so graph.get_center() has a point.
-        def _fake_import() -> bool:
-            graph.get_or_create_node(lon=10.5, lat=46.5, elevation=2000.0)
+        # Stub the heavy import: no network; it must receive the progress reporter and drive it.
+        reported: list[float] = []
+
+        def _fake_import(report: ProgressFn) -> bool:
+            report(0.5, "working…")
+            reported.append(0.5)
             return True
 
-        monkeypatch.setattr(app, "process_osm_import_deferred", _fake_import)
+        monkeypatch.setattr(app, "process_osm_import_pending", _fake_import)
         monkeypatch.setattr(infra, "trigger_rerun", lambda *a, **k: None)
         rendered: list[bool] = []
         monkeypatch.setattr(app, "_render_map_fragment", lambda: rendered.append(True))
 
         app._run_app_ui()
 
-        assert rendered == [], "gate returns before the normal UI renders (no frozen map)"
-        assert (ctx.map.lon, ctx.map.lat) == (10.5, 46.5), "recentered on the imported geometry"
+        assert reported == [0.5], "the import work was driven with the progress reporter"
+        assert rendered == [], "returns before the normal UI renders (no frozen map)"
+        assert (ctx.map.lon, ctx.map.lat) == (10.5, 46.5), "reframed on the placed import box center"
         assert ctx.map.zoom == MapConfig.IMPORT_OVERVIEW_ZOOM, "one step further out than building zoom"
         assert fake_st.session_state["camera_epoch"] == 1, "remount so deck re-reads the frame"
 

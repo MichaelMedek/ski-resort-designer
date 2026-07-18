@@ -30,8 +30,8 @@ def _dirty_ctx() -> PlannerContext:
     ctx.selection.set(lon=5.0, lat=6.0, elevation=2100.0)
     ctx.merge.node_ids = ["N3", "N4"]
     ctx.viewing.panel_visible = True
-    ctx.deferred.osm_import_center_lon = 10.0
-    ctx.deferred.osm_import_center_lat = 47.0
+    ctx.pending.osm_import_center_lon = 10.0
+    ctx.pending.osm_import_center_lat = 47.0
     return ctx
 
 
@@ -123,7 +123,7 @@ class TestEnterBuildingStates:
         # the deferred pass regenerates proposals (first click, undo-back, cancel-custom-to-fan).
         ctx = PlannerContext()
         enter_fn(ctx)
-        assert kind in ctx.deferred.fan_generation, f"{enter_fn.__name__} must arm the {kind.value} fan"
+        assert kind in ctx.pending.fan_generation, f"{enter_fn.__name__} must arm the {kind.value} fan"
 
     def test_enter_lift_placing_hides_panel(self) -> None:
         ctx = _dirty_ctx()
@@ -135,9 +135,9 @@ class TestEnterSlopeCustomPath:
     def test_flags_deferred_custom_connect_generation(self) -> None:
         # The only job of enter_slope_custom_path is to trigger deferred proposal generation.
         ctx = PlannerContext()
-        assert ctx.deferred.custom_connect is False
+        assert ctx.pending.custom_connect is False
         sl.enter_slope_custom_path(ctx)
-        assert ctx.deferred.custom_connect is True, "entering custom-path flags deferred generation"
+        assert ctx.pending.custom_connect is True, "entering custom-path flags deferred generation"
 
 
 class TestEnterPlacingStatesPreserveTheirScratch:
@@ -147,8 +147,8 @@ class TestEnterPlacingStatesPreserveTheirScratch:
         ctx = _dirty_ctx()
         sl.enter_import_placing(ctx)
         assert ctx.viewing.panel_visible is False
-        assert ctx.deferred.osm_import_center_lon == 10.0, "enter must not clear the placed box center (self-loop)"
-        assert ctx.deferred.osm_import_center_lat == 47.0
+        assert ctx.pending.osm_import_center_lon == 10.0, "enter must not clear the placed box center (self-loop)"
+        assert ctx.pending.osm_import_center_lat == 47.0
 
     def test_enter_merge_placing_keeps_the_selection(self) -> None:
         # Self-loop on every node toggle; enter must NOT wipe the accumulating selection.
@@ -167,8 +167,8 @@ class TestExitHandlersCleanUpScratch:
     def test_exit_import_placing_clears_placed_center(self) -> None:
         ctx = _dirty_ctx()
         sl.exit_import_placing(ctx)
-        assert ctx.deferred.osm_import_center_lon is None, "placed center cleared on exit"
-        assert ctx.deferred.osm_import_center_lat is None
+        assert ctx.pending.osm_import_center_lon is None, "placed center cleared on exit"
+        assert ctx.pending.osm_import_center_lat is None
 
     def test_exit_import_placing_leaves_fetch_flag_alone(self) -> None:
         # A confirmed import sets osm_import_mode just before exit; exit must NOT clear it (the deferred
@@ -176,9 +176,9 @@ class TestExitHandlersCleanUpScratch:
         from skiresort_planner.constants import OSMImportMode
 
         ctx = _dirty_ctx()
-        ctx.deferred.osm_import_mode = OSMImportMode.LIFTS_AND_SLOPES
+        ctx.pending.osm_import_mode = OSMImportMode.LIFTS_AND_SLOPES
         sl.exit_import_placing(ctx)
-        assert ctx.deferred.osm_import_mode is OSMImportMode.LIFTS_AND_SLOPES, (
+        assert ctx.pending.osm_import_mode is OSMImportMode.LIFTS_AND_SLOPES, (
             "exit_import_placing must not consume the pending fetch mode"
         )
 
