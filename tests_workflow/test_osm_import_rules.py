@@ -21,7 +21,6 @@ MIN_SEG_PER_SLOPE = 1.8  # R29: path-segments per FINAL app-slope.
 MAX_STRAIGHT_M = OSMConfig.MAX_STRAIGHT_M  # max single straight leg between consecutive points
 MAX_PULL_M = OSMConfig.MAX_PULL_M  # end connector length cap; over this → dropped
 PISTE_TOL_M = OSMConfig.PISTE_TOL_M  # off-piste threshold — SAME source the builder gates on
-PARALLEL_MAX_M = OSMConfig.RELAXED_MERGE_DIST_M  # R34: max sustained same-name parallel length
 MAX_TERRAIN_DEVIATION_M = OSMConfig.SLOPE_TERRAIN_TOL_M  # R23: slope point vs real DEM
 MAX_NODE_TERRAIN_DEVIATION_M = OSMConfig.NODE_TERRAIN_TOL_M  # R25: node vs real DEM (strict)
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "ischgl_osm.json")
@@ -754,15 +753,18 @@ class TestGraphImporter:
             f"{sorted(gaps, key=lambda t: -t[2])[:8]}"
         )
 
-    def test_r34_no_sustained_parallel_runs(self, ischgl_graph):
-        """R34: no two DISTINCT runs may run side-by-side within the near band (DEDUP_TOL..PARALLEL_TOL)
-        for more than PARALLEL_MAX_M. R2 only catches a run drawn ON TOP of another (coincident); this
-        catches the redundant PARALLEL corridor — a wide piste double-drawn as two offset edges, or a
-        diamond arm — which R2's coincidence test misses. The builder must drop the shorter of the pair.
+    def test_r34_no_redundant_parallel_twin(self, ischgl_graph):
+        """R34: no run may be a redundant TWIN of a longer SAME-NAMED sibling — running within the near
+        band (DEDUP_TOL..PARALLEL_TOL) for ≥ PARALLEL_TWIN_FRAC of its OWN length. That is a wide piste
+        double-drawn as two offset edges (the two-ribbon artifact). R2 catches only the ON-TOP coincident
+        case; this catches the near-but-offset twin. NOT flagged: two DIFFERENT pistes, or same-name arms
+        that only briefly parallel then diverge to distant nodes (a genuine fork) — those are real.
         """
         near_lo = OSMConfig.DEDUP_TOL_M
         near_hi = OSMConfig.PARALLEL_TOL_M
-        runs = [[(p.lon, p.lat) for p in r.points] for r in ischgl_graph.slope_runs]
+        frac = OSMConfig.PARALLEL_TWIN_FRAC
+        sruns = ischgl_graph.slope_runs
+        runs = [[(p.lon, p.lat) for p in r.points] for r in sruns]
 
         def sustained_parallel(a: list, b: list) -> float:
             """Longest contiguous stretch of `a` whose points stay in the near band of polyline `b`."""
@@ -778,13 +780,14 @@ class TestGraphImporter:
 
         offenders = []
         for i in range(len(runs)):
+            li = _polylen(runs[i])
             for j in range(len(runs)):
-                if i == j or len(runs[j]) < 2:
-                    continue
-                if sustained_parallel(runs[i], runs[j]) > PARALLEL_MAX_M and _polylen(runs[i]) <= _polylen(runs[j]):
-                    offenders.append((ischgl_graph.slope_runs[i].name, ischgl_graph.slope_runs[j].name))
+                if i == j or len(runs[j]) < 2 or not sruns[i].name or sruns[i].name != sruns[j].name:
+                    continue  # only a twin of the SAME named piste is a redundant double-draw
+                if li <= _polylen(runs[j]) and li > 0 and sustained_parallel(runs[i], runs[j]) >= frac * li:
+                    offenders.append(sruns[i].name)
                     break
         assert not offenders, (
-            f"{len(offenders)} runs run parallel to another within "
-            f"{near_hi:.0f}m for >{PARALLEL_MAX_M:.0f}m (redundant corridor): {offenders[:8]}"
+            f"{len(offenders)} runs are a redundant parallel twin of a same-named sibling "
+            f"(within {near_hi:.0f}m for ≥{frac:.0%} of their length): {sorted(set(offenders))[:8]}"
         )
