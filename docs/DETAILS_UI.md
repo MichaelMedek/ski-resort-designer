@@ -107,7 +107,7 @@ Click on any **finished slope** (the colored ribbon or its icon) to open the sta
 | **Overall Gradient** | Average slope percentage |
 | **Steepest Section** | Maximum gradient in any 300m window (determines difficulty) |
 
-Expand **📋 Segment Details** to see per-segment breakdown with warnings.
+Expand **📋 Segment Details** to see per-segment breakdown with warnings. A **⚠️ disconnected** note also appears here if the slope (or lift) can't be reached from the resort's core network — connect it via slopes or lifts to clear it.
 
 ### 3D View
 
