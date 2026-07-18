@@ -22,6 +22,7 @@ import streamlit as st
 from skiresort_planner.constants import LiftType, MapConfig, OSMImportMode, SlopeConfig, StyleConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
+from skiresort_planner.model.connectivity import CoreMembership
 from skiresort_planner.model.message import (
     DisconnectedEntityMessage,
     ImportActionMessage,
@@ -35,7 +36,7 @@ from skiresort_planner.model.message import (
     SegmentWarningMessage,
 )
 from skiresort_planner.model.path_segment import SegmentKind
-from skiresort_planner.model.resort_graph import CoreMembership, ResortGraph
+from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.actions import (
     confirm_import_action,
     confirm_merge_action,

@@ -26,7 +26,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import ClassVar, TypedDict, cast
+from typing import ClassVar, NamedTuple, TypedDict, cast
 from urllib.parse import urlencode
 
 import requests
@@ -107,6 +107,14 @@ class ImportResult:
     slope_chains: list[tuple[list[list[PathPoint]], str | None]] = field(default_factory=list)
     source: str = EntitySource.OSM
     skipped: int = 0  # ways dropped because they reach outside the box / over nodata / too short
+
+
+class OSMImportResult(NamedTuple):
+    """Counts from one import_osm call (named so callers don't guess tuple positions)."""
+
+    slopes_added: int
+    lifts_added: int
+    duplicates_skipped: int  # entities skipped because the graph already has that endpoint fingerprint
 
 
 class BaseOSMImporter(ABC):

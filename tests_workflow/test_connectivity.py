@@ -9,11 +9,11 @@ are what connect the resort) — the _slope helper commits a matching PathSegmen
 import pytest
 
 from skiresort_planner.constants import ConnectivityConfig, LiftType
-from skiresort_planner.model.connectivity import component_labels
+from skiresort_planner.model.connectivity import CoreMembership, component_labels
 from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import PathSegment, SegmentKind
-from skiresort_planner.model.resort_graph import CoreMembership, ResortGraph
+from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.model.road import Road
 from skiresort_planner.model.slope import Slope
 from tests_workflow.conftest import MockDEMService
@@ -102,7 +102,7 @@ class TestCoreLiftGate:
         assert ConnectivityConfig.MIN_CORE_LIFTS == 5
         _ladder_core(empty_graph, dem, n_lifts=4)
         assert empty_graph.get_core_resort() is None
-        assert empty_graph.count_disconnected() == 0
+        assert empty_graph.count_disconnected(empty_graph.get_core_resort()) == 0
 
     def test_membership_is_no_core_yet_when_no_core(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
         _ladder_core(empty_graph, dem, n_lifts=4)
@@ -121,9 +121,8 @@ class TestCoreResort:
         _ladder_core(empty_graph, dem, n_lifts=5)
         core = empty_graph.get_core_resort()
         assert core is not None
-        assert core.lift_count == 5
         assert core.node_ids == {"B", "P1", "P2", "P3", "P4", "P5"}
-        assert empty_graph.count_disconnected() == 0
+        assert empty_graph.count_disconnected(empty_graph.get_core_resort()) == 0
 
     def test_longest_core_lift_is_named(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
         """The warning names the longest in-core lift — the farthest peak's lift here."""
@@ -161,7 +160,7 @@ class TestCoreResort:
         assert core is not None
         assert "J" in core.node_ids, "interior junction node must be a graph vertex"
         assert empty_graph.entity_membership(start_node_id="J", end_node_id="B", core=core) == CoreMembership.IN_CORE
-        assert empty_graph.count_disconnected() == 0
+        assert empty_graph.count_disconnected(empty_graph.get_core_resort()) == 0
 
 
 class TestDisconnected:
@@ -174,7 +173,7 @@ class TestDisconnected:
         assert (
             empty_graph.entity_membership(start_node_id="P1", end_node_id="V", core=core) == CoreMembership.DISCONNECTED
         )
-        assert empty_graph.count_disconnected() == 1
+        assert empty_graph.count_disconnected(empty_graph.get_core_resort()) == 1
 
     def test_isolated_lift_is_disconnected(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
         """A lift into an isolated pocket (neither end in the core) → DISCONNECTED."""
@@ -186,7 +185,7 @@ class TestDisconnected:
         assert (
             empty_graph.entity_membership(start_node_id="X", end_node_id="Y", core=core) == CoreMembership.DISCONNECTED
         )
-        assert empty_graph.count_disconnected() == 1
+        assert empty_graph.count_disconnected(empty_graph.get_core_resort()) == 1
 
 
 # =============================================================================
@@ -235,3 +234,27 @@ class TestDirectionality:
         assert (
             empty_graph.entity_membership(start_node_id="B", end_node_id="C", core=core) == CoreMembership.DISCONNECTED
         )
+
+
+# =============================================================================
+# 8. get_stats runs the SCC pass exactly once (count_disconnected takes a precomputed core)
+# =============================================================================
+
+
+class TestSingleSccPass:
+    def test_get_stats_computes_core_once(
+        self, empty_graph: ResortGraph, dem: MockDEMService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: get_stats must call get_core_resort exactly once (no per-field recompute)."""
+        _ladder_core(empty_graph, dem, n_lifts=5)
+        calls = 0
+        real = empty_graph.get_core_resort
+
+        def counting_core() -> object:
+            nonlocal calls
+            calls += 1
+            return real()
+
+        monkeypatch.setattr(empty_graph, "get_core_resort", counting_core)
+        empty_graph.get_stats()
+        assert calls == 1, f"get_stats triggered {calls} SCC passes, expected exactly 1"

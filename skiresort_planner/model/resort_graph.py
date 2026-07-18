@@ -15,10 +15,9 @@ Reference: DETAILS.md
 import copy
 import logging
 import statistics
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from datetime import datetime
-from enum import StrEnum
-from typing import TYPE_CHECKING, NamedTuple, TypedDict, cast
+from typing import TYPE_CHECKING, TypedDict, cast
 
 from skiresort_planner.constants import (
     ConnectivityConfig,
@@ -32,6 +31,7 @@ from skiresort_planner.constants import (
 )
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import SideDirection, TerrainAnalyzer
+from skiresort_planner.generators.osm_importer import OSMImportResult
 from skiresort_planner.model.actions import (
     AddLiftAction,
     AddSegmentsAction,
@@ -46,9 +46,15 @@ from skiresort_planner.model.actions import (
     MergeNodesAction,
     UndoAction,
 )
-from skiresort_planner.model.connectivity import component_labels
+from skiresort_planner.model.connectivity import CoreMembership, CoreResort, both_in, component_labels
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.node import Node
+from skiresort_planner.model.node_editing import (
+    INSERT_REJECT_NOT_FINISHED,
+    INSERT_REJECT_TOO_CLOSE,
+    NodeDeletability,
+    deletability_reason,
+)
 from skiresort_planner.model.path_point import PathPoint, endpoints_match
 from skiresort_planner.model.path_segment import PathSegment, SegmentKind
 from skiresort_planner.model.path_smoothing import smooth_joined_path
@@ -63,36 +69,6 @@ if TYPE_CHECKING:
     from skiresort_planner.generators.osm_importer import ImportResult
 
 logger = logging.getLogger(__name__)
-
-
-class NodeDeletability(StrEnum):
-    """Why a node can or can't be deleted by the merge-mode Delete tool (reload-safe StrEnum)."""
-
-    DELETABLE_INTERIOR = "deletable_interior"  # pure interior of one chain -> fuse its two segments
-    DELETABLE_END = "deletable_end"  # clean endpoint of a >1-segment path -> trim its boundary segment
-    IS_PATH_ENDPOINT = "is_path_endpoint"  # shared/branch boundary -> delete that path first
-    IS_LIFT_STATION = "is_lift_station"  # a lift station -> delete the lift first
-    LAST_SEGMENT = "last_segment"  # sole segment of its path -> delete the whole path instead
-    NOT_INTERIOR = "not_interior"  # none of the deletable shapes
-
-
-# Human sentence per non-deletable reason (one place, so the toast text can't drift from the enum).
-_DELETABILITY_REASONS: dict[NodeDeletability, str] = {
-    NodeDeletability.IS_PATH_ENDPOINT: "it is a junction of another path — delete that path first",
-    NodeDeletability.IS_LIFT_STATION: "it is a lift station — delete the lift first",
-    NodeDeletability.LAST_SEGMENT: "it is the only segment of its path — delete the path instead",
-    NodeDeletability.NOT_INTERIOR: "it is not an interior or end node of a single path",
-}
-
-
-def deletability_reason(node_id: str, reason: NodeDeletability) -> str:
-    """Human sentence for why a node can't be deleted (used by the UnableToDeleteMessage toast)."""
-    return f"{node_id} {_DELETABILITY_REASONS[reason]}"
-
-
-# Add-node-on-path rejection sentences (one place, mirroring _DELETABILITY_REASONS).
-_INSERT_REJECT_NOT_FINISHED = "click a finished path to add a node"
-_INSERT_REJECT_TOO_CLOSE = "too close to an existing node (within {gap:.0f}m)"
 
 
 def _chain_node_sequence(segments: list[PathSegment]) -> list[str]:
@@ -126,39 +102,6 @@ class ResortStats(TypedDict):
     total_roads: int
     total_road_length_m: float  # sum of road lengths (roads only)
     disconnected_count: int  # slopes+lifts not in the core resort (0 when no core yet)
-
-
-@dataclass(frozen=True)
-class CoreResort:
-    """The core skiable area — the largest strongly-connected component of the ski graph.
-
-    Derived, never stored: recomputed from the current slopes/lifts each render.
-    """
-
-    node_ids: frozenset[str]
-    lift_count: int
-    longest_lift_name: str  # longest in-core lift (by Lift.get_length_m) — named in the warning
-
-
-class CoreMembership(StrEnum):
-    """Where a slope/lift sits relative to the core resort. StrEnum → reload-safe `==`."""
-
-    IN_CORE = "in_core"
-    DISCONNECTED = "disconnected"
-    NO_CORE_YET = "no_core_yet"  # no core exists yet → never warn
-
-
-def _both_in(node_ids: set[str] | frozenset[str], a: str, b: str) -> bool:
-    """Both endpoints of an entity lie inside `node_ids` — the "fully in the core" test."""
-    return a in node_ids and b in node_ids
-
-
-class OSMImportResult(NamedTuple):
-    """Counts from one import_osm call (named so callers don't guess tuple positions)."""
-
-    slopes_added: int
-    lifts_added: int
-    duplicates_skipped: int  # entities skipped because the graph already has that endpoint fingerprint
 
 
 class ResortGraph:
@@ -1135,7 +1078,7 @@ class ResortGraph:
         # fallback, surfaced as a reason rather than crashing.
         seg = self.segments.get(segment_id)
         if seg is None or self.get_entity_by_segment_id(segment_id) is None:
-            return _INSERT_REJECT_NOT_FINISHED
+            return INSERT_REJECT_NOT_FINISHED
         vertex = seg.points[self._nearest_vertex_index(seg, lon, lat)]
         gap = GeometricTuningConfig.STEP_SIZE_M
         start_node, end_node = self.nodes[seg.start_node_id], self.nodes[seg.end_node_id]
@@ -1143,7 +1086,7 @@ class ResortGraph:
             start_node.distance_to(lon=vertex.lon, lat=vertex.lat) < gap
             or end_node.distance_to(lon=vertex.lon, lat=vertex.lat) < gap
         ):
-            return _INSERT_REJECT_TOO_CLOSE.format(gap=gap)
+            return INSERT_REJECT_TOO_CLOSE.format(gap=gap)
         return None
 
     def insert_node_on_path(self, segment_id: str, lon: float, lat: float) -> str:
@@ -1396,16 +1339,26 @@ class ResortGraph:
             "current_elev": current_elev,
         }
 
-    def count_disconnected(self) -> int:
-        """How many slopes+lifts are DISCONNECTED from the core (0 when there is no core yet)."""
-        core = self.get_core_resort()
+    def _skiable_entities(self) -> list[SegmentPath | Lift]:
+        """The entities that participate in skiable connectivity: slopes + lifts, roads excluded.
+
+        Single source for "what is skiable" — both count_disconnected and the ski-digraph edge
+        builder derive from this, so a new skiable kind can't desync them.
+        """
+        return [*self.slopes.values(), *self.lifts.values()]  # NO roads!
+
+    def count_disconnected(self, core: "CoreResort | None") -> int:
+        """How many skiable entities are DISCONNECTED from the core (0 when there is no core yet).
+
+        Takes the precomputed `core` so the SCC is evaluated once per render (mirrors
+        entity_membership); pass get_core_resort()'s result.
+        """
         if core is None:
             return 0
-        entities: list[SegmentPath | Lift] = [*self.slopes.values(), *self.lifts.values()]  # NO roads, skiable only
         return sum(
             self.entity_membership(start_node_id=e.start_node_id, end_node_id=e.end_node_id, core=core)
             == CoreMembership.DISCONNECTED
-            for e in entities
+            for e in self._skiable_entities()
         )
 
     def get_stats(self) -> ResortStats:
@@ -1423,7 +1376,7 @@ class ResortGraph:
             "total_lifts": len(self.lifts),
             "total_roads": len(self.roads),
             "total_road_length_m": sum(road_lengths),
-            "disconnected_count": self.count_disconnected(),
+            "disconnected_count": self.count_disconnected(self.get_core_resort()),  # one SCC pass
         }
 
     def get_elevation_range(self) -> tuple[float, float] | None:
@@ -1478,7 +1431,7 @@ class ResortGraph:
         """Directed edges of the skiable graph, one edge PER SEGMENT so interior junction nodes are
         real vertices (a slope may be joined mid-chain by another slope/lift). Slopes descend
         segment-by-segment; lifts go bottom→top (plus reverse for bidirectional types per
-        LiftConfig.UPHILL_ONLY). Roads are excluded.
+        LiftConfig.UPHILL_ONLY). Roads are excluded — the skiable set matches _skiable_entities().
         """
         edges: list[tuple[str, str]] = []
         for slope in self.slopes.values():
@@ -1519,17 +1472,13 @@ class ResortGraph:
         assert core_nodes, "a non-empty ski graph must yield a non-empty largest component"
 
         core_lifts = [
-            lf for lf in self.lifts.values() if _both_in(node_ids=core_nodes, a=lf.start_node_id, b=lf.end_node_id)
+            lf for lf in self.lifts.values() if both_in(node_ids=core_nodes, a=lf.start_node_id, b=lf.end_node_id)
         ]
         if len(core_lifts) < ConnectivityConfig.MIN_CORE_LIFTS:
             return None
 
         longest = max(core_lifts, key=lambda lf: lf.get_length_m(nodes=self.nodes))
-        return CoreResort(
-            node_ids=frozenset(core_nodes),
-            lift_count=len(core_lifts),
-            longest_lift_name=longest.name,
-        )
+        return CoreResort(node_ids=frozenset(core_nodes), longest_lift_name=longest.name)
 
     def entity_membership(self, *, start_node_id: str, end_node_id: str, core: CoreResort | None) -> CoreMembership:
         """Where a slope/lift (given by its two endpoints) sits relative to `core`.
@@ -1540,7 +1489,7 @@ class ResortGraph:
         """
         if core is None:
             return CoreMembership.NO_CORE_YET
-        if _both_in(node_ids=core.node_ids, a=start_node_id, b=end_node_id):
+        if both_in(node_ids=core.node_ids, a=start_node_id, b=end_node_id):
             return CoreMembership.IN_CORE
         return CoreMembership.DISCONNECTED
 

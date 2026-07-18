@@ -24,14 +24,13 @@ from skiresort_planner.model.actions import (
     FinishSlopeAction,
 )
 from skiresort_planner.model.node import Node
+from skiresort_planner.model.node_editing import NodeDeletability, deletability_reason
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import PathSegment, SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import (
-    NodeDeletability,
     ResortGraph,
     _chain_node_sequence,
-    deletability_reason,
 )
 from skiresort_planner.model.slope import Slope
 from tests_workflow.conftest import MockDEMService

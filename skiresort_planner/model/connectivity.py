@@ -7,6 +7,8 @@ live in the OSM builder.
 """
 
 from collections.abc import Iterable
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import TypeVar
 
 import numpy as np
@@ -56,3 +58,27 @@ def component_labels(
     assert len(labels) == n, f"scipy returned {len(labels)} labels for {n} nodes"
     assert n_components <= n, f"more components ({n_components}) than nodes ({n})"
     return {node: int(labels[i]) for node, i in index.items()}
+
+
+@dataclass(frozen=True)
+class CoreResort:
+    """The core skiable area — the largest strongly-connected component of the ski graph.
+
+    Derived, never stored: recomputed from the current slopes/lifts each render.
+    """
+
+    node_ids: frozenset[str]
+    longest_lift_name: str  # longest in-core lift (by Lift.get_length_m) — named in the warning
+
+
+class CoreMembership(StrEnum):
+    """Where a slope/lift sits relative to the core resort. StrEnum → reload-safe `==`."""
+
+    IN_CORE = "in_core"
+    DISCONNECTED = "disconnected"
+    NO_CORE_YET = "no_core_yet"  # no core exists yet → never warn
+
+
+def both_in(node_ids: set[str] | frozenset[str], a: str, b: str) -> bool:
+    """Both endpoints of an entity lie inside `node_ids` — the "fully in the core" test."""
+    return a in node_ids and b in node_ids
