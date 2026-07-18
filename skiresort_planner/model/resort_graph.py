@@ -113,16 +113,18 @@ class SegmentStats(TypedDict):
 
 
 class ResortStats(TypedDict):
-    """Whole-resort summary counts and totals."""
+    """Whole-resort summary. Length/drop totals are kind-SCOPED: slope figures cover only slopes,
+    the road figure only roads (a road is not a ski run, so they never share a total).
+    """
 
     total_slopes: int
     total_segments: int
-    total_vertical_m: float
-    total_length_m: float
-    longest_run_m: float
+    total_slope_drop_m: float  # sum of slope drops (slopes only)
+    total_slope_length_m: float  # sum of slope lengths (slopes only)
+    longest_run_m: float  # longest single slope (slopes only)
     total_lifts: int
     total_roads: int
-    total_road_length_m: float
+    total_road_length_m: float  # sum of road lengths (roads only)
     disconnected_count: int  # slopes+lifts not in the core resort (0 when no core yet)
 
 
@@ -1407,24 +1409,20 @@ class ResortGraph:
         )
 
     def get_stats(self) -> ResortStats:
-        """Whole-resort summary. Every field is a sum/count/max over the current entities, so the
-        empty graph falls out naturally (sums→0, max seed→0).
+        """Whole-resort summary. Length/drop totals are kind-scoped (slopes vs roads never mix); the
+        empty graph falls out naturally (sums→0, max default→0), so no special-case branch is needed.
         """
-        # total_*_m sum over ALL segments uniformly (kind-agnostic); longest_run_m is a slope concept
-        # (a road isn't a "run"); total_road_length_m is reported separately for the UI's road line.
-        longest = max((s.length_m for s in self.segments.values()), default=0.0)
-        for slope in self.slopes.values():
-            longest = max(slope.get_total_length(segments=self.segments), longest)
-
+        slope_lengths = [s.get_total_length(segments=self.segments) for s in self.slopes.values()]
+        road_lengths = [r.get_total_length(segments=self.segments) for r in self.roads.values()]
         return {
             "total_slopes": len(self.slopes),
             "total_segments": len(self.segments),
-            "total_vertical_m": sum(s.total_drop_m for s in self.segments.values()),
-            "total_length_m": sum(s.length_m for s in self.segments.values()),
-            "longest_run_m": longest,
+            "total_slope_drop_m": sum(s.get_total_drop(segments=self.segments) for s in self.slopes.values()),
+            "total_slope_length_m": sum(slope_lengths),
+            "longest_run_m": max(slope_lengths, default=0.0),
             "total_lifts": len(self.lifts),
             "total_roads": len(self.roads),
-            "total_road_length_m": sum(r.get_total_length(segments=self.segments) for r in self.roads.values()),
+            "total_road_length_m": sum(road_lengths),
             "disconnected_count": self.count_disconnected(),
         }
 

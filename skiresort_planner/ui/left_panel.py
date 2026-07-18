@@ -384,13 +384,10 @@ class SidebarRenderer:
             # === SLOPES SECTION ===
             st.markdown("**⛷️ Slopes**")
             if total_slopes > 0:
-                slope_vertical = sum(
-                    slope.get_total_drop(segments=self.graph.segments) for slope in self.graph.slopes.values()
+                st.markdown(
+                    f"↓ {stats['total_slope_drop_m'] / 1000:.3f}km **drop** • "
+                    f"{stats['total_slope_length_m'] / 1000:.3f}km **length**"
                 )
-                slope_length = sum(
-                    slope.get_total_length(segments=self.graph.segments) for slope in self.graph.slopes.values()
-                )
-                st.markdown(f"↓ {slope_vertical / 1000:.3f}km drop • {slope_length / 1000:.3f}km length")
 
                 # Difficulty breakdown (km) — loop the single-source difficulty list.
                 difficulty_lengths: dict[str, float] = {d: 0.0 for d in SlopeConfig.DIFFICULTIES}

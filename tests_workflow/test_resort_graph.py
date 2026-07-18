@@ -570,6 +570,16 @@ class TestStatsWithRoads:
         assert stats["total_roads"] == 1
         assert stats["total_road_length_m"] > 0
 
+    def test_road_does_not_pollute_slope_totals(self, empty_graph, path_points_blue) -> None:
+        """Regression: slope drop/length/longest-run are slopes-only — a road must not inflate them."""
+        _commit_road(empty_graph, path_points_blue)
+        stats = empty_graph.get_stats()
+        assert stats["total_slopes"] == 0
+        assert stats["total_slope_drop_m"] == 0
+        assert stats["total_slope_length_m"] == 0
+        assert stats["longest_run_m"] == 0
+        assert stats["total_road_length_m"] > 0, "the road length still lands in the road field"
+
 
 class TestNodeSharingDeletes:
     """Deleting one entity must NOT orphan a node another entity still uses (real-world: a
@@ -1947,8 +1957,8 @@ class TestResortStats:
         assert empty_graph.get_stats() == {
             "total_slopes": 0,
             "total_segments": 0,
-            "total_vertical_m": 0,
-            "total_length_m": 0,
+            "total_slope_drop_m": 0,
+            "total_slope_length_m": 0,
             "longest_run_m": 0,
             "total_lifts": 0,
             "total_roads": 0,
@@ -1969,6 +1979,6 @@ class TestResortStats:
 
         assert stats["total_slopes"] == 1
         assert stats["total_segments"] == len(seg_ids)
-        assert stats["total_vertical_m"] == pytest.approx(exp_vertical)
+        assert stats["total_slope_drop_m"] == pytest.approx(exp_vertical)
         assert stats["longest_run_m"] == pytest.approx(exp_longest)
         assert stats["longest_run_m"] > max_single_seg, "whole run is longer than any single segment"
