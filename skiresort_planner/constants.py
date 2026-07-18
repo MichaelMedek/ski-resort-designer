@@ -435,6 +435,15 @@ class LiftConfig:
     # are str-Enum so this list also behaves as plain strings for callers that compare/serialize.
     TYPES = [t.value for t in LiftType]
 
+    # Whether a lift type carries riders one way (uphill only) or both ways. The single source the
+    # directed ski-graph reads for edge direction — gondolas and trams run both ways, drags/chairs up.
+    UPHILL_ONLY = {
+        LiftType.SURFACE_LIFT: True,
+        LiftType.CHAIRLIFT: True,
+        LiftType.GONDOLA: False,
+        LiftType.AERIAL_TRAM: False,
+    }
+
     # Every lift type must define the full set of pylon-placement knobs the builder reads.
     assert all(
         set(v.keys())
@@ -443,6 +452,8 @@ class LiftConfig:
     ), "each PYLON_CONFIG entry must define exactly the 6 pylon-placement keys"
     # PYLON_CONFIG must be keyed by every LiftType member (bijection: no type missing, none stray).
     assert set(PYLON_CONFIG) == set(LiftType), "PYLON_CONFIG must have one entry per LiftType member"
+    # UPHILL_ONLY must cover every LiftType member (same bijection guarantee as PYLON_CONFIG).
+    assert set(UPHILL_ONLY) == set(LiftType), "UPHILL_ONLY must have one entry per LiftType member"
 
 
 class StyleConfig:
@@ -696,6 +707,14 @@ class MergeConfig:
 
     # Refuse to merge if any two selected nodes are farther apart than this
     MAX_SPAN_M = 500.0
+
+
+class ConnectivityConfig:
+    """Core-resort connectivity thresholds (model/connectivity.py, ResortGraph.get_core_resort)."""
+
+    # A strongly-connected component must hold at least this many lifts before it counts as the
+    # core resort — below it we assume the resort is still being started and flag nothing.
+    MIN_CORE_LIFTS = 5
 
 
 class OSMConfig:

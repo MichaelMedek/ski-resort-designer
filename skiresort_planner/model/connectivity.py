@@ -51,5 +51,8 @@ def component_labels(
     n = len(order)
     graph = csr_matrix((np.ones(len(rows), dtype=np.int8), (rows, cols)), shape=(n, n))
     connection = "strong" if strong else "weak"
-    _, labels = connected_components(graph, directed=strong, connection=connection)
+    n_components, labels = connected_components(graph, directed=strong, connection=connection)
+    # scipy returns exactly one label per node; the node→label mapping below depends on it.
+    assert len(labels) == n, f"scipy returned {len(labels)} labels for {n} nodes"
+    assert n_components <= n, f"more components ({n_components}) than nodes ({n})"
     return {node: int(labels[i]) for node, i in index.items()}

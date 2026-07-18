@@ -641,3 +641,18 @@ class SegmentWarningMessage(WarningMessage):
     @property
     def message(self) -> str:
         return f"⚠️ {self.warning_text}"
+
+
+@dataclass(frozen=True)
+class DisconnectedEntityMessage(WarningMessage):
+    """Warning that the viewed slope/lift can't be reached from the core resort."""
+
+    entity_noun: str  # "slope" / "lift"
+    core_lift_name: str  # longest lift in the core area — orients the user
+
+    @property
+    def message(self) -> str:
+        return (
+            f"⚠️ This {self.entity_noun} is disconnected from the core area (with {self.core_lift_name}) — "
+            "it can't be reached by skiing slopes or taking lifts."
+        )

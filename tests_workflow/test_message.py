@@ -104,6 +104,16 @@ class TestTooSteepDetail:
         assert "no route" in msg and "under 70%" in msg and "±" not in msg
 
 
+class TestDisconnectedEntityMessage:
+    def test_names_entity_kind_and_core_lift(self) -> None:
+        from skiresort_planner.model.message import DisconnectedEntityMessage
+
+        msg = DisconnectedEntityMessage(entity_noun="slope", core_lift_name="5 (Summit Express)").message
+        assert "This slope is disconnected from the core area" in msg
+        assert "5 (Summit Express)" in msg
+        assert "can't be reached" in msg
+
+
 class TestTargetTooFarMessage:
     def test_just_over_max_reads_strictly_above(self) -> None:
         # Fires only when distance strictly exceeds the max; must not render "1000m (max: 1000m)".

@@ -15,12 +15,21 @@ Reference: DETAILS.md
 import copy
 import logging
 import statistics
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, NamedTuple, TypedDict, cast
 
-from skiresort_planner.constants import EntityPrefixes, GeometricTuningConfig, MergeConfig, OSMConfig, UndoConfig
+from skiresort_planner.constants import (
+    ConnectivityConfig,
+    EntityPrefixes,
+    GeometricTuningConfig,
+    LiftConfig,
+    LiftType,
+    MergeConfig,
+    OSMConfig,
+    UndoConfig,
+)
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import SideDirection, TerrainAnalyzer
 from skiresort_planner.model.actions import (
@@ -37,6 +46,7 @@ from skiresort_planner.model.actions import (
     MergeNodesAction,
     UndoAction,
 )
+from skiresort_planner.model.connectivity import component_labels
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint, endpoints_match
@@ -113,6 +123,32 @@ class ResortStats(TypedDict):
     total_lifts: int
     total_roads: int
     total_road_length_m: float
+    disconnected_count: int  # slopes+lifts not in the core resort (0 when no core yet)
+
+
+@dataclass(frozen=True)
+class CoreResort:
+    """The core skiable area — the largest strongly-connected component of the ski graph.
+
+    Derived, never stored: recomputed from the current slopes/lifts each render.
+    """
+
+    node_ids: frozenset[str]
+    lift_count: int
+    longest_lift_name: str  # longest in-core lift (by Lift.get_length_m) — named in the warning
+
+
+class CoreMembership(StrEnum):
+    """Where a slope/lift sits relative to the core resort. StrEnum → reload-safe `==`."""
+
+    IN_CORE = "in_core"
+    DISCONNECTED = "disconnected"
+    NO_CORE_YET = "no_core_yet"  # no core exists yet → never warn
+
+
+def _both_in(node_ids: set[str] | frozenset[str], a: str, b: str) -> bool:
+    """Both endpoints of an entity lie inside `node_ids` — the "fully in the core" test."""
+    return a in node_ids and b in node_ids
 
 
 class OSMImportResult(NamedTuple):
@@ -1358,41 +1394,38 @@ class ResortGraph:
             "current_elev": current_elev,
         }
 
+    def count_disconnected(self) -> int:
+        """How many slopes+lifts are DISCONNECTED from the core (0 when there is no core yet)."""
+        core = self.get_core_resort()
+        if core is None:
+            return 0
+        entities: list[SegmentPath | Lift] = [*self.slopes.values(), *self.lifts.values()]  # NO roads, skiable only
+        return sum(
+            self.entity_membership(start_node_id=e.start_node_id, end_node_id=e.end_node_id, core=core)
+            == CoreMembership.DISCONNECTED
+            for e in entities
+        )
+
     def get_stats(self) -> ResortStats:
-        """Get resort statistics."""
-        if not self.segments:
-            return {
-                "total_slopes": 0,
-                "total_segments": 0,
-                "total_vertical_m": 0,
-                "total_length_m": 0,
-                "longest_run_m": 0,
-                "total_lifts": len(self.lifts),
-                "total_roads": len(self.roads),
-                "total_road_length_m": 0,
-            }
-
-        total_vertical = sum(s.total_drop_m for s in self.segments.values())
-        total_length = sum(s.length_m for s in self.segments.values())
-
-        longest = 0.0
+        """Whole-resort summary. Every field is a sum/count/max over the current entities, so the
+        empty graph falls out naturally (sums→0, max seed→0).
+        """
+        # total_*_m sum over ALL segments uniformly (kind-agnostic); longest_run_m is a slope concept
+        # (a road isn't a "run"); total_road_length_m is reported separately for the UI's road line.
+        longest = max((s.length_m for s in self.segments.values()), default=0.0)
         for slope in self.slopes.values():
-            slope_length = slope.get_total_length(segments=self.segments)
-            longest = max(slope_length, longest)
-        for seg in self.segments.values():
-            longest = max(seg.length_m, longest)
-
-        total_road_length = sum(road.get_total_length(segments=self.segments) for road in self.roads.values())
+            longest = max(slope.get_total_length(segments=self.segments), longest)
 
         return {
             "total_slopes": len(self.slopes),
             "total_segments": len(self.segments),
-            "total_vertical_m": total_vertical,
-            "total_length_m": total_length,
+            "total_vertical_m": sum(s.total_drop_m for s in self.segments.values()),
+            "total_length_m": sum(s.length_m for s in self.segments.values()),
             "longest_run_m": longest,
             "total_lifts": len(self.lifts),
             "total_roads": len(self.roads),
-            "total_road_length_m": total_road_length,
+            "total_road_length_m": sum(r.get_total_length(segments=self.segments) for r in self.roads.values()),
+            "disconnected_count": self.count_disconnected(),
         }
 
     def get_elevation_range(self) -> tuple[float, float] | None:
@@ -1442,6 +1475,70 @@ class ResortGraph:
 
         shared = road_nodes & ski_nodes
         return [self.nodes[nid] for nid in shared]
+
+    def _ski_digraph_edges(self) -> list[tuple[str, str]]:
+        """Directed edges of the skiable graph: slopes go top→bottom, lifts bottom→top (plus the
+        reverse edge for bidirectional types per LiftConfig.UPHILL_ONLY). Roads are excluded.
+        """
+        edges: list[tuple[str, str]] = [(sl.start_node_id, sl.end_node_id) for sl in self.slopes.values()]
+        for lift in self.lifts.values():
+            edges.append((lift.start_node_id, lift.end_node_id))
+            if not LiftConfig.UPHILL_ONLY[LiftType(lift.lift_type)]:
+                edges.append((lift.end_node_id, lift.start_node_id))
+        return edges
+
+    def get_core_resort(self) -> CoreResort | None:
+        """The core skiable area — largest strongly-connected component of the ski graph.
+
+        Directed model: slopes descend, lifts ascend, gondolas/trams run both ways (per
+        LiftConfig.UPHILL_ONLY); roads don't count. Returned only once the largest SCC holds at
+        least ConnectivityConfig.MIN_CORE_LIFTS lifts, else None (no core yet → nothing is flagged).
+        Derived fresh, never stored — same contract as get_parking_nodes().
+        """
+        edges = self._ski_digraph_edges()
+        # Nodes touched by any slope/lift endpoint (roads excluded); no edges → no core.
+        nodes = {n for e in edges for n in e}
+        if not nodes:
+            return None
+        # Every ski-graph endpoint must be a materialised node (referential integrity — a dangling
+        # id here means a slope/lift outlived a deleted node; fail loud rather than mis-score the core).
+        assert nodes <= set(self.nodes), f"ski-graph references unknown nodes: {nodes - set(self.nodes)}"
+
+        comp = component_labels(nodes, edges, strong=True)
+        assert set(comp) == nodes, "component_labels must label exactly the ski-graph nodes"
+        members: dict[int, set[str]] = {}
+        for node_id, cid in comp.items():
+            members.setdefault(cid, set()).add(node_id)
+        # Largest component by node count (tie-break irrelevant — any largest is a valid core).
+        core_cid = max(members, key=lambda cid: len(members[cid]))
+        core_nodes = members[core_cid]
+        assert core_nodes, "a non-empty ski graph must yield a non-empty largest component"
+
+        core_lifts = [
+            lf for lf in self.lifts.values() if _both_in(node_ids=core_nodes, a=lf.start_node_id, b=lf.end_node_id)
+        ]
+        if len(core_lifts) < ConnectivityConfig.MIN_CORE_LIFTS:
+            return None
+
+        longest = max(core_lifts, key=lambda lf: lf.get_length_m(nodes=self.nodes))
+        return CoreResort(
+            node_ids=frozenset(core_nodes),
+            lift_count=len(core_lifts),
+            longest_lift_name=longest.name,
+        )
+
+    def entity_membership(self, *, start_node_id: str, end_node_id: str, core: CoreResort | None) -> CoreMembership:
+        """Where a slope/lift (given by its two endpoints) sits relative to `core`.
+
+        Pass the precomputed `core` so it's evaluated once per render, not once per entity.
+        IN_CORE iff BOTH endpoints are in the core SCC; NO_CORE_YET when no core exists; else
+        DISCONNECTED (e.g. a dead-end valley slope you can't ski/lift back from).
+        """
+        if core is None:
+            return CoreMembership.NO_CORE_YET
+        if _both_in(node_ids=core.node_ids, a=start_node_id, b=end_node_id):
+            return CoreMembership.IN_CORE
+        return CoreMembership.DISCONNECTED
 
     def change_token(self) -> tuple[int, int, int, int, int, int]:
         """Return a cheap snapshot that changes on any graph mutation.

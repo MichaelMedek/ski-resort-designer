@@ -1953,6 +1953,7 @@ class TestResortStats:
             "total_lifts": 0,
             "total_roads": 0,
             "total_road_length_m": 0,
+            "disconnected_count": 0,
         }
 
     def test_multi_segment_slope_reports_slope_totals(self, empty_graph, mock_dem_blue_slope) -> None:

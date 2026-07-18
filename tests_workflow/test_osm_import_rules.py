@@ -854,7 +854,7 @@ class TestImportRules:
         """R36: every non-lift node must be a real junction (run-degree ≥3) — a degree-2 pass-through
         node (one run in, one out, nothing branching) must have been collapsed, its two runs merged.
         """
-        deg = defaultdict(int)
+        deg: dict[int, int] = defaultdict(int)
         for r in ds.graph.slope_runs:
             deg[r.node_a] += 1
             deg[r.node_b] += 1

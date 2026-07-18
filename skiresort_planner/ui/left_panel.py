@@ -368,11 +368,17 @@ class SidebarRenderer:
             # Header with counts
             st.markdown(f"**{total_slopes} Slopes • {total_lifts} Lifts • {total_roads} Roads**")
 
+            # Disconnected-terrain badge — surfaced here so it's seen without clicking each entity.
+            disconnected = stats["disconnected_count"]
+            if disconnected > 0:
+                st.markdown(f"⚠️ {disconnected} disconnected from core area")
+
             # Elevation range across all nodes
             elev_range = self.graph.get_elevation_range()
             if elev_range is not None:
                 min_elev, max_elev = elev_range
                 st.markdown(f"⛰️ Elevation: {min_elev:.0f}m – {max_elev:.0f}m")
+
             st.divider()
 
             # === SLOPES SECTION ===

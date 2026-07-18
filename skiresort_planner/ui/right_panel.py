@@ -23,6 +23,7 @@ from skiresort_planner.constants import LiftType, MapConfig, OSMImportMode, Slop
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.model.message import (
+    DisconnectedEntityMessage,
     ImportActionMessage,
     ImportPlacingContextMessage,
     LiftActionMessage,
@@ -34,7 +35,7 @@ from skiresort_planner.model.message import (
     SegmentWarningMessage,
 )
 from skiresort_planner.model.path_segment import SegmentKind
-from skiresort_planner.model.resort_graph import ResortGraph
+from skiresort_planner.model.resort_graph import CoreMembership, ResortGraph
 from skiresort_planner.ui.actions import (
     confirm_import_action,
     confirm_merge_action,
@@ -57,6 +58,19 @@ if TYPE_CHECKING:
     from skiresort_planner.ui.mode_registry import EntityKindSpec
 
 logger = logging.getLogger(__name__)
+
+
+def _render_disconnected_warning(graph: ResortGraph, start_node_id: str, end_node_id: str, noun: str) -> None:
+    """Show a warning below the stats when this slope/lift is disconnected from the core resort.
+
+    Single source for both the slope and lift panels — computes core membership and displays the
+    message only on DISCONNECTED (silent when there's no core yet or the entity is in-core).
+    """
+    core = graph.get_core_resort()
+    membership = graph.entity_membership(start_node_id=start_node_id, end_node_id=end_node_id, core=core)
+    if membership == CoreMembership.DISCONNECTED:
+        assert core is not None  # DISCONNECTED implies a core exists
+        DisconnectedEntityMessage(entity_noun=noun, core_lift_name=core.longest_lift_name).display()
 
 
 def _commit_button_label(path: "ProposedPathSegment", *, continue_label: str, continue_help: str) -> tuple[str, str]:
@@ -741,6 +755,12 @@ class PathStatsPanel(StatsPanel):
                 help=f"Steepest {SlopeConfig.ROLLING_WINDOW_M}m section within any single segment",
             )
 
+        # Slopes participate in skiable connectivity; roads don't — warn only for disconnected slopes.
+        if self.kind == SegmentKind.SLOPE:
+            _render_disconnected_warning(
+                graph=self.graph, start_node_id=owner.start_node_id, end_node_id=owner.end_node_id, noun="slope"
+            )
+
         with st.expander("📋 Segment Details", expanded=False):
             for i, seg_id in enumerate(owner.segment_ids, 1):
                 seg = self.graph.segments[seg_id]
@@ -812,3 +832,7 @@ class LiftStatsPanel(StatsPanel):
                 f"{max_cable_gradient:.0f}%",
                 help="Steepest gradient between any two adjacent pylons",
             )
+
+        _render_disconnected_warning(
+            graph=self.graph, start_node_id=lift.start_node_id, end_node_id=lift.end_node_id, noun="lift"
+        )
