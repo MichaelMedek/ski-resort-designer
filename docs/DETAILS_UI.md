@@ -483,9 +483,9 @@ Click **🧭 Route Planner** in the sidebar, then pick two nodes to see the best
 
 1. Click the **🧭 Route Planner** button (a utility tool, like Node Merge).
 2. **Click a start node**, then **click an end node** (routes run node-to-node — a bare terrain click is guided, not acted on).
-3. The app computes up to **five best routes**, each optimal under one criterion, and draws each in its own colour on the map.
+3. The app computes up to **best routes**, each optimal under one criterion, and draws each in its own colour on the map.
 
-### The five criteria
+### The criteria
 
 | Criterion | Picks the route with… |
 |-----------|-----------------------|
@@ -493,7 +493,6 @@ Click **🧭 Route Planner** in the sidebar, then pick two nodes to see the best
 | **Least distance** | the least total slope kilometres |
 | **Least drop** | the least vertical descent skied |
 | **Easiest** | the gentlest slope |
-| **Most scenic** | the highest peak reached en route |
 
 ### Browsing and filtering
 

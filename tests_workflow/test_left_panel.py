@@ -136,6 +136,31 @@ class TestSidebarRuns:
         assert "Complete or cancel current build to change type" in joined
 
 
+class TestSidebarButtonHelpCompleteness:
+    """Every registered state must render the mode-selector without a button's help text raising.
+
+    `_get_button_help` / `_disabled_button_reason` must resolve a help string in EVERY state.
+    """
+
+    def test_every_state_renders_all_button_help_without_raising(self, fake_st, empty_graph) -> None:
+        from skiresort_planner.ui.mode_registry import BUILD_STATES, OPERATIONS
+
+        for state_id in BUILD_STATES:
+            sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+            sm.current_state = getattr(sm, state_id)  # force the state (bypasses guards — test only)
+            renderer = SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph)
+            for mode, op in OPERATIONS.items():
+                label = BuildMode.display_name(mode)
+                # Whatever the state, the help text must resolve (disabled-reason or enabled-action) —
+                # never hit the fall-through raise.
+                renderer._get_button_help(
+                    mode=mode,
+                    label=label,
+                    is_disabled=not op.enabled(sm),
+                    is_building_or_placing=BUILD_STATES[state_id].blocks_build_buttons(),
+                )
+
+
 class TestModeSelectorButton:
     def test_click_road_mode_button_switches_mode(self, fake_st, empty_graph) -> None:
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)

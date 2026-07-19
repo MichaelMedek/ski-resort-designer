@@ -735,7 +735,7 @@ class _IdleViewingRouteState(BuildState):
     def sidebar_panel(
         self, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph
     ) -> sidebar_panels.SidebarPanel:
-        return sidebar_panels.RouteViewingSidebarPanel(sm=sm, ctx=ctx, graph=graph)
+        return sidebar_panels.ViewingSidebarPanel(sm=sm, ctx=ctx, graph=graph)
 
     def blocks_build_buttons(self) -> bool:
         return False  # a viewing state: keep build buttons live so a click switches mode

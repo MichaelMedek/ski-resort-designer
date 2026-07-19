@@ -17,7 +17,7 @@ from collections.abc import Callable
 
 import streamlit as st
 
-from skiresort_planner.constants import LiftConfig, OSMConfig, PathConfig, SlopeConfig, StyleConfig
+from skiresort_planner.constants import OSMConfig, PathConfig
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.actions import (
@@ -230,47 +230,3 @@ class RoutePlacingSidebarPanel(SidebarPanel):
             on_cancel=self.sm.cancel_route_placing,
             help="Discard the route and return to idle",
         )
-
-
-class RouteViewingSidebarPanel(SidebarPanel):
-    """idle_viewing_route: the route filters (difficulty slider + lift-type checkboxes) + a Close
-    button. Filtering is a pure read of the computed routes, so changing a filter just reruns — no
-    recompute. Closing follows the codebase idiom (close the panel to leave; re-enter to plan again).
-    """
-
-    def controls(self) -> None:
-        self._render_filters()  # Addional filters
-        self._render_close_panel_button()
-
-    def _render_filters(self) -> None:
-        """Max-difficulty select-slider (snaps to the difficulty bands) + per-lift-type checkboxes."""
-        rp = self.ctx.route_plan
-        st.markdown("**🎚️ Route filters**")
-
-        # "Any" + each difficulty band, easiest→hardest; "Any" means no cap.
-        options = ["Any", *SlopeConfig.DIFFICULTIES]
-        current = rp.filter_max_difficulty or "Any"
-        choice = st.select_slider(
-            "Max difficulty",
-            options=options,
-            value=current,
-            format_func=str.capitalize,
-            key="route_difficulty_filter",
-            help="Hide routes whose hardest slope exceeds this band.",
-        )
-        new_difficulty = None if choice == "Any" else choice
-        if new_difficulty != rp.filter_max_difficulty:
-            rp.filter_max_difficulty = new_difficulty
-            trigger_rerun()
-
-        st.markdown("**Allowed lifts**")
-        for lift_type in LiftConfig.TYPES:
-            checked = st.checkbox(
-                f"{StyleConfig.LIFT_ICONS[lift_type]} {lift_type.replace('_', ' ').title()}",
-                value=rp.filter_lift_types[lift_type],
-                key=f"route_lift_type_{lift_type}",
-                help=f"Include routes that use a {lift_type.replace('_', ' ')}.",
-            )
-            if checked != rp.filter_lift_types[lift_type]:
-                rp.filter_lift_types[lift_type] = checked
-                trigger_rerun()

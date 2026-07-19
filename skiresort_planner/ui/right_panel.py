@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Literal
 
 import streamlit as st
 
-from skiresort_planner.constants import LiftType, MapConfig, OSMImportMode, SlopeConfig, StyleConfig
+from skiresort_planner.constants import LiftConfig, LiftType, MapConfig, OSMImportMode, SlopeConfig, StyleConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.model.connectivity import CoreMembership
@@ -598,6 +598,9 @@ class RouteViewingControlPanel(ControlPanel):
         return RouteNoResultsMessage(filters_active=bool(self.ctx.route_plan.routes) and self._filters_active())
 
     def buttons(self) -> None:
+        # Filters live HERE (the viewing/right panel), next to the results they act on
+        if self.ctx.route_plan.routes:
+            self._render_filters()
         routes = self._filtered()
         if routes:
             self._render_route_browser(routes)
@@ -605,6 +608,41 @@ class RouteViewingControlPanel(ControlPanel):
         # Idiom: close the panel to leave. To plan again, re-enter Route Planner and pick two nodes.
         if st.button("✖️ Close", width="stretch", help="Close this panel to start building again"):
             self.sm.close_panel()  # type: ignore[attr-defined]  # dynamic python-statemachine event
+
+    def _render_filters(self) -> None:
+        """Max-difficulty select-slider (snaps to the difficulty bands) + per-lift-type checkboxes.
+        A pure read of the computed routes — changing a filter just reruns, no recompute.
+        """
+        rp = self.ctx.route_plan
+        st.markdown("**🎚️ Route filters**")
+
+        # "Any" + each difficulty band, easiest→hardest; "Any" means no cap.
+        options = ["Any", *SlopeConfig.DIFFICULTIES]
+        current = rp.filter_max_difficulty or "Any"
+        choice = st.select_slider(
+            "Max difficulty",
+            options=options,
+            value=current,
+            format_func=str.capitalize,
+            key="route_difficulty_filter",
+            help="Hide routes whose hardest slope exceeds this band.",
+        )
+        new_difficulty = None if choice == "Any" else choice
+        if new_difficulty != rp.filter_max_difficulty:
+            rp.filter_max_difficulty = new_difficulty
+            trigger_rerun()
+
+        st.markdown("**Allowed lifts**")
+        for lift_type in LiftConfig.TYPES:
+            checked = st.checkbox(
+                f"{StyleConfig.LIFT_ICONS[lift_type]} {lift_type.replace('_', ' ').title()}",
+                value=rp.filter_lift_types[lift_type],
+                key=f"route_lift_type_{lift_type}",
+                help=f"Include routes that use a {lift_type.replace('_', ' ')}.",
+            )
+            if checked != rp.filter_lift_types[lift_type]:
+                rp.filter_lift_types[lift_type] = checked
+                trigger_rerun()
 
     def _render_route_browser(self, routes: "list[Route]") -> None:
         """◀ ▶ browser over the filtered routes (mirrors _render_proposal_browser)."""

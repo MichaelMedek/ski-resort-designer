@@ -1,11 +1,12 @@
-"""Route planner — the best A→B ski routes by five criteria.
+"""Route planner — the best A→B ski routes by four criteria.
 
 Pure model layer (stdlib + numpy + scipy only, like model.connectivity): no streamlit/ui imports, so
-the core is unit-testable without a browser. We compute FIVE single-objective optimal routes (one per
+the core is unit-testable without a browser. We compute FOUR single-objective optimal routes (one per
 criterion) rather than enumerating all paths: single-objective shortest/best paths are polynomial,
 whereas one path optimal across several objectives at once is NP-hard (a Pareto front). Criteria 1–3
-are additive shortest paths (scipy Dijkstra on a re-weighted CSR); criterion 4 is a minimax
-(bottleneck) path and 5 a max-min over node elevation — small best-first searches over the same graph.
+are additive shortest paths (scipy Dijkstra on a re-weighted CSR); criterion 4 (easiest) is a minimax
+(bottleneck) path — a small best-first over the same graph. Every criterion is a genuine shortest/best
+path, so all are stable and cycle-safe even on bidirectional-lift loops.
 """
 
 import heapq
@@ -36,7 +37,6 @@ class RouteCriterion(StrEnum):
     LEAST_DISTANCE = "least_distance"  # least total slope distance
     LEAST_DROP = "least_drop"  # least total vertical descent skied
     EASIEST = "easiest"  # minimises the hardest slope difficulty on the route
-    MOST_SCENIC = "most_scenic"  # reaches the highest peak point en route
 
 
 @dataclass(frozen=True)
@@ -131,9 +131,8 @@ class RoutePlanner:
         """Node-id path optimal under `criterion`, or None if B is unreachable from A."""
         if criterion in (RouteCriterion.FEWEST_LIFTS, RouteCriterion.LEAST_DISTANCE, RouteCriterion.LEAST_DROP):
             return self._dijkstra_path(criterion, src, dst)
-        if criterion == RouteCriterion.EASIEST:
-            return self._minimax_path(src, dst)
-        return self._scenic_path(src, dst)  # MOST_SCENIC
+        assert criterion == RouteCriterion.EASIEST, f"unhandled criterion {criterion}"
+        return self._minimax_path(src, dst)
 
     def _segment_of(self, owner: SkiEdge) -> PathSegment:
         """The PathSegment behind a slope edge. Asserts it's a slope edge (segment_id set) — a lift
@@ -181,18 +180,6 @@ class RoutePlanner:
             return (max(max_band, band(self._owner[edge])), edges + 1)
 
         return self._best_first(src, dst, start_cost=(0.0, 0), fold=fold)
-
-    def _scenic_path(self, src: int, dst: int) -> list[str] | None:
-        """Most scenic: reach the highest node elevation en route. Cost per node =
-        (-highest elevation reached so far, edge count) — negated so min-cost is the highest peak.
-        """
-        elev = {i: self.graph.nodes[nid].elevation for i, nid in enumerate(self._nodes)}
-
-        def fold(cost: _Cost, _u: int, v: int, _edge: tuple[str, str]) -> _Cost:
-            neg_peak, edges = cost
-            return (min(neg_peak, -elev[v]), edges + 1)
-
-        return self._best_first(src, dst, start_cost=(-elev[src], 0), fold=fold)
 
     def _best_first(
         self,

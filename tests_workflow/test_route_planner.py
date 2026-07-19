@@ -1,4 +1,4 @@
-"""Tests for the route planner: the five best-by-criterion A→B routes over the ski graph.
+"""Tests for the route planner: the four best-by-criterion A→B routes over the ski graph.
 
 Topologies are built with the shared conftest builders (add_node/add_slope/add_slope_segment +
 add_lift) so each route is exact. Tests assert concrete return values — the chosen node path, the
@@ -76,7 +76,7 @@ class TestSingleSlopeRoute:
         assert [s.entity_id for s in route.steps] == ["SL1"], "two segments of one slope collapse to one step"
 
 
-class TestLiftAndScenic:
+class TestLiftRoutes:
     def test_bidirectional_gondola_usable_in_returning_route(
         self, empty_graph: ResortGraph, dem: MockDEMService
     ) -> None:
@@ -93,28 +93,26 @@ class TestLiftAndScenic:
         assert [(s.is_lift, s.name) for s in route.steps] == [(True, "Gondi")]
         assert route.total_slope_length_m == 0.0, "no skiing on a gondola-only route"
 
-    def test_most_scenic_prefers_higher_peak(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
-        """Two ways A→B: a direct low slope vs a lift up to a high peak then ski down. Scenic takes
-        the high peak; the other criteria take the shorter, lift-free direct slope.
+    def test_bidirectional_lift_cycle_solves_fast_without_hanging(
+        self, empty_graph: ResortGraph, dem: MockDEMService
+    ) -> None:
+        """A bidirectional lift up to a peak + a slope down forms a directed CYCLE (A→peak→B and
+        peak→A). Every criterion must terminate quickly on it — a genuine shortest/best-path cost is
+        cycle-safe by construction. Regression: an invalid non-shortest cost once looped forever here.
         """
         add_node(empty_graph, "A", 0.0, 0.0, 1800.0)
         add_node(empty_graph, "B", 0.0, -2000 / M, 1000.0)
         add_slope(empty_graph, "Low", top="A", bottom="B")
-        add_node(empty_graph, "HighPeak", 0.0, 500 / M, 2400.0)
-        empty_graph.add_lift(
-            start_node_id="A", end_node_id="HighPeak", lift_type=LiftType.CHAIRLIFT, dem=dem, name="Up"
-        )
-        add_slope(empty_graph, "Scenic", top="HighPeak", bottom="B")
+        add_node(empty_graph, "Peak", 0.0, 500 / M, 2400.0)
+        # A gondola is bidirectional → A⇄Peak, and the slope Peak→A closes a cycle through A.
+        empty_graph.add_lift(start_node_id="A", end_node_id="Peak", lift_type=LiftType.GONDOLA, dem=dem, name="Up")
+        add_slope(empty_graph, "Down", top="Peak", bottom="A")
 
         routes = RoutePlanner(empty_graph).best_routes("A", "B")
-        scenic = _route_for(routes, RouteCriterion.MOST_SCENIC)
-        assert scenic.node_path == ("A", "HighPeak", "B"), "scenic detours over the high peak"
-        assert scenic.highest_elev_m == pytest.approx(2400.0)
-        assert scenic.lift_count == 1
-        # The direct low slope wins the other four criteria (shorter, lift-free, less drop).
+        won = {c for r in routes for c in r.criteria}
+        assert won == set(RouteCriterion), "all four criteria resolve on a cyclic graph"
         fewest = _route_for(routes, RouteCriterion.FEWEST_LIFTS)
-        assert fewest.node_path == ("A", "B") and fewest.lift_count == 0
-        assert fewest.highest_elev_m == pytest.approx(1800.0), "the direct route never climbs to the peak"
+        assert fewest.node_path == ("A", "B") and fewest.lift_count == 0, "fewest-lifts takes the direct slope"
 
 
 class TestCriteriaDiverge:

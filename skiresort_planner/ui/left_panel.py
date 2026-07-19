@@ -142,24 +142,18 @@ class SidebarRenderer:
         self.ctx = context
         self.graph = graph
 
-    def _disabled_button_reason(self, mode: str, *, is_building_or_placing: bool) -> str:
-        """Why the button for `mode` is greyed out (helper for _get_button_help's disabled branch)."""
+    def _disabled_button_reason(self, *, is_building_or_placing: bool) -> str:
+        """Why a greyed-out build button is disabled (helper for _get_button_help's disabled branch)."""
         if is_building_or_placing:
             return "Finish or cancel current action first"
-        if self.sm.is_idle_viewing_slope and not BuildMode.is_slope(mode):
-            return "Close slope panel to switch build mode"
-        if self.sm.is_idle_viewing_lift and not BuildMode.is_lift(mode):
-            return "Close lift panel to switch build mode"
-        if self.sm.is_idle_viewing_road and not BuildMode.is_road(mode):
-            return "Close road panel to switch build mode"
-        raise ValueError(
-            f"Button {mode} is disabled but no known reason (building_or_placing={is_building_or_placing})"
-        )
+        # The ONLY other way a builder is disabled is a viewing panel being open.
+        assert not self.sm.is_idle_ready, "a builder button is only disabled while building/placing or viewing"
+        return "Close the open panel to switch build mode"
 
     def _get_button_help(self, *, mode: str, label: str, is_disabled: bool, is_building_or_placing: bool) -> str:
         """Generate contextual help text for a build-mode button (disabled reason or enabled action)."""
         if is_disabled:
-            return self._disabled_button_reason(mode, is_building_or_placing=is_building_or_placing)
+            return self._disabled_button_reason(is_building_or_placing=is_building_or_placing)
         if self.sm.is_idle_viewing_lift and BuildMode.is_lift(mode):
             return f"Change viewed lift to {label}"
         if BuildMode.is_slope(mode):

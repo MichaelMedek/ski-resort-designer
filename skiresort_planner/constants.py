@@ -720,16 +720,15 @@ class ConnectivityConfig:
 
 
 class RoutePlannerConfig:
-    """Route planner (model/routing.py + ui route views): overlay colours for the ≤5 shown routes."""
+    """Route planner (model/routing.py + ui route views): overlay colours for the ≤4 shown routes."""
 
     # One distinct RGBA per route criterion, in RouteCriterion order (fewest-lifts, least-distance,
-    # least-drop, easiest, most-scenic). Coincident routes share the first winning criterion's colour.
+    # least-drop, easiest). Coincident routes share the first winning criterion's colour.
     ROUTE_COLORS = [
         [227, 26, 28, 230],  # red
         [31, 120, 180, 230],  # blue
         [51, 160, 44, 230],  # green
         [255, 127, 0, 230],  # orange
-        [106, 61, 154, 230],  # purple
     ]
 
 
