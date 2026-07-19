@@ -31,6 +31,7 @@ from skiresort_planner.model.message import (
     LiftPlacingContextMessage,
     MergeActionMessage,
     MergePlacingContextMessage,
+    NoReturnEntityMessage,
     PathActionMessage,
     PathBuildingContextMessage,
     SegmentWarningMessage,
@@ -61,17 +62,24 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _render_disconnected_warning(graph: ResortGraph, start_node_id: str, end_node_id: str, noun: str) -> None:
-    """Show a warning below the stats when this slope/lift is disconnected from the core resort.
+def _render_connectivity_warnings(graph: ResortGraph, start_node_id: str, end_node_id: str, noun: str) -> None:
+    """Show the connectivity warnings for a viewed slope/lift, below its stats (0, 1, or 2 of them).
 
-    Single source for both the slope and lift panels — computes core membership and displays the
-    message only on DISCONNECTED (silent when there's no core yet or the entity is in-core).
+    Single source for both the slope and lift panels; one SCC pass feeds both checks:
+    - DISCONNECTED: the entity can't be reached from the core area at all.
+    - one-way trip: after taking it, no slopes/lifts bring you back to ride it again.
+    Both stay silent until a core exists (anti-false-alarm), so an early/tiny resort warns nothing.
     """
-    core = graph.get_core_resort()
-    membership = graph.entity_membership(start_node_id=start_node_id, end_node_id=end_node_id, core=core)
-    if membership == CoreMembership.DISCONNECTED:
-        assert core is not None  # DISCONNECTED implies a core exists
+    labels = graph.strongly_connected_labels()
+    core = graph.get_core_resort(labels=labels)
+    if core is None:
+        return  # no core yet → nothing to critique
+    if graph.entity_membership(start_node_id=start_node_id, end_node_id=end_node_id, core=core) == (
+        CoreMembership.DISCONNECTED
+    ):
         DisconnectedEntityMessage(entity_noun=noun, core_lift_name=core.longest_lift_name).display()
+    if not graph.can_loop_back(start_node_id=start_node_id, end_node_id=end_node_id, labels=labels):
+        NoReturnEntityMessage(entity_noun=noun).display()
 
 
 def _commit_button_label(path: "ProposedPathSegment", *, continue_label: str, continue_help: str) -> tuple[str, str]:
@@ -756,9 +764,9 @@ class PathStatsPanel(StatsPanel):
                 help=f"Steepest {SlopeConfig.ROLLING_WINDOW_M}m section within any single segment",
             )
 
-        # Slopes participate in skiable connectivity; roads don't — warn only for disconnected slopes.
+        # Slopes participate in skiable connectivity; roads don't — warn only for slopes.
         if self.kind == SegmentKind.SLOPE:
-            _render_disconnected_warning(
+            _render_connectivity_warnings(
                 graph=self.graph, start_node_id=owner.start_node_id, end_node_id=owner.end_node_id, noun="slope"
             )
 
@@ -834,6 +842,6 @@ class LiftStatsPanel(StatsPanel):
                 help="Steepest gradient between any two adjacent pylons",
             )
 
-        _render_disconnected_warning(
+        _render_connectivity_warnings(
             graph=self.graph, start_node_id=lift.start_node_id, end_node_id=lift.end_node_id, noun="lift"
         )

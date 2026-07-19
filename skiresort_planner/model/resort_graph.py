@@ -15,9 +15,10 @@ Reference: DETAILS.md
 import copy
 import logging
 import statistics
+from collections import deque
 from dataclasses import asdict
 from datetime import datetime
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TYPE_CHECKING, NamedTuple, TypedDict, cast
 
 from skiresort_planner.constants import (
     ConnectivityConfig,
@@ -88,6 +89,15 @@ class SegmentStats(TypedDict):
     current_elev: float
 
 
+class GreatestDescent(NamedTuple):
+    """Deepest lift-free chain of slopes: what the greatest-descent stat reports (max vertical drop)."""
+
+    drop_m: float  # total vertical drop (the maximised quantity)
+    length_m: float  # horizontal ski distance of that same chain
+    top_elev_m: float  # elevation at the top of the chain
+    bottom_elev_m: float  # elevation at the bottom of the chain
+
+
 class ResortStats(TypedDict):
     """Whole-resort summary. Length/drop totals are kind-SCOPED: slope figures cover only slopes,
     the road figure only roads (a road is not a ski run, so they never share a total).
@@ -98,10 +108,12 @@ class ResortStats(TypedDict):
     total_slope_drop_m: float  # sum of slope drops (slopes only)
     total_slope_length_m: float  # sum of slope lengths (slopes only)
     longest_run_m: float  # longest single slope (slopes only)
+    greatest_descent: GreatestDescent  # deepest lift-free chain of slopes (drop/length/elev range)
     total_lifts: int
     total_roads: int
     total_road_length_m: float  # sum of road lengths (roads only)
     disconnected_count: int  # slopes+lifts not in the core resort (0 when no core yet)
+    no_return_count: int  # slopes+lifts you can't loop back to (one-way trips; 0 when no core yet)
 
 
 class ResortGraph:
@@ -1361,22 +1373,91 @@ class ResortGraph:
             for e in self._skiable_entities()
         )
 
+    def count_no_return(self, labels: dict[str, int], *, core: "CoreResort | None") -> int:
+        """How many skiable entities are one-way trips — you can't loop back to ride them again.
+
+        Takes the precomputed SCC `labels` (strongly_connected_labels) so the pass is shared. Gated
+        on `core` to match the per-entity warning: 0 until a core network exists (anti-false-alarm).
+        """
+        if core is None:
+            return 0
+        return sum(
+            not self.can_loop_back(start_node_id=e.start_node_id, end_node_id=e.end_node_id, labels=labels)
+            for e in self._skiable_entities()
+        )
+
+    def greatest_descent(self) -> GreatestDescent:
+        """Greatest continuous ski descent skiable top-to-bottom without riding a lift (max vertical drop).
+
+        Globally-optimal DAG longest-path (Kahn topological order → exact DP, not greedy), MAXIMISING
+        vertical drop, tie-broken by horizontal length. Slope-segment edges only (no lifts/roads).
+        A cycle in the slopes-only graph means a wrong-direction segment — asserts rather than looping.
+        Returns zeros when there are no slopes.
+        """
+        # Slope-segment edges only: node -> [(to, length, drop)]. Roads/lifts excluded.
+        adj: dict[str, list[tuple[str, float, float]]] = {}
+        indeg: dict[str, int] = {}
+        for slope in self.slopes.values():
+            for sid in slope.segment_ids:
+                seg = self.segments[sid]
+                adj.setdefault(seg.start_node_id, []).append((seg.end_node_id, seg.length_m, seg.total_drop_m))
+                indeg[seg.end_node_id] = indeg.get(seg.end_node_id, 0) + 1
+                indeg.setdefault(seg.start_node_id, indeg.get(seg.start_node_id, 0))
+        if not indeg:
+            return GreatestDescent(drop_m=0.0, length_m=0.0, top_elev_m=0.0, bottom_elev_m=0.0)
+
+        # Kahn topological order: pop in-degree-0 nodes; a valid order guarantees each node's best-
+        # descent-so-far is final before it is extended. Fewer popped than total ⇒ a cycle exists.
+        queue = deque(nid for nid, d in indeg.items() if d == 0)
+        topo: list[str] = []
+        remaining = dict(indeg)
+        while queue:
+            nid = queue.popleft()
+            topo.append(nid)
+            for to, _length, _drop in adj.get(nid, []):
+                remaining[to] -= 1
+                if remaining[to] == 0:
+                    queue.append(to)
+        assert len(topo) == len(indeg), "slopes-only graph has a cycle — a segment points uphill"
+
+        # best[node] = (drop, length, top_node) of the deepest descent ENDING at node; maximise drop,
+        # tie-break length. top_node is carried so the winner's elevation range can be reported.
+        best: dict[str, tuple[float, float, str]] = {nid: (0.0, 0.0, nid) for nid in indeg}
+        for nid in topo:
+            base_drop, base_len, base_top = best[nid]
+            for to, length, drop in adj.get(nid, []):
+                cand = (base_drop + drop, base_len + length, base_top)
+                if cand[:2] > best[to][:2]:  # compare (drop, length) lexicographically
+                    best[to] = cand
+        end_node = max(best, key=lambda nid: best[nid][:2])
+        drop_m, length_m, top_node = best[end_node]
+        return GreatestDescent(
+            drop_m=drop_m,
+            length_m=length_m,
+            top_elev_m=self.nodes[top_node].elevation,
+            bottom_elev_m=self.nodes[end_node].elevation,
+        )
+
     def get_stats(self) -> ResortStats:
         """Whole-resort summary. Length/drop totals are kind-scoped (slopes vs roads never mix); the
         empty graph falls out naturally (sums→0, max default→0), so no special-case branch is needed.
         """
         slope_lengths = [s.get_total_length(segments=self.segments) for s in self.slopes.values()]
         road_lengths = [r.get_total_length(segments=self.segments) for r in self.roads.values()]
+        labels = self.strongly_connected_labels()  # one SCC pass feeds both connectivity counts
+        core = self.get_core_resort(labels=labels)
         return {
             "total_slopes": len(self.slopes),
             "total_segments": len(self.segments),
             "total_slope_drop_m": sum(s.get_total_drop(segments=self.segments) for s in self.slopes.values()),
             "total_slope_length_m": sum(slope_lengths),
             "longest_run_m": max(slope_lengths, default=0.0),
+            "greatest_descent": self.greatest_descent(),
             "total_lifts": len(self.lifts),
             "total_roads": len(self.roads),
             "total_road_length_m": sum(road_lengths),
-            "disconnected_count": self.count_disconnected(self.get_core_resort()),  # one SCC pass
+            "disconnected_count": self.count_disconnected(core=core),
+            "no_return_count": self.count_no_return(labels=labels, core=core),
         }
 
     def get_elevation_range(self) -> tuple[float, float] | None:
@@ -1444,27 +1525,38 @@ class ResortGraph:
                 edges.append((lift.end_node_id, lift.start_node_id))
         return edges
 
-    def get_core_resort(self) -> CoreResort | None:
-        """The core skiable area — largest strongly-connected component of the ski graph.
-
-        Directed model: slopes descend, lifts ascend, gondolas/trams run both ways (per
-        LiftConfig.UPHILL_ONLY); roads don't count. Returned only once the largest SCC holds at
-        least ConnectivityConfig.MIN_CORE_LIFTS lifts, else None (no core yet → nothing is flagged).
-        Derived fresh, never stored — same contract as get_parking_nodes().
+    def strongly_connected_labels(self) -> dict[str, int]:
+        """SCC id per ski-graph node (roads excluded). Two nodes share an id iff you can travel from
+        each to the other by skiing/lifting — i.e. you can loop back. The one SCC computation that
+        both get_core_resort and can_loop_back derive from. Empty dict when there are no ski edges.
         """
         edges = self._ski_digraph_edges()
         # Nodes touched by any slope/lift endpoint (roads excluded); no edges → no core.
         nodes = {n for e in edges for n in e}
         if not nodes:
-            return None
+            return {}
         # Every ski-graph endpoint must be a materialised node (referential integrity — a dangling
         # id here means a slope/lift outlived a deleted node; fail loud rather than mis-score the core).
         assert nodes <= set(self.nodes), f"ski-graph references unknown nodes: {nodes - set(self.nodes)}"
+        labels = component_labels(nodes, edges, strong=True)
+        assert set(labels) == nodes, "component_labels must label exactly the ski-graph nodes"
+        return labels
 
-        comp = component_labels(nodes, edges, strong=True)
-        assert set(comp) == nodes, "component_labels must label exactly the ski-graph nodes"
+    def get_core_resort(self, labels: dict[str, int] | None = None) -> CoreResort | None:
+        """The core skiable area — largest strongly-connected component of the ski graph.
+
+        Directed model: slopes descend, lifts ascend, gondolas/trams run both ways (per
+        LiftConfig.UPHILL_ONLY); roads don't count. Returned only once the largest SCC holds at
+        least ConnectivityConfig.MIN_CORE_LIFTS lifts, else None (no core yet → nothing is flagged).
+        Pass precomputed `labels` (strongly_connected_labels) to share the SCC pass; else computed here.
+        Derived fresh, never stored — same contract as get_parking_nodes().
+        """
+        if labels is None:
+            labels = self.strongly_connected_labels()
+        if not labels:
+            return None
         members: dict[int, set[str]] = {}
-        for node_id, cid in comp.items():
+        for node_id, cid in labels.items():
             members.setdefault(cid, set()).add(node_id)
         # Largest component by node count (tie-break irrelevant — any largest is a valid core).
         core_cid = max(members, key=lambda cid: len(members[cid]))
@@ -1479,6 +1571,15 @@ class ResortGraph:
 
         longest = max(core_lifts, key=lambda lf: lf.get_length_m(nodes=self.nodes))
         return CoreResort(node_ids=frozenset(core_nodes), longest_lift_name=longest.name)
+
+    def can_loop_back(self, *, start_node_id: str, end_node_id: str, labels: dict[str, int]) -> bool:
+        """Whether, after traversing start→end, you can return to start (ride the entity again).
+
+        True iff both endpoints share an SCC in `labels` (strongly_connected_labels). A bidirectional
+        lift always can (its reverse edge keeps both ends in one SCC); a dead-end slope cannot.
+        """
+        a = labels.get(start_node_id)
+        return a is not None and a == labels.get(end_node_id)
 
     def entity_membership(self, *, start_node_id: str, end_node_id: str, core: CoreResort | None) -> CoreMembership:
         """Where a slope/lift (given by its two endpoints) sits relative to `core`.

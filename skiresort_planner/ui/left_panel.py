@@ -368,10 +368,13 @@ class SidebarRenderer:
             # Header with counts
             st.markdown(f"**{total_slopes} Slopes • {total_lifts} Lifts • {total_roads} Roads**")
 
-            # Disconnected-terrain badge — surfaced here so it's seen without clicking each entity.
+            # Connectivity badges — surfaced here so they're seen without clicking each entity.
             disconnected = stats["disconnected_count"]
             if disconnected > 0:
                 st.markdown(f"⚠️ {disconnected} disconnected from core area")
+            no_return = stats["no_return_count"]
+            if no_return > 0:
+                st.markdown(f"⚠️ {no_return} one-way (can't loop back)")
 
             # Elevation range across all nodes
             elev_range = self.graph.get_elevation_range()
@@ -384,9 +387,17 @@ class SidebarRenderer:
             # === SLOPES SECTION ===
             st.markdown("**⛷️ Slopes**")
             if total_slopes > 0:
+                # Resort total
+                total_slope_drop_km = stats["total_slope_drop_m"] / 1000
+                total_slope_length_km = stats["total_slope_length_m"] / 1000
                 st.markdown(
-                    f"↓ {stats['total_slope_drop_m'] / 1000:.3f}km **drop** • "
-                    f"{stats['total_slope_length_m'] / 1000:.3f}km **length**"
+                    f"🏔️ Resort total: {total_slope_drop_km:.1f}km drop • {total_slope_length_km:.1f}km slope length"
+                )
+                # Greatest continuous descent (chained slopes, no lift) — max vertical drop, the marquee run.
+                descent = stats["greatest_descent"]
+                st.markdown(
+                    f"🏔️ Greatest descent: {descent.drop_m:.0f}m drop • {descent.length_m / 1000:.1f}km "
+                    f"({descent.top_elev_m:.0f}m→{descent.bottom_elev_m:.0f}m)"
                 )
 
                 # Difficulty breakdown (km) — loop the single-source difficulty list.
@@ -398,7 +409,7 @@ class SidebarRenderer:
 
                 st.markdown(
                     " • ".join(
-                        f"{StyleConfig.DIFFICULTY_EMOJIS[d]} {difficulty_lengths[d] / 1000:.3f}km"
+                        f"{StyleConfig.DIFFICULTY_EMOJIS[d]} {difficulty_lengths[d] / 1000:.1f}km"
                         for d in SlopeConfig.DIFFICULTIES
                     )
                 )
@@ -414,7 +425,7 @@ class SidebarRenderer:
                     lift.get_vertical_rise(nodes=self.graph.nodes) for lift in self.graph.lifts.values()
                 )
                 lift_length = sum(lift.get_length_m(nodes=self.graph.nodes) for lift in self.graph.lifts.values())
-                st.markdown(f"↑ {lift_vertical / 1000:.3f}km rise • {lift_length / 1000:.3f}km length")
+                st.markdown(f"↑ {lift_vertical / 1000:.1f}km rise • {lift_length / 1000:.1f}km lift length")
 
                 # Lift type breakdown (count) — loop the single-source lift types.
                 lift_counts: dict[str, int] = {t: 0 for t in LiftConfig.TYPES}
@@ -430,12 +441,8 @@ class SidebarRenderer:
             # === ROADS SECTION ===
             st.markdown(f"**{StyleConfig.ROAD_ICON} Roads**")
             if total_roads > 0:
-                road_length = stats["total_road_length_m"]
-                # Elevation change across all roads (mirrors slope drop / lift rise line).
-                road_elev_change = sum(
-                    abs(road.get_total_drop(segments=self.graph.segments)) for road in self.graph.roads.values()
-                )
-                st.markdown(f"↕ {road_elev_change / 1000:.3f}km elevation change • {road_length / 1000:.3f}km length")
+                road_length_km = stats["total_road_length_m"] / 1000
+                st.markdown(f"{road_length_km:.1f}km road length")
             else:
                 st.caption("No roads yet")
 
