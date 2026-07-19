@@ -114,6 +114,15 @@ class TestDisconnectedEntityMessage:
         assert "can't be reached" in msg
 
 
+class TestNoReturnEntityMessage:
+    def test_names_entity_kind_and_one_way(self) -> None:
+        from skiresort_planner.model.message import NoReturnEntityMessage
+
+        msg = NoReturnEntityMessage(entity_noun="lift").message
+        assert "This lift is a one-way trip" in msg
+        assert "back to ride it again" in msg
+
+
 class TestTargetTooFarMessage:
     def test_just_over_max_reads_strictly_above(self) -> None:
         # Fires only when distance strictly exceeds the max; must not render "1000m (max: 1000m)".

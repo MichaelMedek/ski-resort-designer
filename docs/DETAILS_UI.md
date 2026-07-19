@@ -41,6 +41,16 @@ The interface has three main areas:
 
 ---
 
+### Resort Summary
+
+The sidebar's **📊 Resort Summary** expander gives a whole-resort overview:
+
+- **Counts** — total slopes, lifts, and roads, plus two connectivity badges.
+- **Elevation range** across all nodes.
+- **Slopes** — total drop and length, the difficulty breakdown (km per green/blue/red/black), and the Greatest descent (max vertical drop).
+- **Lifts** — total rise and length, and a per-type count.
+- **Roads** — total length and elevation change.
+
 ## Building Slopes
 
 ### Step 1: Start a New Slope
@@ -107,7 +117,13 @@ Click on any **finished slope** (the colored ribbon or its icon) to open the sta
 | **Overall Gradient** | Average slope percentage |
 | **Steepest Section** | Maximum gradient in any 300m window (determines difficulty) |
 
-Expand **📋 Segment Details** to see per-segment breakdown with warnings. A **⚠️ disconnected** note also appears here if the slope (or lift) can't be reached from the resort's core network — connect it via slopes or lifts to clear it.
+Below the metrics, up to two **⚠️ connectivity warnings** may appear:
+- **Disconnected from the core area** — the slope/lift can't be reached from the resort's core network at all; connect it via slopes or lifts to clear it.
+- **One-way trip** — after taking it, no sequence of slopes and lifts brings you back to ride it again (a dead-end).
+
+Both warnings stay silent until the resort has a core network (at least 5 connected lifts).
+
+Expand **📋 Segment Details** to see the per-segment breakdown with any per-segment warnings.
 
 ### 3D View
 
@@ -244,6 +260,8 @@ Click on any **lift** (the purple line or its icon) to open the statistics panel
 | **Vertical Rise** | Elevation gain |
 | **Pylons** | Number of support towers |
 | **Steepest Section** | Maximum gradient between pylons |
+
+Below the metrics, the same two **⚠️ connectivity warnings** as slopes may appear.
 
 ### Changing Lift Type
 

@@ -242,19 +242,95 @@ class TestDirectionality:
 
 
 class TestSingleSccPass:
-    def test_get_stats_computes_core_once(
+    def test_get_stats_computes_scc_once(
         self, empty_graph: ResortGraph, dem: MockDEMService, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Regression: get_stats must call get_core_resort exactly once (no per-field recompute)."""
+        """Regression: get_stats runs the SCC labelling exactly once, shared by the core + both
+        connectivity counts (disconnected and no-return) — no per-field recompute.
+        """
         _ladder_core(empty_graph, dem, n_lifts=5)
         calls = 0
-        real = empty_graph.get_core_resort
+        real = empty_graph.strongly_connected_labels
 
-        def counting_core() -> object:
+        def counting_labels() -> dict[str, int]:
             nonlocal calls
             calls += 1
             return real()
 
-        monkeypatch.setattr(empty_graph, "get_core_resort", counting_core)
+        monkeypatch.setattr(empty_graph, "strongly_connected_labels", counting_labels)
         empty_graph.get_stats()
         assert calls == 1, f"get_stats triggered {calls} SCC passes, expected exactly 1"
+
+
+# =============================================================================
+# 9. can_loop_back — "after riding this, can I get back to ride it again?"
+# =============================================================================
+
+
+class TestCanLoopBack:
+    def test_ladder_slope_can_loop_back(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
+        """A slope whose bottom has a lift back to its top shares an SCC → can be repeated."""
+        _ladder_core(empty_graph, dem, n_lifts=5)
+        labels = empty_graph.strongly_connected_labels()
+        # SL1 goes P1 -> B; lift 1 goes B -> P1, so both endpoints share an SCC.
+        assert empty_graph.can_loop_back(start_node_id="P1", end_node_id="B", labels=labels)
+
+    def test_dead_end_slope_cannot_loop_back(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
+        """A slope to a valley with no way back is a one-way trip (endpoints in different SCCs)."""
+        _ladder_core(empty_graph, dem, n_lifts=5)
+        _node(empty_graph, "V", lon=0.0, lat=-0.01, elev=500.0)
+        _slope(empty_graph, "SL_dead", top="P1", bottom="V")
+        labels = empty_graph.strongly_connected_labels()
+        assert not empty_graph.can_loop_back(start_node_id="P1", end_node_id="V", labels=labels)
+
+    def test_bidirectional_gondola_always_loops(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
+        """A gondola's reverse edge keeps both ends in one SCC → never a one-way trip."""
+        _ladder_core(empty_graph, dem, n_lifts=5)
+        _node(empty_graph, "G", lon=-0.02, lat=0.02, elev=PEAK_ELEV)
+        empty_graph.add_lift(start_node_id="B", end_node_id="G", lift_type=LiftType.GONDOLA, dem=dem, name="Gondola")
+        labels = empty_graph.strongly_connected_labels()
+        assert empty_graph.can_loop_back(start_node_id="B", end_node_id="G", labels=labels)
+
+    def test_one_way_chairlift_deadend_cannot_loop(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
+        """A one-way chairlift to a dead-end top can't be ridden again."""
+        _ladder_core(empty_graph, dem, n_lifts=5)
+        _node(empty_graph, "C", lon=-0.02, lat=0.02, elev=PEAK_ELEV)
+        empty_graph.add_lift(start_node_id="B", end_node_id="C", lift_type=LiftType.CHAIRLIFT, dem=dem, name="Dead")
+        labels = empty_graph.strongly_connected_labels()
+        assert not empty_graph.can_loop_back(start_node_id="B", end_node_id="C", labels=labels)
+
+
+# =============================================================================
+# 10. count_no_return — resort-summary count of one-way (dead-end) elements
+# =============================================================================
+
+
+class TestCountNoReturn:
+    def test_zero_when_no_core_yet(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
+        """Below the 5-lift core gate, nothing is flagged (anti-false-alarm)."""
+        _ladder_core(empty_graph, dem, n_lifts=4)
+        _node(empty_graph, "V", lon=0.0, lat=-0.01, elev=500.0)
+        _slope(empty_graph, "SL_dead", top="P1", bottom="V")
+        labels = empty_graph.strongly_connected_labels()
+        assert empty_graph.count_no_return(labels, core=empty_graph.get_core_resort(labels=labels)) == 0
+
+    def test_counts_dead_end_slope(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
+        """A dead-end valley slope is counted as one one-way element."""
+        _ladder_core(empty_graph, dem, n_lifts=5)
+        _node(empty_graph, "V", lon=0.0, lat=-0.01, elev=500.0)
+        _slope(empty_graph, "SL_dead", top="P1", bottom="V")
+        labels = empty_graph.strongly_connected_labels()
+        assert empty_graph.count_no_return(labels, core=empty_graph.get_core_resort(labels=labels)) == 1
+
+    def test_ladder_alone_has_no_one_way(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
+        """A clean lift-up/slope-down ladder loops everywhere → zero one-way elements."""
+        _ladder_core(empty_graph, dem, n_lifts=5)
+        labels = empty_graph.strongly_connected_labels()
+        assert empty_graph.count_no_return(labels, core=empty_graph.get_core_resort(labels=labels)) == 0
+
+    def test_stats_expose_no_return_count(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
+        """get_stats surfaces the count for the resort-summary badge."""
+        _ladder_core(empty_graph, dem, n_lifts=5)
+        _node(empty_graph, "V", lon=0.0, lat=-0.01, elev=500.0)
+        _slope(empty_graph, "SL_dead", top="P1", bottom="V")
+        assert empty_graph.get_stats()["no_return_count"] == 1

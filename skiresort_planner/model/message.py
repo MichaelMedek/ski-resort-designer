@@ -656,3 +656,17 @@ class DisconnectedEntityMessage(WarningMessage):
             f"⚠️ This {self.entity_noun} is disconnected from the core area (with {self.core_lift_name}) — "
             "it can't be reached by skiing slopes or taking lifts."
         )
+
+
+@dataclass(frozen=True)
+class NoReturnEntityMessage(WarningMessage):
+    """Warning that after taking the viewed slope/lift you can't get back to ride it again."""
+
+    entity_noun: str  # "slope" / "lift"
+
+    @property
+    def message(self) -> str:
+        return (
+            f"⚠️ This {self.entity_noun} is a one-way trip — once you take it, no sequence of slopes "
+            "and lifts brings you back to ride it again."
+        )

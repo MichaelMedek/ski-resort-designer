@@ -368,10 +368,13 @@ class SidebarRenderer:
             # Header with counts
             st.markdown(f"**{total_slopes} Slopes • {total_lifts} Lifts • {total_roads} Roads**")
 
-            # Disconnected-terrain badge — surfaced here so it's seen without clicking each entity.
+            # Connectivity badges — surfaced here so they're seen without clicking each entity.
             disconnected = stats["disconnected_count"]
             if disconnected > 0:
                 st.markdown(f"⚠️ {disconnected} disconnected from core area")
+            no_return = stats["no_return_count"]
+            if no_return > 0:
+                st.markdown(f"⚠️ {no_return} one-way (can't loop back)")
 
             # Elevation range across all nodes
             elev_range = self.graph.get_elevation_range()
@@ -387,6 +390,12 @@ class SidebarRenderer:
                 st.markdown(
                     f"↓ {stats['total_slope_drop_m'] / 1000:.3f}km **drop** • "
                     f"{stats['total_slope_length_m'] / 1000:.3f}km **length**"
+                )
+                # Greatest continuous descent (chained slopes, no lift) — max vertical drop, the marquee run.
+                descent = stats["greatest_descent"]
+                st.markdown(
+                    f"🏔️ Greatest descent: {descent.drop_m:.0f}m drop • {descent.length_m / 1000:.3f}km "
+                    f"({descent.top_elev_m:.0f}m→{descent.bottom_elev_m:.0f}m)"
                 )
 
                 # Difficulty breakdown (km) — loop the single-source difficulty list.

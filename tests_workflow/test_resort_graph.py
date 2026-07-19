@@ -1953,7 +1953,9 @@ class TestResortStats:
     """get_stats summarises the whole resort (slope/segment/lift/road counts + totals)."""
 
     def test_empty_graph_reports_all_zero(self, empty_graph) -> None:
-        assert empty_graph.get_stats() == {
+        stats = empty_graph.get_stats()
+        descent = stats.pop("greatest_descent")
+        assert stats == {
             "total_slopes": 0,
             "total_segments": 0,
             "total_slope_drop_m": 0,
@@ -1963,7 +1965,9 @@ class TestResortStats:
             "total_roads": 0,
             "total_road_length_m": 0,
             "disconnected_count": 0,
+            "no_return_count": 0,
         }
+        assert descent == (0.0, 0.0, 0.0, 0.0)
 
     def test_multi_segment_slope_reports_slope_totals(self, empty_graph, mock_dem_blue_slope) -> None:
         graph = empty_graph
@@ -1981,3 +1985,59 @@ class TestResortStats:
         assert stats["total_slope_drop_m"] == pytest.approx(exp_vertical)
         assert stats["longest_run_m"] == pytest.approx(exp_longest)
         assert stats["longest_run_m"] > max_single_seg, "whole run is longer than any single segment"
+
+    def test_greatest_descent_chains_across_slopes(self, empty_graph) -> None:
+        """Greatest descent chains SEPARATE slopes sharing a node — deeper than any single slope."""
+        graph = empty_graph
+        M = MapConfig.METERS_PER_DEGREE_EQUATOR
+        # A(2000) -> B(1700) -> C(1500): two separate slopes meeting at B, both descending south.
+        for nid, lat, elev in (("A", 0.0, 2000.0), ("B", -600 / M, 1700.0), ("C", -1200 / M, 1500.0)):
+            graph.nodes[nid] = Node(id=nid, location=PathPoint(lon=0.0, lat=lat, elevation=elev))
+        for sid, top, bot in (("S1", "A", "B"), ("S2", "B", "C")):
+            a, b = graph.nodes[top], graph.nodes[bot]
+            graph.segments[sid] = PathSegment(
+                id=sid,
+                name=sid,
+                start_node_id=top,
+                end_node_id=bot,
+                kind=SegmentKind.SLOPE,
+                points=[a.location, b.location],
+            )
+        graph.slopes["SL1"] = Slope(id="SL1", name="1", segment_ids=["S1"], start_node_id="A", end_node_id="B")
+        graph.slopes["SL2"] = Slope(id="SL2", name="2", segment_ids=["S2"], start_node_id="B", end_node_id="C")
+
+        descent = graph.greatest_descent()
+        one_slope_len = graph.segments["S1"].length_m
+        assert descent.length_m == pytest.approx(graph.segments["S1"].length_m + graph.segments["S2"].length_m)
+        assert descent.length_m > one_slope_len, "chained descent exceeds a single slope"
+        assert descent.drop_m == pytest.approx(500.0)  # 2000 -> 1500 across the chain
+        assert descent.top_elev_m == pytest.approx(2000.0)
+        assert descent.bottom_elev_m == pytest.approx(1500.0)
+
+    def test_greatest_descent_maximizes_drop_not_length(self, empty_graph) -> None:
+        """From one summit, a short steep plunge beats a long gentle traverse — drop is maximised."""
+        graph = empty_graph
+        M = MapConfig.METERS_PER_DEGREE_EQUATOR
+        # T(2000) forks: a long shallow run to L(1900, far) vs a short steep run to P(1200, near).
+        for nid, lon, lat, elev in (
+            ("T", 0.0, 0.0, 2000.0),
+            ("L", 0.0, -3000 / M, 1900.0),  # far but only 100 m drop
+            ("P", 0.0, -400 / M, 1200.0),  # near but 800 m drop
+        ):
+            graph.nodes[nid] = Node(id=nid, location=PathPoint(lon=lon, lat=lat, elevation=elev))
+        for sid, top, bot in (("Sgentle", "T", "L"), ("Ssteep", "T", "P")):
+            a, b = graph.nodes[top], graph.nodes[bot]
+            graph.segments[sid] = PathSegment(
+                id=sid,
+                name=sid,
+                start_node_id=top,
+                end_node_id=bot,
+                kind=SegmentKind.SLOPE,
+                points=[a.location, b.location],
+            )
+        graph.slopes["SLg"] = Slope(id="SLg", name="g", segment_ids=["Sgentle"], start_node_id="T", end_node_id="L")
+        graph.slopes["SLs"] = Slope(id="SLs", name="s", segment_ids=["Ssteep"], start_node_id="T", end_node_id="P")
+
+        descent = graph.greatest_descent()
+        assert descent.drop_m == pytest.approx(800.0), "picks the deeper plunge, not the longer traverse"
+        assert descent.bottom_elev_m == pytest.approx(1200.0)
