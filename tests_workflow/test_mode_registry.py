@@ -82,6 +82,7 @@ class TestOperationBijection:
             BuildMode.AERIAL_TRAM,
             BuildMode.IMPORT,
             BuildMode.MERGE,
+            BuildMode.ROUTE,
         }
         assert set(OPERATIONS) == modes
 

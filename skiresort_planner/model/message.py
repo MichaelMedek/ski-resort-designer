@@ -293,6 +293,14 @@ class CustomPathComputingToast(InfoToast):
         return "🎯 Computing custom path options…"
 
 
+class RouteComputingToast(InfoToast):
+    """Informational cue while the best A→B routes are being computed (default ℹ️ icon)."""
+
+    @property
+    def message(self) -> str:
+        return "🧭 Computing the best routes…"
+
+
 # =============================================================================
 # CENTER (UNDER MAP) - Loading states (BLUE)
 # =============================================================================
@@ -669,4 +677,69 @@ class NoReturnEntityMessage(WarningMessage):
         return (
             f"⚠️ This {self.entity_noun} is a one-way trip — once you take it, no sequence of slopes "
             "and lifts brings you back to ride it again."
+        )
+
+
+# =============================================================================
+# ROUTE PLANNER — pick start/end, then browse the best routes by criterion
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class RoutePlacingContextMessage(InfoMessage):
+    """RIGHT panel (blue): where the route START was placed (node + elevation).
+
+    Mirrors LiftPlacingContextMessage's first-station block. In route_placing the start is always
+    set (the first node click sets it before the transition), so this always renders — no branch.
+    """
+
+    start_node_id: str
+    start_elevation_m: float
+
+    @property
+    def message(self) -> str:
+        return (
+            f"🧭 **Route Planner** — Placing\n\n"
+            f"- 🚩 Start: node **{self.start_node_id}**\n"
+            f"- 📍 Elevation: {self.start_elevation_m:.0f}m"
+        )
+
+
+@dataclass(frozen=True)
+class RoutePlacingActionMessage(WarningMessage):
+    """RIGHT panel (yellow): instruction to click the end node (mirrors LiftActionMessage)."""
+
+    @property
+    def message(self) -> str:
+        return "🏁 **Select End Node**\n\n- 👆 Click another **node** to finish the route."
+
+
+@dataclass(frozen=True)
+class RouteResultsContextMessage(InfoMessage):
+    """RIGHT panel (blue): how many routes were found and which one is shown."""
+
+    total: int = 0
+    selected_index: int = 0  # 0-based
+
+    @property
+    def message(self) -> str:
+        return f"🛣️ **Routes** — showing {self.selected_index + 1} of {self.total}"
+
+
+@dataclass(frozen=True)
+class RouteNoResultsMessage(WarningMessage):
+    """RIGHT panel (yellow): no routes to show — distinguish "filters too strict" from "none exist"."""
+
+    filters_active: bool = False  # True when a difficulty/lift-type filter is hiding routes
+
+    @property
+    def message(self) -> str:
+        if self.filters_active:
+            return (
+                "⚠️ **No routes match the filters**\n\n"
+                "- 🎚️ Loosen the difficulty slider, or\n- ☑️ re-enable more lift types."
+            )
+        return (
+            "⚠️ **No route exists**\n\n"
+            "- 🎯 No way to ski/lift from the start to the end.\n- Build connecting slopes or lifts."
         )

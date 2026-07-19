@@ -46,8 +46,8 @@ def _concrete_subclasses(base: type) -> list[type]:
 def _make(cls: type):
     """Instantiate a message dataclass with dummy values for its required fields (defaults elsewhere).
 
-    Covers the field types the messages actually use (str/float/int/SegmentKind/OSMImportMode) so the
-    hierarchy tests can construct EVERY class without hard-coding constructor args per class.
+    Covers the field types the messages actually use (str/float/int/bool/SegmentKind/OSMImportMode) so
+    the hierarchy tests can construct EVERY class without hard-coding constructor args per class.
     """
     import dataclasses
     import typing
@@ -59,6 +59,7 @@ def _make(cls: type):
         str: "x",
         float: 1.0,
         int: 1,
+        bool: True,
         SegmentKind: SegmentKind.SLOPE,
         OSMImportMode: OSMImportMode.LIFTS_ONLY,
     }
@@ -289,6 +290,13 @@ class TestMessageHierarchy:
         toast = CustomPathComputingToast()
         assert isinstance(toast, InfoToast)
         assert "custom path" in toast.message.lower()
+
+    def test_route_computing_toast_text(self) -> None:
+        from skiresort_planner.model.message import InfoToast, RouteComputingToast
+
+        toast = RouteComputingToast()
+        assert isinstance(toast, InfoToast)
+        assert "route" in toast.message.lower()
 
 
 class TestImportPlacingMessages:

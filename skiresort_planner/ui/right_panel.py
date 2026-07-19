@@ -34,6 +34,10 @@ from skiresort_planner.model.message import (
     NoReturnEntityMessage,
     PathActionMessage,
     PathBuildingContextMessage,
+    RouteNoResultsMessage,
+    RoutePlacingActionMessage,
+    RoutePlacingContextMessage,
+    RouteResultsContextMessage,
     SegmentWarningMessage,
 )
 from skiresort_planner.model.path_segment import SegmentKind
@@ -43,6 +47,7 @@ from skiresort_planner.ui.actions import (
     confirm_merge_action,
     delete_nodes_action,
     rename_entity_action,
+    route_plan_filtered_routes,
 )
 from skiresort_planner.ui.context import EntityKind, PlannerContext
 from skiresort_planner.ui.dialogs import ConfirmDialog, InputDialog
@@ -55,6 +60,7 @@ if TYPE_CHECKING:
     from skiresort_planner.model.message import Message
     from skiresort_planner.model.proposed_path import ProposedPathSegment
     from skiresort_planner.model.road import Road
+    from skiresort_planner.model.routing import Route
     from skiresort_planner.model.segment_path import SegmentPath
     from skiresort_planner.model.slope import Slope
     from skiresort_planner.ui.mode_registry import EntityKindSpec
@@ -541,6 +547,100 @@ class MergePlacingControlPanel(ControlPanel):
             delete_nodes_action()
         # Discoverability hint, mirroring the path builder's "click any point" caption.
         st.caption("🎯 Or click any path on the map to add a node there.")
+
+
+class RoutePlacingControlPanel(ControlPanel):
+    """route_placing: pick the end node. Blue = where the start was placed (node + elevation);
+    yellow = 'click the end node'. No buttons — the second node click completes the route and Cancel
+    lives in the sidebar (mirrors LiftPlacingControlPanel exactly).
+    """
+
+    def context_message(self) -> "Message | None":
+        # The start is always set on entry (the first node click sets it before start_route), so index
+        # strictly — fail loud otherwise.
+        start_id = self.ctx.route_plan.start_node_id
+        assert start_id is not None, "route_placing entered without a start node"
+        return RoutePlacingContextMessage(
+            start_node_id=start_id, start_elevation_m=self.graph.nodes[start_id].elevation
+        )
+
+    def action_message(self) -> "Message | None":
+        return RoutePlacingActionMessage()  # yellow: click the end node
+
+    def buttons(self) -> None:
+        return None  # the second node click completes the route; Cancel is in the sidebar
+
+
+class RouteViewingControlPanel(ControlPanel):
+    """idle_viewing_route: browse the best routes. Blue = results summary (or none when empty);
+    yellow = no-results guidance when filters/graph yield nothing. Buttons = the ◀▶ browser, the
+    selected route's stats, and a Close button (mirrors EntityInfoControlPanel's viewing surface).
+    """
+
+    def _filtered(self) -> "list[Route]":
+        return route_plan_filtered_routes()
+
+    def _filters_active(self) -> bool:
+        rp = self.ctx.route_plan
+        return rp.filter_max_difficulty is not None or not all(rp.filter_lift_types.values())
+
+    def context_message(self) -> "Message | None":
+        routes = self._filtered()
+        if not routes:
+            return None  # the yellow no-results message carries the whole story
+        idx = min(self.ctx.route_plan.selected_index, len(routes) - 1)
+        return RouteResultsContextMessage(total=len(routes), selected_index=idx)
+
+    def action_message(self) -> "Message | None":
+        if self._filtered():
+            return None
+        # Distinguish "filters hid them all" from "no route exists at all".
+        return RouteNoResultsMessage(filters_active=bool(self.ctx.route_plan.routes) and self._filters_active())
+
+    def buttons(self) -> None:
+        routes = self._filtered()
+        if routes:
+            self._render_route_browser(routes)
+            self._render_route_stats(routes)
+        # Idiom: close the panel to leave. To plan again, re-enter Route Planner and pick two nodes.
+        if st.button("✖️ Close", width="stretch", help="Close this panel to start building again"):
+            self.sm.close_panel()  # type: ignore[attr-defined]  # dynamic python-statemachine event
+
+    def _render_route_browser(self, routes: "list[Route]") -> None:
+        """◀ ▶ browser over the filtered routes (mirrors _render_proposal_browser)."""
+        if len(routes) <= 1:
+            return
+        idx = min(self.ctx.route_plan.selected_index, len(routes) - 1)
+        col_prev, col_label, col_next = st.columns([1, 2, 1])
+        with col_prev:
+            if st.button("◀", key="route_prev", width="stretch"):
+                self.ctx.route_plan.selected_index = (idx - 1) % len(routes)
+                trigger_rerun()
+        with col_label:
+            st.markdown(f"**Route {idx + 1} / {len(routes)}**")
+        with col_next:
+            if st.button("▶", key="route_next", width="stretch"):
+                self.ctx.route_plan.selected_index = (idx + 1) % len(routes)
+                trigger_rerun()
+
+    def _render_route_stats(self, routes: "list[Route]") -> None:
+        """Stats for the selected route: criteria won, totals, and the ordered slope/lift steps."""
+        idx = min(self.ctx.route_plan.selected_index, len(routes) - 1)
+        route = routes[idx]
+        won = ", ".join(c.value.replace("_", " ") for c in route.criteria)
+        st.caption(f"🏅 Best for: {won}")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Slope Length", f"{route.total_slope_length_m / 1000:.2f}km")
+            st.metric("Slope Drop", f"{route.total_slope_drop_m:.0f}m")
+        with col2:
+            st.metric("Lifts", f"{route.lift_count}")
+            st.metric("Highest Point", f"{route.highest_elev_m:.0f}m")
+        with st.expander("📋 Route Steps", expanded=False):
+            for i, step in enumerate(route.steps, 1):
+                icon = StyleConfig.LIFT_ICONS[step.detail] if step.is_lift else StyleConfig.SLOPE_ICON
+                kind = "lift" if step.is_lift else step.detail
+                st.markdown(f"{i}. {icon} **{step.name}** ({kind})")
 
 
 def _render_proposal_browser(ctx: PlannerContext, *, key_prefix: str, noun: str) -> None:

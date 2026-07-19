@@ -113,6 +113,9 @@ def _start_mode_from_terrain(
     elif ctx.build_mode.is_merge():
         # Merge/delete act on nodes; add-node acts on a path. A bare terrain click hits neither.
         InvalidClickMessage(action="edit nodes", reason="Click a node to select it, or a path to add a node.").display()
+    elif ctx.build_mode.is_route():
+        # Routes run node-to-node; a bare terrain click has no node to anchor to.
+        InvalidClickMessage(action="plan a route", reason="Click a node to set the route start.").display()
     else:
         raise RuntimeError(f"[IDLE] Unknown build_mode '{build_mode}'.")
 
@@ -145,6 +148,12 @@ def _start_mode_from_node(ctx: PlannerContext, sm: PlannerStateMachine, node: No
         logger.debug(f"[IDLE] Node click: starting merge from {node.id}")
         ctx.merge.toggle(node.id)
         sm.start_merge()
+    elif ctx.build_mode.is_route():
+        # First node click sets the route START, then enters route_placing (mirrors merge). Routes
+        # are node-to-node, so terrain clicks are ignored in _start_mode_from_terrain.
+        logger.debug(f"[IDLE] Node click: route start = {node.id}")
+        ctx.route_plan.start_node_id = node.id
+        sm.start_route()
     else:
         raise RuntimeError(f"[IDLE] Unknown build_mode '{build_mode}'.")
 
@@ -660,4 +669,34 @@ def handle_merge_placing_click(click_info: ClickInfo, elevation: float | None) -
     InvalidClickMessage(
         action="select for merge",
         reason="Click a node to select it, or a path to add a node.",
+    ).display()
+
+
+def handle_route_placing_click(click_info: ClickInfo, elevation: float | None) -> None:
+    """Handle a click while picking the route's start/end nodes (route_placing).
+
+    Routes run node-to-node, so only NODE markers act: clicking the SAME node as the start re-picks
+    it (redraw in place, no transition); clicking a DIFFERENT node sets the end, arms the deferred
+    route computation, and completes to idle_viewing_route. Every other click is an InvalidClickMessage.
+    """
+    sm: PlannerStateMachine = st.session_state.state_machine
+    ctx: PlannerContext = st.session_state.context
+
+    if click_info.click_type == MapClickType.MARKER and click_info.marker_type == MarkerType.NODE:
+        assert click_info.node_id is not None  # Validated in ClickInfo
+        clicked = click_info.node_id
+        if clicked == ctx.route_plan.start_node_id:
+            # Re-picking the same node as start is a no-op re-selection; redraw in place.
+            bump_dedup_epoch()
+            trigger_rerun()
+            return
+        logger.debug(f"[ROUTE] End node = {clicked}; computing routes from {ctx.route_plan.start_node_id}")
+        ctx.route_plan.end_node_id = clicked
+        ctx.pending.route_plan_generation = True  # compute after the rerun (deferred-work pattern)
+        sm.complete_route()
+        return
+
+    InvalidClickMessage(
+        action="plan a route",
+        reason="Click a node to set the route end.",
     ).display()

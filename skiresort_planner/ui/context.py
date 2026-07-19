@@ -38,6 +38,7 @@ from skiresort_planner.model.path_segment import SegmentKind
 if TYPE_CHECKING:
     from skiresort_planner.model.path_point import PathPoint
     from skiresort_planner.model.proposed_path import ProposedPathSegment
+    from skiresort_planner.model.routing import Route
 
 
 class EntityKind(StrEnum):
@@ -187,8 +188,9 @@ class BuildMode:
     SURFACE_LIFT = "surface_lift"
     AERIAL_TRAM = "aerial_tram"
     ROAD = "road"
-    IMPORT = "import"
-    MERGE = "merge"
+    IMPORT = "import"  # import OSM lifts and slopes
+    MERGE = "merge"  # merge, add or delete nodes of paths
+    ROUTE = "route"  # route planner: pick start + end node
 
     # Lift types + their order are OWNED by LiftConfig.TYPES (single source of truth); we don't
     # re-list them. The named constants above exist for readable references (BuildMode.CHAIRLIFT).
@@ -200,7 +202,7 @@ class BuildMode:
     )
 
     # Every build mode, in sidebar order — built from parts so the lift block tracks LIFT_TYPES.
-    ALL = [SLOPE, ROAD, *LIFT_TYPES, IMPORT, MERGE]
+    ALL = [SLOPE, ROAD, *LIFT_TYPES, IMPORT, MERGE, ROUTE]
 
     @staticmethod
     def is_slope(mode: str) -> bool:
@@ -228,6 +230,11 @@ class BuildMode:
         return mode == BuildMode.MERGE
 
     @staticmethod
+    def is_route(mode: str) -> bool:
+        """Check if mode is the route planner (click-to-pick start + end nodes)."""
+        return mode == BuildMode.ROUTE
+
+    @staticmethod
     def display_name(mode: str) -> str:
         """Human-friendly name for display."""
         from skiresort_planner.constants import StyleConfig
@@ -241,6 +248,8 @@ class BuildMode:
                 return "Import"
             case BuildMode.MERGE:
                 return "Node Merge"
+            case BuildMode.ROUTE:
+                return "Route Planner"
             case BuildMode.CHAIRLIFT | BuildMode.GONDOLA | BuildMode.SURFACE_LIFT | BuildMode.AERIAL_TRAM:
                 return StyleConfig.LIFT_DISPLAY_NAMES[mode]
             case _:
@@ -260,6 +269,8 @@ class BuildMode:
                 return StyleConfig.IMPORT_ICON
             case BuildMode.MERGE:
                 return StyleConfig.MERGE_ICON
+            case BuildMode.ROUTE:
+                return StyleConfig.ROUTE_ICON
             case BuildMode.CHAIRLIFT | BuildMode.GONDOLA | BuildMode.SURFACE_LIFT | BuildMode.AERIAL_TRAM:
                 return StyleConfig.LIFT_ICONS[mode]
             case _:
@@ -299,6 +310,10 @@ class BuildModeContext(BaseContext):
     def is_merge(self) -> bool:
         """Check if mode is node merge."""
         return BuildMode.is_merge(self.mode)
+
+    def is_route(self) -> bool:
+        """Check if mode is the route planner."""
+        return BuildMode.is_route(self.mode)
 
 
 @dataclass
@@ -639,6 +654,8 @@ class PendingContext(BaseContext):
     # Center of the placed import box (click-to-place). Set by start_import, consumed on confirm.
     osm_import_center_lon: float | None = None
     osm_import_center_lat: float | None = None
+    # Recompute the route plan on the next render (both endpoints picked, or a filter changed).
+    route_plan_generation: bool = False
 
     def clear_custom_connect(self) -> None:
         self.custom_connect = False
@@ -652,6 +669,7 @@ class PendingContext(BaseContext):
         self.osm_import_half_width_km = OSMConfig.HALF_WIDTH_DEFAULT_KM
         self.osm_import_center_lon = None
         self.osm_import_center_lat = None
+        self.route_plan_generation = False
 
 
 @dataclass
@@ -673,6 +691,32 @@ class MergeContext(BaseContext):
 
     def clear(self) -> None:
         self.node_ids = []
+
+
+@dataclass
+class RoutePlanContext(BaseContext):
+    """Route-planner state: the two picked endpoints, the computed routes, and the active filters.
+
+    Flow: click start → start_node_id set; click end → end_node_id set + routes computed; then the
+    difficulty/lift-type filters narrow which of the computed routes are shown. Roads never appear
+    (routing is over the skiable graph only).
+    """
+
+    start_node_id: str | None = None
+    end_node_id: str | None = None
+    routes: list[Route] = field(default_factory=list)  # the ≤5 best-by-criterion routes, deduped
+    selected_index: int = 0  # index into the FILTERED routes currently shown
+    filter_max_difficulty: str | None = None  # None = no cap; else a SlopeConfig.DIFFICULTIES band
+    # Lift types allowed on a shown route; all enabled by default (single source: LiftConfig.TYPES).
+    filter_lift_types: dict[str, bool] = field(default_factory=lambda: {t: True for t in LiftConfig.TYPES})
+
+    def clear(self) -> None:
+        self.start_node_id = None
+        self.end_node_id = None
+        self.routes = []
+        self.selected_index = 0
+        self.filter_max_difficulty = None
+        self.filter_lift_types = {t: True for t in LiftConfig.TYPES}
 
 
 @dataclass
@@ -732,6 +776,7 @@ class PlannerContext:
     click_dedup: ClickDeduplicationContext = field(default_factory=ClickDeduplicationContext)
     pending: PendingContext = field(default_factory=PendingContext)
     merge: MergeContext = field(default_factory=MergeContext)
+    route_plan: RoutePlanContext = field(default_factory=RoutePlanContext)
     messages: UIMessagesContext = field(default_factory=UIMessagesContext)
     build_mode: BuildModeContext = field(default_factory=BuildModeContext)
 
@@ -770,6 +815,10 @@ class PlannerContext:
     def clear_merge(self) -> None:
         """Clear the node-merge selection."""
         self.merge.clear()
+
+    def clear_route_plan(self) -> None:
+        """Clear the route-planner endpoints, computed routes, and filters."""
+        self.route_plan.clear()
 
     def set_selection(
         self,

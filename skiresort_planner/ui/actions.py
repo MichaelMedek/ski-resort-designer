@@ -36,6 +36,7 @@ from skiresort_planner.model.message import (
 )
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.resort_graph import ResortGraph
+from skiresort_planner.model.routing import Route, RoutePlanner, filter_routes
 from skiresort_planner.ui.context import PlannerContext
 from skiresort_planner.ui.infra import bump_camera_epoch, bump_dedup_epoch, trigger_rerun
 from skiresort_planner.ui.kind_spec import KIND_SPECS
@@ -125,6 +126,36 @@ def process_custom_connect_pending() -> bool:
     # runs inside the current render cycle from app.py, so the natural render shows the new proposals.
     bump_dedup_epoch()
     return True
+
+
+def process_route_plan_pending() -> bool:
+    """Compute the best routes between the two picked nodes (deferred, mirrors the fan/custom flow).
+
+    Reads ctx.route_plan.start/end_node_id, runs the RoutePlanner (scipy shortest paths — fast, no
+    network), stores the ≤5 deduped routes, and resets the shown selection. No-op if nothing pending.
+    """
+    ctx: PlannerContext = st.session_state.context
+    graph: ResortGraph = st.session_state.graph
+
+    if not ctx.pending.route_plan_generation:
+        return False
+    ctx.pending.route_plan_generation = False
+
+    start, end = ctx.route_plan.start_node_id, ctx.route_plan.end_node_id
+    assert start is not None and end is not None, "route computation armed without both endpoints"
+    ctx.route_plan.routes = RoutePlanner(graph).best_routes(start_node_id=start, end_node_id=end)
+    ctx.route_plan.selected_index = 0
+    return True
+
+
+def route_plan_filtered_routes() -> list[Route]:
+    """The current route-plan routes passing the active difficulty/lift-type filters (shared by the
+    right panel, sidebar, and map overlay so all three agree on what's shown).
+    """
+    ctx: PlannerContext = st.session_state.context
+    rp = ctx.route_plan
+    allowed = {t for t, on in rp.filter_lift_types.items() if on}
+    return filter_routes(rp.routes, max_difficulty=rp.filter_max_difficulty, allowed_lift_types=allowed)
 
 
 def confirm_import_action(mode: OSMImportMode) -> None:

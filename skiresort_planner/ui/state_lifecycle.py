@@ -83,6 +83,7 @@ def enter_idle_ready(ctx: PlannerContext) -> None:
     ctx.selection.clear()
     ctx.click_dedup.clear_marker()
     ctx.viewing.clear()
+    ctx.clear_route_plan()
     logger.debug(
         f"[LIFECYCLE] idle_ready complete: map_center=({ctx.map.lat:.4f}, {ctx.map.lon:.4f}), zoom={ctx.map.zoom}"
     )
@@ -195,6 +196,22 @@ def exit_merge_placing(ctx: PlannerContext) -> None:
     """Exit MERGE_PLACING: clear the node-merge selection so none survives the exit."""
     logger.debug("[LIFECYCLE] EXIT: merge_placing - clearing merge selection")
     ctx.merge.clear()
+
+
+def enter_route_placing(ctx: PlannerContext) -> None:
+    """Enter route_placing: hide the panel, ready for the end-node click. The start node was set by
+    the completing click handler just before this fires; enter_idle_ready clears the route-plan
+    scratch on cancel/close (the one exit path), so it must NOT be cleared here.
+    """
+    logger.debug("[LIFECYCLE] ENTER: route_placing - hiding panel")
+    _enter_placement_mode(ctx)
+
+
+def enter_idle_viewing_route(ctx: PlannerContext) -> None:
+    """Enter ROUTE_VIEWING: show the panel; the computed routes were set by the completing click."""
+    logger.debug("[LIFECYCLE] ENTER: idle_viewing_route - showing route results panel")
+    ctx.viewing.show_panel()
+    ctx.click_dedup.clear_marker()
 
 
 def enter_import_placing(ctx: PlannerContext) -> None:

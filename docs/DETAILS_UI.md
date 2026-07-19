@@ -475,6 +475,34 @@ While in Node Merge mode, **click anywhere on an existing path** to drop a new n
 
 ---
 
+## Route Planner
+
+Click **🧭 Route Planner** in the sidebar, then pick two nodes to see the best ways to ski between them.
+
+### Planning a route
+
+1. Click the **🧭 Route Planner** button (a utility tool, like Node Merge).
+2. **Click a start node**, then **click an end node** (routes run node-to-node — a bare terrain click is guided, not acted on).
+3. The app computes up to **five best routes**, each optimal under one criterion, and draws each in its own colour on the map.
+
+### The five criteria
+
+| Criterion | Picks the route with… |
+|-----------|-----------------------|
+| **Fewest lifts** | the least number of lift rides |
+| **Least distance** | the least total slope kilometres |
+| **Least drop** | the least vertical descent skied |
+| **Easiest** | the gentlest slope |
+| **Most scenic** | the highest peak reached en route |
+
+### Browsing and filtering
+
+- Use the **◀ ▶** browser in the right panel to step through the routes.
+- In the sidebar, a **max-difficulty slider** (snaps to 🟢🔵🔴⚫) hides routes whose hardest slope exceeds your level, and **per-lift-type checkboxes** hide routes that use lift types you unchecked.
+- If filters hide every route, you're prompted to loosen them; if **no route exists** at all, you're told to build connecting slopes or lifts.
+
+---
+
 ## Exploring New Areas
 
 ![Exploring New Areas](images/8-NewAreas.png)

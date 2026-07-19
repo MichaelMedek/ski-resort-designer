@@ -28,6 +28,7 @@ from skiresort_planner.constants import (
     ClickConfig,
     MapConfig,
     MarkerConfig,
+    RoutePlannerConfig,
     StyleConfig,
 )
 from skiresort_planner.core.geo_calculator import GeoCalculator
@@ -40,6 +41,7 @@ if TYPE_CHECKING:
     from skiresort_planner.core.terrain_analyzer import TerrainOrientation
     from skiresort_planner.model.lift import Lift
     from skiresort_planner.model.road import Road
+    from skiresort_planner.model.routing import Route
     from skiresort_planner.model.slope import Slope
 
 logger = logging.getLogger(__name__)
@@ -1220,6 +1222,34 @@ class MapRenderer:
             )
         )
 
+        return layers
+
+    def create_route_layers(self, routes: "list[Route]", *, use_3d: bool) -> list[pdk.Layer]:
+        """One coloured polyline per route, drawn through each route's node path.
+
+        Colour is by the route's first winning criterion (its index into RoutePlannerConfig.ROUTE_COLORS),
+        so a route reads as "the fewest-lifts one" etc. Empty when there are no routes to show.
+        """
+        if not self.graph or not routes:
+            return []
+        route_z = MapConfig.Z_OFFSET_2D_MARKERS if not use_3d else 0
+        layers: list[pdk.Layer] = []
+        for i, route in enumerate(routes):
+            color = RoutePlannerConfig.ROUTE_COLORS[i % len(RoutePlannerConfig.ROUTE_COLORS)]
+            path = [[self.graph.nodes[nid].lon, self.graph.nodes[nid].lat, route_z] for nid in route.node_path]
+            data = [{"path": path, "color": color, "name": ", ".join(c.value for c in route.criteria)}]
+            layers.append(
+                pdk.Layer(
+                    "PathLayer",
+                    data,
+                    get_path="path",
+                    get_color="color",
+                    get_width=MarkerConfig.DIRECTION_ARROW_WIDTH,
+                    width_min_pixels=4,
+                    cap_rounded=True,
+                    id=f"route_{i}",
+                )
+            )
         return layers
 
     def create_import_bbox_layers(

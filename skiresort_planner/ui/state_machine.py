@@ -284,6 +284,7 @@ from skiresort_planner.ui.state_lifecycle import (
     enter_idle_ready,
     enter_idle_viewing_lift,
     enter_idle_viewing_road,
+    enter_idle_viewing_route,
     enter_idle_viewing_slope,
     enter_import_placing,
     enter_lift_placing,
@@ -291,6 +292,7 @@ from skiresort_planner.ui.state_lifecycle import (
     enter_road_building,
     enter_road_custom_path,
     enter_road_starting,
+    enter_route_placing,
     enter_slope_building,
     enter_slope_custom_path,
     enter_slope_starting,
@@ -398,6 +400,7 @@ class PlannerStateMachine(StateMachine):
     idle_viewing_slope = State("IdleViewingSlope")
     idle_viewing_lift = State("IdleViewingLift")
     idle_viewing_road = State("IdleViewingRoad")
+    idle_viewing_route = State("IdleViewingRoute")
 
     # SLOPE states (building in progress)
     slope_starting = State("SlopeStarting")
@@ -412,6 +415,9 @@ class PlannerStateMachine(StateMachine):
 
     # MERGE state (click-to-select node markers to collapse, then confirm)
     merge_placing = State("MergePlacing")
+
+    # ROUTE state (click a start node then an end node)
+    route_placing = State("RoutePlacing")
 
     # ROAD states (segment-by-segment, like a slope: build then finish)
     road_starting = State("RoadStarting")
@@ -432,6 +438,7 @@ class PlannerStateMachine(StateMachine):
     start_road = idle_ready.to(road_starting, event="start_road")  # 1.9 [event: start_road]
     start_import = idle_ready.to(import_placing, event="start_import")  # 1.10 [event: start_import]
     start_merge = idle_ready.to(merge_placing, event="start_merge")  # 1.11 [event: start_merge]
+    start_route = idle_ready.to(route_placing, event="start_route")  # 1.12 [event: start_route]
     view_slope = idle_ready.to(idle_viewing_slope, event="view_slope")  # 1.2 [event: view_slope]
     view_lift = idle_ready.to(idle_viewing_lift, event="view_lift")  # 1.3 [event: view_lift]
     view_road = idle_ready.to(idle_viewing_road, event="view_road")  # 1.5 [event: view_road]
@@ -457,6 +464,7 @@ class PlannerStateMachine(StateMachine):
         import_placing, event="start_import"
     )  # 2.10 [event: start_import]
     start_merge_from_slope_view = idle_viewing_slope.to(merge_placing, event="start_merge")  # 2.11 [event: start_merge]
+    start_route_from_slope_view = idle_viewing_slope.to(route_placing, event="start_route")  # 2.12 [event: start_route]
 
     # ==========================================================================
     # 3. Transitions: From IDLE_VIEWING_LIFT
@@ -479,6 +487,7 @@ class PlannerStateMachine(StateMachine):
         import_placing, event="start_import"
     )  # 3.10 [event: start_import]
     start_merge_from_lift_view = idle_viewing_lift.to(merge_placing, event="start_merge")  # 3.11 [event: start_merge]
+    start_route_from_lift_view = idle_viewing_lift.to(route_placing, event="start_route")  # 3.12 [event: start_route]
 
     # ==========================================================================
     # 3b. Transitions: From IDLE_VIEWING_ROAD
@@ -501,6 +510,7 @@ class PlannerStateMachine(StateMachine):
         import_placing, event="start_import"
     )  # 3b.10 [event: start_import]
     start_merge_from_road_view = idle_viewing_road.to(merge_placing, event="start_merge")  # 3b.11 [event: start_merge]
+    start_route_from_road_view = idle_viewing_road.to(route_placing, event="start_route")  # 3b.12 [event: start_route]
 
     # ==========================================================================
     # 4. Transitions: From SLOPE_STARTING (0 segments)
@@ -595,6 +605,11 @@ class PlannerStateMachine(StateMachine):
     complete_merge = merge_placing.to(idle_ready)  # 8c.2 [direct]
     cancel_merge = merge_placing.to(idle_ready)  # 8c.1 [direct]
     toggle_merge_node = merge_placing.to(merge_placing)  # 8c.3 [direct] self-loop
+
+    # route_placing / idle_viewing_route (all direct, mirroring MERGE_PLACING)
+    complete_route = route_placing.to(idle_viewing_route)  # 8d.2 [direct]
+    cancel_route_placing = route_placing.to(idle_ready)  # 8d.1 [direct]
+    close_route_panel = idle_viewing_route.to(idle_ready, event="close_panel")  # 8d.3 [event: close_panel]
 
     # ==========================================================================
     # 9. Transitions: From ROAD_STARTING (0 segments) / ROAD_BUILDING (1+ segments)
@@ -730,6 +745,10 @@ class PlannerStateMachine(StateMachine):
             "start_merge_from_slope_view",
             "start_merge_from_lift_view",
             "start_merge_from_road_view",
+            # start_route event (NOT start_route - that IS the event entry point)
+            "start_route_from_slope_view",
+            "start_route_from_lift_view",
+            "start_route_from_road_view",
             # view_slope event (NOT view_slope - that IS the event entry point)
             "switch_to_slope_view",
             "switch_slope",
@@ -809,6 +828,16 @@ class PlannerStateMachine(StateMachine):
     def is_merge_placing(self) -> bool:
         """Check if selecting nodes to merge."""
         return bool(self.merge_placing.is_active)
+
+    @property
+    def is_route_placing(self) -> bool:
+        """Check if picking the route start/end nodes."""
+        return bool(self.route_placing.is_active)
+
+    @property
+    def is_idle_viewing_route(self) -> bool:
+        """Check if browsing the computed routes."""
+        return bool(self.idle_viewing_route.is_active)
 
     @property
     def is_road_starting(self) -> bool:
@@ -947,6 +976,14 @@ class PlannerStateMachine(StateMachine):
     def on_enter_merge_placing(self) -> None:
         """Hook: Entering merge placing state (also fires on toggle self-loop)."""
         enter_merge_placing(self.context)
+
+    def on_enter_route_placing(self) -> None:
+        """Hook: Entering route_placing — the start node was set by the completing click handler."""
+        enter_route_placing(self.context)
+
+    def on_enter_idle_viewing_route(self) -> None:
+        """Hook: Entering idle_viewing_route (routes computed by the completing click handler)."""
+        enter_idle_viewing_route(self.context)
 
     def on_enter_road_starting(self) -> None:
         """Hook: Entering road starting state."""

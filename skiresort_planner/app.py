@@ -31,6 +31,7 @@ from skiresort_planner.model.message import (
     Message,
     OSMImportErrorMessage,
     OSMImportLoadingMessage,
+    RouteComputingToast,
     SizingMapMessage,
     ToastMessage,
     WarningToast,
@@ -50,6 +51,7 @@ from skiresort_planner.ui import (
     process_custom_connect_pending,
     process_osm_import_pending,
     process_path_generation_pending,
+    process_route_plan_pending,
     reload_map,
     render_control_panel,
     trigger_rerun,
@@ -454,6 +456,8 @@ def _run_app_ui() -> None:
         run_pending_action(cue=CustomPathComputingToast(), work=process_custom_connect_pending)
     elif ctx.pending.fan_generation:
         run_pending_action(cue=None, work=process_path_generation_pending)  # fast — no cue needed
+    elif ctx.pending.route_plan_generation:
+        run_pending_action(cue=RouteComputingToast(), work=process_route_plan_pending)  # scipy shortest paths
 
     # Sidebar (fire-and-forget: its panels call actions directly on button clicks)
     sidebar = SidebarRenderer(state_machine=sm, context=ctx, graph=graph)

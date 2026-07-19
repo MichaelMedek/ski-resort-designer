@@ -30,6 +30,7 @@ from skiresort_planner.ui.actions import (
     process_custom_connect_pending,
     process_osm_import_pending,
     process_path_generation_pending,
+    process_route_plan_pending,
     recompute_paths,
     undo_last_action,
 )
@@ -91,6 +92,7 @@ __all__ = [
     "process_custom_connect_pending",
     "process_osm_import_pending",
     "process_path_generation_pending",
+    "process_route_plan_pending",
     "recompute_paths",
     "reload_map",
     "trigger_rerun",

@@ -16,7 +16,7 @@ import copy
 import logging
 import statistics
 from collections import deque
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, NamedTuple, TypedDict, cast
 
@@ -75,6 +75,18 @@ logger = logging.getLogger(__name__)
 def _chain_node_sequence(segments: list[PathSegment]) -> list[str]:
     """The ordered node ids a segment chain visits: first segment's start, then each segment's end."""
     return [segments[0].start_node_id, *(s.end_node_id for s in segments)]
+
+
+@dataclass(frozen=True)
+class SkiEdge:
+    """One directed edge of the skiable graph and the entity that owns it — the single source both
+    connectivity and routing derive from. A slope contributes one SkiEdge per segment (segment_id set,
+    is_lift False); a lift contributes one (or two, for bidirectional) with segment_id None.
+    """
+
+    entity_id: str  # owning Slope or Lift id
+    is_lift: bool
+    segment_id: str | None  # the PathSegment for a slope edge; None for a lift edge
 
 
 class SegmentStats(TypedDict):
@@ -1508,22 +1520,37 @@ class ResortGraph:
         shared = road_nodes & ski_nodes
         return [self.nodes[nid] for nid in shared]
 
-    def _ski_digraph_edges(self) -> list[tuple[str, str]]:
-        """Directed edges of the skiable graph, one edge PER SEGMENT so interior junction nodes are
-        real vertices (a slope may be joined mid-chain by another slope/lift). Slopes descend
-        segment-by-segment; lifts go bottom→top (plus reverse for bidirectional types per
-        LiftConfig.UPHILL_ONLY). Roads are excluded — the skiable set matches _skiable_entities().
+    def ski_digraph(self) -> tuple[list[tuple[str, str]], dict[tuple[str, str], SkiEdge]]:
+        """The directed skiable graph: edges + the entity that owns each edge, from ONE walk.
+
+        One edge PER SEGMENT so interior junction nodes are real vertices (a slope may be joined
+        mid-chain). Slopes descend segment-by-segment; lifts go bottom→top plus a reverse edge for
+        bidirectional types (LiftConfig.UPHILL_ONLY). Roads are excluded. The owner map lets routing
+        describe a node-path as named slopes/lifts without re-scanning; connectivity uses just the edges.
         """
         edges: list[tuple[str, str]] = []
+        owner: dict[tuple[str, str], SkiEdge] = {}
         for slope in self.slopes.values():
-            segs = [self.segments[sid] for sid in slope.segment_ids]
-            seq = _chain_node_sequence(segs)  # top → each interior junction → bottom
-            edges.extend(zip(seq, seq[1:], strict=False))  # consecutive pairs (seq is 1 longer than the pairs)
+            for sid in slope.segment_ids:
+                seg = self.segments[sid]
+                edge = (seg.start_node_id, seg.end_node_id)
+                edges.append(edge)
+                owner[edge] = SkiEdge(entity_id=slope.id, is_lift=False, segment_id=sid)
         for lift in self.lifts.values():
-            edges.append((lift.start_node_id, lift.end_node_id))
+            up = (lift.start_node_id, lift.end_node_id)
+            edges.append(up)
+            owner[up] = SkiEdge(entity_id=lift.id, is_lift=True, segment_id=None)
             if not LiftConfig.UPHILL_ONLY[LiftType(lift.lift_type)]:
-                edges.append((lift.end_node_id, lift.start_node_id))
-        return edges
+                down = (lift.end_node_id, lift.start_node_id)
+                edges.append(down)
+                owner[down] = SkiEdge(entity_id=lift.id, is_lift=True, segment_id=None)
+        return edges, owner
+
+    def _ski_digraph_edges(self) -> list[tuple[str, str]]:
+        """Directed edges of the skiable graph (connectivity's view) — see ski_digraph for the full
+        walk. Kept as the edges-only accessor its callers (SCC labelling) use.
+        """
+        return self.ski_digraph()[0]
 
     def strongly_connected_labels(self) -> dict[str, int]:
         """SCC id per ski-graph node (roads excluded). Two nodes share an id iff you can travel from

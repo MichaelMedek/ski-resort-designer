@@ -172,6 +172,8 @@ class SidebarRenderer:
             return "Select, then click the map to place an OpenStreetMap import area."
         if BuildMode.is_merge(mode):
             return "Select, then click node markers to merge them into one."
+        if BuildMode.is_route(mode):
+            return "Select, then click a start node and an end node to see the best routes."
         raise ValueError(f"Button {mode} has no help text (is_disabled={is_disabled})")
 
     def render(self) -> None:

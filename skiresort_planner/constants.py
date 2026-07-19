@@ -529,6 +529,8 @@ class StyleConfig:
     IMPORT_ICON = "🗺️"
     # Node-merge mode icon (build-mode selector).
     MERGE_ICON = "🔗"
+    # Route-planner mode icon (build-mode selector).
+    ROUTE_ICON = "🧭"
     # Generic sidebar-header icons: one "in-progress" glyph for every building/placing state, one for
     # viewing a finished entity. Shared so all state headers stay consistent from one source.
     BUILDING_ICON = "🏗️"
@@ -715,6 +717,20 @@ class ConnectivityConfig:
     # A strongly-connected component must hold at least this many lifts before it counts as the
     # core resort — below it we assume the resort is still being started and flag nothing.
     MIN_CORE_LIFTS = 5
+
+
+class RoutePlannerConfig:
+    """Route planner (model/routing.py + ui route views): overlay colours for the ≤5 shown routes."""
+
+    # One distinct RGBA per route criterion, in RouteCriterion order (fewest-lifts, least-distance,
+    # least-drop, easiest, most-scenic). Coincident routes share the first winning criterion's colour.
+    ROUTE_COLORS = [
+        [227, 26, 28, 230],  # red
+        [31, 120, 180, 230],  # blue
+        [51, 160, 44, 230],  # green
+        [255, 127, 0, 230],  # orange
+        [106, 61, 154, 230],  # purple
+    ]
 
 
 class OSMConfig:
