@@ -916,3 +916,56 @@ class TestGraphImporter:
         # Reference artifacts written for inspection (never read back).
         assert (tmp_path / "osm_raw.json").exists()
         assert (tmp_path / "osm_import.png").exists()
+
+
+class TestDegree2CollapseGeometry:
+    """Focused unit tests for the degree-2 collapse (shapely.ops.linemerge fusion + fabricated re-mark),
+    on a synthetic 3-node chain so the geometry assertions are exact (not fixture-count envelopes).
+    """
+
+    @staticmethod
+    def _builder():
+        return OSMGraphBuilder(dem=DEMService(), bbox=DATASETS[0].bbox)
+
+    def _chain_graph(self):
+        """A→B→C oriented downhill (2000→1900→1800 m), each run carrying an INTERIOR vertex."""
+        from skiresort_planner.generators.osm_graph_builder import ImportGraph, SlopeRun
+        from skiresort_planner.model.path_point import PathPoint
+
+        lon0, lat0 = DATASETS[0].bbox[0], DATASETS[0].bbox[1]
+        # Legs kept well under MAX_STRAIGHT_M (100 m ≈ 0.0013° lon here) so _finalize_fork_run accepts.
+        a = PathPoint(lon=lon0 + 0.0000, lat=lat0, elevation=2000.0)
+        b = PathPoint(lon=lon0 + 0.0010, lat=lat0, elevation=1900.0)
+        c = PathPoint(lon=lon0 + 0.0020, lat=lat0, elevation=1800.0)
+        mid_ab = PathPoint(lon=lon0 + 0.0005, lat=lat0 + 0.00005, elevation=1950.0)  # interior bend
+        mid_bc = PathPoint(lon=lon0 + 0.0015, lat=lat0 + 0.00005, elevation=1850.0)
+        g = ImportGraph(node_points={1: a, 2: b, 3: c})
+        g.slope_runs = [
+            SlopeRun(points=[a, mid_ab, b], node_a=1, node_b=2, name="Piste"),
+            SlopeRun(points=[b, mid_bc, c], node_a=2, node_b=3, name="Piste"),
+        ]
+        return g, (a, mid_ab, b, mid_bc, c)
+
+    def test_collapse_keeps_interior_vertices(self):
+        """Node 2 (degree-2, non-lift) collapses into one A→C run whose polyline keeps BOTH interior
+        bends — linemerge fusion must not flatten the run to a straight chord.
+        """
+        g, (a, mid_ab, b, mid_bc, c) = self._chain_graph()
+        self._builder()._collapse_degree2_nodes(g)
+        assert len(g.slope_runs) == 1, "the two runs merge at the degree-2 node"
+        merged = g.slope_runs[0]
+        assert {merged.node_a, merged.node_b} == {1, 3}, "merged run spans the two far endpoints"
+        lons = [round(p.lon, 6) for p in merged.points]
+        assert round(mid_ab.lon, 6) in lons and round(mid_bc.lon, 6) in lons, "both interior bends survive"
+        assert len(merged.points) >= 4, "kept interior vertices, not a 2-point straight chord"
+
+    def test_collapse_repopulates_fabricated_overlay(self):
+        """After the collapse, build() re-marks fabricated; here we call it directly and assert the merged
+        run's overlay has one flag per point (not the empty default a freshly-fused run carries).
+        """
+        b = self._builder()
+        g, _pts = self._chain_graph()
+        b._collapse_degree2_nodes(g)
+        b._mark_fabricated(g)
+        merged = g.slope_runs[0]
+        assert len(merged.fabricated) == len(merged.points), "fabricated overlay covers every point"
