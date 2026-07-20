@@ -364,24 +364,16 @@ class SidebarRenderer:
             # Header with counts
             st.markdown(f"**{total_slopes} Slopes • {total_lifts} Lifts • {total_roads} Roads**")
 
-            # Connectivity badges — surfaced here so they're seen without clicking each entity.
-            disconnected = stats["disconnected_count"]
-            if disconnected > 0:
-                st.markdown(f"⚠️ {disconnected} disconnected from core area")
-            no_return = stats["no_return_count"]
-            if no_return > 0:
-                st.markdown(f"⚠️ {no_return} one-way (can't loop back)")
-
-            # Name the biggest offenders per category (largest 3 by length) so the count is actionable.
-            # One loop over (predicate-attr, heading) so the two lists can't drift apart.
+            # Connectivity — one block per category (count in heading + biggest offenders) so
+            # they're seen without clicking each entity. One loop so the two lists can't drift apart.
             defects = stats["defects"]
             for attr, heading in (
-                ("disconnected", "Disconnected from core"),
+                ("disconnected", "Disconnected from core area"),
                 ("no_return", "One-way (can't loop back)"),
             ):
                 offenders = sorted((d for d in defects if getattr(d, attr)), key=lambda d: d.length_m, reverse=True)
                 if offenders:
-                    st.markdown(f"⚠️ **{heading}** (largest {min(3, len(offenders))}):")
+                    st.markdown(f"⚠️ **{len(offenders)} {heading}** (largest {min(3, len(offenders))}):")
                     for d in offenders[:3]:
                         st.markdown(f"&nbsp;&nbsp;• {d.name} — {d.length_m / 1000:.1f}km")
 
