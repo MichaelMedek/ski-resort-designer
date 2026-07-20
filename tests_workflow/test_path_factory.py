@@ -351,6 +351,36 @@ class TestGenerateSlopeFan:
         assert paths[0].sector_name == "Green Left (Gentle)"
         assert paths[0].target_difficulty == "green"
 
+    def test_fan_is_deterministic_under_a_fixed_seed(self, path_factory: PathFactory) -> None:
+        """A fixed RNG seed reproduces the fan byte-for-byte (guards the batched/vectorized sampling
+        from introducing any nondeterminism into the traced points).
+        """
+        import random
+
+        def run() -> list[tuple[str, tuple[tuple[float, float, float], ...]]]:
+            random.seed(1234)
+            return [
+                (p.sector_name, tuple((pt.lon, pt.lat, pt.elevation) for pt in p.points))
+                for p in path_factory.generate_fan(kind=SegmentKind.SLOPE, lon=0.0, lat=0.0, elevation=2500.0)
+            ]
+
+        assert run() == run(), "same seed → identical fan"
+
+    def test_recompute_yields_a_different_fan(self, path_factory: PathFactory) -> None:
+        """Production invariant: the tracer's traverse noise is UNSEEDED, so hitting 'recompute' with
+        the same inputs re-rolls the fan (different traced geometry each time). This guards the
+        recompute UX — a stray random.seed() in production, or a fully deterministic tracer, would
+        silently collapse every recompute to the same paths and this test would catch it.
+        """
+
+        def fan() -> list[tuple[tuple[float, float], ...]]:
+            return [
+                tuple((pt.lon, pt.lat) for pt in p.points)
+                for p in path_factory.generate_fan(kind=SegmentKind.SLOPE, lon=0.0, lat=0.0, elevation=2500.0)
+            ]
+
+        assert fan() != fan(), "consecutive recomputes must re-roll the traverse noise → different fan"
+
 
 class TestGenerateRoadFan:
     """Unit tests for generate_road_fan - the road fan (signed green targets).

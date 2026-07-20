@@ -119,6 +119,49 @@ class TestComputeGradient:
         # The plane is linear, so the reduced magnitude scales exactly with raw steepness.
         assert g30.slope_pct == pytest.approx(g20.slope_pct * 1.5, rel=1e-6)
 
+    def test_batched_sampling_equals_scalar_reference_on_curved_dem(self) -> None:
+        """Regression: the batched gradient (one get_elevations + one destination_vec per ring) must
+        equal a per-sample scalar reference EXACTLY, even on curved terrain where the 16 ring samples
+        all differ. Guards the vectorized sampling against a divergence from the scalar geodesy.
+        """
+        from math import atan2, cos, degrees, radians, sin, sqrt
+
+        from skiresort_planner.constants import GeometricTuningConfig
+        from skiresort_planner.core.geo_calculator import GeoCalculator
+        from tests_workflow.conftest import RoughDEMService
+
+        dem = RoughDEMService()
+        analyzer = TerrainAnalyzer(dem=dem)
+
+        def scalar_gradient(lon: float, lat: float) -> tuple[float, float]:
+            ce = dem.get_elevation(lon=lon, lat=lat)
+            assert ce is not None
+            sx: list[float] = []
+            sy: list[float] = []
+            tw = 0.0
+            for radius, weight in [
+                (0.5 * GeometricTuningConfig.STEP_SIZE_M, 2.0),
+                (1.0 * GeometricTuningConfig.STEP_SIZE_M, 1.0),
+            ]:
+                for a in [0, 45, 90, 135, 180, 225, 270, 315]:
+                    slon, slat = GeoCalculator.destination(lon=lon, lat=lat, bearing_deg=a, distance_m=radius)
+                    se = dem.get_elevation(lon=slon, lat=slat)
+                    assert se is not None
+                    slope = ((ce - se) / radius) * 100
+                    ar = radians(a)
+                    sx.append(slope * sin(ar) * weight)
+                    sy.append(slope * cos(ar) * weight)
+                    tw += weight
+            gx = sum(sx) / tw
+            gy = sum(sy) / tw
+            return sqrt(gx**2 + gy**2), (degrees(atan2(gx, gy)) + 360) % 360
+
+        for lon, lat in [(0.0, 0.0), (0.3, -0.4), (-0.5, 0.2), (0.1, 0.9)]:
+            grad = analyzer.compute_gradient(lon=lon, lat=lat)
+            ref_slope, ref_bearing = scalar_gradient(lon, lat)
+            assert grad.slope_pct == pytest.approx(ref_slope, abs=0.0), f"slope at ({lon},{lat})"
+            assert grad.bearing_deg == pytest.approx(ref_bearing, abs=0.0), f"bearing at ({lon},{lat})"
+
     def test_diagonal_slope_bearing_in_se_quadrant_biased_south(self, mock_dem_red_slope_diagonal) -> None:
         """DEM dropping 30% south + 10% east → fall line in the SE quadrant, biased south."""
         analyzer = TerrainAnalyzer(dem=mock_dem_red_slope_diagonal)

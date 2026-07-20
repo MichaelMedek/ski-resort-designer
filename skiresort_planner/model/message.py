@@ -8,8 +8,8 @@ Architecture:
 Design Principles:
 - Maximum ONE message per panel location at any time
 - Two levels only: INFO (blue) = context/status/loading, WARNING (yellow) = invalid input / next step.
-- Subclass InfoMessage/WarningMessage (inline) or InfoToast/WarningToast (transient) — the level/icon is
-  fixed by the base, so a subclass supplies only its text.
+- Subclass InfoMessage/WarningMessage for inline messages (level/icon fixed by the base). Transient
+  toasts are always WarningToast (yellow); a subclass supplies only its text.
 
 All data (elevations, node names, stats) must be preserved in the consolidated messages.
 """
@@ -115,20 +115,9 @@ class ToastMessage(ABC):
 
 
 @dataclass(frozen=True)
-class InfoToast(ToastMessage):
-    """Transient blue (INFO) toast — an informational cue (e.g. "computing…"). Default icon ℹ️;
-    a subclass may override `icon` for a topical glyph. Semantic level INFO (st.toast has no color API).
-    """
-
-    @property
-    def icon(self) -> str:
-        return "ℹ️"
-
-
-@dataclass(frozen=True)
 class WarningToast(ToastMessage):
-    """Transient yellow (WARNING) toast — invalid input / rejected action. Default icon ⚠️;
-    a subclass may override `icon` for a topical glyph. Semantic level WARNING.
+    """Transient yellow (WARNING) toast — invalid input / rejected action. The only toast level:
+    toasts are always transient warnings (a subclass may override `icon` for a topical glyph).
     """
 
     @property

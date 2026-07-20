@@ -30,7 +30,7 @@ def _concrete_subclasses(base: type) -> list[type]:
     """
     from skiresort_planner.model import message as m
 
-    abstract = {m.Message, m.ToastMessage, m.InfoMessage, m.WarningMessage, m.InfoToast, m.WarningToast}
+    abstract = {m.Message, m.ToastMessage, m.InfoMessage, m.WarningMessage, m.WarningToast}
     out: list[type] = []
 
     def walk(cls: type) -> None:
@@ -229,8 +229,9 @@ class TestOSMImportMessages:
 
 class TestMessageHierarchy:
     """Every concrete message inherits its level/icon from a base class by construction. These tests
-    enumerate ALL message classes so a newly-added one that skips the InfoMessage/WarningMessage/
-    InfoToast/WarningToast bases fails here (completeness guard), and assert the two-levels-only rule.
+    enumerate ALL message classes so a newly-added one that skips the InfoMessage/WarningMessage
+    (inline) or WarningToast (transient) bases fails here (completeness guard), and assert the
+    two-levels-only rule.
     """
 
     def test_only_info_and_warning_levels_exist(self) -> None:
@@ -248,13 +249,14 @@ class TestMessageHierarchy:
                 f"{cls.__name__} must subclass InfoMessage or WarningMessage, not Message directly"
             )
 
-    def test_every_toast_is_info_or_warning(self) -> None:
-        # Each concrete toast must subclass InfoToast or WarningToast so its icon is fixed by the base.
+    def test_every_toast_is_a_warning(self) -> None:
+        # Toasts are always transient warnings — every concrete toast subclasses WarningToast so its
+        # icon is fixed by the base (never ToastMessage directly).
         from skiresort_planner.model import message as m
 
         for cls in _concrete_subclasses(m.ToastMessage):
-            assert issubclass(cls, m.InfoToast | m.WarningToast), (
-                f"{cls.__name__} must subclass InfoToast or WarningToast, not ToastMessage directly"
+            assert issubclass(cls, m.WarningToast), (
+                f"{cls.__name__} must subclass WarningToast, not ToastMessage directly"
             )
 
     def test_info_and_warning_inline_levels(self) -> None:
@@ -265,17 +267,14 @@ class TestMessageHierarchy:
             expected = MessageLevel.INFO if issubclass(cls, InfoMessage) else MessageLevel.WARNING
             assert _make(cls).level == expected, f"{cls.__name__} level"
 
-    def test_info_and_warning_toast_icons(self) -> None:
-        # InfoToast subclasses share one icon; WarningToast subclasses share another; the two differ.
+    def test_warning_toast_icon(self) -> None:
+        # Every concrete toast is a WarningToast and shares its ⚠️ icon.
         from skiresort_planner.model import message as m
-        from skiresort_planner.model.message import InfoToast, WarningToast
+        from skiresort_planner.model.message import WarningToast
 
-        info_icon = _make(next(c for c in _concrete_subclasses(InfoToast))).icon
         warn_icon = _make(next(c for c in _concrete_subclasses(WarningToast))).icon
-        assert info_icon != warn_icon, "info vs warning toasts are visually distinct"
         for cls in _concrete_subclasses(m.ToastMessage):
-            expected = info_icon if issubclass(cls, InfoToast) else warn_icon
-            assert _make(cls).icon == expected, f"{cls.__name__} icon inherited from its toast base"
+            assert _make(cls).icon == warn_icon, f"{cls.__name__} icon inherited from WarningToast"
 
     def test_clicking_disabled_in_3d_toast_text(self) -> None:
         from skiresort_planner.model.message import ClickingDisabledIn3DToast, WarningToast

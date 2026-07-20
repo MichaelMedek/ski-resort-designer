@@ -16,6 +16,8 @@ from enum import StrEnum
 from math import atan2, cos, degrees, radians, sin, sqrt
 from typing import Optional
 
+import numpy as np
+
 from skiresort_planner.constants import (
     GeometricTuningConfig,
     SlopeConfig,
@@ -227,45 +229,55 @@ class TerrainAnalyzer:
 
         bounds = self._dem.bounds
 
+        inner_radius = 0.5 * GeometricTuningConfig.STEP_SIZE_M  # 15m with 30m step
+        outer_radius = 1.0 * GeometricTuningConfig.STEP_SIZE_M  # 30m with 30m step
+        ring_configs = [
+            (inner_radius, 2.0),
+            (outer_radius, 1.0),
+        ]
+        angles_deg = [0, 45, 90, 135, 180, 225, 270, 315]
+        angles_arr = np.array(angles_deg, dtype=np.float64)
+
+        # Build all 16 ring sample coords with one destination_vec per ring, then ONE batched
+        # elevation lookup (33 scalar DEM/geo calls → 2 vectorized calls). The weighted sum below
+        # stays a scalar loop in the SAME ring/angle order, so the result is byte-identical.
+        sample_lons: list[float] = []
+        sample_lats: list[float] = []
+        sample_meta: list[tuple[float, float, int]] = []  # (radius_m, weight, angle_deg)
+        for radius_m, weight in ring_configs:
+            ring_lons, ring_lats = GeoCalculator.destination_vec(lon, lat, angles_arr, radius_m)
+            for i, angle_deg in enumerate(angles_deg):
+                sample_lons.append(float(ring_lons[i]))
+                sample_lats.append(float(ring_lats[i]))
+                sample_meta.append((radius_m, weight, angle_deg))
+
+        sample_elevs = self._dem.get_elevations(sample_lons, sample_lats)
+
         # Sample at 8 compass directions on two rings
         samples_x: list[float] = []  # East-West gradient contributions
         samples_y: list[float] = []  # North-South gradient contributions
         total_weight = 0.0
 
-        inner_radius = 0.5 * GeometricTuningConfig.STEP_SIZE_M  # 15m with 30m step
-        outer_radius = 1.0 * GeometricTuningConfig.STEP_SIZE_M  # 30m with 30m step
+        for (radius_m, weight, angle_deg), sample_lon, sample_lat, sample_elev in zip(
+            sample_meta, sample_lons, sample_lats, sample_elevs, strict=True
+        ):
+            # Check bounds
+            if not (bounds[0] <= sample_lon <= bounds[2] and bounds[1] <= sample_lat <= bounds[3]):
+                continue
 
-        ring_configs = [
-            (inner_radius, 2.0),
-            (outer_radius, 1.0),
-        ]
+            # Out-of-coverage / nodata samples come back as NaN (external DEM data) — skip them.
+            if np.isnan(sample_elev):
+                continue
 
-        for radius_m, weight in ring_configs:
-            for angle_deg in [0, 45, 90, 135, 180, 225, 270, 315]:
-                sample_lon, sample_lat = GeoCalculator.destination(
-                    lon=lon,
-                    lat=lat,
-                    bearing_deg=angle_deg,
-                    distance_m=radius_m,
-                )
+            # Calculate slope from center to sample point
+            drop = center_elev - float(sample_elev)
+            slope = (drop / radius_m) * 100  # As percentage
 
-                # Check bounds
-                if not (bounds[0] <= sample_lon <= bounds[2] and bounds[1] <= sample_lat <= bounds[3]):
-                    continue
-
-                sample_elev = self._dem.get_elevation(lon=sample_lon, lat=sample_lat)
-                if sample_elev is None:
-                    continue
-
-                # Calculate slope from center to sample point
-                drop = center_elev - sample_elev
-                slope = (drop / radius_m) * 100  # As percentage
-
-                # Decompose into x (east) and y (north) components
-                angle_rad = radians(angle_deg)
-                samples_x.append(slope * sin(angle_rad) * weight)
-                samples_y.append(slope * cos(angle_rad) * weight)
-                total_weight += weight
+            # Decompose into x (east) and y (north) components
+            angle_rad = radians(angle_deg)
+            samples_x.append(slope * sin(angle_rad) * weight)
+            samples_y.append(slope * cos(angle_rad) * weight)
+            total_weight += weight
 
         if not samples_x or total_weight == 0:
             return TerrainGradient(slope_pct=0.0, bearing_deg=0.0)
