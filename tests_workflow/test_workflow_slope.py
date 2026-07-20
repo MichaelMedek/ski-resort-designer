@@ -163,13 +163,13 @@ class TestForceStateMethods:
         seg1_id = list(graph.segments.keys())[0]
         sm.commit_path(segment_id=seg1_id, endpoint_node_id=endpoint_ids[0])  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
-        sm.select_custom_target(
+        sm.select_custom_target(  # type: ignore[attr-defined]  # dynamic python-statemachine event
             target_location=(
                 0.0,
                 -500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
                 dem.get_elevation_or_raise(lon=0.0, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR),
             )
-        )  # type: ignore[attr-defined]  # dynamic python-statemachine event
+        )
 
         assert sm.current_state_value == "slope_custom_path"
 
@@ -272,13 +272,13 @@ class TestCustomPathBranch:
         start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
         sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
 
-        sm.select_custom_target(
+        sm.select_custom_target(  # type: ignore[attr-defined]  # dynamic python-statemachine event
             target_location=(
                 0.0,
                 -500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
                 dem.get_elevation_or_raise(lon=0.0, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR),
             )
-        )  # type: ignore[attr-defined]  # dynamic python-statemachine event
+        )
         assert sm.current_state_value == "slope_custom_path"
         assert len(ctx.build(SegmentKind.SLOPE).segments) == 0
 
@@ -300,13 +300,13 @@ class TestCustomPathBranch:
         sm.commit_path(segment_id=seg_id, endpoint_node_id=endpoint_ids[0])  # type: ignore[attr-defined]  # dynamic python-statemachine event
         assert sm.current_state_value == "slope_building"
 
-        sm.select_custom_target(
+        sm.select_custom_target(  # type: ignore[attr-defined]  # dynamic python-statemachine event
             target_location=(
                 0.0,
                 -1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
                 dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
             )
-        )  # type: ignore[attr-defined]  # dynamic python-statemachine event
+        )
         assert sm.current_state_value == "slope_custom_path"
         assert len(ctx.build(SegmentKind.SLOPE).segments) == 1
 

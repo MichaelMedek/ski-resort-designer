@@ -115,13 +115,13 @@ class TestSelectCustomTargetWorkflow:
 
         start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
         sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
-        sm.select_custom_target(
+        sm.select_custom_target(  # type: ignore[attr-defined]  # dynamic python-statemachine event
             target_location=(
                 0.0,
                 -400 / MapConfig.METERS_PER_DEGREE_EQUATOR,
                 dem.get_elevation_or_raise(lon=0.0, lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR),
             )
-        )  # type: ignore[attr-defined]  # dynamic python-statemachine event
+        )
         start_node_first = ctx.custom_connect.start_node
         assert sm.current_state_value == "slope_custom_path"
 
@@ -145,19 +145,19 @@ class TestSelectCustomTargetWorkflow:
         sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
 
         # Node target → its id is captured for exact reuse on commit.
-        sm.select_custom_target(
+        sm.select_custom_target(  # type: ignore[attr-defined]  # dynamic python-statemachine event
             target_location=(0.0, -600 / MapConfig.METERS_PER_DEGREE_EQUATOR, 1880.0), target_node="N7"
-        )  # type: ignore[attr-defined]  # dynamic python-statemachine event
+        )
         assert ctx.custom_connect.target_node == "N7", "clicked node's identity is captured"
 
         # A terrain target (no node kwarg) leaves it None on the SM-mutated context → proximity fallback.
-        sm.select_custom_target(
+        sm.select_custom_target(  # type: ignore[attr-defined]  # dynamic python-statemachine event
             target_location=(
                 0.0,
                 -700 / MapConfig.METERS_PER_DEGREE_EQUATOR,
                 dem.get_elevation_or_raise(lon=0.0, lat=-700 / MapConfig.METERS_PER_DEGREE_EQUATOR),
             )
-        )  # type: ignore[attr-defined]  # dynamic python-statemachine event
+        )
         assert ctx.custom_connect.target_node is None, "terrain re-target clears the captured node id"
 
     def test_select_target_sets_deferred_flag_cancel_clears_it(self, workflow_setup: WorkflowSetup) -> None:
@@ -169,13 +169,13 @@ class TestSelectCustomTargetWorkflow:
         start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
         sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
 
-        sm.select_custom_target(
+        sm.select_custom_target(  # type: ignore[attr-defined]  # dynamic python-statemachine event
             target_location=(
                 0.0,
                 -500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
                 dem.get_elevation_or_raise(lon=0.0, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR),
             )
-        )  # type: ignore[attr-defined]  # dynamic python-statemachine event
+        )
         assert sm.current_state_value == "slope_custom_path"
         assert ctx.pending.custom_connect, "entering custom path arms deferred generation"
 
@@ -193,13 +193,13 @@ class TestCancelCustomConnect:
 
         start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
         sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
-        sm.select_custom_target(
+        sm.select_custom_target(  # type: ignore[attr-defined]  # dynamic python-statemachine event
             target_location=(
                 0.0,
                 -500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
                 dem.get_elevation_or_raise(lon=0.0, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR),
             )
-        )  # type: ignore[attr-defined]  # dynamic python-statemachine event
+        )
 
         assert sm.current_state_value == "slope_custom_path"
         assert len(ctx.build(SegmentKind.SLOPE).segments) == 0, "No segments committed"
@@ -216,13 +216,13 @@ class TestCancelCustomConnect:
         start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
         sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
         _commit_first_segment(sm, graph, factory, start_elev)
-        sm.select_custom_target(
+        sm.select_custom_target(  # type: ignore[attr-defined]  # dynamic python-statemachine event
             target_location=(
                 0.0,
                 -500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
                 dem.get_elevation_or_raise(lon=0.0, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR),
             )
-        )  # type: ignore[attr-defined]  # dynamic python-statemachine event
+        )
 
         assert sm.current_state_value == "slope_custom_path"
         assert len(ctx.build(SegmentKind.SLOPE).segments) == 1, "Has 1 segment"
@@ -241,13 +241,13 @@ class TestCancelSlopeFromCustom:
 
         start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
         sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
-        sm.select_custom_target(
+        sm.select_custom_target(  # type: ignore[attr-defined]  # dynamic python-statemachine event
             target_location=(
                 0.0,
                 -500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
                 dem.get_elevation_or_raise(lon=0.0, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR),
             )
-        )  # type: ignore[attr-defined]  # dynamic python-statemachine event
+        )
 
         assert sm.current_state_value == "slope_custom_path"
 
@@ -271,13 +271,13 @@ class TestFinishSlopeFromCustom:
         start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
         sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
         _commit_first_segment(sm, graph, factory, start_elev)
-        sm.select_custom_target(
+        sm.select_custom_target(  # type: ignore[attr-defined]  # dynamic python-statemachine event
             target_location=(
                 0.0,
                 -500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
                 dem.get_elevation_or_raise(lon=0.0, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR),
             )
-        )  # type: ignore[attr-defined]  # dynamic python-statemachine event
+        )
         assert sm.current_state_value == "slope_custom_path"
 
         # Seed an in-progress target proposal so the clear is observable (not vacuous):
@@ -385,13 +385,13 @@ class TestCancelRoadFromCustom:
         start = PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
         sm.start_road(node_id=None, location=start)
         _commit_first_road_segment(sm, graph, start)
-        sm.select_custom_target(
+        sm.select_custom_target(  # type: ignore[attr-defined]  # dynamic python-statemachine event
             target_location=(
                 0.0,
                 -500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
                 dem.get_elevation_or_raise(lon=0.0, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR),
             )
-        )  # type: ignore[attr-defined]
+        )
         assert sm.current_state_value == "road_custom_path"
 
         sm.send("cancel_road")
@@ -411,13 +411,13 @@ class TestFinishRoadFromCustom:
         start = PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
         sm.start_road(node_id=None, location=start)
         _commit_first_road_segment(sm, graph, start)
-        sm.select_custom_target(
+        sm.select_custom_target(  # type: ignore[attr-defined]  # dynamic python-statemachine event
             target_location=(
                 0.0,
                 -500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
                 dem.get_elevation_or_raise(lon=0.0, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR),
             )
-        )  # type: ignore[attr-defined]
+        )
         assert sm.current_state_value == "road_custom_path"
 
         # Seed an in-progress target proposal so the clear-on-finish is observable (not vacuous).

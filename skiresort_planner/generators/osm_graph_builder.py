@@ -1268,7 +1268,7 @@ class OSMGraphBuilder:
         lift_nodes = self._lift_nodes(graph)
         while True:
             # MultiGraph so parallel runs (same node pair) each add to endpoint degree.
-            g: nx.MultiGraph = nx.MultiGraph()  # type: ignore[type-arg,explicit-any]  # networkx untyped
+            g: nx.MultiGraph = nx.MultiGraph()  # networkx untyped
             g.add_edges_from((r.node_a, r.node_b) for r in graph.slope_runs)
             keep = [
                 r
@@ -1596,7 +1596,7 @@ class OSMGraphBuilder:
         for _ in range(500):  # fixpoint guard; each pass collapses one node
             # MultiGraph carrying each run's index: a degree-2 non-lift node with two DISTINCT incident
             # runs is a pass-through to collapse (a parallel-pair node has degree 2 but one shared run).
-            g: nx.MultiGraph = nx.MultiGraph()  # type: ignore[type-arg,explicit-any]  # networkx untyped
+            g: nx.MultiGraph = nx.MultiGraph()  # networkx untyped
             g.add_edges_from((r.node_a, r.node_b, {"ri": i}) for i, r in enumerate(graph.slope_runs))
             victim = next(
                 (

@@ -246,7 +246,7 @@ class TestCriteriaDiverge:
         assert shortest.node_path == ("A", "Mid", "Ledge", "B"), "shortest-slope takes the lift shortcut"
         assert shortest.lift_count == 1
         assert shortest.total_slope_length_m < fewest.total_slope_length_m, "the shortcut skis less"
-        assert fewest.node_path != shortest.node_path, "the two criteria genuinely diverge"
+        assert list(fewest.node_path) != list(shortest.node_path), "the two criteria genuinely diverge"
 
     def test_shortest_slope_prefers_less_skiing_over_a_down_lift(
         self, empty_graph: ResortGraph, dem: MockDEMService
