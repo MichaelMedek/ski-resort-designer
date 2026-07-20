@@ -23,10 +23,12 @@ Output is an ImportGraph the ResortGraph materializes with shared nodes as one u
 
 import logging
 import math
+import re
 from collections import Counter, defaultdict
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Collection, Hashable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
 import networkx as nx
 import numpy as np
@@ -38,7 +40,7 @@ from shapely import STRtree, distance, line_interpolate_point, line_merge, set_p
 from shapely.geometry import LineString, MultiLineString, Point
 from shapely.ops import substring, unary_union
 
-from skiresort_planner.constants import OSMConfig, SlopeConfig
+from skiresort_planner.constants import ConnectionConfig, OSMConfig, SlopeConfig
 from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
@@ -286,6 +288,173 @@ def ways_to_lines(
     return pistes, extract_lift_sections(elements, bbox)
 
 
+def _base_lift_name(nm: str | None) -> str | None:
+    """Strip a `(k)` mid-station suffix so all sections of one lift share a base name."""
+    return re.sub(r" \(\d+\)$", "", nm) if nm else nm
+
+
+def _lift_pairs_via_dijkstra(
+    down: "dict[Hashable, set[Hashable]]", sources: "Sequence[Hashable]", targets: "Collection[Hashable]"
+) -> "set[tuple[Hashable, Hashable]]":
+    """{(s, t)} for every source s that reaches target t over directed adjacency `down`, computed in ONE
+    vectorized scipy multi-source `dijkstra` (finite distance ⇒ reachable) — no per-node Python BFS.
+
+    Nodes are indexed in first-seen order (no sort — keys may be heterogeneous, e.g. metre-tuples plus
+    virtual ('src', id) markers, which are not mutually comparable).
+    """
+    idx: dict[Hashable, int] = {}
+
+    def index(n: Hashable) -> int:
+        i = idx.get(n)
+        if i is None:
+            i = idx[n] = len(idx)
+        return i
+
+    rows: list[int] = []
+    cols: list[int] = []
+    for u, vs in down.items():
+        ui = index(u)
+        for v in vs:
+            rows.append(ui)
+            cols.append(index(v))
+    for s in sources:
+        index(s)
+    tgt_present = [t for t in targets if t in idx]
+    n = len(idx)
+    if n == 0 or not sources:
+        return set()
+    mat = csr_matrix((np.ones(len(rows), dtype=np.int8), (rows, cols)), shape=(n, n))
+    src_idx = [idx[s] for s in sources]
+    dist = np.atleast_2d(dijkstra(mat, directed=True, indices=src_idx, unweighted=True))  # (len(sources), n)
+    node_at = {i: node for node, i in idx.items()}
+    tgt_idx = np.array([idx[t] for t in tgt_present], dtype=int)
+    pairs: set[tuple[Hashable, Hashable]] = set()
+    for row, s in enumerate(sources):
+        for j in tgt_idx[np.isfinite(dist[row, tgt_idx])]:
+            t = node_at[int(j)]
+            if t != s:
+                pairs.add((s, t))
+    return pairs
+
+
+def _downhill_adjacency(graph: "ImportGraph") -> dict[int, set[int]]:
+    """hi→{lo} over the FINAL graph's slope runs, each oriented by its endpoints' DEM elevations."""
+    elev = {k: v.elevation for k, v in graph.node_points.items()}
+    down: dict[int, set[int]] = defaultdict(set)
+    for r in graph.slope_runs:
+        hi, lo = (r.node_a, r.node_b) if elev[r.node_a] >= elev[r.node_b] else (r.node_b, r.node_a)
+        down[hi].add(lo)
+    return down
+
+
+class LiftReachabilityCheck:
+    """Sanity check: every lift→lift SLOPE-ONLY downhill connection OSM offers must survive to the final
+    graph. What matters to a skier is whether, from lift station A, skiing DOWN slopes only (no riding
+    lifts), station B is reachable. Identity is the FINAL node id (two lift ends are one station iff the
+    builder merged them), so a station shared by two lifts can never desync the two measurements.
+
+    OSM ground truth uses a MIN_NODE_DIST_M circle round each station (raw pistes rarely end exactly on
+    one); the final graph is measured EXACTLY on shared node ids. A connection is only demanded when the
+    destination is at least MIN_DROP_M below the source (a real net descent, not DEM noise between
+    near-equal peaks). `missing()` returns the dropped connections; the builder logs them as a warning
+    and the R40 test asserts the set is empty.
+    """
+
+    def __init__(self, builder: "OSMGraphBuilder", pistes: list[tuple[list[Vertex], str | None]]) -> None:
+        self.builder = builder
+        self.pistes = pistes
+
+    @staticmethod
+    def node_labels(graph: "ImportGraph") -> dict[int, str]:
+        """Final lift-node id → human label listing every (lift, role) it serves, e.g.
+        'Greitspitzbahn_bottom' or 'Greitspitzbahn_top / Greitspitzlift_top' when one node is two lifts'
+        station. Roles rank bottom/top/mid_k by elevation within each lift's own nodes. Display only.
+        """
+        elev = {k: v.elevation for k, v in graph.node_points.items()}
+        by_name: dict[str, set[int]] = defaultdict(set)
+        for lf in graph.lifts:
+            by_name[_base_lift_name(lf.name) or f"@{lf.node_a}"] |= {lf.node_a, lf.node_b}
+        roles: dict[int, list[str]] = defaultdict(list)
+        for nm, nodes in by_name.items():
+            ordered = sorted(nodes, key=lambda n: elev[n])
+            for rank, n in enumerate(ordered):
+                role = "bottom" if rank == 0 else ("top" if rank == len(ordered) - 1 else f"mid_{rank - 1}")
+                roles[n].append(f"{nm}_{role}")
+        return {n: " / ".join(sorted(names)) for n, names in roles.items()}
+
+    @staticmethod
+    def final_pairs(graph: "ImportGraph") -> set[tuple[int, int]]:
+        """FINAL graph, EXACT (no circle): from each lift node, ski DOWN slope runs and collect every
+        OTHER lift node reached — {(ni, nj)} in node-id space (one vectorized dijkstra).
+        """
+        lift_nodes = {n for lf in graph.lifts for n in (lf.node_a, lf.node_b)}
+        down: dict[Hashable, set[Hashable]] = {k: set(v) for k, v in _downhill_adjacency(graph).items()}
+        raw = _lift_pairs_via_dijkstra(down, sorted(lift_nodes), set(lift_nodes))
+        return {(cast(int, s), cast(int, t)) for s, t in raw}
+
+    def osm_pairs(self, graph: "ImportGraph") -> set[tuple[int, int]]:
+        """OSM ground truth as FINAL-node-id pairs {(ni, nj)}: skiing DOWN raw pistes reaches nj's station
+        circle from ni's downhill exits. Raw pistes are planar-noded (crossings shared, via _full_split)
+        and DEM-oriented; a MIN_NODE_DIST_M circle round each FINAL lift-node gives its EXIT verts (at/
+        below it → ski away) and ENTRY verts (any in-circle vertex → arriving = you're there). Only demands
+        a pair when nj is ≥MIN_DROP_M below ni (a real descent, not near-equal-peak DEM noise).
+
+        Reachability is ONE vectorized dijkstra: a virtual ("src", n) node feeds ni's exit verts and each
+        entry vert feeds a virtual ("tgt", n), so ni→nj iff ("src",ni) reaches ("tgt",nj) — no per-station
+        Python traversal.
+        """
+        b, dem = self.builder, self.builder.dem
+
+        def key(xy: XY) -> tuple[int, int]:
+            return (round(xy[0]), round(xy[1]))
+
+        down: dict[object, set[object]] = defaultdict(set)
+        vert_elev: dict[tuple[int, int], float] = {}
+        piste_lines = [LineString([b._to_m(lon, lat) for lon, lat in vs]) for vs, _nm in self.pistes if len(vs) >= 2]
+        for seg in b._full_split(piste_lines):
+            pts = []
+            for x, y in seg.coords:
+                lon, lat = b._to_deg(x, y)
+                pts.append((key((x, y)), dem.get_elevation(lon=lon, lat=lat)))
+            for (ka, ea), (kb, eb) in zip(pts, pts[1:], strict=False):
+                if ea is not None:
+                    vert_elev[ka] = ea
+                if eb is not None:
+                    vert_elev[kb] = eb
+                if ka == kb or ea is None or eb is None:
+                    continue
+                hi, lo = (ka, kb) if ea >= eb else (kb, ka)
+                down[hi].add(lo)
+
+        lift_nodes = sorted({n for lf in graph.lifts for n in (lf.node_a, lf.node_b)})
+        verts = list(vert_elev)
+        tree = cKDTree(np.array(verts, dtype=float)) if verts else None
+        radius = OSMConfig.MIN_NODE_DIST_M
+        for n in lift_nodes:
+            p = graph.node_points[n]
+            near = tree.query_ball_point(list(b._to_m(p.lon, p.lat)), radius) if tree is not None else []
+            for j in near:
+                v = verts[j]
+                if vert_elev[v] <= p.elevation:
+                    down[("src", n)].add(v)  # exit: ski away from ni going down
+                down[v].add(("tgt", n))  # entry: reaching v means you're at nj
+
+        raw = _lift_pairs_via_dijkstra(down, [("src", n) for n in lift_nodes], {("tgt", n) for n in lift_nodes})
+        elev = graph.node_points
+        # unwrap the virtual ("src"/"tgt", node_id) endpoints; keep only real net descents (≥MIN_DROP_M)
+        pairs: set[tuple[int, int]] = set()
+        for s, t in raw:
+            si = cast(tuple[str, int], s)[1]
+            ti = cast(tuple[str, int], t)[1]
+            if si != ti and elev[si].elevation - elev[ti].elevation >= ConnectionConfig.MIN_DROP_M:
+                pairs.add((si, ti))
+        return pairs
+
+    def missing(self, graph: "ImportGraph") -> set[tuple[int, int]]:
+        """Lift→lift downhill connections OSM offers but the final graph dropped — {(ni, nj)} node ids."""
+        return self.osm_pairs(graph) - self.final_pairs(graph)
+
+
 class OSMGraphBuilder:
     """Turns raw Overpass ways into a connected ImportGraph. Pure geometry — no graph mutation."""
 
@@ -410,6 +579,12 @@ class OSMGraphBuilder:
             f"{len(graph.lifts)} lifts (deduped {graph.deduped}, dropped uphill {graph.dropped_uphill}, "
             f"isolated {graph.dropped_isolated})"
         )
+        # Sanity check: warn if any lift→lift downhill connection OSM offers was dropped (real ski gap).
+        missing = LiftReachabilityCheck(builder=self, pistes=pistes).missing(graph)
+        if missing:
+            labels = LiftReachabilityCheck.node_labels(graph)
+            report = sorted(f"{labels[a]} → {labels[b]}" for a, b in missing)
+            logger.warning(f"[IMPORT] {len(missing)} lift→lift downhill connections dropped vs OSM: {report}")
         return graph
 
     # -- step 2: dedup duplicate pistes -----------------------------------------------------------
