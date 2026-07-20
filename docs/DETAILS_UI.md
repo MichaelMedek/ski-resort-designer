@@ -330,10 +330,11 @@ As with slopes and lifts, you can view the road's elevation profile, switch to *
 - **🛣️ Road** — Build a gentle car road segment by segment
 - **🎿💺🚡🚠 Lift buttons** — Click terrain to place a lift (Surface, Chair, Gondola, Aerial Tram)
 
-Below a divider sit two **utility** buttons:
+Below a divider sit the **utility** buttons:
 
 - **🗺️ Import** — load real lifts & pistes from OpenStreetMap for an area.
 - **🔗 Node Merge** — merge junction nodes, delete a node, or add a node on a path.
+- **🧭 Route Planner** — pick a start + end node to see the best ways to ski between them.
 
 The currently active mode is highlighted.
 
