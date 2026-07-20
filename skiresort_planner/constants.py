@@ -832,7 +832,7 @@ class OSMConfig:
     OSM_DEDUP_TOL_M = 100.0
 
     # --- Connected-graph build (generators/osm_graph_builder.py). Distances in metres. ---
-    DEDUP_TOL_M = 18.0  # near-coincidence band for the duplicate-piste test
+    DEDUP_TOL_M = 20.0  # near-coincidence band for the duplicate-piste test
     PARALLEL_TOL_M = 60.0  # near-but-offset band for the redundant-parallel
     PARALLEL_TWIN_FRAC = 0.70  # a same-name run parallel to a longer sibling ≥this of ITS length is a twin
     DEDUP_COVER_FRAC = 0.78  # covered fraction to call a piste a duplicate
@@ -845,7 +845,7 @@ class OSMConfig:
     MAX_PULL_M = 300.0  # max straight hub connector (longer → drop the segment)
     MAX_STRAIGHT_M = 100.0  # max single straight leg between consecutive points
     TRIM_END_M = 50.0  # trim off each slope end before the hub connector
-    SNAP_GRID_M = 12.0  # snap-round grid before noding (collapse near-coincident ends)
+    SNAP_GRID_M = 10.0  # snap-round grid before noding (collapse near-coincident ends)
     COORD_GRID_M = 1.0  # integer-metre projection grid (_to_m + post-noding set_precision) → bit-exact vertices
     NODE_TERRAIN_TOL_M = 10.0  # max node vs DEM deviation; also the carve depth + descent-carry cap
     SLOPE_TERRAIN_TOL_M = 50.0  # max slope-point vs DEM deviation
