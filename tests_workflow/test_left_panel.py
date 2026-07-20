@@ -66,6 +66,37 @@ class TestSidebarRuns:
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
 
+    def test_defect_lists_show_largest_three_by_length(self, fake_st, empty_graph, monkeypatch) -> None:
+        """The summary names the largest 3 offenders per category, ordered by length. Isolate the
+        panel logic by feeding a crafted stats.defects (the classifier is tested in test_connectivity).
+        """
+        from skiresort_planner.model.resort_graph import EntityDefect
+
+        defects = [
+            EntityDefect(
+                entity_id=f"SL{i}", name=f"slope-{i}", length_m=float(i * 100), disconnected=True, no_return=False
+            )
+            for i in range(1, 5)  # 4 disconnected slopes of increasing length (100..400m)
+        ] + [EntityDefect(entity_id="L1", name="lift-a", length_m=250.0, disconnected=False, no_return=True)]
+        stats = empty_graph.get_stats()
+        stats["disconnected_count"] = 4
+        stats["no_return_count"] = 1
+        stats["defects"] = defects
+        monkeypatch.setattr(empty_graph, "get_stats", lambda: stats)
+
+        lines: list[str] = []
+        monkeypatch.setattr(fake_st, "markdown", lambda text, *a, **k: lines.append(text))
+
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph)._render_resort_stats()
+
+        body = "\n".join(lines)
+        assert "**Disconnected from core** (largest 3):" in body
+        # Largest 3 by length are 400,300,200 → slope-4/3/2; slope-1 (100m) is dropped.
+        assert "slope-4" in body and "slope-3" in body and "slope-2" in body
+        assert "slope-1" not in body
+        assert "**One-way (can't loop back)**" in body and "lift-a" in body
+
     def test_sidebar_during_slope_building(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         # Building state renders the building controls + undo/reset buttons.
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)

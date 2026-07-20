@@ -564,6 +564,14 @@ class StyleConfig:
     }
     assert set(LIFT_DISPLAY_NAMES.keys()) == set(LiftConfig.TYPES) | {"slope"}
 
+    @staticmethod
+    def gray_out(rgba: list[int]) -> list[int]:
+        """Mute an entity color halfway toward gray — the "half-dead" tone for a connectivity-defect
+        slope/lift, so its difficulty/type hue is still readable but visibly demoted. Alpha kept.
+        """
+        r, g, b, a = rgba
+        return [(r + 128) // 2, (g + 128) // 2, (b + 128) // 2, a]
+
 
 class NameConfig:
     """Creative naming components for slopes and lifts."""

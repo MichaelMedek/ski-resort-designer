@@ -372,6 +372,19 @@ class SidebarRenderer:
             if no_return > 0:
                 st.markdown(f"⚠️ {no_return} one-way (can't loop back)")
 
+            # Name the biggest offenders per category (largest 3 by length) so the count is actionable.
+            # One loop over (predicate-attr, heading) so the two lists can't drift apart.
+            defects = stats["defects"]
+            for attr, heading in (
+                ("disconnected", "Disconnected from core"),
+                ("no_return", "One-way (can't loop back)"),
+            ):
+                offenders = sorted((d for d in defects if getattr(d, attr)), key=lambda d: d.length_m, reverse=True)
+                if offenders:
+                    st.markdown(f"⚠️ **{heading}** (largest {min(3, len(offenders))}):")
+                    for d in offenders[:3]:
+                        st.markdown(f"&nbsp;&nbsp;• {d.name} — {d.length_m / 1000:.1f}km")
+
             # Elevation range across all nodes
             elev_range = self.graph.get_elevation_range()
             if elev_range is not None:

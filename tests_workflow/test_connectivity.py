@@ -65,7 +65,7 @@ class TestCoreLiftGate:
         assert ConnectivityConfig.MIN_CORE_LIFTS == 5
         build_ladder_core(empty_graph, dem, n_lifts=4)
         assert empty_graph.get_core_resort() is None
-        assert empty_graph.count_disconnected(empty_graph.get_core_resort()) == 0
+        assert empty_graph.get_stats()["disconnected_count"] == 0
 
     def test_membership_is_no_core_yet_when_no_core(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
         build_ladder_core(empty_graph, dem, n_lifts=4)
@@ -85,7 +85,7 @@ class TestCoreResort:
         core = empty_graph.get_core_resort()
         assert core is not None
         assert core.node_ids == {"B", "P1", "P2", "P3", "P4", "P5"}
-        assert empty_graph.count_disconnected(empty_graph.get_core_resort()) == 0
+        assert empty_graph.get_stats()["disconnected_count"] == 0
 
     def test_longest_core_lift_is_named(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
         """The warning names the longest in-core lift — the farthest peak's lift here."""
@@ -123,7 +123,7 @@ class TestCoreResort:
         assert core is not None
         assert "J" in core.node_ids, "interior junction node must be a graph vertex"
         assert empty_graph.entity_membership(start_node_id="J", end_node_id="B", core=core) == CoreMembership.IN_CORE
-        assert empty_graph.count_disconnected(empty_graph.get_core_resort()) == 0
+        assert empty_graph.get_stats()["disconnected_count"] == 0
 
 
 class TestDisconnected:
@@ -136,7 +136,7 @@ class TestDisconnected:
         assert (
             empty_graph.entity_membership(start_node_id="P1", end_node_id="V", core=core) == CoreMembership.DISCONNECTED
         )
-        assert empty_graph.count_disconnected(empty_graph.get_core_resort()) == 1
+        assert empty_graph.get_stats()["disconnected_count"] == 1
 
     def test_isolated_lift_is_disconnected(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
         """A lift into an isolated pocket (neither end in the core) → DISCONNECTED."""
@@ -148,7 +148,7 @@ class TestDisconnected:
         assert (
             empty_graph.entity_membership(start_node_id="X", end_node_id="Y", core=core) == CoreMembership.DISCONNECTED
         )
-        assert empty_graph.count_disconnected(empty_graph.get_core_resort()) == 1
+        assert empty_graph.get_stats()["disconnected_count"] == 1
 
 
 # =============================================================================
@@ -200,7 +200,7 @@ class TestDirectionality:
 
 
 # =============================================================================
-# 8. get_stats runs the SCC pass exactly once (count_disconnected takes a precomputed core)
+# 8. get_stats runs the SCC pass exactly once (connectivity_defects takes precomputed labels/core)
 # =============================================================================
 
 
@@ -264,7 +264,7 @@ class TestCanLoopBack:
 
 
 # =============================================================================
-# 10. count_no_return — resort-summary count of one-way (dead-end) elements
+# 10. no_return_count — resort-summary count of one-way (dead-end) elements (via get_stats)
 # =============================================================================
 
 
@@ -274,22 +274,12 @@ class TestCountNoReturn:
         build_ladder_core(empty_graph, dem, n_lifts=4)
         add_node(empty_graph, "V", lon=0.0, lat=-0.01, elev=500.0)
         add_slope(empty_graph, "SL_dead", top="P1", bottom="V")
-        labels = empty_graph.strongly_connected_labels()
-        assert empty_graph.count_no_return(labels, core=empty_graph.get_core_resort(labels=labels)) == 0
-
-    def test_counts_dead_end_slope(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
-        """A dead-end valley slope is counted as one one-way element."""
-        build_ladder_core(empty_graph, dem, n_lifts=5)
-        add_node(empty_graph, "V", lon=0.0, lat=-0.01, elev=500.0)
-        add_slope(empty_graph, "SL_dead", top="P1", bottom="V")
-        labels = empty_graph.strongly_connected_labels()
-        assert empty_graph.count_no_return(labels, core=empty_graph.get_core_resort(labels=labels)) == 1
+        assert empty_graph.get_stats()["no_return_count"] == 0
 
     def test_ladder_alone_has_no_one_way(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
         """A clean lift-up/slope-down ladder loops everywhere → zero one-way elements."""
         build_ladder_core(empty_graph, dem, n_lifts=5)
-        labels = empty_graph.strongly_connected_labels()
-        assert empty_graph.count_no_return(labels, core=empty_graph.get_core_resort(labels=labels)) == 0
+        assert empty_graph.get_stats()["no_return_count"] == 0
 
     def test_stats_expose_no_return_count(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
         """get_stats surfaces the count for the resort-summary badge."""
@@ -297,3 +287,61 @@ class TestCountNoReturn:
         add_node(empty_graph, "V", lon=0.0, lat=-0.01, elev=500.0)
         add_slope(empty_graph, "SL_dead", top="P1", bottom="V")
         assert empty_graph.get_stats()["no_return_count"] == 1
+
+
+# =============================================================================
+# 11. connectivity_defects — the per-entity single source both counts + panel/map read
+# =============================================================================
+
+
+class TestConnectivityDefects:
+    def test_empty_when_no_core_yet(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
+        """Below the core gate nothing is classified (mirrors the counts' anti-false-alarm)."""
+        build_ladder_core(empty_graph, dem, n_lifts=4)
+        add_node(empty_graph, "V", lon=0.0, lat=-0.01, elev=500.0)
+        add_slope(empty_graph, "SL_dead", top="P1", bottom="V")
+        labels = empty_graph.strongly_connected_labels()
+        assert empty_graph.connectivity_defects(labels=labels, core=empty_graph.get_core_resort(labels=labels)) == []
+
+    def test_dead_end_slope_flagged_with_length(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
+        """A dead-end valley slope is flagged (its valley end is outside the core, so it's both
+        disconnected AND one-way) and carries the slope's own length so the panel can rank it.
+        """
+        build_ladder_core(empty_graph, dem, n_lifts=5)
+        add_node(empty_graph, "V", lon=0.0, lat=-0.01, elev=500.0)
+        add_slope(empty_graph, "SL_dead", top="P1", bottom="V")
+        labels = empty_graph.strongly_connected_labels()
+        defects = empty_graph.connectivity_defects(labels=labels, core=empty_graph.get_core_resort(labels=labels))
+        assert len(defects) == 1
+        (d,) = defects
+        assert d.entity_id == "SL_dead"
+        assert d.disconnected and d.no_return
+        assert d.length_m == empty_graph.slopes["SL_dead"].get_total_length(segments=empty_graph.segments)
+
+    def test_isolated_lift_flagged_disconnected(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
+        """A lift into an isolated pocket is DISCONNECTED, with the lift's span as its length."""
+        build_ladder_core(empty_graph, dem, n_lifts=5)
+        add_node(empty_graph, "X", lon=0.02, lat=0.0, elev=BUILDER_BASE_ELEV)
+        add_node(empty_graph, "Y", lon=0.02, lat=0.01, elev=BUILDER_PEAK_ELEV)
+        empty_graph.add_lift(start_node_id="X", end_node_id="Y", lift_type=LiftType.CHAIRLIFT, dem=dem, name="Orphan")
+        labels = empty_graph.strongly_connected_labels()
+        defects = empty_graph.connectivity_defects(labels=labels, core=empty_graph.get_core_resort(labels=labels))
+        lift_id = next(lid for lid, lf in empty_graph.lifts.items() if lf.name == "Orphan")
+        (defect,) = [d for d in defects if d.entity_id == lift_id]
+        assert defect.disconnected
+        assert defect.length_m == empty_graph.lifts[lift_id].get_length_m(nodes=empty_graph.nodes)
+
+    def test_counts_are_sums_of_defects(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
+        """Single-source parity: the summary counts equal the flag-sums of connectivity_defects, so the
+        badges and the named lists can never disagree.
+        """
+        build_ladder_core(empty_graph, dem, n_lifts=5)
+        add_node(empty_graph, "V", lon=0.0, lat=-0.01, elev=500.0)
+        add_slope(empty_graph, "SL_dead", top="P1", bottom="V")
+        add_node(empty_graph, "X", lon=0.02, lat=0.0, elev=BUILDER_BASE_ELEV)
+        add_node(empty_graph, "Y", lon=0.02, lat=0.01, elev=BUILDER_PEAK_ELEV)
+        empty_graph.add_lift(start_node_id="X", end_node_id="Y", lift_type=LiftType.CHAIRLIFT, dem=dem, name="Orphan")
+        stats = empty_graph.get_stats()
+        defects = stats["defects"]
+        assert stats["disconnected_count"] == sum(d.disconnected for d in defects)
+        assert stats["no_return_count"] == sum(d.no_return for d in defects)

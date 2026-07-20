@@ -111,6 +111,18 @@ class GreatestDescent(NamedTuple):
     bottom_elev_m: float  # elevation at the bottom of the chain
 
 
+class EntityDefect(NamedTuple):
+    """One skiable entity (slope/lift) that fails a connectivity check — the unit both the summary
+    counts and the panel/map surfacing derive from, so they can never disagree.
+    """
+
+    entity_id: str  # "SL5"/"L3" — panel identity and map gray-out lookup key
+    name: str  # display name
+    length_m: float  # slope chain length or lift span — the sort key for "largest N"
+    disconnected: bool  # not reachable from the core resort
+    no_return: bool  # one-way: can't loop back to ride it again
+
+
 class ResortStats(TypedDict):
     """Whole-resort summary. Length/drop totals are kind-SCOPED: slope figures cover only slopes,
     the road figure only roads (a road is not a ski run, so they never share a total).
@@ -127,6 +139,7 @@ class ResortStats(TypedDict):
     total_road_length_m: float  # sum of road lengths (roads only)
     disconnected_count: int  # slopes+lifts not in the core resort (0 when no core yet)
     no_return_count: int  # slopes+lifts you can't loop back to (one-way trips; 0 when no core yet)
+    defects: list["EntityDefect"]  # the per-entity defect list the two counts above are sums of
 
 
 class ResortGraph:
@@ -1364,40 +1377,58 @@ class ResortGraph:
             "current_elev": current_elev,
         }
 
-    def _skiable_entities(self) -> list[SegmentPath | Lift]:
-        """The entities that participate in skiable connectivity: slopes + lifts, roads excluded.
-
-        Single source for "what is skiable" — both count_disconnected and the ski-digraph edge
-        builder derive from this, so a new skiable kind can't desync them.
+    def _classify_endpoints(
+        self, *, start_node_id: str, end_node_id: str, labels: dict[str, int], core: "CoreResort"
+    ) -> tuple[bool, bool]:
+        """(disconnected, no_return) for one entity's endpoints — the single classify used by both
+        the slope and lift loops of connectivity_defects, so they can't diverge.
         """
-        return [*self.slopes.values(), *self.lifts.values()]  # NO roads!
+        membership = self.entity_membership(start_node_id=start_node_id, end_node_id=end_node_id, core=core)
+        disconnected = membership == CoreMembership.DISCONNECTED
+        no_return = not self.can_loop_back(start_node_id=start_node_id, end_node_id=end_node_id, labels=labels)
+        return disconnected, no_return
 
-    def count_disconnected(self, core: "CoreResort | None") -> int:
-        """How many skiable entities are DISCONNECTED from the core (0 when there is no core yet).
+    def connectivity_defects(self, *, labels: dict[str, int], core: "CoreResort | None") -> list[EntityDefect]:
+        """Per-entity connectivity defects — the single source the summary counts and the panel/map
+        surfacing all read. Empty when no core exists yet (anti-false-alarm, mirrors the counts).
 
-        Takes the precomputed `core` so the SCC is evaluated once per render (mirrors
-        entity_membership); pass get_core_resort()'s result.
-        """
-        if core is None:
-            return 0
-        return sum(
-            self.entity_membership(start_node_id=e.start_node_id, end_node_id=e.end_node_id, core=core)
-            == CoreMembership.DISCONNECTED
-            for e in self._skiable_entities()
-        )
-
-    def count_no_return(self, labels: dict[str, int], *, core: "CoreResort | None") -> int:
-        """How many skiable entities are one-way trips — you can't loop back to ride them again.
-
-        Takes the precomputed SCC `labels` (strongly_connected_labels) so the pass is shared. Gated
-        on `core` to match the per-entity warning: 0 until a core network exists (anti-false-alarm).
+        Takes the precomputed `labels`/`core` so the SCC pass stays shared (see get_stats). Slopes and
+        lifts differ only in the length accessor; the classify itself is _classify_endpoints.
         """
         if core is None:
-            return 0
-        return sum(
-            not self.can_loop_back(start_node_id=e.start_node_id, end_node_id=e.end_node_id, labels=labels)
-            for e in self._skiable_entities()
-        )
+            return []
+        defects: list[EntityDefect] = []
+        for slope in self.slopes.values():
+            disconnected, no_return = self._classify_endpoints(
+                start_node_id=slope.start_node_id, end_node_id=slope.end_node_id, labels=labels, core=core
+            )
+            if disconnected or no_return:
+                length = slope.get_total_length(segments=self.segments)
+                defects.append(
+                    EntityDefect(
+                        entity_id=slope.id,
+                        name=slope.name,
+                        length_m=length,
+                        disconnected=disconnected,
+                        no_return=no_return,
+                    )
+                )
+        for lift in self.lifts.values():
+            disconnected, no_return = self._classify_endpoints(
+                start_node_id=lift.start_node_id, end_node_id=lift.end_node_id, labels=labels, core=core
+            )
+            if disconnected or no_return:
+                length = lift.get_length_m(nodes=self.nodes)
+                defects.append(
+                    EntityDefect(
+                        entity_id=lift.id,
+                        name=lift.name,
+                        length_m=length,
+                        disconnected=disconnected,
+                        no_return=no_return,
+                    )
+                )
+        return defects
 
     def greatest_descent(self) -> GreatestDescent:
         """Greatest continuous ski descent skiable top-to-bottom without riding a lift (max vertical drop).
@@ -1442,6 +1473,7 @@ class ResortGraph:
         road_lengths = [r.get_total_length(segments=self.segments) for r in self.roads.values()]
         labels = self.strongly_connected_labels()  # one SCC pass feeds both connectivity counts
         core = self.get_core_resort(labels=labels)
+        defects = self.connectivity_defects(labels=labels, core=core)  # single source; both counts sum it
         return {
             "total_slopes": len(self.slopes),
             "total_segments": len(self.segments),
@@ -1452,8 +1484,9 @@ class ResortGraph:
             "total_lifts": len(self.lifts),
             "total_roads": len(self.roads),
             "total_road_length_m": sum(road_lengths),
-            "disconnected_count": self.count_disconnected(core=core),
-            "no_return_count": self.count_no_return(labels=labels, core=core),
+            "disconnected_count": sum(d.disconnected for d in defects),
+            "no_return_count": sum(d.no_return for d in defects),
+            "defects": defects,
         }
 
     def get_elevation_range(self) -> tuple[float, float] | None:

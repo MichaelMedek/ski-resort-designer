@@ -64,6 +64,34 @@ def _populate_full_resort(graph, dem):
     return road, lift
 
 
+class TestGrayOut:
+    """StyleConfig.gray_out — the pure color-muting helper behind the connectivity-defect dimming."""
+
+    def test_blends_each_channel_halfway_to_128_and_keeps_alpha(self) -> None:
+        from skiresort_planner.constants import StyleConfig
+
+        # chairlift purple [168,85,247,200] → each rgb averaged with 128, alpha untouched.
+        assert StyleConfig.gray_out([168, 85, 247, 200]) == [148, 106, 187, 200]
+        # A fully opaque black stays opaque; 31→(31+128)//2=79 etc.
+        assert StyleConfig.gray_out([31, 41, 55, 255]) == [79, 84, 91, 255]
+
+    def test_gray_is_a_fixed_point(self) -> None:
+        """Pure gray is already halfway to 128 only at 128 itself — the muting converges there."""
+        from skiresort_planner.constants import StyleConfig
+
+        assert StyleConfig.gray_out([128, 128, 128, 200]) == [128, 128, 128, 200]
+
+    def test_moves_color_toward_gray_not_away(self) -> None:
+        """Every muted channel sits strictly between the original and 128 (never overshoots)."""
+        from skiresort_planner.constants import StyleConfig
+
+        for original in ([34, 197, 94, 200], [239, 68, 68, 200], [216, 180, 254, 200]):
+            muted = StyleConfig.gray_out(original)
+            for orig_c, muted_c in zip(original[:3], muted[:3], strict=True):
+                lo, hi = sorted((orig_c, 128))
+                assert lo <= muted_c <= hi
+
+
 class TestMapRendering:
     """Tests for map layer rendering."""
 
@@ -105,9 +133,10 @@ class TestMapRendering:
         expected_color[3] = 100
         assert belt.data[0]["color"] == expected_color
 
-    def test_defective_slope_is_grayed_out(self, empty_graph, path_points_blue) -> None:
-        """A slope in defect_ids renders belt + icon muted toward gray; a non-defect slope keeps its
-        difficulty color (the gray-out is opt-in per entity).
+    def test_defective_slope_grays_belt_but_keeps_icon_hue(self, empty_graph, path_points_blue) -> None:
+        """A slope in defect_ids mutes its belt/centerline toward gray, but the center-circle icon
+        keeps its full difficulty hue so it stays a clear clickable marker. A non-defect slope keeps
+        the belt hue too.
         """
         from skiresort_planner.constants import StyleConfig
         from skiresort_planner.model.proposed_path import ProposedPathSegment
@@ -124,16 +153,16 @@ class TestMapRendering:
         plain_belt = next(layer for layer in plain["slopes"] if layer.id == "segments_belt")
         assert plain_belt.data[0]["color"][:3] == base[:3]
 
-        # Grayed: belt + icon both muted via StyleConfig.gray_out.
+        # Defect: belt grays, but the icon marker stays the full difficulty color.
         grayed = renderer._create_segment_layers(use_3d=False, defect_ids={slope.id})
         grayed_belt = next(layer for layer in grayed["slopes"] if layer.id == "segments_belt")
         grayed_icons = next(layer for layer in grayed["slopes"] if layer.id == "segments_icons")
         assert grayed_belt.data[0]["color"][:3] == StyleConfig.gray_out(base)[:3]
-        assert grayed_icons.data[0]["color"] == StyleConfig.gray_out(base)
+        assert grayed_icons.data[0]["color"] == list(StyleConfig.SLOPE_COLORS_RGBA["blue"])
 
-    def test_defective_lift_is_grayed_out(self, empty_graph, mock_dem_blue_slope) -> None:
-        """A lift in defect_ids renders its cable + icon muted toward gray; the control keeps its
-        per-type purple.
+    def test_defective_lift_grays_cable_but_keeps_icon_hue(self, empty_graph, mock_dem_blue_slope) -> None:
+        """A lift in defect_ids mutes its cable toward gray, but the center icon keeps its per-type
+        purple so it stays a clear clickable marker; the control cable keeps its purple too.
         """
         from skiresort_planner.constants import StyleConfig
         from skiresort_planner.ui.center_map import MapRenderer
@@ -156,7 +185,9 @@ class TestMapRendering:
 
         grayed = renderer._create_lift_layers(use_3d=False, defect_ids={lift.id})
         grayed_cable = next(layer for layer in grayed["cables_icons"] if layer.id == "lift_cables")
+        grayed_icons = next(layer for layer in grayed["cables_icons"] if layer.id == "lift_icons")
         assert grayed_cable.data[0]["color"] == StyleConfig.gray_out(base)
+        assert grayed_icons.data[0]["color"] == base
 
     def test_map_renderer_renders_proposals(self, empty_graph, path_points_blue) -> None:
         """MapRenderer renders proposal paths."""

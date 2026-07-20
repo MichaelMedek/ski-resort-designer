@@ -195,8 +195,9 @@ class MapRenderer:
             layer_collection.terrain.append(terrain_layer)
 
         if self.graph:
+            defect_ids = self._defect_entity_ids()  # slopes/lifts to gray out (empty when no core yet)
             if show_lifts:
-                lift_layers = self._create_lift_layers(use_3d=use_3d)
+                lift_layers = self._create_lift_layers(use_3d=use_3d, defect_ids=defect_ids)
                 layer_collection.pylons.extend(lift_layers["pylons"])
                 layer_collection.lifts.extend(lift_layers["cables_icons"])
 
@@ -208,7 +209,9 @@ class MapRenderer:
             if show_segments:
                 # One shared loop builds slope + road layers, returned in
                 # separate buckets so each keeps its z-order and styling.
-                segment_layers = self._create_segment_layers(highlight_ids=highlight_segment_ids, use_3d=use_3d)
+                segment_layers = self._create_segment_layers(
+                    highlight_ids=highlight_segment_ids, use_3d=use_3d, defect_ids=defect_ids
+                )
                 layer_collection.slopes.extend(segment_layers["slopes"])
                 layer_collection.roads.extend(segment_layers["roads"])
 
@@ -401,8 +404,20 @@ class MapRenderer:
     # SEGMENT LAYERS
     # =========================================================================
 
+    def _defect_entity_ids(self) -> set[str]:
+        """Slope/lift ids with a connectivity defect (disconnected or one-way) — grayed out on the map.
+
+        Derived from the same connectivity_defects classifier the panel counts/lists use, so what the
+        map dims and what the summary reports can't disagree. Empty when no core exists yet.
+        """
+        if not self.graph:
+            return set()
+        labels = self.graph.strongly_connected_labels()
+        core = self.graph.get_core_resort(labels=labels)
+        return {d.entity_id for d in self.graph.connectivity_defects(labels=labels, core=core)}
+
     def _create_segment_layers(
-        self, highlight_ids: list[str] | None = None, *, use_3d: bool = False
+        self, highlight_ids: list[str] | None = None, *, use_3d: bool = False, defect_ids: set[str] | None = None
     ) -> dict[str, list[pdk.Layer]]:
         """Create belt/center-line/icon layers for slopes AND roads in one pass.
 
@@ -421,6 +436,7 @@ class MapRenderer:
             return {"slopes": [], "roads": []}
 
         highlight_ids = highlight_ids or []
+        defect_ids = defect_ids or set()  # entity ids to gray out; here matched against slope ids
         # Segment → owner maps, built once — used only for click/panel routing.
         road_of = {sid: road for road in self.graph.roads.values() for sid in road.segment_ids}
         slope_of = {sid: slope for slope in self.graph.slopes.values() for sid in slope.segment_ids}
@@ -495,6 +511,10 @@ class MapRenderer:
                 slope_id = None
 
             color = list(StyleConfig.SLOPE_COLORS_RGBA[difficulty])
+            # Connectivity-defect slope → mute only the belt/centerline toward gray ("half-dead").
+            # The center-circle icon keeps its full hue so it stays a clear clickable marker.
+            if slope_id in defect_ids:
+                color = StyleConfig.gray_out(color)
 
             # Adjust opacity for highlight
             if seg_id in highlight_ids:
@@ -603,11 +623,14 @@ class MapRenderer:
     # LIFT LAYERS
     # =========================================================================
 
-    def _create_lift_layers(self, *, use_3d: bool = False) -> dict[str, list[pdk.Layer]]:
+    def _create_lift_layers(
+        self, *, use_3d: bool = False, defect_ids: set[str] | None = None
+    ) -> dict[str, list[pdk.Layer]]:
         """Create layers for lift cables, pylons, and icons.
 
         Args:
             use_3d: If True, use real elevations. If False, use flat z offsets.
+            defect_ids: Lift ids with a connectivity defect — grayed out ("half-dead").
 
         Returns:
             Dict with 'pylons' and 'cables_icons' keys for separate z-ordering.
@@ -615,6 +638,7 @@ class MapRenderer:
         if not self.graph:
             return {"pylons": [], "cables_icons": []}
 
+        defect_ids = defect_ids or set()
         cable_data = []
         pylon_data = []
         icon_data = []
@@ -624,6 +648,9 @@ class MapRenderer:
             end_node = self.graph.nodes[lift.end_node_id]
 
             color = list(StyleConfig.LIFT_COLORS_RGBA[lift.lift_type])
+            # Connectivity-defect lift → mute only the cable (the "line") toward gray ("half-dead").
+            # The center icon keeps its full hue so it stays a clear clickable marker.
+            cable_color = StyleConfig.gray_out(color) if lift_id in defect_ids else color
 
             # Use pre-computed cable points with sag (from Lift.calculate_cable_points)
             cable_path = [
@@ -645,7 +672,7 @@ class MapRenderer:
                     "type": ClickConfig.TYPE_LIFT,
                     "id": lift_id,
                     "path": cable_path,
-                    "color": color,
+                    "color": cable_color,
                     "name": f"{StyleConfig.LIFT_ICONS[lift.lift_type]} {lift.name}",
                     "lift_type": lift.lift_type,
                 }

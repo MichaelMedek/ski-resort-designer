@@ -2047,6 +2047,7 @@ class TestResortStats:
             "total_road_length_m": 0,
             "disconnected_count": 0,
             "no_return_count": 0,
+            "defects": [],
         }
         assert descent == (0.0, 0.0, 0.0, 0.0)
 
