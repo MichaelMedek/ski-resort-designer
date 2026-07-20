@@ -27,7 +27,6 @@ import rasterio
 import requests
 from pyproj import Transformer
 from rasterio.io import DatasetReader
-from rasterio.warp import transform
 
 from skiresort_planner.constants import DEMConfig
 
@@ -98,6 +97,8 @@ class DEMService:
     # (identity, no reprojection). Replaces per-call rasterio.warp.transform (which rebuilds the GDAL
     # env every call) — same result, ~25× faster.
     _to_dem: Transformer | None = None
+    # WGS84 (west, south, east, north), computed once at load — bounds are load-time constant.
+    _wgs84_bounds: tuple[float, float, float, float] | None = None
 
     def __new__(cls, dem_path: Path | None = None) -> "DEMService":
         """Create or return the singleton instance.
@@ -148,11 +149,25 @@ class DEMService:
             # Cache the WGS84→DEM-CRS transformer once (only when reprojection is needed).
             if self._dem_crs != "EPSG:4326":
                 self._to_dem = Transformer.from_crs("EPSG:4326", self._dem_crs, always_xy=True)
+            self._wgs84_bounds = self._compute_wgs84_bounds(dataset.bounds)
             # Set _dem_transform LAST - this is what is_loaded checks
             self._dem_transform = dataset.transform
 
             elapsed = time.time() - start_time
             logger.info(f"EuroDEM loaded in {elapsed:.2f}s (shape: {self._dem_array.shape}, CRS: {self._dem_crs})")
+
+    def _compute_wgs84_bounds(self, b: object) -> tuple[float, float, float, float]:
+        """WGS84 (west, south, east, north) from the DEM's native-CRS bounds, computed once at load.
+
+        Reprojects the four corners via the cached _to_dem transformer (INVERSE = DEM-CRS→WGS84) so the
+        identity-vs-reproject decision lives in one place (`_to_dem is not None`), not a second CRS test.
+        """
+        if self._to_dem is not None:
+            corners_x = [b.left, b.right, b.left, b.right]  # type: ignore[attr-defined]
+            corners_y = [b.bottom, b.bottom, b.top, b.top]  # type: ignore[attr-defined]
+            lons, lats = self._to_dem.transform(corners_x, corners_y, direction="INVERSE")
+            return min(lons), min(lats), max(lons), max(lats)
+        return b.left, b.bottom, b.right, b.top  # type: ignore[attr-defined]
 
     def get_elevation(self, lon: float, lat: float) -> float | None:
         """Get elevation at a single point.
@@ -214,21 +229,11 @@ class DEMService:
 
     @property
     def bounds(self) -> tuple[float, float, float, float]:
-        """Return (west, south, east, north) bounds in WGS84.
+        """Return (west, south, east, north) WGS84 bounds — computed once at load, cached.
 
         Returns:
             Tuple of (min_lon, min_lat, max_lon, max_lat) in decimal degrees.
         """
         self._ensure_loaded()
-        assert self._dem is not None
-        assert self._dem_crs is not None, "DEM CRS must be set after _ensure_loaded()"
-        b = self._dem.bounds
-
-        if self._dem_crs != "EPSG:4326":
-            # Transform corners to WGS84
-            corners_x = [b.left, b.right, b.left, b.right]
-            corners_y = [b.bottom, b.bottom, b.top, b.top]
-            lons, lats = transform(self._dem_crs, "EPSG:4326", corners_x, corners_y)
-            return min(lons), min(lats), max(lons), max(lats)
-
-        return b.left, b.bottom, b.right, b.top
+        assert self._wgs84_bounds is not None, "bounds must be set after _ensure_loaded()"
+        return self._wgs84_bounds

@@ -17,8 +17,6 @@ from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 from tests_workflow.conftest import MockDEMService
 
-M = 111320.0  # metres per degree near the equator
-
 
 def _node_at(dem: MockDEMService, node_id: str, lon: float, lat: float) -> Node:
     """A Node at (lon, lat) with DEM elevation — for seeding lift stations in delete tests."""
@@ -35,10 +33,18 @@ def _fake_import_result(dem: MockDEMService):
 
     slope_points = [
         PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
-        PathPoint(lon=0.0, lat=-500 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / M)),
+        PathPoint(
+            lon=0.0,
+            lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        ),
     ]
     lift = (
-        PathPoint(lon=0.02, lat=-500 / M, elevation=dem.get_elevation_or_raise(lon=0.02, lat=-500 / M)),
+        PathPoint(
+            lon=0.02,
+            lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.02, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        ),
         PathPoint(lon=0.02, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.02, lat=0.0)),
         "chairlift",
         "Gipfelbahn",
@@ -71,8 +77,10 @@ def _make_slope(graph, path_points):
 
 
 def _make_road(graph):
-    M = 111320.0
-    pts = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=300 / M, lat=0.0, elevation=1990.0)]
+    pts = [
+        PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
+        PathPoint(lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=1990.0),
+    ]
     graph.commit_paths(
         paths=[ProposedPathSegment(points=pts, is_connector=True, kind=SegmentKind.ROAD)], record_undo=False
     )
@@ -165,9 +173,10 @@ class TestDeleteLiftAction:
         from skiresort_planner.ui.actions import delete_lift_action
 
         dem = mock_dem_blue_slope
-        M = 111320.0
         bottom, _ = empty_graph.get_or_create_node(
-            lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M)
+            lon=0.0,
+            lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         )
         top, _ = empty_graph.get_or_create_node(
             lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)
@@ -182,11 +191,11 @@ class TestDeleteLiftAction:
 def _two_segment_slope(graph: ResortGraph, dem: MockDEMService) -> ResortGraph:
     """Commit two contiguous 300m slope segments so the graph has 3 nodes with a junction.
 
-    Nodes sit at lat 0, -300/M, -600/M (all lon 0). Adjacent nodes are 300m apart (< 500m,
+    Nodes sit at lat 0, -300m, -600m (all lon 0). Adjacent nodes are 300m apart (< 500m,
     mergeable); the endpoints are 600m apart (> MergeConfig.MAX_SPAN_M, not mergeable).
     """
-    mid = -300 / M
-    bot = -600 / M
+    mid = -300 / MapConfig.METERS_PER_DEGREE_EQUATOR
+    bot = -600 / MapConfig.METERS_PER_DEGREE_EQUATOR
     seg_a = [
         PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
         PathPoint(lon=0.0, lat=mid, elevation=dem.get_elevation_or_raise(lon=0.0, lat=mid)),
@@ -292,7 +301,7 @@ class TestDeleteNodesAction:
 
         dem = mock_dem_blue_slope
         empty_graph.nodes["A"] = _node_at(dem, "A", 0.0, 0.0)
-        empty_graph.nodes["T"] = _node_at(dem, "T", 0.0, -1000 / M)
+        empty_graph.nodes["T"] = _node_at(dem, "T", 0.0, -1000 / MapConfig.METERS_PER_DEGREE_EQUATOR)
         empty_graph.add_lift(start_node_id="A", end_node_id="T", lift_type="chairlift", dem=dem)
         sm, ctx = _session(fake_st, empty_graph, dem=dem)
         stack_before = len(empty_graph.undo_stack)
@@ -357,7 +366,11 @@ class TestDeleteNodesAction:
         # Slope 1 south to a junction; slope 2 branches south-east from that same node.
         leg1 = [
             PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
-            PathPoint(lon=0.0, lat=-400 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-400 / M)),
+            PathPoint(
+                lon=0.0,
+                lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                elevation=dem.get_elevation_or_raise(lon=0.0, lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            ),
         ]
         empty_graph.commit_paths(paths=[ProposedPathSegment(points=leg1, target_difficulty="blue")])
         slope1 = empty_graph.finish_slope(segment_ids=list(empty_graph.segments.keys()))
@@ -366,7 +379,11 @@ class TestDeleteNodesAction:
         leg2 = [
             PathPoint(lon=j.lon, lat=j.lat, elevation=j.elevation),
             PathPoint(
-                lon=400 / M, lat=j.lat - 400 / M, elevation=dem.get_elevation_or_raise(lon=400 / M, lat=j.lat - 400 / M)
+                lon=400 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                lat=j.lat - 400 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                elevation=dem.get_elevation_or_raise(
+                    lon=400 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=j.lat - 400 / MapConfig.METERS_PER_DEGREE_EQUATOR
+                ),
             ),
         ]
         before = set(empty_graph.segments)
@@ -541,9 +558,10 @@ class TestCenterHelpers:
         from skiresort_planner.ui.actions import center_on_lift
 
         dem = mock_dem_blue_slope
-        M = 111320.0
         bottom, _ = empty_graph.get_or_create_node(
-            lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M)
+            lon=0.0,
+            lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         )
         top, _ = empty_graph.get_or_create_node(
             lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)
@@ -574,7 +592,9 @@ class TestSelectLiftTypeAction:
 
         dem = mock_dem_blue_slope
         bottom, _ = empty_graph.get_or_create_node(
-            lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M)
+            lon=0.0,
+            lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         )
         top, _ = empty_graph.get_or_create_node(
             lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)
@@ -803,7 +823,14 @@ class TestDeferredProcessing:
 
         # A run of N points stepping south by `step` metres each — length scales with (N-1)*step.
         def _seg(n: int, step: float) -> ProposedPathSegment:
-            pts = [PathPoint(lon=0.0, lat=-(i * step) / M, elevation=start_elev - i * step * 0.1) for i in range(n)]
+            pts = [
+                PathPoint(
+                    lon=0.0,
+                    lat=-(i * step) / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                    elevation=start_elev - i * step * 0.1,
+                )
+                for i in range(n)
+            ]
             return ProposedPathSegment(points=pts, is_connector=False)
 
         long_route, short_route = _seg(6, 100.0), _seg(3, 100.0)  # ~500m vs ~200m, out of order
@@ -811,7 +838,11 @@ class TestDeferredProcessing:
         monkeypatch.setattr(path_factory, "generate_manual_paths", lambda **_: [long_route, short_route])
         monkeypatch.setattr(path_factory, "straight_line", lambda **_: straight)
 
-        ctx.custom_connect.target_location = (0.0, -500 / M, dem.get_elevation_or_raise(lon=0.0, lat=-500 / M))
+        ctx.custom_connect.target_location = (
+            0.0,
+            -500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            dem.get_elevation_or_raise(lon=0.0, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        )
         ctx.pending.gradient_target = 99.0  # a stale fan target must be IGNORED by custom-connect
         ctx.pending.custom_connect = True
         assert actions.process_custom_connect_pending() is True
@@ -1139,7 +1170,6 @@ class TestUndoToZeroAfterFinish:
         )
 
         dem = mock_dem_red_slope_diagonal
-        m = 111320.0
         sm, ctx = _session(fake_st, empty_graph, path_factory, dem)
         ctx.build_mode.mode = SegmentKind.ROAD.value
 
@@ -1147,8 +1177,10 @@ class TestUndoToZeroAfterFinish:
         sm.start_road(node_id=None, location=PathPoint(lon=0.0, lat=0.0, elevation=2000.0))
         for i in range(1, 3):
             pts = [
-                PathPoint(lon=(i - 1) * 300 / m, lat=0.0, elevation=2000.0 - (i - 1) * 10),
-                PathPoint(lon=i * 300 / m, lat=0.0, elevation=2000.0 - i * 10),
+                PathPoint(
+                    lon=(i - 1) * 300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=2000.0 - (i - 1) * 10
+                ),
+                PathPoint(lon=i * 300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=2000.0 - i * 10),
             ]
             endpoint_ids = empty_graph.commit_paths(paths=[ProposedPathSegment(points=pts, kind=SegmentKind.ROAD)])
             seg = list(empty_graph.segments.keys())[-1]
@@ -1185,7 +1217,10 @@ class TestMapEpochs:
 
         dem = mock_dem_red_slope_diagonal
         sm, ctx = self._road_building(fake_st, empty_graph, path_factory, dem)
-        pts = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=300 / M, lat=0.0, elevation=1990.0)]
+        pts = [
+            PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
+            PathPoint(lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=1990.0),
+        ]
         ctx.proposals.paths = [ProposedPathSegment(points=pts, kind=SegmentKind.ROAD)]
         ctx.proposals.selected_idx = 0
         camera_before = fake_st.session_state["camera_epoch"]
@@ -1199,7 +1234,10 @@ class TestMapEpochs:
 
         dem = mock_dem_red_slope_diagonal
         sm, ctx = self._road_building(fake_st, empty_graph, path_factory, dem)
-        pts = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=300 / M, lat=0.0, elevation=1990.0)]
+        pts = [
+            PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
+            PathPoint(lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=1990.0),
+        ]
         endpoint_ids = empty_graph.commit_paths(paths=[ProposedPathSegment(points=pts, kind=SegmentKind.ROAD)])
         sm.commit_road(segment_id=list(empty_graph.segments.keys())[-1], endpoint_node_id=endpoint_ids[0])
         camera_before = fake_st.session_state["camera_epoch"]
@@ -1214,7 +1252,10 @@ class TestMapEpochs:
 
         dem = mock_dem_red_slope_diagonal
         sm, ctx = self._road_building(fake_st, empty_graph, path_factory, dem)
-        pts = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=300 / M, lat=0.0, elevation=1990.0)]
+        pts = [
+            PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
+            PathPoint(lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=1990.0),
+        ]
         endpoint_ids = empty_graph.commit_paths(paths=[ProposedPathSegment(points=pts, kind=SegmentKind.ROAD)])
         sm.commit_road(segment_id=list(empty_graph.segments.keys())[-1], endpoint_node_id=endpoint_ids[0])
         camera_before = fake_st.session_state["camera_epoch"]

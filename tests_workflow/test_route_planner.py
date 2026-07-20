@@ -20,7 +20,6 @@ from skiresort_planner.model.routing import Route, RouteCriterion, RoutePlanner,
 from skiresort_planner.model.slope import Slope
 from tests_workflow.conftest import MockDEMService, add_node, add_slope
 
-M = MapConfig.METERS_PER_DEGREE_EQUATOR
 BLACK = SlopeConfig.DIFFICULTIES[-1]  # the broadest cap — every slope allowed
 
 
@@ -65,7 +64,7 @@ class TestFeasibility:
 class TestSingleSlopeRoute:
     def test_one_slope_route_maps_to_that_slope(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
         add_node(empty_graph, "Peak", 0.0, 0.0, 2000.0)
-        add_node(empty_graph, "Base", 0.0, -1000 / M, 1400.0)
+        add_node(empty_graph, "Base", 0.0, -1000 / MapConfig.METERS_PER_DEGREE_EQUATOR, 1400.0)
         add_slope(empty_graph, "SL1", top="Peak", bottom="Base")
 
         routes = _at_cap(RoutePlanner(empty_graph).best_routes("Peak", "Base"), BLACK)
@@ -80,8 +79,8 @@ class TestSingleSlopeRoute:
     def test_interior_junction_maps_to_owning_slope(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
         """A route through a slope's mid-chain node still reads as one slope step (not per-segment)."""
         add_node(empty_graph, "Peak", 0.0, 0.0, 2000.0)
-        add_node(empty_graph, "Mid", 0.0, -500 / M, 1700.0)
-        add_node(empty_graph, "Base", 0.0, -1000 / M, 1400.0)
+        add_node(empty_graph, "Mid", 0.0, -500 / MapConfig.METERS_PER_DEGREE_EQUATOR, 1700.0)
+        add_node(empty_graph, "Base", 0.0, -1000 / MapConfig.METERS_PER_DEGREE_EQUATOR, 1400.0)
         add_slope(empty_graph, "SL1", top="Peak", bottom="Base", via=["Mid"])
 
         route = _route_for(RoutePlanner(empty_graph).best_routes("Peak", "Base"), RouteCriterion.FEWEST_LIFTS)
@@ -95,7 +94,7 @@ class TestLiftRoutes:
     ) -> None:
         """Top→Base is reachable ONLY via the gondola's reverse (down) edge — the exact route."""
         add_node(empty_graph, "Base", 0.0, 0.0, 1400.0)
-        add_node(empty_graph, "Top", 0.0, 500 / M, 2000.0)
+        add_node(empty_graph, "Top", 0.0, 500 / MapConfig.METERS_PER_DEGREE_EQUATOR, 2000.0)
         empty_graph.add_lift(start_node_id="Base", end_node_id="Top", lift_type=LiftType.GONDOLA, dem=dem, name="Gondi")
 
         routes = _at_cap(RoutePlanner(empty_graph).best_routes("Top", "Base"), BLACK)
@@ -114,9 +113,9 @@ class TestLiftRoutes:
         Regression: an invalid non-shortest cost once looped forever here.
         """
         add_node(empty_graph, "A", 0.0, 0.0, 1800.0)
-        add_node(empty_graph, "B", 0.0, -2000 / M, 1000.0)
+        add_node(empty_graph, "B", 0.0, -2000 / MapConfig.METERS_PER_DEGREE_EQUATOR, 1000.0)
         add_slope(empty_graph, "Low", top="A", bottom="B")
-        add_node(empty_graph, "Peak", 0.0, 500 / M, 2400.0)
+        add_node(empty_graph, "Peak", 0.0, 500 / MapConfig.METERS_PER_DEGREE_EQUATOR, 2400.0)
         empty_graph.add_lift(start_node_id="A", end_node_id="Peak", lift_type=LiftType.GONDOLA, dem=dem, name="Up")
         add_slope(empty_graph, "Down", top="Peak", bottom="A")
 
@@ -133,7 +132,7 @@ class TestLiftRoutes:
     ) -> None:
         """A route crossing a lift traces the sagged cable_points, not a straight chord between stations."""
         add_node(empty_graph, "Base", 0.0, 0.0, 1400.0)
-        add_node(empty_graph, "Top", 0.0, 500 / M, 2000.0)
+        add_node(empty_graph, "Top", 0.0, 500 / MapConfig.METERS_PER_DEGREE_EQUATOR, 2000.0)
         lift = empty_graph.add_lift(
             start_node_id="Base", end_node_id="Top", lift_type=LiftType.GONDOLA, dem=dem, name="Gondi"
         )
@@ -156,7 +155,7 @@ def _ladder_scc(graph: ResortGraph, dem: MockDEMService, n_lifts: int) -> None:
     add_node(graph, "B", 0.0, 0.0, 1400.0)
     for i in range(1, n_lifts + 1):
         peak = f"P{i}"
-        add_node(graph, peak, 0.0, (500 * i) / M, 2000.0)
+        add_node(graph, peak, 0.0, (500 * i) / MapConfig.METERS_PER_DEGREE_EQUATOR, 2000.0)
         graph.add_lift(start_node_id="B", end_node_id=peak, lift_type=LiftType.CHAIRLIFT, dem=dem, name=f"L{i}")
         add_slope(graph, f"S{i}", top=peak, bottom="B")
 
@@ -190,7 +189,7 @@ class TestScenicTour:
         _ladder_scc(empty_graph, dem, n_lifts=1)  # B ⇄ P1 via L1
         # Disconnected pocket: X→Y lift with a down slope among themselves, unreachable from B.
         add_node(empty_graph, "X", 1.0, 0.0, 1400.0)
-        add_node(empty_graph, "Y", 1.0, 500 / M, 2000.0)
+        add_node(empty_graph, "Y", 1.0, 500 / MapConfig.METERS_PER_DEGREE_EQUATOR, 2000.0)
         empty_graph.add_lift(start_node_id="X", end_node_id="Y", lift_type=LiftType.CHAIRLIFT, dem=dem, name="LX")
         add_slope(empty_graph, "SX", top="Y", bottom="X")
 
@@ -222,11 +221,17 @@ class TestCriteriaDiverge:
         shortcut (less skiing); fewest-lifts stays on the long lift-free run — two DIFFERENT routes.
         """
         add_node(empty_graph, "A", 0.0, 0.0, 2000.0)
-        add_node(empty_graph, "B", 0.0, -3000 / M, 1000.0)
-        add_node(empty_graph, "Far", 2000 / M, -1500 / M, 1500.0)
+        add_node(empty_graph, "B", 0.0, -3000 / MapConfig.METERS_PER_DEGREE_EQUATOR, 1000.0)
+        add_node(
+            empty_graph,
+            "Far",
+            2000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            -1500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            1500.0,
+        )
         add_slope(empty_graph, "LongWay", top="A", bottom="B", via=["Far"])  # long, lift-free
-        add_node(empty_graph, "Mid", 0.0, -300 / M, 1900.0)
-        add_node(empty_graph, "Ledge", 0.0, -280 / M, 1950.0)
+        add_node(empty_graph, "Mid", 0.0, -300 / MapConfig.METERS_PER_DEGREE_EQUATOR, 1900.0)
+        add_node(empty_graph, "Ledge", 0.0, -280 / MapConfig.METERS_PER_DEGREE_EQUATOR, 1950.0)
         add_slope(empty_graph, "Short1", top="A", bottom="Mid")
         empty_graph.add_lift(
             start_node_id="Mid", end_node_id="Ledge", lift_type=LiftType.CHAIRLIFT, dem=dem, name="Hop"
@@ -250,9 +255,9 @@ class TestCriteriaDiverge:
         riding a down-gondola skis far less than the all-ski run, so shortest-slope takes the gondola.
         """
         add_node(empty_graph, "A", 0.0, 0.0, 2000.0)
-        add_node(empty_graph, "B", 0.0, -3000 / M, 1000.0)
+        add_node(empty_graph, "B", 0.0, -3000 / MapConfig.METERS_PER_DEGREE_EQUATOR, 1000.0)
         add_slope(empty_graph, "AllSki", top="A", bottom="B")  # long ski
-        add_node(empty_graph, "Mlow", 0.0, -200 / M, 1900.0)
+        add_node(empty_graph, "Mlow", 0.0, -200 / MapConfig.METERS_PER_DEGREE_EQUATOR, 1900.0)
         add_slope(empty_graph, "TopBit", top="A", bottom="Mlow")  # short ski
         empty_graph.add_lift(
             start_node_id="B", end_node_id="Mlow", lift_type=LiftType.GONDOLA, dem=dem, name="DownGondi"
@@ -276,9 +281,15 @@ class TestDifficultyCapIsHonest:
         self, empty_graph: ResortGraph, dem: MockDEMService
     ) -> None:
         add_node(empty_graph, "A", 0.0, 0.0, 2000.0)
-        add_node(empty_graph, "B", 0.0, -300 / M, 1400.0)  # 600m over 300m ⇒ black
+        add_node(empty_graph, "B", 0.0, -300 / MapConfig.METERS_PER_DEGREE_EQUATOR, 1400.0)  # 600m over 300m ⇒ black
         add_slope(empty_graph, "BlackRun", top="A", bottom="B")
-        add_node(empty_graph, "W", -4000 / M, -150 / M, 1700.0)  # long, shallow legs ⇒ green
+        add_node(
+            empty_graph,
+            "W",
+            -4000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            -150 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            1700.0,
+        )  # long, shallow legs ⇒ green
         add_slope(empty_graph, "GreenRun", top="A", bottom="B", via=["W"])
         assert empty_graph.slopes["BlackRun"].get_difficulty(segments=empty_graph.segments) == "black"
         assert empty_graph.slopes["GreenRun"].get_difficulty(segments=empty_graph.segments) == "green"
@@ -297,7 +308,7 @@ class TestDifficultyCapIsHonest:
         # Only a black run connects A→B. Under the green cap there is genuinely NO route; under black
         # there is. The per-cap result makes that distinction honestly.
         add_node(empty_graph, "A", 0.0, 0.0, 2000.0)
-        add_node(empty_graph, "B", 0.0, -300 / M, 1400.0)  # steep ⇒ black
+        add_node(empty_graph, "B", 0.0, -300 / MapConfig.METERS_PER_DEGREE_EQUATOR, 1400.0)  # steep ⇒ black
         add_slope(empty_graph, "BlackRun", top="A", bottom="B")
         assert empty_graph.slopes["BlackRun"].get_difficulty(segments=empty_graph.segments) == "black"
 
@@ -310,9 +321,9 @@ class TestRouteStats:
     def test_totals_aggregate_slopes_and_lifts(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
         """A lift then two slopes to a distinct base: lift_count and slope drop aggregate correctly."""
         add_node(empty_graph, "Start", 0.0, 0.0, 1400.0)
-        add_node(empty_graph, "Top", 0.0, 500 / M, 2000.0)
-        add_node(empty_graph, "Mid", 0.0, 250 / M, 1700.0)
-        add_node(empty_graph, "Valley", 0.0, -500 / M, 1000.0)
+        add_node(empty_graph, "Top", 0.0, 500 / MapConfig.METERS_PER_DEGREE_EQUATOR, 2000.0)
+        add_node(empty_graph, "Mid", 0.0, 250 / MapConfig.METERS_PER_DEGREE_EQUATOR, 1700.0)
+        add_node(empty_graph, "Valley", 0.0, -500 / MapConfig.METERS_PER_DEGREE_EQUATOR, 1000.0)
         empty_graph.add_lift(start_node_id="Start", end_node_id="Top", lift_type=LiftType.CHAIRLIFT, dem=dem, name="Up")
         add_slope(empty_graph, "TopRun", top="Top", bottom="Mid")
         add_slope(empty_graph, "MidRun", top="Mid", bottom="Valley")
@@ -344,20 +355,30 @@ class TestRouteGeometry:
 
     def test_route_follows_bent_segment_geometry(self, empty_graph: ResortGraph) -> None:
         add_node(empty_graph, "A", 0.0, 0.0, 2000.0)
-        add_node(empty_graph, "B", 0.0, -1000 / M, 1000.0)
-        bend = PathPoint(lon=500 / M, lat=-500 / M, elevation=1500.0)  # off the straight A→B chord
+        add_node(empty_graph, "B", 0.0, -1000 / MapConfig.METERS_PER_DEGREE_EQUATOR, 1000.0)
+        bend = PathPoint(
+            lon=500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=1500.0,
+        )  # off the straight A→B chord
         self._bent_slope(empty_graph, "Run", top="A", bottom="B", bend=bend)
 
         route = _at_cap(RoutePlanner(empty_graph).best_routes("A", "B"), BLACK)[0]
         pts = route.path_points
-        assert pts[0] == (0.0, 0.0, 2000.0) and pts[-1] == (0.0, -1000 / M, 1000.0), "endpoints A→B"
+        assert pts[0] == (0.0, 0.0, 2000.0) and pts[-1] == (0.0, -1000 / MapConfig.METERS_PER_DEGREE_EQUATOR, 1000.0), (
+            "endpoints A→B"
+        )
         assert (bend.lon, bend.lat, bend.elevation) in pts, "the bend point is traced, not skipped"
 
     def test_segment_points_oriented_to_travel_direction(self, empty_graph: ResortGraph) -> None:
         # points are stored A→B; a route skiing A→B must emit them in descent order, not reversed.
         add_node(empty_graph, "A", 0.0, 0.0, 2000.0)
-        add_node(empty_graph, "B", 0.0, -1000 / M, 1000.0)
-        bend = PathPoint(lon=500 / M, lat=-500 / M, elevation=1500.0)
+        add_node(empty_graph, "B", 0.0, -1000 / MapConfig.METERS_PER_DEGREE_EQUATOR, 1000.0)
+        bend = PathPoint(
+            lon=500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=1500.0,
+        )
         self._bent_slope(empty_graph, "Run", top="A", bottom="B", bend=bend)  # stored A→B
 
         route = _at_cap(RoutePlanner(empty_graph).best_routes("A", "B"), BLACK)[0]

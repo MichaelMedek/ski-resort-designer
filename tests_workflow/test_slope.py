@@ -1,15 +1,14 @@
 """Unit tests for the Slope model (model/slope.py)."""
 
+from skiresort_planner.constants import MapConfig
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import PathSegment
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 
-M = 111320.0  # metres per degree near the equator
-
 
 def _segment(id: str, length_m: float, grade_pct: float) -> PathSegment:
     """A 2-point south-running segment of the given length and (descending) grade."""
-    dlat = length_m / M
+    dlat = length_m / MapConfig.METERS_PER_DEGREE_EQUATOR
     return PathSegment(
         id=id,
         start_node_id=f"{id}a",

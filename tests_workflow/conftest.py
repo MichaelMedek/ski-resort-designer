@@ -265,8 +265,11 @@ class MockDEMService(DEMService):
 
     def get_elevation(self, lon: float, lat: float) -> float | None:
         """Return elevation using simple linear formula."""
-        M = MapConfig.METERS_PER_DEGREE_EQUATOR
-        return self.base_elevation + lat * M * (self.slope_ns_pct / 100) - lon * M * (self.slope_ew_pct / 100)
+        return (
+            self.base_elevation
+            + lat * MapConfig.METERS_PER_DEGREE_EQUATOR * (self.slope_ns_pct / 100)
+            - lon * MapConfig.METERS_PER_DEGREE_EQUATOR * (self.slope_ew_pct / 100)
+        )
 
     def get_elevation_or_raise(self, lon: float, lat: float) -> float:
         """Return elevation, raising if None (never happens for mock)."""
@@ -292,8 +295,15 @@ class ConeDEMService(MockDEMService):
         self._bounds = (-2.0, -2.0, 2.0, 2.0)
 
     def get_elevation(self, lon: float, lat: float) -> float | None:
-        M = MapConfig.METERS_PER_DEGREE_EQUATOR
-        return self.summit - float(((lon * M) ** 2 + (lat * M) ** 2) ** 0.5) * self.grade_pct / 100.0
+        return (
+            self.summit
+            - float(
+                ((lon * MapConfig.METERS_PER_DEGREE_EQUATOR) ** 2 + (lat * MapConfig.METERS_PER_DEGREE_EQUATOR) ** 2)
+                ** 0.5
+            )
+            * self.grade_pct
+            / 100.0
+        )
 
 
 class RoughDEMService(MockDEMService):
@@ -423,7 +433,6 @@ def graph_with_nodes(mock_dem_blue_slope: MockDEMService) -> ResortGraph:
     """Graph with 3 nodes arranged vertically: summit → mid → valley."""
     graph = ResortGraph()
     dem = mock_dem_blue_slope
-    M = MapConfig.METERS_PER_DEGREE_EQUATOR
 
     graph.nodes["N1"] = Node(
         id="N1",
@@ -437,16 +446,16 @@ def graph_with_nodes(mock_dem_blue_slope: MockDEMService) -> ResortGraph:
         id="N2",
         location=PathPoint(
             lon=0.0,
-            lat=-1000 / M,
-            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M),
+            lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         ),
     )
     graph.nodes["N3"] = Node(
         id="N3",
         location=PathPoint(
             lon=0.0,
-            lat=-2000 / M,
-            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-2000 / M),
+            lat=-2000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-2000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         ),
     )
     return graph
@@ -472,13 +481,32 @@ def sm_and_ctx(empty_graph: ResortGraph) -> SMAndCtx:
 def path_points_blue(mock_dem_blue_slope: MockDEMService) -> list[PathPoint]:
     """Path going 800m south with 5 points on blue slope terrain."""
     dem = mock_dem_blue_slope
-    M = MapConfig.METERS_PER_DEGREE_EQUATOR
     return [
-        PathPoint(lon=0.0, lat=-0 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-0 / M)),
-        PathPoint(lon=0.0, lat=-200 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-200 / M)),
-        PathPoint(lon=0.0, lat=-400 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-400 / M)),
-        PathPoint(lon=0.0, lat=-600 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-600 / M)),
-        PathPoint(lon=0.0, lat=-800 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-800 / M)),
+        PathPoint(
+            lon=0.0,
+            lat=-0 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-0 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        ),
+        PathPoint(
+            lon=0.0,
+            lat=-200 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-200 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        ),
+        PathPoint(
+            lon=0.0,
+            lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        ),
+        PathPoint(
+            lon=0.0,
+            lat=-600 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-600 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        ),
+        PathPoint(
+            lon=0.0,
+            lat=-800 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-800 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        ),
     ]
 
 

@@ -4,7 +4,7 @@ These tests use the actual EuroDEM file and are skipped if unavailable.
 They validate that algorithms work correctly with real terrain data.
 """
 
-from skiresort_planner.constants import GeometricTuningConfig
+from skiresort_planner.constants import GeometricTuningConfig, MapConfig
 from skiresort_planner.core.path_tracer import PathTracer
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.model.path_segment import SegmentKind
@@ -82,6 +82,48 @@ class TestRealDEMTerrain:
         assert result.total_drop_m > 0, "Path should go downhill"
 
 
+class TestDEMServiceSampling:
+    """Regression tests for DEMService's real transform/inverse-affine/nodata path.
+
+    Mock DEMs override get_elevation(s) with formulas and bypass this entirely, so these
+    guard the cached-pyproj-transform vectorization on the actual reprojected EuroDEM.
+    """
+
+    def test_batch_equals_elementwise_scalar(self, real_dem) -> None:
+        """Batched get_elevations([...]) equals element-wise get_elevation on the real reprojected DEM.
+
+        This is the byte-identity claim of the pyproj-transform change: the vectorized batch path and
+        the single-point wrapper (which delegates through the same code) must agree exactly.
+        """
+        import numpy as np
+
+        lons = [10.30, 10.31, 10.32, 10.33, 10.34, 10.29]
+        lats = [46.98, 46.99, 46.97, 46.96, 46.985, 47.00]
+        batch = real_dem.get_elevations(lons, lats)
+        scalar = np.array([real_dem.get_elevation(lon=lo, lat=la) for lo, la in zip(lons, lats, strict=True)])
+        assert np.array_equal(batch, scalar, equal_nan=True), "batch must equal element-wise scalar"
+
+    def test_out_of_coverage_point_is_nan_then_none(self, real_dem) -> None:
+        """A point far outside DEM coverage → NaN from get_elevations, None from the scalar wrapper."""
+        import numpy as np
+
+        # Mid-Atlantic: far outside the Alps DEM footprint.
+        far_lon, far_lat = -40.0, 20.0
+        assert np.isnan(real_dem.get_elevations([far_lon], [far_lat])[0]), "off-DEM point → NaN"
+        assert real_dem.get_elevation(lon=far_lon, lat=far_lat) is None, "off-DEM point → None (scalar API)"
+
+    def test_bounds_are_cached_and_finite(self, real_dem) -> None:
+        """Bounds is computed once and returns a stable finite WGS84 box covering the sample point."""
+        import math
+
+        b1 = real_dem.bounds
+        b2 = real_dem.bounds
+        assert b1 == b2, "bounds must be stable (cached)"
+        assert all(math.isfinite(v) for v in b1), "bounds must be finite"
+        west, south, east, north = b1
+        assert west < 10.317 < east and south < 46.982 < north, "Ischgl sample point lies within bounds"
+
+
 class TestPathGenerationOnRealTerrain:
     """Tests for path generation algorithms on real terrain."""
 
@@ -113,19 +155,16 @@ class TestPathGenerationOnRealTerrain:
         - Plans a path between two real points (start guaranteed higher)
         - Returned path genuinely connects start → target with ordered points
         """
-        from skiresort_planner.constants import MapConfig
         from skiresort_planner.core.geo_calculator import GeoCalculator
         from skiresort_planner.generators.connection_planners import LeastCostPathPlanner
 
         analyzer = TerrainAnalyzer(dem=real_dem)
         planner = LeastCostPathPlanner(dem_service=real_dem, terrain_analyzer=analyzer)
 
-        M = MapConfig.METERS_PER_DEGREE_EQUATOR
-
         # Two points ~500m apart on the N-S line. Slope-mode planning REQUIRES net
         # descent, so orient the pair by elevation: higher point is the start.
         lon = 10.32
-        lat_a, lat_b = 46.98, 46.98 - 500 / M
+        lat_a, lat_b = 46.98, 46.98 - 500 / MapConfig.METERS_PER_DEGREE_EQUATOR
         elev_a = real_dem.get_elevation(lon=lon, lat=lat_a)
         elev_b = real_dem.get_elevation(lon=lon, lat=lat_b)
         assert elev_a is not None and elev_b is not None, "Both sample points need valid elevation"

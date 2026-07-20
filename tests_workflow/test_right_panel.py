@@ -9,7 +9,7 @@ state change (3D toggle, close panel) is asserted.
 from contextlib import nullcontext
 from typing import Literal
 
-from skiresort_planner.constants import RoutePlannerConfig, StyleConfig
+from skiresort_planner.constants import MapConfig, RoutePlannerConfig, StyleConfig
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
@@ -26,8 +26,6 @@ from skiresort_planner.ui.right_panel import (
     route_legs,
 )
 from skiresort_planner.ui.state_machine import PlannerStateMachine
-
-M = 111320.0
 
 
 def _info_panel(kind: EntityKind, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph) -> None:
@@ -60,7 +58,9 @@ def _build_road(graph: ResortGraph, path_points: list[PathPoint]) -> str:
 
 def _build_lift(graph: ResortGraph, dem) -> str:
     bottom, _ = graph.get_or_create_node(
-        lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M)
+        lon=0.0,
+        lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+        elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
     )
     top, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
     lift = graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)

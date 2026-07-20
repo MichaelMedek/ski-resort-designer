@@ -6,7 +6,7 @@ Focus on _are_paths_similar and _deduplicate_paths which are mathematical compar
 
 import pytest
 
-from skiresort_planner.constants import GeometricTuningConfig, SlopeConfig
+from skiresort_planner.constants import GeometricTuningConfig, MapConfig, SlopeConfig
 from skiresort_planner.generators.path_factory import GradeConfig, PathFactory, Side
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
@@ -282,15 +282,16 @@ class TestRoadModeNoStraightLineFallback:
     def test_road_mode_never_yields_straight_line_fallback(self, path_factory) -> None:
         # A gentle, reachable target → a real traced (multi-point) road path,
         # never the 2-point "Direct Line (fallback)" that slope mode makes.
-        M = 111320.0
         paths = list(
             path_factory.generate_manual_paths(
                 start_lon=0.0,
                 start_lat=0.0,
                 start_elevation=path_factory.dem_service.get_elevation_or_raise(lon=0.0, lat=0.0),
-                target_lon=300 / M,
+                target_lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR,
                 target_lat=0.0,
-                target_elevation=path_factory.dem_service.get_elevation_or_raise(lon=300 / M, lat=0.0),
+                target_elevation=path_factory.dem_service.get_elevation_or_raise(
+                    lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0
+                ),
                 kind=SegmentKind.ROAD,
             )
         )
@@ -305,15 +306,16 @@ class TestRoadModeNoStraightLineFallback:
         # Slope mode no longer fabricates a straight-line fallback: it yields only real
         # traced routes (or nothing). On this reachable diagonal target it yields routes,
         # none of which are the old 2-point "Direct Line (fallback)".
-        M = 111320.0
         paths = list(
             path_factory.generate_manual_paths(
                 start_lon=0.0,
                 start_lat=0.0,
                 start_elevation=path_factory.dem_service.get_elevation_or_raise(lon=0.0, lat=0.0),
                 target_lon=0.0,
-                target_lat=-250 / M,
-                target_elevation=path_factory.dem_service.get_elevation_or_raise(lon=0.0, lat=-250 / M),
+                target_lat=-250 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                target_elevation=path_factory.dem_service.get_elevation_or_raise(
+                    lon=0.0, lat=-250 / MapConfig.METERS_PER_DEGREE_EQUATOR
+                ),
                 kind=SegmentKind.SLOPE,
             )
         )
@@ -448,8 +450,7 @@ class TestStraightLine:
     def _endpoints(self) -> tuple[float, float, float, float, float, float]:
         # Explicit elevations: the builder does not query the DEM, it interpolates the two
         # given points, so we control the drop directly (250m S, 25m drop → 10%).
-        M = 111320.0
-        return 0.0, 0.0, 2500.0, 0.0, -250 / M, 2475.0
+        return 0.0, 0.0, 2500.0, 0.0, -250 / MapConfig.METERS_PER_DEGREE_EQUATOR, 2475.0
 
     def test_road_straight_line_is_a_densified_connector(self, path_factory: PathFactory) -> None:
         """A direct road is a ROAD connector, densified to RESAMPLE_STEP_M, no ski difficulty."""
@@ -485,14 +486,12 @@ class TestFilterByMaxGrade:
     300 m rolling window) make max_slope_pct == abs(avg), so drop/length gives an exact known grade.
     """
 
-    M = 111320.0  # metres per degree latitude
-
     def _path_with_grade(self, grade_pct: float) -> ProposedPathSegment:
         # 100 m south, drop chosen so avg grade == grade_pct (sign = descent/climb).
         length_m = 100.0
         drop_m = grade_pct / 100.0 * length_m
         return make_path(
-            [(0.0, 0.0, 2000.0), (0.0, -length_m / self.M, 2000.0 - drop_m)],
+            [(0.0, 0.0, 2000.0), (0.0, -length_m / MapConfig.METERS_PER_DEGREE_EQUATOR, 2000.0 - drop_m)],
             slope_pct=grade_pct,
         )
 
@@ -609,8 +608,7 @@ class TestFinishHonoursProposalDifficulty:
         factory = PathFactory(
             dem_service=rough_dem_bumpy, path_tracer=PathTracer(dem=rough_dem_bumpy, analyzer=an), terrain_analyzer=an
         )
-        M = 111320.0
-        s_lat, t_lat = 0.0, -1200 / M  # ~1.2km south descent on the bumpy DEM
+        s_lat, t_lat = 0.0, -1200 / MapConfig.METERS_PER_DEGREE_EQUATOR  # ~1.2km south descent on the bumpy DEM
         se = rough_dem_bumpy.get_elevation(lon=0.0, lat=s_lat)
         te = rough_dem_bumpy.get_elevation(lon=0.0, lat=t_lat)
         proposals = list(

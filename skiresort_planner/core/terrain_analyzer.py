@@ -229,13 +229,7 @@ class TerrainAnalyzer:
 
         bounds = self._dem.bounds
 
-        inner_radius = 0.5 * GeometricTuningConfig.STEP_SIZE_M  # 15m with 30m step
-        outer_radius = 1.0 * GeometricTuningConfig.STEP_SIZE_M  # 30m with 30m step
-        ring_configs = [
-            (inner_radius, 2.0),
-            (outer_radius, 1.0),
-        ]
-        angles_deg = [0, 45, 90, 135, 180, 225, 270, 315]
+        angles_deg = GeometricTuningConfig.GRADIENT_SAMPLE_ANGLES_DEG
         angles_arr = np.array(angles_deg, dtype=np.float64)
 
         # Build all 16 ring sample coords with one destination_vec per ring, then ONE batched
@@ -244,7 +238,8 @@ class TerrainAnalyzer:
         sample_lons: list[float] = []
         sample_lats: list[float] = []
         sample_meta: list[tuple[float, float, int]] = []  # (radius_m, weight, angle_deg)
-        for radius_m, weight in ring_configs:
+        for radius_factor, weight in GeometricTuningConfig.GRADIENT_RINGS:
+            radius_m = radius_factor * GeometricTuningConfig.STEP_SIZE_M
             ring_lons, ring_lats = GeoCalculator.destination_vec(lon, lat, angles_arr, radius_m)
             for i, angle_deg in enumerate(angles_deg):
                 sample_lons.append(float(ring_lons[i]))
@@ -279,6 +274,7 @@ class TerrainAnalyzer:
             samples_y.append(slope * cos(angle_rad) * weight)
             total_weight += weight
 
+        # All 16 samples out of coverage (NaN) → flat terrain (external-DEM edge, e.g. map edge).
         if not samples_x or total_weight == 0:
             return TerrainGradient(slope_pct=0.0, bearing_deg=0.0)
 

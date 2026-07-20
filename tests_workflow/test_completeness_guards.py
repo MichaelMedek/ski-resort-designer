@@ -12,7 +12,7 @@ import dataclasses
 import inspect
 import textwrap
 
-from skiresort_planner.constants import PACKAGE_DIR
+from skiresort_planner.constants import PACKAGE_DIR, MapConfig
 
 # =============================================================================
 # 1. Serialization round-trip: every dataclass field survives to_dict → from_dict
@@ -92,20 +92,21 @@ class TestSerializationCompleteness:
         from skiresort_planner.model.resort_graph import ResortGraph
 
         graph, dem = empty_graph, mock_dem_blue_slope
-        m = 111320.0
         # A slope.
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         graph.finish_slope(segment_ids=list(graph.segments.keys()))
         # A road.
         road_pts = [
             PathPoint(lon=0.3, lat=0.3, elevation=2000.0),
-            PathPoint(lon=0.3 + 300 / m, lat=0.3, elevation=1990.0),
+            PathPoint(lon=0.3 + 300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.3, elevation=1990.0),
         ]
         graph.commit_paths(paths=[ProposedPathSegment(points=road_pts, is_connector=True, kind=SegmentKind.ROAD)])
         graph.finish_road(segment_ids=[list(graph.segments.keys())[-1]])
         # A lift.
         bottom, _ = graph.get_or_create_node(
-            lon=0.0, lat=-1000 / m, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / m)
+            lon=0.0,
+            lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         )
         top, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
         graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
@@ -458,10 +459,12 @@ class TestSegmentPathEntitiesCoversEveryKind:
         from skiresort_planner.model.resort_graph import ResortGraph
         from skiresort_planner.ui.kind_spec import KIND_SPECS
 
-        m = 111320.0
         for kind in SegmentKind:
             graph = ResortGraph()
-            pts = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=0.0, lat=-300 / m, elevation=1970.0)]
+            pts = [
+                PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
+                PathPoint(lon=0.0, lat=-300 / MapConfig.METERS_PER_DEGREE_EQUATOR, elevation=1970.0),
+            ]
             graph.commit_paths(paths=[ProposedPathSegment(points=pts, kind=kind)], record_undo=False)
             seg_id = list(graph.segments.keys())[-1]
             entity = KIND_SPECS[kind].finish(graph, [seg_id])
@@ -486,10 +489,12 @@ class TestSegmentPathEntitiesCoversEveryKind:
         from skiresort_planner.model.resort_graph import ResortGraph
         from skiresort_planner.ui.kind_spec import KIND_SPECS
 
-        m = 111320.0
         for kind in SegmentKind:
             graph = ResortGraph()
-            pts = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=0.0, lat=-300 / m, elevation=1970.0)]
+            pts = [
+                PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
+                PathPoint(lon=0.0, lat=-300 / MapConfig.METERS_PER_DEGREE_EQUATOR, elevation=1970.0),
+            ]
             graph.commit_paths(paths=[ProposedPathSegment(points=pts, kind=kind)], record_undo=False)
             entity = KIND_SPECS[kind].finish(graph, [list(graph.segments.keys())[-1]])
             assert entity is not None

@@ -9,11 +9,9 @@ the equator (1° ≈ 111320 m) so distances are simple to reason about.
 
 import pytest
 
-from skiresort_planner.constants import SlopeConfig
+from skiresort_planner.constants import MapConfig, SlopeConfig
 from skiresort_planner.model.path_geometry import Path
 from skiresort_planner.model.path_point import PathPoint
-
-M = 111320.0  # metres per degree near the equator
 
 
 def _south_path(*, drop_per_100m: float, length_m: float, step_m: float = 30.0) -> Path:
@@ -27,7 +25,9 @@ def _south_path(*, drop_per_100m: float, length_m: float, step_m: float = 30.0) 
     points = []
     for i in range(n):
         south_m = i * step_m
-        points.append(PathPoint(lon=0.0, lat=-south_m / M, elevation=2500.0 - south_m * grade))
+        points.append(
+            PathPoint(lon=0.0, lat=-south_m / MapConfig.METERS_PER_DEGREE_EQUATOR, elevation=2500.0 - south_m * grade)
+        )
     return Path(points=points)
 
 
@@ -108,7 +108,11 @@ class TestMaxSlopeMagnitude:
         for i in range(1, 13):  # 12 × 30 m = 360 m
             south_m = i * 30.0
             steep_points.append(
-                PathPoint(lon=0.0, lat=last.lat - south_m / M, elevation=last.elevation - south_m * 0.40)
+                PathPoint(
+                    lon=0.0,
+                    lat=last.lat - south_m / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                    elevation=last.elevation - south_m * 0.40,
+                )
             )
         p = Path(points=gentle.points + steep_points)
         assert p.avg_slope_pct < 25.0, "the long gentle head keeps the AVERAGE modest"
@@ -149,7 +153,11 @@ class TestDifficultyFromSteepestSection:
         gentle = _south_path(drop_per_100m=5.0, length_m=600.0)
         last = gentle.points[-1]
         steep = [
-            PathPoint(lon=0.0, lat=last.lat - (i * 30.0) / M, elevation=last.elevation - (i * 30.0) * 0.40)
+            PathPoint(
+                lon=0.0,
+                lat=last.lat - (i * 30.0) / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                elevation=last.elevation - (i * 30.0) * 0.40,
+            )
             for i in range(1, 13)
         ]
         p = Path(points=gentle.points + steep)

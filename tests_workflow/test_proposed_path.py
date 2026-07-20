@@ -1,17 +1,15 @@
 """Unit tests for ProposedPathSegment computed metrics (model/proposed_path.py)."""
 
-from skiresort_planner.constants import SlopeConfig
+from skiresort_planner.constants import MapConfig, SlopeConfig
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import PathSegment, SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 
-M = 111320.0  # metres per degree near the equator
-
 
 def _segment_of_grade(grade_pct: float, length_m: float = 350.0) -> list[PathPoint]:
     """A 2-point south-running descent whose slope == grade_pct (longer than ROLLING_WINDOW_M)."""
-    dlat = length_m / M
+    dlat = length_m / MapConfig.METERS_PER_DEGREE_EQUATOR
     return [
         PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
         PathPoint(lon=0.0, lat=-dlat, elevation=2000.0 - length_m * grade_pct / 100.0),

@@ -9,6 +9,7 @@ from contextlib import nullcontext
 
 import pytest
 
+from skiresort_planner.constants import MapConfig
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
@@ -16,8 +17,6 @@ from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.context import BuildMode
 from skiresort_planner.ui.left_panel import SidebarRenderer
 from skiresort_planner.ui.state_machine import PlannerStateMachine
-
-M = 111320.0
 
 
 def _build_slope(graph: ResortGraph, path_points: list[PathPoint]) -> str:
@@ -36,7 +35,9 @@ def _build_road(graph: ResortGraph, path_points: list[PathPoint]) -> str:
 
 def _build_lift(graph: ResortGraph, dem) -> str:
     bottom, _ = graph.get_or_create_node(
-        lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M)
+        lon=0.0,
+        lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+        elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
     )
     top, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
     lift = graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
@@ -271,10 +272,13 @@ class TestDescribeUndoAction:
         from skiresort_planner.generators.osm_importer import ImportResult
 
         dem = mock_dem_blue_slope
-        m = 111320.0
         slope_points = [
             PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
-            PathPoint(lon=0.0, lat=-500 / m, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / m)),
+            PathPoint(
+                lon=0.0,
+                lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            ),
         ]
         empty_graph.import_osm(ImportResult(slope_chains=[([slope_points], "Run")]), dem=dem)
         assert "OSM import" in self._describe_top(empty_graph)
@@ -286,7 +290,9 @@ class TestDescribeUndoAction:
         dem = mock_dem_blue_slope
         a, _ = empty_graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
         b, _ = empty_graph.get_or_create_node(
-            lon=0.0, lat=-200 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-200 / M)
+            lon=0.0,
+            lat=-200 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-200 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         )
         empty_graph.merge_nodes(node_ids=[a.id, b.id], dem=dem)
         assert self._describe_top(empty_graph) == "Un-merge 2 nodes"

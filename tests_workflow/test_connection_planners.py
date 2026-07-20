@@ -15,7 +15,7 @@ import math
 import numpy as np
 import pytest
 
-from skiresort_planner.constants import GeometricTuningConfig
+from skiresort_planner.constants import GeometricTuningConfig, MapConfig
 from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.generators.connection_planners import (
@@ -288,7 +288,7 @@ class TestPlannerIntegration:
         MockDEMForPlanner elevation = 2000 - lat*1000, so a target ~500m NORTH (higher
         lat) sits lower than the start (net drop). DOWNHILL mode should succeed.
         """
-        step_deg = 500.0 / 111320.0  # ~500m north in latitude
+        step_deg = 500.0 / MapConfig.METERS_PER_DEGREE_EQUATOR  # ~500m north in latitude
         start_elev = planner.dem.get_elevation(lon=10.0, lat=47.0)
         target_elev = planner.dem.get_elevation(lon=10.0, lat=47.0 + step_deg)
         assert start_elev is not None and target_elev is not None
@@ -317,7 +317,7 @@ class TestPlannerIntegration:
         Elevation = 2000 - lat*1000, so lower lat is higher ground; UPHILL mode with a
         negative (climbing) target grade should succeed and carry that grade through.
         """
-        step_deg = 500.0 / 111320.0  # ~500m south in latitude
+        step_deg = 500.0 / MapConfig.METERS_PER_DEGREE_EQUATOR  # ~500m south in latitude
         start_elev = planner.dem.get_elevation(lon=10.0, lat=47.0)
         target_elev = planner.dem.get_elevation(lon=10.0, lat=47.0 - step_deg)
         assert start_elev is not None and target_elev is not None
@@ -346,7 +346,7 @@ class TestPlannerIntegration:
         The target ~500m north sits BELOW the start (net drop > 0). In UPHILL mode the
         segment must net-climb, so plan() must bail out before building the grid.
         """
-        step_deg = 500.0 / 111320.0  # ~500m north = lower ground = net drop
+        step_deg = 500.0 / MapConfig.METERS_PER_DEGREE_EQUATOR  # ~500m north = lower ground = net drop
         start_elev = planner.dem.get_elevation(lon=10.0, lat=47.0)
         target_elev = planner.dem.get_elevation(lon=10.0, lat=47.0 + step_deg)
         assert start_elev is not None and target_elev is not None
@@ -385,7 +385,7 @@ class TestEdgeCostGradeAttractor:
             to_elev=to_elev,
             from_lon=0.0,
             from_lat=0.0,
-            to_lon=30.0 / 111320.0,
+            to_lon=30.0 / MapConfig.METERS_PER_DEGREE_EQUATOR,
             to_lat=0.0,
             target_grade_pct=target_grade_pct,
             gradient_mode=gradient_mode,
@@ -413,7 +413,9 @@ class TestEdgeCostGradeAttractor:
 
         planner = self._planner(mock_dem_blue_slope)
         cost = self._cost(planner, 2000.0, 1994.0, target_grade_pct=0.0, gradient_mode=GradientMode.DOWNHILL)
-        horiz = GeoCalculator.haversine_distance_m(lat1=0.0, lon1=0.0, lat2=0.0, lon2=30.0 / 111320.0)
+        horiz = GeoCalculator.haversine_distance_m(
+            lat1=0.0, lon1=0.0, lat2=0.0, lon2=30.0 / MapConfig.METERS_PER_DEGREE_EQUATOR
+        )
         actual_grade = (6.0 / horiz) * 100
         expected = horiz * exp(abs(actual_grade - 0.0) / GeometricTuningConfig.COST_SIGMA)
         assert cost == pytest.approx(expected, rel=1e-6)

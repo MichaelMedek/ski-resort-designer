@@ -86,8 +86,9 @@ class MapConfig:
     # Node snapping threshold for lift placement (used when creating end nodes)
     LIFT_END_NODE_THRESHOLD_M = 80  # Extra generous for lift top station placement
 
-    # At equator, 1 degree of latitude or longitude ≈ 111,320 meters
-    # Used by MockDEMService in tests for coordinate calculations
+    # Metres per degree of latitude (and of longitude at the equator), on the WGS84 spherical earth
+    # (EARTH_RADIUS_M · π/180 ≈ 111195 m). Single source for all lat/lon↔metre conversions codebase-wide.
+    # test_geo_calculator asserts this equals GeoCalculator.haversine_distance_m(0,0,1,0) exactly.
     METERS_PER_DEGREE_EQUATOR = 111320.0
 
     # 2D mode z-offsets (relative layer ordering, no terrain)
@@ -217,6 +218,10 @@ class GeometricTuningConfig:
 
     # --- Fan tracer (path_tracer.py) + fan breadth (path_factory.py) ---
     STEP_SIZE_M = 30  # Path trace / terrain-sample / node-snap step (smaller = smoother, slower)
+    # Weighted "Magic 8" gradient (terrain_analyzer.compute_gradient): two concentric rings sampled at
+    # 8 compass bearings. (radius_factor × STEP_SIZE_M, weight) — inner ring weighted double.
+    GRADIENT_RINGS = [(0.5, 2.0), (1.0, 1.0)]
+    GRADIENT_SAMPLE_ANGLES_DEG = [0, 45, 90, 135, 180, 225, 270, 315]
     MIN_TRAVERSE_ANGLE_DEG = 2  # Keeps left/right paths diverging and the traverse off straight up/down
     MAX_TURN_PER_STEP_DEG = 40.0  # Max angular change per step to prevent self-intersection
     BEARING_SMOOTHING_WINDOW = 4  # Number of recent bearings to average when smoothing

@@ -5,11 +5,10 @@ the 2D/3D full-resort render, LayerCollection z-ordering, and the
 calculate_3d_view_for_* camera calculators.
 """
 
+from skiresort_planner.constants import MapConfig
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.ui.click_detector import ClickDetector
 from skiresort_planner.ui.context import ClickDeduplicationContext
-
-M = 111320.0  # metres per degree near the equator
 
 
 def _populate_full_resort(graph, dem):
@@ -24,7 +23,11 @@ def _populate_full_resort(graph, dem):
             ProposedPathSegment(
                 points=[
                     summit,
-                    PathPoint(lon=0.0, lat=-400 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-400 / M)),
+                    PathPoint(
+                        lon=0.0,
+                        lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                        elevation=dem.get_elevation_or_raise(lon=0.0, lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+                    ),
                 ],
                 target_difficulty="blue",
             )
@@ -37,7 +40,11 @@ def _populate_full_resort(graph, dem):
             ProposedPathSegment(
                 points=[
                     summit,
-                    PathPoint(lon=400 / M, lat=0.0, elevation=dem.get_elevation_or_raise(lon=400 / M, lat=0.0)),
+                    PathPoint(
+                        lon=400 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                        lat=0.0,
+                        elevation=dem.get_elevation_or_raise(lon=400 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0),
+                    ),
                 ],
                 is_connector=True,
                 kind=SegmentKind.ROAD,
@@ -48,7 +55,9 @@ def _populate_full_resort(graph, dem):
     road = graph.finish_road(segment_ids=[list(graph.segments.keys())[-1]])
     # Lift from valley up to summit.
     bottom, _ = graph.get_or_create_node(
-        lon=0.0, lat=-800 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-800 / M)
+        lon=0.0,
+        lat=-800 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+        elevation=dem.get_elevation_or_raise(lon=0.0, lat=-800 / MapConfig.METERS_PER_DEGREE_EQUATOR),
     )
     top, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
     lift = graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
@@ -95,6 +104,59 @@ class TestMapRendering:
         expected_color = list(StyleConfig.SLOPE_COLORS_RGBA["blue"])
         expected_color[3] = 100
         assert belt.data[0]["color"] == expected_color
+
+    def test_defective_slope_is_grayed_out(self, empty_graph, path_points_blue) -> None:
+        """A slope in defect_ids renders belt + icon muted toward gray; a non-defect slope keeps its
+        difficulty color (the gray-out is opt-in per entity).
+        """
+        from skiresort_planner.constants import StyleConfig
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
+        from skiresort_planner.ui.center_map import MapRenderer
+
+        graph = empty_graph
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        renderer = MapRenderer(graph=graph)
+
+        base = list(StyleConfig.SLOPE_COLORS_RGBA["blue"])
+        # Non-defect control: belt keeps base color (alpha dropped to 100 for the belt).
+        plain = renderer._create_segment_layers(use_3d=False)
+        plain_belt = next(layer for layer in plain["slopes"] if layer.id == "segments_belt")
+        assert plain_belt.data[0]["color"][:3] == base[:3]
+
+        # Grayed: belt + icon both muted via StyleConfig.gray_out.
+        grayed = renderer._create_segment_layers(use_3d=False, defect_ids={slope.id})
+        grayed_belt = next(layer for layer in grayed["slopes"] if layer.id == "segments_belt")
+        grayed_icons = next(layer for layer in grayed["slopes"] if layer.id == "segments_icons")
+        assert grayed_belt.data[0]["color"][:3] == StyleConfig.gray_out(base)[:3]
+        assert grayed_icons.data[0]["color"] == StyleConfig.gray_out(base)
+
+    def test_defective_lift_is_grayed_out(self, empty_graph, mock_dem_blue_slope) -> None:
+        """A lift in defect_ids renders its cable + icon muted toward gray; the control keeps its
+        per-type purple.
+        """
+        from skiresort_planner.constants import StyleConfig
+        from skiresort_planner.ui.center_map import MapRenderer
+
+        graph = empty_graph
+        dem = mock_dem_blue_slope
+        bottom, _ = graph.get_or_create_node(
+            lon=0.0,
+            lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        )
+        top, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
+        lift = graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
+        renderer = MapRenderer(graph=graph)
+        base = list(StyleConfig.LIFT_COLORS_RGBA["chairlift"])
+
+        plain = renderer._create_lift_layers(use_3d=False)
+        plain_cable = next(layer for layer in plain["cables_icons"] if layer.id == "lift_cables")
+        assert plain_cable.data[0]["color"][:3] == base[:3]
+
+        grayed = renderer._create_lift_layers(use_3d=False, defect_ids={lift.id})
+        grayed_cable = next(layer for layer in grayed["cables_icons"] if layer.id == "lift_cables")
+        assert grayed_cable.data[0]["color"] == StyleConfig.gray_out(base)
 
     def test_map_renderer_renders_proposals(self, empty_graph, path_points_blue) -> None:
         """MapRenderer renders proposal paths."""
@@ -170,8 +232,8 @@ class TestMapRendering:
         graph.finish_slope(segment_ids=list(graph.segments.keys()))
         # Road as a separate short segment.
         road_pts = [
-            type(path_points_blue[0])(lon=500 / M, lat=0.0, elevation=2000.0),
-            type(path_points_blue[0])(lon=800 / M, lat=0.0, elevation=1990.0),
+            type(path_points_blue[0])(lon=500 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=2000.0),
+            type(path_points_blue[0])(lon=800 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=1990.0),
         ]
         graph.commit_paths(
             paths=[ProposedPathSegment(points=road_pts, is_connector=True, kind=SegmentKind.ROAD)], record_undo=False
@@ -209,7 +271,9 @@ class TestMapRendering:
         graph = empty_graph
         dem = mock_dem_blue_slope
         bottom, _ = graph.get_or_create_node(
-            lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M)
+            lon=0.0,
+            lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         )
         top, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
         lift = graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
@@ -237,7 +301,11 @@ class TestMapRendering:
         graph.commit_paths(
             paths=[
                 ProposedPathSegment(
-                    points=[shared, PathPoint(lon=0.0, lat=-300 / M, elevation=1900.0)], target_difficulty="blue"
+                    points=[
+                        shared,
+                        PathPoint(lon=0.0, lat=-300 / MapConfig.METERS_PER_DEGREE_EQUATOR, elevation=1900.0),
+                    ],
+                    target_difficulty="blue",
                 )
             ]
         )
@@ -245,7 +313,10 @@ class TestMapRendering:
         graph.commit_paths(
             paths=[
                 ProposedPathSegment(
-                    points=[shared, PathPoint(lon=300 / M, lat=0.0, elevation=1990.0)],
+                    points=[
+                        shared,
+                        PathPoint(lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=1990.0),
+                    ],
                     is_connector=True,
                     kind=SegmentKind.ROAD,
                 )
@@ -286,7 +357,11 @@ class TestMapRendering:
         graph.commit_paths(
             paths=[
                 ProposedPathSegment(
-                    points=[shared, PathPoint(lon=0.0, lat=-300 / M, elevation=1900.0)], target_difficulty="blue"
+                    points=[
+                        shared,
+                        PathPoint(lon=0.0, lat=-300 / MapConfig.METERS_PER_DEGREE_EQUATOR, elevation=1900.0),
+                    ],
+                    target_difficulty="blue",
                 )
             ]
         )
@@ -294,7 +369,10 @@ class TestMapRendering:
         graph.commit_paths(
             paths=[
                 ProposedPathSegment(
-                    points=[shared, PathPoint(lon=300 / M, lat=0.0, elevation=1990.0)],
+                    points=[
+                        shared,
+                        PathPoint(lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=1990.0),
+                    ],
                     is_connector=True,
                     kind=SegmentKind.ROAD,
                 )
@@ -321,7 +399,6 @@ class TestFullResortRendering:
     """
 
     def test_render_2d_produces_layers(self, empty_graph, mock_dem_blue_slope) -> None:
-        from skiresort_planner.constants import MapConfig
         from skiresort_planner.ui.center_map import MapRenderer
 
         _populate_full_resort(empty_graph, mock_dem_blue_slope)
@@ -384,7 +461,13 @@ class TestThreeDViewCalculators:
                 ProposedPathSegment(
                     points=[
                         PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
-                        PathPoint(lon=0.0, lat=-400 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-400 / M)),
+                        PathPoint(
+                            lon=0.0,
+                            lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                            elevation=dem.get_elevation_or_raise(
+                                lon=0.0, lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR
+                            ),
+                        ),
                     ],
                     target_difficulty="blue",
                 )
@@ -392,7 +475,6 @@ class TestThreeDViewCalculators:
         )
         slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
 
-        from skiresort_planner.constants import MapConfig
         from skiresort_planner.core.geo_calculator import GeoCalculator
 
         start = graph.nodes[slope.start_node_id]
@@ -407,7 +489,6 @@ class TestThreeDViewCalculators:
         assert MapConfig.VIEW_3D_MIN_ZOOM <= zoom < MapConfig.VIEW_3D_ZOOM
 
     def test_lift_view(self, empty_graph, mock_dem_blue_slope) -> None:
-        from skiresort_planner.constants import MapConfig
         from skiresort_planner.core.geo_calculator import GeoCalculator
         from skiresort_planner.ui.center_map import MapRenderer
 
@@ -430,7 +511,6 @@ class TestThreeDViewCalculators:
         empty_graph.commit_paths(paths=[proposal], record_undo=False)
         road = empty_graph.finish_road(segment_ids=[list(empty_graph.segments.keys())[-1]])
 
-        from skiresort_planner.constants import MapConfig
         from skiresort_planner.core.geo_calculator import GeoCalculator
 
         start = empty_graph.nodes[road.start_node_id]

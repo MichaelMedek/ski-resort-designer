@@ -476,7 +476,10 @@ class TestImportRules:
         from shapely.ops import unary_union
 
         lat0 = (ds.bbox[1] + ds.bbox[3]) / 2
-        mlat, mlon = 111_320.0, 111_320.0 * math.cos(math.radians(lat0))
+        mlat, mlon = (
+            MapConfig.METERS_PER_DEGREE_EQUATOR,
+            MapConfig.METERS_PER_DEGREE_EQUATOR * math.cos(math.radians(lat0)),
+        )
 
         def to_m(lon, lat):
             return ((lon - ds.bbox[0]) * mlon, (lat - ds.bbox[1]) * mlat)

@@ -25,8 +25,6 @@ from skiresort_planner.ui.sidebar_panels import (
 )
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
-M = 111320.0  # metres per degree near the equator
-
 
 def _session(fake_st, graph, factory, dem):
     """Seed fake st.session_state with the objects the panels' action functions read."""

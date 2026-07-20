@@ -69,6 +69,20 @@ class TestGeoCalculator:
         assert along_lat == pytest.approx(expected, rel=1e-9), "1° of latitude at the equator = R·π/180"
         assert along_lon == pytest.approx(expected, rel=1e-9), "1° of longitude at the equator = R·π/180"
 
+    def test_meters_per_degree_constant_matches_haversine(self) -> None:
+        """MapConfig.METERS_PER_DEGREE_EQUATOR is the single lat/lon↔metre constant used codebase-wide.
+
+        It's a hard-coded literal (avoids an import cycle), so this test is its guard: it must equal
+        haversine_distance_m(0,0,1,0) to a sane precision. If EARTH_RADIUS_M or the haversine formula
+        ever changes materially, this fails and the constant must be updated in lockstep.
+        """
+        from skiresort_planner.constants import MapConfig
+
+        one_degree_m = GeoCalculator.haversine_distance_m(lat1=0.0, lon1=0.0, lat2=1.0, lon2=0.0)
+        assert pytest.approx(one_degree_m, abs=1e-3) == MapConfig.METERS_PER_DEGREE_EQUATOR, (
+            "the constant must equal one equator-degree from haversine (to sub-mm precision)"
+        )
+
     def test_haversine_zero_distance_and_symmetry(self) -> None:
         """Distance to self is exactly 0, and haversine(A,B) == haversine(B,A)."""
         assert GeoCalculator.haversine_distance_m(lat1=46.0, lon1=10.0, lat2=46.0, lon2=10.0) == 0.0
