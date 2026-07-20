@@ -166,7 +166,7 @@ class MapRenderer:
         extra_layers: list[pdk.Layer] | None = None,
         terrain_layer: pdk.Layer | None = None,
         use_3d: bool = False,
-        merge_node_ids: list[str] | None = None,
+        selected_node_ids: list[str] | None = None,
     ) -> pdk.Deck:
         """Render complete map with all layers.
 
@@ -181,7 +181,7 @@ class MapRenderer:
             extra_layers: Additional layers to include (markers always on top)
             terrain_layer: Pre-generated terrain elevation layer (BitmapLayer)
             use_3d: If True, render with 3D terrain elevations. If False, flat 2D at z=0.
-            merge_node_ids: Node ids currently selected for merging — drawn RED.
+            selected_node_ids: Node ids currently selected (merge/delete/route start) — drawn RED.
 
         Returns:
             pdk.Deck object ready for display.
@@ -201,7 +201,9 @@ class MapRenderer:
                 layer_collection.lifts.extend(lift_layers["cables_icons"])
 
             if show_nodes:
-                layer_collection.nodes.append(self._create_node_layer(use_3d=use_3d, merge_node_ids=merge_node_ids))
+                layer_collection.nodes.append(
+                    self._create_node_layer(use_3d=use_3d, selected_node_ids=selected_node_ids)
+                )
 
             if show_segments:
                 # One shared loop builds slope + road layers, returned in
@@ -744,7 +746,7 @@ class MapRenderer:
     # NODE LAYER
     # =========================================================================
 
-    def _create_node_layer(self, *, use_3d: bool = False, merge_node_ids: list[str] | None = None) -> pdk.Layer:
+    def _create_node_layer(self, *, use_3d: bool = False, selected_node_ids: list[str] | None = None) -> pdk.Layer:
         """Create layer for junction nodes.
 
         A node that is also a **parking node** (a road junction shared with a
@@ -752,13 +754,13 @@ class MapRenderer:
         with a "Parking place" tooltip — the parking marker IS the node marker,
         so it's always visible and hoverable (no separate under-layer).
 
-        A node in `merge_node_ids` (selected in the node-merge tool) renders RED and bigger, so the
-        user sees exactly which nodes will collapse. Merge-selection takes priority over the parking
-        style (a selected parking node still shows red while selected).
+        A node in `selected_node_ids` (highlighted by merge/delete OR the route planner as start) renders
+        RED and bigger, so the user sees exactly which nodes are selected. Selection takes priority over
+        the parking style (a selected parking node still shows red while selected).
 
         Args:
             use_3d: If True, use terrain elevation. If False, use z-offset.
-            merge_node_ids: Node ids selected for merging (drawn red).
+            selected_node_ids: Node ids currently selected (merge/delete/route start) — drawn red.
 
         Returns:
             ScatterplotLayer with nodes; per-point color/radius/name.
@@ -767,16 +769,16 @@ class MapRenderer:
             return pdk.Layer("ScatterplotLayer", [], id="nodes")
 
         parking_ids = {n.id for n in self.graph.get_parking_nodes()}
-        merge_ids = set(merge_node_ids or [])
+        selected_ids = set(selected_node_ids or [])
 
         node_data = []
         for node_id, node in self.graph.nodes.items():
             is_parking = node_id in parking_ids
-            is_merge_selected = node_id in merge_ids
-            is_big = is_merge_selected or is_parking
-            if is_merge_selected:
-                color = list(StyleConfig.MERGE_SELECTED_RGBA)
-                name = f"{StyleConfig.MERGE_ICON} Selected to merge — {node_id}"
+            is_selected = node_id in selected_ids
+            is_big = is_selected or is_parking
+            if is_selected:
+                color = list(StyleConfig.SELECTED_NODE_RGBA)
+                name = f"✅ Selected — {node_id}"
             elif is_parking:
                 color = list(StyleConfig.PARKING_COLOR_RGBA)
                 name = f"{StyleConfig.PARKING_ICON} Parking place — {node_id}"

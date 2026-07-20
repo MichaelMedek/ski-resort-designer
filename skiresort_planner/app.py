@@ -354,7 +354,7 @@ def _render_map_fragment_inner() -> None:
             extra_layers=extra_layers,
             terrain_layer=basemap_layer,
             use_3d=use_3d,
-            merge_node_ids=build_state.merge_highlight_node_ids(ctx),
+            selected_node_ids=build_state.selected_node_ids(ctx),
         )
 
     deck = _build_deck()

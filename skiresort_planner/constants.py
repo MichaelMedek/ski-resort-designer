@@ -535,8 +535,8 @@ class StyleConfig:
     # viewing a finished entity. Shared so all state headers stay consistent from one source.
     BUILDING_ICON = "🏗️"
     VIEWING_ICON = "👁️"
-    # Nodes selected for merging render solid red so the collapse set is unmistakable.
-    MERGE_SELECTED_RGBA = [239, 68, 68, 235]
+    # A selected node (merge/delete candidate or route start) renders solid red so the selection is clear.
+    SELECTED_NODE_RGBA = [239, 68, 68, 235]
     # OSM import overlay (RGBA for Pydeck): one blue for the box, one for the center dot.
     IMPORT_BOX_RGBA = [33, 150, 243, 60]  # translucent square (fill + outline)
     IMPORT_CENTER_RGBA = [33, 150, 243, 230]  # solid center dot (click to confirm)

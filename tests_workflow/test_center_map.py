@@ -272,9 +272,9 @@ class TestMapRendering:
             assert point["color"] == list(MarkerConfig.NODE_MARKER_COLOR)
             assert point["radius"] == ClickConfig.NODE_MARKER_RADIUS
 
-    def test_merge_selection_overrides_parking_style(self, empty_graph) -> None:
-        """A node in merge_node_ids renders RED + big with the merge icon; merge styling wins
-        over the parking (blue) style even when the node is a shared road/slope parking node.
+    def test_selected_node_overrides_parking_style(self, empty_graph) -> None:
+        """A node in selected_node_ids renders RED + big with a neutral "Selected" tooltip; selection
+        styling wins over the parking (blue) style even for a shared road/slope parking node.
         """
         from skiresort_planner.constants import ClickConfig, StyleConfig
         from skiresort_planner.model.path_point import PathPoint
@@ -304,15 +304,15 @@ class TestMapRendering:
 
         parking_ids = {n.id for n in graph.get_parking_nodes()}
         assert parking_ids, "shared road/slope node should be a parking node"
-        merge_id = next(iter(parking_ids))  # select the parking node itself for merge
+        selected_id = next(iter(parking_ids))  # select the parking node itself
 
-        node_layer = MapRenderer(graph=graph)._create_node_layer(use_3d=False, merge_node_ids=[merge_id])
-        record = next(d for d in node_layer.data if d["id"] == merge_id)
-        # Merge wins over parking: red (not parking blue), big radius, merge icon in the tooltip.
-        assert record["color"] == list(StyleConfig.MERGE_SELECTED_RGBA)
+        node_layer = MapRenderer(graph=graph)._create_node_layer(use_3d=False, selected_node_ids=[selected_id])
+        record = next(d for d in node_layer.data if d["id"] == selected_id)
+        # Selection wins over parking: red (not parking blue), big radius, neutral "Selected" tooltip.
+        assert record["color"] == list(StyleConfig.SELECTED_NODE_RGBA)
         assert record["color"] != list(StyleConfig.PARKING_COLOR_RGBA)
         assert record["radius"] == ClickConfig.NODE_MARKER_RADIUS_BIG
-        assert StyleConfig.MERGE_ICON in record["name"]
+        assert "Selected" in record["name"] and "merge" not in record["name"].lower()
 
 
 class TestFullResortRendering:

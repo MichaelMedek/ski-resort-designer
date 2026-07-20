@@ -120,8 +120,8 @@ class BuildState(ABC):
         """The elevation profile shown in the right column, or None when the state shows none."""
 
     @abstractmethod
-    def merge_highlight_node_ids(self, ctx: PlannerContext) -> list[str] | None:
-        """Node ids to draw as merge candidates, or None when not merging."""
+    def selected_node_ids(self, ctx: PlannerContext) -> list[str] | None:
+        """Node ids to draw as selected (merge/delete candidates or the route start), or None."""
 
     @abstractmethod
     def renders_custom_path(self, ctx: PlannerContext) -> bool:
@@ -187,7 +187,7 @@ class _IdleReadyState(BuildState):
     def bottom_profile(self, ctx: PlannerContext, graph: ResortGraph) -> ProfileSpec | None:
         return None
 
-    def merge_highlight_node_ids(self, ctx: PlannerContext) -> list[str] | None:
+    def selected_node_ids(self, ctx: PlannerContext) -> list[str] | None:
         return None
 
     def renders_custom_path(self, ctx: PlannerContext) -> bool:
@@ -271,7 +271,7 @@ class _EntityViewingState(BuildState):
         fig = bottom_chart.render_viewing_profile(kind=self.kind, entity_id=entity_id, graph=graph)
         return ProfileSpec(fig=fig, key="viewing_profile")
 
-    def merge_highlight_node_ids(self, ctx: PlannerContext) -> list[str] | None:
+    def selected_node_ids(self, ctx: PlannerContext) -> list[str] | None:
         return None
 
     def renders_custom_path(self, ctx: PlannerContext) -> bool:
@@ -401,7 +401,7 @@ class _PathBuildingState(BuildState):
         # Key is scoped per kind so slope and road profile charts never collide.
         return ProfileSpec(fig=fig, key=f"combined_{self.kind.value}_profile")
 
-    def merge_highlight_node_ids(self, ctx: PlannerContext) -> list[str] | None:
+    def selected_node_ids(self, ctx: PlannerContext) -> list[str] | None:
         return None
 
     def renders_custom_path(self, ctx: PlannerContext) -> bool:
@@ -470,7 +470,7 @@ class _LiftPlacingState(BuildState):
     def bottom_profile(self, ctx: PlannerContext, graph: ResortGraph) -> ProfileSpec | None:
         return None
 
-    def merge_highlight_node_ids(self, ctx: PlannerContext) -> list[str] | None:
+    def selected_node_ids(self, ctx: PlannerContext) -> list[str] | None:
         return None
 
     def renders_custom_path(self, ctx: PlannerContext) -> bool:
@@ -539,7 +539,7 @@ class _ImportSelectingState(BuildState):
     def bottom_profile(self, ctx: PlannerContext, graph: ResortGraph) -> ProfileSpec | None:
         return None
 
-    def merge_highlight_node_ids(self, ctx: PlannerContext) -> list[str] | None:
+    def selected_node_ids(self, ctx: PlannerContext) -> list[str] | None:
         return None
 
     def renders_custom_path(self, ctx: PlannerContext) -> bool:
@@ -597,7 +597,7 @@ class _MergeSelectingState(BuildState):
     def bottom_profile(self, ctx: PlannerContext, graph: ResortGraph) -> ProfileSpec | None:
         return None
 
-    def merge_highlight_node_ids(self, ctx: PlannerContext) -> list[str] | None:
+    def selected_node_ids(self, ctx: PlannerContext) -> list[str] | None:
         return ctx.merge.node_ids
 
     def renders_custom_path(self, ctx: PlannerContext) -> bool:
@@ -657,7 +657,7 @@ class _RoutePlacingState(BuildState):
     def bottom_profile(self, ctx: PlannerContext, graph: ResortGraph) -> ProfileSpec | None:
         return None
 
-    def merge_highlight_node_ids(self, ctx: PlannerContext) -> list[str] | None:
+    def selected_node_ids(self, ctx: PlannerContext) -> list[str] | None:
         # Reuse the node-highlight channel to show the picked start node while awaiting the end.
         start = ctx.route_plan.start_node_id
         return [start] if start is not None else None
@@ -728,7 +728,7 @@ class _IdleViewingRouteState(BuildState):
     def bottom_profile(self, ctx: PlannerContext, graph: ResortGraph) -> ProfileSpec | None:
         return None
 
-    def merge_highlight_node_ids(self, ctx: PlannerContext) -> list[str] | None:
+    def selected_node_ids(self, ctx: PlannerContext) -> list[str] | None:
         return None
 
     def renders_custom_path(self, ctx: PlannerContext) -> bool:
