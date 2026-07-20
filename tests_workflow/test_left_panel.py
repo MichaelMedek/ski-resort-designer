@@ -91,11 +91,11 @@ class TestSidebarRuns:
         SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph)._render_resort_stats()
 
         body = "\n".join(lines)
-        assert "**Disconnected from core** (largest 3):" in body
+        assert "**4 Disconnected from core area** (largest 3):" in body
         # Largest 3 by length are 400,300,200 → slope-4/3/2; slope-1 (100m) is dropped.
         assert "slope-4" in body and "slope-3" in body and "slope-2" in body
         assert "slope-1" not in body
-        assert "**One-way (can't loop back)**" in body and "lift-a" in body
+        assert "**1 One-way (can't loop back)** (largest 1):" in body and "lift-a" in body
 
     def test_sidebar_during_slope_building(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         # Building state renders the building controls + undo/reset buttons.

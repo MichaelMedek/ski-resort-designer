@@ -579,81 +579,81 @@ class StyleConfig:
 class NameConfig:
     """Creative naming components for slopes and lifts."""
 
-    # Slope name prefixes by difficulty
+    # Slope name prefixes by difficulty — Austrian piste flavour (Harakiri, Höllental, …).
     SLOPE_PREFIXES = {
-        "green": ["Gentle", "Easy", "Nursery", "Bunny", "Beginner's", "Soft"],
-        "blue": ["Cruiser", "Scenic", "Alpine", "Mountain", "Valley", "Classic"],
-        "red": ["Bold", "Thunder", "Steep", "Expert's", "Challenge", "Pro"],
-        "black": ["Extreme", "Death", "Kamikaze", "Insane", "Devil's", "Daredevil"],
+        "green": ["Sanfte", "Kinder", "Übungs", "Wiesen", "Zwergen", "Hasen"],
+        "blue": ["Panorama", "Sonnen", "Almen", "Genuss", "Familien", "Bummel"],
+        "red": ["Kühne", "Steile", "Gams", "Adler", "Rasante", "Wilde"],
+        "black": ["Teufels", "Höllen", "Todes", "Wahnsinns", "Harakiri", "Kamikaze"],
     }
     assert set(SLOPE_PREFIXES.keys()) == set(SlopeConfig.DIFFICULTIES)
 
     SLOPE_SUFFIXES = [
-        "Run",
-        "Trail",
-        "Slope",
-        "Descent",
-        "Pass",
-        "Chute",
-        "Face",
-        "Bowl",
-        "Gully",
-        "Ridge",
-        "Drop",
-        "Way",
-        "Line",
+        "Abfahrt",
+        "Piste",
+        "Hang",
+        "Schuss",
+        "Rinne",
+        "Kante",
+        "Mulde",
+        "Steilhang",
+        "Kar",
+        "Wand",
+        "Buckel",
+        "Schneise",
+        "Trasse",
         "Route",
-        "Pitch",
-        "Section",
+        "Strecke",
+        "Latschen",
     ]
 
-    # Road name components (roads have no difficulty — creative geography words)
+    # Road name components (roads have no difficulty — Alpine geography words)
     ROAD_PREFIXES = [
-        "Alpine",
-        "Valley",
-        "Ridgeline",
-        "Serpentine",
-        "Highland",
-        "Forest",
-        "Mountain",
-        "Meadow",
-        "Glacier",
-        "Summit",
+        "Alpen",
+        "Tal",
+        "Serpentinen",
+        "Höhen",
+        "Wald",
+        "Berg",
+        "Almen",
+        "Gletscher",
+        "Gipfel",
+        "Wiesen",
     ]
 
     ROAD_SUFFIXES = [
-        "Road",
+        "Straße",
         "Route",
-        "Way",
-        "Drive",
+        "Weg",
+        "Zufahrt",
         "Pass",
-        "Trail",
-        "Access",
-        "Lane",
+        "Steig",
+        "Allee",
+        "Gasse",
     ]
 
-    # Lift name prefixes by type
+    # Lift name prefixes by type — real Austrian mountain/place roots (Gams, Kogel, Valluga, …).
     LIFT_PREFIXES = {
-        "surface_lift": ["Bunny", "Beginner's", "Practice", "Easy", "Learner's", "First"],
-        "chairlift": ["Alpine", "Mountain", "Scenic", "Valley", "Ridge", "Summit"],
-        "gondola": ["Panorama", "Vista", "Sky", "Peak", "Grand", "Majestic"],
-        "aerial_tram": ["Eagle", "Falcon", "Summit", "Peak", "Apex", "Pinnacle"],
+        "surface_lift": ["Hasen", "Übungs", "Zwergen", "Anfänger", "Wiesen", "Bründl"],
+        "chairlift": ["Alm", "Gams", "Hirschen", "Edelweiß", "Sonnen", "Kogel"],
+        "gondola": ["Panorama", "Gipfel", "Adler", "Kristall", "Berg", "Wolken"],
+        "aerial_tram": ["Gletscher", "Nebelhorn", "Falken", "Zugspitz", "Wildspitz", "Valluga"],
     }
     assert set(LIFT_PREFIXES.keys()) == set(LiftConfig.TYPES)
 
     LIFT_SUFFIXES = {
-        "surface_lift": ["Tow", "Lift", "Pull", "Rope", "Drag", "Line"],
-        "chairlift": ["Chair", "Lift", "Express", "Quad", "Six", "Flyer"],
-        "gondola": ["Gondola", "Cabin", "Tram", "Link", "Connect", "Cruiser"],
-        "aerial_tram": ["Tram", "Cable Car", "Aerial", "Skyway", "Tramway", "Rise"],
+        "surface_lift": ["Schlepplift", "Tellerlift", "Bügellift", "Übungslift", "Seillift", "Ziehlift"],
+        "chairlift": ["Sesselbahn", "Sessellift", "Express", "Viererbahn", "Sechserbahn", "Jet"],
+        "gondola": ["Gondelbahn", "Kabinenbahn", "Umlaufbahn", "Gondel", "Kabine", "Express"],
+        "aerial_tram": ["Seilbahn", "Pendelbahn", "Luftseilbahn", "Schwebebahn", "Großkabine", "Bahn"],
     }
     assert set(LIFT_SUFFIXES.keys()) == set(LiftConfig.TYPES)
 
     # Length descriptors for lift naming
     LENGTH_DESCRIPTORS = {
-        "short": ["Little", "Mini", "Short"],  # < LENGTH_SHORT_MAX_M
-        "medium": ["Classic", "Standard", "Regular"],  # between short and long
-        "long": ["Grand", "Big", "Giant"],  # > LENGTH_LONG_MIN_M
+        "short": ["Kleine", "Mini", "Kurze"],  # < LENGTH_SHORT_MAX_M
+        "medium": ["Klassische", "Standard", "Normale"],  # between short and long
+        "long": ["Große", "Lange", "Riesen"],  # > LENGTH_LONG_MIN_M
     }
     # Length/rise bands for entity naming (single source for lift + slope generate_name).
     LENGTH_SHORT_MAX_M = 500  # below → "short" descriptor
@@ -661,16 +661,16 @@ class NameConfig:
     SUMMIT_RISE_M = 500  # lift rise / slope drop above this → "Summit" name
     BIG_DROP_M = 300  # slope drop above this → "big" descriptor
 
-    # 8-point compass directions for naming
+    # 8-point compass directions for naming (German labels)
     COMPASS_DIRECTIONS = {
-        "N": (337.5, 22.5),
-        "NE": (22.5, 67.5),
-        "E": (67.5, 112.5),
-        "SE": (112.5, 157.5),
-        "S": (157.5, 202.5),
-        "SW": (202.5, 247.5),
-        "W": (247.5, 292.5),
-        "NW": (292.5, 337.5),
+        "Nord": (337.5, 22.5),
+        "Nordost": (22.5, 67.5),
+        "Ost": (67.5, 112.5),
+        "Südost": (112.5, 157.5),
+        "Süd": (157.5, 202.5),
+        "Südwest": (202.5, 247.5),
+        "West": (247.5, 292.5),
+        "Nordwest": (292.5, 337.5),
     }
     assert len(COMPASS_DIRECTIONS) == 8
 
@@ -682,11 +682,11 @@ class NameConfig:
             bearing_deg: Bearing in degrees (0-360)
 
         Returns:
-            Compass direction string (N, NE, E, SE, S, SW, W, NW)
+            Compass direction string (Nord, Nordost, Ost, Südost, Süd, Südwest, West, Nordwest)
         """
         brg = bearing_deg % 360
         for direction, (low, high) in NameConfig.COMPASS_DIRECTIONS.items():
-            if direction == "N":
+            if direction == "Nord":
                 if brg >= low or brg < high:
                     return direction
             elif low <= brg < high:

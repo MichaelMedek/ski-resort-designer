@@ -26,29 +26,29 @@ class TestSlopeNaming:
     def test_summit_name_for_large_drop(self) -> None:
         from skiresort_planner.model.slope import Slope
 
-        # Drop above SUMMIT_RISE_M (500m) → "Summit" in the name.
+        # Drop above SUMMIT_RISE_M (500m) → "Gipfel" in the name.
         name = Slope.generate_name(
             difficulty="black", slope_id="SL1", start_elevation=3000.0, end_elevation=2400.0, avg_bearing=0.0
         )
-        assert "Summit" in name
+        assert "Gipfel" in name
 
     def test_big_name_for_medium_drop(self) -> None:
         from skiresort_planner.model.slope import Slope
 
-        # Drop between BIG_DROP_M (300m) and SUMMIT_RISE_M (500m) → "Big".
+        # Drop between BIG_DROP_M (300m) and SUMMIT_RISE_M (500m) → "Groß".
         name = Slope.generate_name(
             difficulty="red", slope_id="SL2", start_elevation=3000.0, end_elevation=2650.0, avg_bearing=90.0
         )
-        assert "Big" in name
+        assert "Groß" in name
 
     def test_no_size_descriptor_for_small_drop(self) -> None:
         from skiresort_planner.model.slope import Slope
 
-        # Drop below BIG_DROP_M (300m) → neither Summit nor Big.
+        # Drop below BIG_DROP_M (300m) → neither Gipfel nor Groß.
         name = Slope.generate_name(
             difficulty="blue", slope_id="SL3", start_elevation=2200.0, end_elevation=2100.0, avg_bearing=180.0
         )
-        assert "Summit" not in name and "Big" not in name
+        assert "Gipfel" not in name and "Groß" not in name
 
     def test_name_embeds_slope_number(self) -> None:
         from skiresort_planner.model.slope import Slope

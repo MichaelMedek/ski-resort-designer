@@ -198,7 +198,7 @@ class Lift(NodeConnected):
             avg_bearing: Average bearing in degrees
 
         Returns:
-            Creative lift name like "1 (Alpine Ridge Express)"
+            Creative lift name like "1 (Gams Nord Sesselbahn)"
         """
         lift_number = Lift.number_from_id(lift_id=lift_id)
         prefixes = NameConfig.LIFT_PREFIXES[lift_type]
@@ -218,7 +218,7 @@ class Lift(NodeConnected):
         name = f"{length_desc}{prefix} {direction}{suffix}"
 
         if vertical_rise_m > NameConfig.SUMMIT_RISE_M:
-            name = f"{prefix} {direction}Summit {suffix}"
+            name = f"{prefix} {direction}Gipfel {suffix}"
 
         return f"{lift_number} ({name.strip()})"
 

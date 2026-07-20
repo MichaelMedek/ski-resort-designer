@@ -25,13 +25,13 @@ def _commit_road(graph: ResortGraph, path_points: list[PathPoint]) -> Road:
 
 class TestRoadName:
     def test_road_name_is_creative_and_compass_based(self) -> None:
-        # bearing 90 → East. Format: "{n} ({direction} {Prefix} {Suffix})".
+        # bearing 90 → Ost. Format: "{n} ({direction} {Prefix} {Suffix})".
         from skiresort_planner.constants import NameConfig
 
         name = Road.generate_name(road_id="R1", avg_bearing=90.0)
-        assert name.startswith("1 (E "), f"expected number + compass direction, got {name!r}"
+        assert name.startswith("1 (Ost "), f"expected number + compass direction, got {name!r}"
         assert name.endswith(")")
-        inner = name[len("1 (E ") : -1]  # "{Prefix} {Suffix}"
+        inner = name[len("1 (Ost ") : -1]  # "{Prefix} {Suffix}"
         prefix, suffix = inner.split(" ")
         assert prefix in NameConfig.ROAD_PREFIXES
         assert suffix in NameConfig.ROAD_SUFFIXES
