@@ -21,7 +21,7 @@ from skiresort_planner.ui.right_panel import (
     EntityInfoControlPanel,
     ImportSelectingControlPanel,
     LiftStatsPanel,
-    MergeSelectingControlPanel,
+    NodeEditingControlPanel,
     PathStatsPanel,
     route_legs,
 )
@@ -607,8 +607,8 @@ class TestMergeAndImportPanels:
     button-body logic and disabled-state, asserting the real action fires and the guard raises.
     """
 
-    def _merge_panel(self, sm, ctx, graph) -> MergeSelectingControlPanel:
-        return MergeSelectingControlPanel(sm=sm, ctx=ctx, graph=graph, on_commit=_noop, on_cancel_connection=_noop)
+    def _merge_panel(self, sm, ctx, graph) -> NodeEditingControlPanel:
+        return NodeEditingControlPanel(sm=sm, ctx=ctx, graph=graph, on_commit=_noop, on_cancel_connection=_noop)
 
     def _import_panel(self, sm, ctx, graph) -> ImportSelectingControlPanel:
         return ImportSelectingControlPanel(sm=sm, ctx=ctx, graph=graph, on_commit=_noop, on_cancel_connection=_noop)
@@ -626,7 +626,7 @@ class TestMergeAndImportPanels:
                 return False
 
             monkeypatch.setattr("skiresort_planner.ui.right_panel.st.button", _btn)
-            ctx.merge.node_ids = node_ids
+            ctx.node_edit.node_ids = node_ids
             panel.buttons()
             return captured
 
@@ -652,7 +652,7 @@ class TestMergeAndImportPanels:
             "skiresort_planner.ui.right_panel.st.button",
             lambda label, **k: label == "🔗 Confirm Merge" and not bool(k.get("disabled", False)),
         )
-        ctx.merge.node_ids = ["A", "B"]
+        ctx.node_edit.node_ids = ["A", "B"]
         self._merge_panel(sm, ctx, empty_graph).buttons()
         assert fired == [True], "clicking Confirm Merge must invoke confirm_merge_action"
 
@@ -667,7 +667,7 @@ class TestMergeAndImportPanels:
             "skiresort_planner.ui.right_panel.st.button",
             lambda label, **k: label == "🗑️ Delete Node(s)" and not bool(k.get("disabled", False)),
         )
-        ctx.merge.node_ids = ["A"]
+        ctx.node_edit.node_ids = ["A"]
         self._merge_panel(sm, ctx, empty_graph).buttons()
         assert fired == [True], "clicking Delete Node(s) must invoke delete_nodes_action"
 

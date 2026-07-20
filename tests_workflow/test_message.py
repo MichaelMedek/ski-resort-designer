@@ -305,31 +305,31 @@ class TestImportSelectingMessages:
         assert "center dot" not in msg, "center dot no longer confirms — must not be advertised"
 
 
-class TestMergeSelectingMessages:
+class TestNodeEditMessages:
     def test_context_zero_selected_prompts_to_click(self) -> None:
-        from skiresort_planner.model.message import MergeSelectingContextMessage
+        from skiresort_planner.model.message import NodeEditContextMessage
 
-        msg = MergeSelectingContextMessage(selected_count=0, span_m=0.0).message
-        assert "Merge Nodes" in msg
+        msg = NodeEditContextMessage(selected_count=0, span_m=0.0).message
+        assert "Edit Nodes" in msg
         assert "Click node markers" in msg
 
     def test_context_shows_count_and_span(self) -> None:
-        from skiresort_planner.model.message import MergeSelectingContextMessage
+        from skiresort_planner.model.message import NodeEditContextMessage
 
-        msg = MergeSelectingContextMessage(selected_count=3, span_m=89.0).message
+        msg = NodeEditContextMessage(selected_count=3, span_m=89.0).message
         assert "3 node" in msg
         assert "89m" in msg
 
     def test_action_under_two_asks_for_more(self) -> None:
-        from skiresort_planner.model.message import MergeActionMessage
+        from skiresort_planner.model.message import NodeEditActionMessage
 
-        msg = MergeActionMessage(selected_count=1).message
+        msg = NodeEditActionMessage(selected_count=1).message
         assert "Delete" in msg and "Merge" in msg, "the <2 prompt covers both merge and delete"
 
     def test_action_two_or_more_offers_confirm(self) -> None:
-        from skiresort_planner.model.message import MergeActionMessage
+        from skiresort_planner.model.message import NodeEditActionMessage
 
-        msg = MergeActionMessage(selected_count=2).message
+        msg = NodeEditActionMessage(selected_count=2).message
         assert "Confirm Merge" in msg
 
     def test_unable_to_delete_names_the_reason(self) -> None:

@@ -969,3 +969,23 @@ class TestDegree2CollapseGeometry:
         b._mark_fabricated(g)
         merged = g.slope_runs[0]
         assert len(merged.fabricated) == len(merged.points), "fabricated overlay covers every point"
+
+    def test_to_m_round_trip_is_integer_metre_exact(self):
+        """_to_m quantises the projection to a 1 m grid; the bit-exact shared-vertex guarantee (pnode raw
+        tuple key, degree-2 collapse) needs _to_m(_to_deg(*xy)) == xy for every hub. Verify no drift over a
+        grid spanning the ischgl bbox — a single ±1 m round-trip flip would silently mis-key nodes.
+        """
+        b = self._builder()
+        drift = [(x, y) for x in range(0, 6000, 50) for y in range(0, 6000, 50) if b._to_m(*b._to_deg(x, y)) != (x, y)]
+        assert drift == [], f"{len(drift)} points drift on the _to_m/_to_deg round-trip: {drift[:5]}"
+
+    def test_full_split_yields_integer_metre_vertices(self, ds):
+        """Every noded segment vertex is integer-metre (set_precision(1.0) after unary_union), so shared
+        vertices are bit-exact — the precondition for linemerge fusion and the raw-tuple pnode key.
+        """
+        b = OSMGraphBuilder(dem=DEMService(), bbox=ds.bbox)
+        lines = [LineString([b._to_m(lo, la) for lo, la in vs]) for vs, _ in ds.pistes if len(vs) >= 2]
+        lines = [ls for ls in lines if ls.length >= OSMConfig.MIN_PISTE_LENGTH_M]
+        kept, _ = b._dedup(lines)
+        nonint = [(x, y) for s in b._full_split(kept) for x, y in s.coords if x != round(x) or y != round(y)]
+        assert nonint == [], f"{len(nonint)} non-integer vertices after full-split: {nonint[:5]}"

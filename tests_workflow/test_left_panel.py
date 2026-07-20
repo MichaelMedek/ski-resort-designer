@@ -155,7 +155,7 @@ class TestSidebarRuns:
 
     def test_sidebar_building_state_renders_consolidated_block(self, fake_st, empty_graph) -> None:
         # Building/placing states render the SAME collapsed info block as idle/viewing (header label
-        # + the "complete or cancel" bullet), not the old plain markdown/caption pair.
+        # + the "buttons locked" bullet), not the old plain markdown/caption pair.
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         sm.start_import(lon=0.0, lat=0.0)
         assert sm.is_import_selecting
@@ -165,7 +165,7 @@ class TestSidebarRuns:
         SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
         joined = "\n".join(captured)
 
-        assert "Complete or cancel current build to change type" in joined
+        assert "Buttons locked — finish or cancel this import to switch build type" in joined
 
 
 class TestSidebarButtonHelpCompleteness:

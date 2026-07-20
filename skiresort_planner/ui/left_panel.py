@@ -164,8 +164,8 @@ class SidebarRenderer:
             return f"Select, then click on map to start placing a {label}"
         if BuildMode.is_import(mode):
             return "Select, then click the map to place an OpenStreetMap import area."
-        if BuildMode.is_merge(mode):
-            return "Select, then click node markers to merge them into one."
+        if BuildMode.is_node_edit(mode):
+            return "Select, then click node markers to edit them (add, delete or merge)."
         if BuildMode.is_route(mode):
             return "Select, then click a start node and an end node to see the best routes."
         raise ValueError(f"Button {mode} has no help text (is_disabled={is_disabled})")
@@ -335,7 +335,7 @@ class SidebarRenderer:
                 with col:
                     render_op_button(op)
 
-        # UTILITY group (import + node-merge): visually separated by a divider — same category
+        # UTILITY group (OSM importer + node editor): visually separated by a divider — same category
         # technically, but optically distinct from the real builders.
         utilities = [op for op in OPERATIONS.values() if op.group == OperationGroup.UTILITY]
         if utilities:

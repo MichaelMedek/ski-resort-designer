@@ -150,13 +150,13 @@ class TestIdleClickRouting:
         graph = ResortGraph()
         node, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=2000.0)
         sm, ctx = _session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
-        ctx.build_mode.mode = BuildMode.MERGE
+        ctx.build_mode.mode = BuildMode.NODE_EDIT
 
         handle_idle_click(
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id), elevation=None
         )
-        assert sm.is_merge_selecting, "first node click starts merge (like other modes' first click)"
-        assert ctx.merge.node_ids == [node.id], "the clicked node is the first merge selection"
+        assert sm.is_node_edit_selecting, "first node click starts node edit (like other modes' first click)"
+        assert ctx.node_edit.node_ids == [node.id], "the clicked node is the first merge selection"
 
     def test_merge_mode_terrain_click_is_invalid_and_stays_idle(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
@@ -165,14 +165,14 @@ class TestIdleClickRouting:
 
         dem = mock_dem_red_slope_diagonal
         sm, ctx = _session(fake_st, ResortGraph(), path_factory, dem)
-        ctx.build_mode.mode = BuildMode.MERGE
+        ctx.build_mode.mode = BuildMode.NODE_EDIT
 
         handle_idle_click(
             ClickInfo(click_type=MapClickType.TERRAIN, lat=0.01, lon=0.02),
             elevation=dem.get_elevation_or_raise(lon=0.02, lat=0.01),
         )
         assert sm.is_idle_ready, "terrain is not a merge target — stay idle"
-        assert ctx.merge.node_ids == [], "no selection from a terrain click"
+        assert ctx.node_edit.node_ids == [], "no selection from a terrain click"
 
     def test_merge_mode_segment_click_enters_merge_and_inserts_node(
         self, fake_st, path_factory, mock_dem_blue_slope, path_points_blue
@@ -188,7 +188,7 @@ class TestIdleClickRouting:
         seg_id = slope.segment_ids[0]
         mid = graph.segments[seg_id].points[len(graph.segments[seg_id].points) // 2]
         sm, ctx = _session(fake_st, graph, path_factory, mock_dem_blue_slope)
-        ctx.build_mode.mode = BuildMode.MERGE
+        ctx.build_mode.mode = BuildMode.NODE_EDIT
         nodes_before = len(graph.nodes)
 
         handle_idle_click(
@@ -202,14 +202,14 @@ class TestIdleClickRouting:
             elevation=None,
         )
         assert len(graph.nodes) == nodes_before + 1, "a belt click in merge mode adds a node"
-        assert sm.is_merge_selecting, "the click enters merge mode (does not open the slope panel)"
+        assert sm.is_node_edit_selecting, "the click enters node-edit mode (does not open the slope panel)"
         assert ctx.viewing.slope_id is None, "no slope panel opened"
 
     def test_merge_mode_segment_click_rejected_stays_idle(
         self, fake_st, path_factory, mock_dem_blue_slope, path_points_blue, monkeypatch
     ) -> None:
         """In idle+merge, a belt click whose insert is REJECTED (too close to an endpoint) must NOT
-        enter merge — it stays idle_ready with a toast. Guards the `if insert: start_merge()` branch.
+        enter merge — it stays idle_ready with a toast. Guards the `if insert: start_node_edit()` branch.
         """
         from skiresort_planner.ui.click_handlers import handle_idle_click
 
@@ -219,7 +219,7 @@ class TestIdleClickRouting:
         seg_id = slope.segment_ids[0]
         near_end = graph.segments[seg_id].points[0]  # within STEP_SIZE_M of the endpoint node
         sm, ctx = _session(fake_st, graph, path_factory, mock_dem_blue_slope)
-        ctx.build_mode.mode = BuildMode.MERGE
+        ctx.build_mode.mode = BuildMode.NODE_EDIT
         nodes_before = len(graph.nodes)
 
         import streamlit
@@ -1790,17 +1790,15 @@ class TestBuildStateMarkerCompleteness:
             assert len(graph.segments) == 0, f"{marker_type.name} must not add graph segments"
             assert sm.is_road_starting, f"{marker_type.name} must not leave road building"
 
-    def test_merge_selecting_rejects_every_entity_marker(
-        self, fake_st, path_factory, mock_dem_red_slope_diagonal
-    ) -> None:
-        from skiresort_planner.ui.click_handlers import handle_merge_selecting_click
+    def test_node_editing_rejects_every_entity_marker(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
+        from skiresort_planner.ui.click_handlers import handle_node_edit_selecting_click
 
         for _marker_type, ci in self._entity_marker_clicks():
             sm, ctx = _session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
-            sm.start_merge()
-            handle_merge_selecting_click(click_info=ci, elevation=None)
-            assert ctx.merge.node_ids == [], "no entity marker adds to the merge selection"
-            assert sm.is_merge_selecting, "an entity marker must not navigate away from merge placing"
+            sm.start_node_edit()
+            handle_node_edit_selecting_click(click_info=ci, elevation=None)
+            assert ctx.node_edit.node_ids == [], "no entity marker adds to the merge selection"
+            assert sm.is_node_edit_selecting, "an entity marker must not navigate away from node editing"
 
     def test_import_selecting_rejects_every_entity_marker(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
@@ -1873,45 +1871,45 @@ class TestImportSelectingClick:
 
 
 # =============================================================================
-# handle_merge_selecting_click — toggle node selection, reject non-node clicks
+# handle_node_edit_selecting_click — toggle node selection, reject non-node clicks
 # =============================================================================
 
 
-class TestMergeSelectingClick:
+class TestNodeEditingClick:
     def _merge_session(self, fake_st, graph, factory, dem):
         sm, ctx = _session(fake_st, graph, factory, dem)
-        sm.start_merge()
+        sm.start_node_edit()
         return sm, ctx
 
     def test_node_click_toggles_selection(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
-        from skiresort_planner.ui.click_handlers import handle_merge_selecting_click
+        from skiresort_planner.ui.click_handlers import handle_node_edit_selecting_click
 
         graph = ResortGraph()
         node, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=2000.0)
         sm, ctx = self._merge_session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
 
-        handle_merge_selecting_click(
+        handle_node_edit_selecting_click(
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id), elevation=None
         )
-        assert ctx.merge.node_ids == [node.id]
-        assert sm.is_merge_selecting, "selecting a node keeps us in merge placing"
+        assert ctx.node_edit.node_ids == [node.id]
+        assert sm.is_node_edit_selecting, "selecting a node keeps us in node editing"
 
     def test_reclick_node_removes_it(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
-        from skiresort_planner.ui.click_handlers import handle_merge_selecting_click
+        from skiresort_planner.ui.click_handlers import handle_node_edit_selecting_click
 
         graph = ResortGraph()
         node, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=2000.0)
         sm, ctx = self._merge_session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
         click = ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id)
 
-        handle_merge_selecting_click(click, elevation=None)
-        handle_merge_selecting_click(click, elevation=None)
-        assert ctx.merge.node_ids == [], "re-clicking a selected node deselects it"
+        handle_node_edit_selecting_click(click, elevation=None)
+        handle_node_edit_selecting_click(click, elevation=None)
+        assert ctx.node_edit.node_ids == [], "re-clicking a selected node deselects it"
 
     def test_segment_body_click_inserts_a_node(
         self, fake_st, path_factory, mock_dem_blue_slope, path_points_blue
     ) -> None:
-        from skiresort_planner.ui.click_handlers import handle_merge_selecting_click
+        from skiresort_planner.ui.click_handlers import handle_node_edit_selecting_click
 
         graph = ResortGraph()
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
@@ -1921,7 +1919,7 @@ class TestMergeSelectingClick:
         sm, ctx = self._merge_session(fake_st, graph, path_factory, mock_dem_blue_slope)
         nodes_before = len(graph.nodes)
 
-        handle_merge_selecting_click(
+        handle_node_edit_selecting_click(
             ClickInfo(
                 click_type=MapClickType.MARKER,
                 marker_type=MarkerType.SEGMENT,
@@ -1933,12 +1931,12 @@ class TestMergeSelectingClick:
         )
         assert len(graph.nodes) == nodes_before + 1, "a path-body click adds one node"
         assert len(graph.slopes[slope.id].segment_ids) == 2, "the clicked segment was split"
-        assert sm.is_merge_selecting, "adding a node stays in merge placing"
+        assert sm.is_node_edit_selecting, "adding a node stays in node editing"
 
     def test_slope_icon_click_is_rejected_not_inserted(
         self, fake_st, path_factory, mock_dem_blue_slope, path_points_blue, monkeypatch
     ) -> None:
-        from skiresort_planner.ui.click_handlers import handle_merge_selecting_click
+        from skiresort_planner.ui.click_handlers import handle_node_edit_selecting_click
 
         graph = ResortGraph()
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
@@ -1948,18 +1946,18 @@ class TestMergeSelectingClick:
         nodes_before = len(graph.nodes)
 
         # The slope ICON marker is position-less (only the SEGMENT belt inserts nodes) → rejected.
-        handle_merge_selecting_click(
+        handle_node_edit_selecting_click(
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SLOPE, slope_id=slope.id),
             elevation=None,
         )
         assert len(graph.nodes) == nodes_before, "a slope-icon click adds no node"
-        assert any("select for merge" in t.lower() for t in toasts), "the icon click is rejected"
-        assert sm.is_merge_selecting
+        assert any("edit nodes" in t.lower() for t in toasts), "the icon click is rejected"
+        assert sm.is_node_edit_selecting
 
     def test_path_body_click_too_close_to_endpoint_shows_toast(
         self, fake_st, path_factory, mock_dem_blue_slope, path_points_blue, monkeypatch
     ) -> None:
-        from skiresort_planner.ui.click_handlers import handle_merge_selecting_click
+        from skiresort_planner.ui.click_handlers import handle_node_edit_selecting_click
 
         graph = ResortGraph()
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
@@ -1970,7 +1968,7 @@ class TestMergeSelectingClick:
         toasts = _capture_toasts(monkeypatch)
         nodes_before = len(graph.nodes)
 
-        handle_merge_selecting_click(
+        handle_node_edit_selecting_click(
             ClickInfo(
                 click_type=MapClickType.MARKER,
                 marker_type=MarkerType.SEGMENT,
@@ -1982,24 +1980,24 @@ class TestMergeSelectingClick:
         )
         assert len(graph.nodes) == nodes_before, "a too-close click adds no node"
         assert any("add a node" in t for t in toasts), "the user is told why the insert was rejected"
-        assert sm.is_merge_selecting
+        assert sm.is_node_edit_selecting
 
     def test_terrain_click_is_rejected_without_crashing(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
     ) -> None:
-        from skiresort_planner.ui.click_handlers import handle_merge_selecting_click
+        from skiresort_planner.ui.click_handlers import handle_node_edit_selecting_click
 
         graph = ResortGraph()
         _sm, ctx = self._merge_session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
 
-        handle_merge_selecting_click(
+        handle_node_edit_selecting_click(
             ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
             elevation=mock_dem_red_slope_diagonal.get_elevation_or_raise(lon=0.0, lat=0.0),
         )
-        assert ctx.merge.node_ids == [], "terrain clicks never add to the merge selection"
+        assert ctx.node_edit.node_ids == [], "terrain clicks never add to the merge selection"
 
     def test_slope_marker_click_is_rejected(self, fake_st, path_factory, mock_dem_blue_slope, path_points_blue) -> None:
-        from skiresort_planner.ui.click_handlers import handle_merge_selecting_click
+        from skiresort_planner.ui.click_handlers import handle_node_edit_selecting_click
 
         graph = ResortGraph()
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
@@ -2008,55 +2006,55 @@ class TestMergeSelectingClick:
         _sm, ctx = self._merge_session(fake_st, graph, path_factory, mock_dem_blue_slope)
 
         # A non-node marker must be rejected (InvalidClickMessage), never crash, never select.
-        handle_merge_selecting_click(
+        handle_node_edit_selecting_click(
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SLOPE, slope_id=slope.id), elevation=None
         )
-        assert ctx.merge.node_ids == []
+        assert ctx.node_edit.node_ids == []
 
     def test_second_distinct_node_grows_the_selection(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         # Existing tests select one node or re-click the same one; this exercises the multi-select
         # path — a second DISTINCT node must be appended (the state a real merge always needs).
-        from skiresort_planner.ui.click_handlers import handle_merge_selecting_click
+        from skiresort_planner.ui.click_handlers import handle_node_edit_selecting_click
 
         graph = ResortGraph()
         first, _ = graph.get_or_create_node(lon=0.02, lat=0.03, elevation=2000.0)
         second, _ = graph.get_or_create_node(lon=0.05, lat=0.07, elevation=1950.0)
         sm, ctx = self._merge_session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
 
-        handle_merge_selecting_click(
+        handle_node_edit_selecting_click(
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=first.id), elevation=None
         )
-        handle_merge_selecting_click(
+        handle_node_edit_selecting_click(
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=second.id), elevation=None
         )
-        assert ctx.merge.node_ids == [first.id, second.id], "a second distinct node joins the selection"
-        assert sm.is_merge_selecting, "selecting nodes keeps us in merge placing"
+        assert ctx.node_edit.node_ids == [first.id, second.id], "a second distinct node joins the selection"
+        assert sm.is_node_edit_selecting, "selecting nodes keeps us in node editing"
 
     def test_stale_node_id_still_toggles_without_crashing(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
     ) -> None:
         # A NODE marker id missing from the graph (deleted-but-still-drawn) must be recorded by the
         # toggle without raising — the selection is a pure id set, robust to a one-frame desync.
-        from skiresort_planner.ui.click_handlers import handle_merge_selecting_click
+        from skiresort_planner.ui.click_handlers import handle_node_edit_selecting_click
 
         sm, ctx = self._merge_session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
 
-        handle_merge_selecting_click(
+        handle_node_edit_selecting_click(
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id="GHOST"), elevation=None
         )
-        assert ctx.merge.node_ids == ["GHOST"], "the toggle records the id even when the node is gone"
-        assert sm.is_merge_selecting, "a stale node id does not crash or leave merge placing"
+        assert ctx.node_edit.node_ids == ["GHOST"], "the toggle records the id even when the node is gone"
+        assert sm.is_node_edit_selecting, "a stale node id does not crash or leave node editing"
 
-    def test_terrain_reject_stays_in_merge_selecting(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
+    def test_terrain_reject_stays_in_node_editing(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         # Strengthen the reject path: a rejected terrain click must not just leave the selection
         # empty, it must also NOT navigate away (a regression that fired a cancel/finish would slip
         # past an assertion that only checks node_ids).
-        from skiresort_planner.ui.click_handlers import handle_merge_selecting_click
+        from skiresort_planner.ui.click_handlers import handle_node_edit_selecting_click
 
         sm, ctx = self._merge_session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
-        handle_merge_selecting_click(
+        handle_node_edit_selecting_click(
             ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
             elevation=mock_dem_red_slope_diagonal.get_elevation_or_raise(lon=0.0, lat=0.0),
         )
-        assert ctx.merge.node_ids == []
-        assert sm.is_merge_selecting, "a rejected terrain click keeps us in merge placing"
+        assert ctx.node_edit.node_ids == []
+        assert sm.is_node_edit_selecting, "a rejected terrain click keeps us in node editing"

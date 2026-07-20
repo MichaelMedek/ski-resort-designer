@@ -28,7 +28,7 @@ def _dirty_ctx() -> PlannerContext:
     ctx.custom_connect.target_location = (0.0, 0.0, 2100.0)  # force_mode derives from this
     ctx.custom_connect.start_node = "N1"
     ctx.selection.set(lon=5.0, lat=6.0, elevation=2100.0)
-    ctx.merge.node_ids = ["N3", "N4"]
+    ctx.node_edit.node_ids = ["N3", "N4"]
     ctx.viewing.panel_visible = True
     ctx.pending.osm_import_center_lon = 10.0
     ctx.pending.osm_import_center_lat = 47.0
@@ -150,12 +150,12 @@ class TestEnterPlacingStatesPreserveTheirScratch:
         assert ctx.pending.osm_import_center_lon == 10.0, "enter must not clear the placed box center (self-loop)"
         assert ctx.pending.osm_import_center_lat == 47.0
 
-    def test_enter_merge_selecting_keeps_the_selection(self) -> None:
+    def test_enter_node_editing_keeps_the_selection(self) -> None:
         # Self-loop on every node toggle; enter must NOT wipe the accumulating selection.
         ctx = _dirty_ctx()
-        sl.enter_merge_selecting(ctx)
+        sl.enter_node_edit_selecting(ctx)
         assert ctx.viewing.panel_visible is False
-        assert ctx.merge.node_ids == ["N3", "N4"], "enter must not clear the merge selection (self-loop)"
+        assert ctx.node_edit.node_ids == ["N3", "N4"], "enter must not clear the merge selection (self-loop)"
 
 
 class TestExitHandlersCleanUpScratch:
@@ -182,10 +182,10 @@ class TestExitHandlersCleanUpScratch:
             "exit_import_selecting must not consume the pending fetch mode"
         )
 
-    def test_exit_merge_selecting_clears_selection(self) -> None:
+    def test_exit_node_editing_clears_selection(self) -> None:
         ctx = _dirty_ctx()
-        sl.exit_merge_selecting(ctx)
-        assert ctx.merge.node_ids == [], "merge selection cleared on exit"
+        sl.exit_node_edit_selecting(ctx)
+        assert ctx.node_edit.node_ids == [], "merge selection cleared on exit"
 
 
 class TestNoOpExitsHaveNoHook:

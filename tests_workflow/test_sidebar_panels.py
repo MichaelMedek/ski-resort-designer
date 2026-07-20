@@ -19,7 +19,7 @@ from skiresort_planner.ui.sidebar_panels import (
     IdleSidebarPanel,
     ImportSidebarPanel,
     LiftSidebarPanel,
-    MergeSidebarPanel,
+    NodeEditSidebarPanel,
     PathBuildSidebarPanel,
     ViewingSidebarPanel,
 )
@@ -226,11 +226,11 @@ class TestImportSidebarPanel:
         assert sm.is_import_selecting and ctx.pending.osm_import_mode is None, "rendering does not confirm the import"
 
 
-class TestMergeSidebarPanel:
+class TestNodeEditSidebarPanel:
     def test_renders_while_placing_without_leaving(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         sm, ctx = _session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
-        sm.start_merge()
-        assert sm.is_merge_selecting
+        sm.start_node_edit()
+        assert sm.is_node_edit_selecting
 
-        MergeSidebarPanel(sm=sm, ctx=ctx, graph=ResortGraph()).controls()  # no button fired
-        assert sm.is_merge_selecting, "rendering the merge cancel button does not itself cancel"
+        NodeEditSidebarPanel(sm=sm, ctx=ctx, graph=ResortGraph()).controls()  # no button fired
+        assert sm.is_node_edit_selecting, "rendering the node-edit cancel button does not itself cancel"

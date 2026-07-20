@@ -288,7 +288,7 @@ from skiresort_planner.ui.state_lifecycle import (
     enter_idle_viewing_slope,
     enter_import_selecting,
     enter_lift_placing,
-    enter_merge_selecting,
+    enter_node_edit_selecting,
     enter_road_building,
     enter_road_custom_path,
     enter_road_starting,
@@ -413,8 +413,8 @@ class PlannerStateMachine(StateMachine):
     # IMPORT state (click-to-place an OSM import bounding box, then confirm)
     import_selecting = State("ImportSelecting")
 
-    # MERGE state (click-to-select node markers to collapse, then confirm)
-    merge_selecting = State("MergeSelecting")
+    # NODE EDITOR state (click node markers to select, then add/delete/merge)
+    node_edit_selecting = State("NodeEditing")
 
     # ROUTE state (click a start node then an end node)
     route_placing = State("RoutePlacing")
@@ -437,7 +437,7 @@ class PlannerStateMachine(StateMachine):
     start_lift = idle_ready.to(lift_placing, event="start_lift")  # 1.8 [event: start_lift]
     start_road = idle_ready.to(road_starting, event="start_road")  # 1.9 [event: start_road]
     start_import = idle_ready.to(import_selecting, event="start_import")  # 1.10 [event: start_import]
-    start_merge = idle_ready.to(merge_selecting, event="start_merge")  # 1.11 [event: start_merge]
+    start_node_edit = idle_ready.to(node_edit_selecting, event="start_node_edit")  # 1.11 [event: start_node_edit]
     start_route = idle_ready.to(route_placing, event="start_route")  # 1.12 [event: start_route]
     view_slope = idle_ready.to(idle_viewing_slope, event="view_slope")  # 1.2 [event: view_slope]
     view_lift = idle_ready.to(idle_viewing_lift, event="view_lift")  # 1.3 [event: view_lift]
@@ -452,8 +452,8 @@ class PlannerStateMachine(StateMachine):
     # 2.3. switch_to_lift_view [event: view_lift]: Click lift in panel or on map
     # 2.4. start_slope_from_slope_view [event: start_slope]: Click terrain/node to start new slope
     # 2.8. start_lift_from_slope_view [event: start_lift]: Click terrain/node in lift mode
-    # NOTE: the UTILITIES (import/merge/route) are NOT reachable from a view — they start only from
-    # idle_ready (enforced in click_handlers._utility_start_allowed), so no start_{import,merge,route}
+    # NOTE: the UTILITIES (import/node-edit/route) are NOT reachable from a view — they start only from
+    # idle_ready (enforced in click_handlers._utility_start_allowed), so no start_{import,node_edit,route}
     # _from_slope_view transitions exist. Only the builders (slope/lift/road) start from a view.
 
     close_slope_panel = idle_viewing_slope.to(idle_ready, event="close_panel")  # 2.1 [event: close_panel]
@@ -584,16 +584,16 @@ class PlannerStateMachine(StateMachine):
     retarget_import = import_selecting.to(import_selecting)  # 8b.3 [direct] self-loop
 
     # ==========================================================================
-    # 8c. Transitions: From MERGE_SELECTING (click-to-select nodes, then confirm)
+    # 8c. Transitions: From NODE_EDITING (click-to-select nodes, then add/delete/merge)
     # ==========================================================================
-    # All transitions from MERGE_SELECTING are direct (no shared events), mirroring IMPORT_SELECTING.
-    # 8c.1. cancel_merge [direct]: Cancel button
-    # 8c.2. complete_merge [direct]: Confirm button → collapse the selected nodes to their median
-    # 8c.3. toggle_merge_node [direct, self-loop]: click a node marker to add/remove it
+    # All transitions from NODE_EDITING are direct (no shared events), mirroring IMPORT_SELECTING.
+    # 8c.1. cancel_node_edit [direct]: Cancel button
+    # 8c.2. finish_node_edit [direct]: Confirm merge/delete → returns to idle (graph mutation in action)
+    # 8c.3. toggle_node_edit_node [direct, self-loop]: click a node marker to add/remove it
 
-    complete_merge = merge_selecting.to(idle_ready)  # 8c.2 [direct]
-    cancel_merge = merge_selecting.to(idle_ready)  # 8c.1 [direct]
-    toggle_merge_node = merge_selecting.to(merge_selecting)  # 8c.3 [direct] self-loop
+    finish_node_edit = node_edit_selecting.to(idle_ready)  # 8c.2 [direct]
+    cancel_node_edit = node_edit_selecting.to(idle_ready)  # 8c.1 [direct]
+    toggle_node_edit_node = node_edit_selecting.to(node_edit_selecting)  # 8c.3 [direct] self-loop
 
     # route_placing (pick start→end) and idle_viewing_route (browse the best routes).
     complete_route = route_placing.to(idle_viewing_route)  # 8d.2 [direct]
@@ -739,7 +739,7 @@ class PlannerStateMachine(StateMachine):
             "start_road_from_lift_view",
             "start_road_from_road_view",
             # start_route event (NOT start_route - that IS the event entry point). Utilities
-            # (import/merge/route) start ONLY from idle_ready, so there are no _from_{slope,lift,road}
+            # (import/node-edit/route) start ONLY from idle_ready, so there are no _from_{slope,lift,road}
             # _view variants for them — only route's own re-plan-from-route-view.
             "start_route_from_route_view",
             # view_slope event (NOT view_slope - that IS the event entry point)
@@ -826,9 +826,9 @@ class PlannerStateMachine(StateMachine):
         return bool(self.import_selecting.is_active)
 
     @property
-    def is_merge_selecting(self) -> bool:
-        """Check if selecting nodes to merge."""
-        return bool(self.merge_selecting.is_active)
+    def is_node_edit_selecting(self) -> bool:
+        """Check if in the node editor (selecting nodes to add/delete/merge)."""
+        return bool(self.node_edit_selecting.is_active)
 
     @property
     def is_route_placing(self) -> bool:
@@ -969,9 +969,9 @@ class PlannerStateMachine(StateMachine):
         """Hook: Entering import placing state (also fires on retarget self-loop)."""
         enter_import_selecting(self.context)
 
-    def on_enter_merge_selecting(self) -> None:
-        """Hook: Entering merge placing state (also fires on toggle self-loop)."""
-        enter_merge_selecting(self.context)
+    def on_enter_node_edit_selecting(self) -> None:
+        """Hook: Entering the node editor (also fires on toggle self-loop)."""
+        enter_node_edit_selecting(self.context)
 
     def on_enter_route_placing(self) -> None:
         """Hook: Entering route_placing — the start node was set by the completing click handler."""
@@ -995,8 +995,8 @@ class PlannerStateMachine(StateMachine):
 
     # ==========================================================================
     # Exit Hooks - only states with real teardown need one; the rest exit as no-ops.
-    # (force/undo runs the same teardown via EXIT_HOOKS. import/merge clear their scratch
-    # in their before_cancel_*/before_complete_* hooks, so they need no on_exit here.)
+    # (force/undo runs the same teardown via EXIT_HOOKS. import/node-edit clear their scratch
+    # in their before_cancel_*/before_finish_* hooks, so they need no on_exit here.)
     # ==========================================================================
 
     def on_exit_lift_placing(self) -> None:
@@ -1171,17 +1171,17 @@ class PlannerStateMachine(StateMachine):
         self.context.pending.osm_import_center_lon = None
         self.context.pending.osm_import_center_lat = None
 
-    def before_toggle_merge_node(self, node_id: str) -> None:
-        """Self-loop in merge_selecting: add/remove the clicked node from the selection."""
-        self.context.merge.toggle(node_id)
+    def before_toggle_node_edit_node(self, node_id: str) -> None:
+        """Self-loop in node_edit_selecting: add/remove the clicked node from the selection."""
+        self.context.node_edit.toggle(node_id)
 
-    def before_cancel_merge(self) -> None:
-        """Discard an unconfirmed merge: clear the selected-node set."""
-        self.context.merge.clear()
+    def before_cancel_node_edit(self) -> None:
+        """Discard an unconfirmed node edit: clear the selected-node set."""
+        self.context.node_edit.clear()
 
-    def before_complete_merge(self) -> None:
-        """Merge confirmed: clear the selection (the graph mutation runs in the action)."""
-        self.context.merge.clear()
+    def before_finish_node_edit(self) -> None:
+        """Node edit confirmed (merge/delete): clear the selection (the graph mutation runs in the action)."""
+        self.context.node_edit.clear()
 
     def before_finish_road(self, entity_id: str) -> None:
         """Set the viewed road before finishing (mirrors before_finish_slope).

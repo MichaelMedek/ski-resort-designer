@@ -197,7 +197,7 @@ class BuildMode:
     AERIAL_TRAM = "aerial_tram"
     ROAD = "road"
     IMPORT = "import"  # import OSM lifts and slopes
-    MERGE = "merge"  # merge, add or delete nodes of paths
+    NODE_EDIT = "node_edit"  # node editor: select, add, delete or merge nodes of paths
     ROUTE = "route"  # route planner: pick start + end node
 
     # Lift types + their order are OWNED by LiftConfig.TYPES (single source of truth); we don't
@@ -210,7 +210,7 @@ class BuildMode:
     )
 
     # Every build mode, in sidebar order — built from parts so the lift block tracks LIFT_TYPES.
-    ALL = [SLOPE, ROAD, *LIFT_TYPES, IMPORT, MERGE, ROUTE]
+    ALL = [SLOPE, ROAD, *LIFT_TYPES, IMPORT, NODE_EDIT, ROUTE]
 
     @staticmethod
     def is_slope(mode: str) -> bool:
@@ -233,9 +233,9 @@ class BuildMode:
         return mode == BuildMode.IMPORT
 
     @staticmethod
-    def is_merge(mode: str) -> bool:
-        """Check if mode is node merge (click-to-select nodes to collapse)."""
-        return mode == BuildMode.MERGE
+    def is_node_edit(mode: str) -> bool:
+        """Check if mode is the node editor (click-to-select nodes to add/delete/merge)."""
+        return mode == BuildMode.NODE_EDIT
 
     @staticmethod
     def is_route(mode: str) -> bool:
@@ -253,9 +253,9 @@ class BuildMode:
             case BuildMode.ROAD:
                 return "Road"
             case BuildMode.IMPORT:
-                return "Import"
-            case BuildMode.MERGE:
-                return "Node Merge"
+                return "OSM Importer"
+            case BuildMode.NODE_EDIT:
+                return "Node Editor"
             case BuildMode.ROUTE:
                 return "Route Planner"
             case BuildMode.CHAIRLIFT | BuildMode.GONDOLA | BuildMode.SURFACE_LIFT | BuildMode.AERIAL_TRAM:
@@ -275,7 +275,7 @@ class BuildMode:
                 return StyleConfig.ROAD_ICON
             case BuildMode.IMPORT:
                 return StyleConfig.IMPORT_ICON
-            case BuildMode.MERGE:
+            case BuildMode.NODE_EDIT:
                 return StyleConfig.MERGE_ICON
             case BuildMode.ROUTE:
                 return StyleConfig.ROUTE_ICON
@@ -315,9 +315,9 @@ class BuildModeContext(BaseContext):
         """Check if mode is OSM import."""
         return BuildMode.is_import(self.mode)
 
-    def is_merge(self) -> bool:
-        """Check if mode is node merge."""
-        return BuildMode.is_merge(self.mode)
+    def is_node_edit(self) -> bool:
+        """Check if mode is the node editor."""
+        return BuildMode.is_node_edit(self.mode)
 
     def is_route(self) -> bool:
         """Check if mode is the route planner."""
@@ -681,11 +681,12 @@ class PendingContext(BaseContext):
 
 
 @dataclass
-class MergeContext(BaseContext):
-    """Selection state for the manual node-merge tool.
+class NodeEditContext(BaseContext):
+    """Selection state for the manual node editor (select / add / delete / merge nodes).
 
-    Holds the node ids the user has clicked while in merge_selecting. Clicking a node toggles it
-    (re-click removes); on confirm the nodes collapse to their median position (see merge_nodes).
+    Holds the node ids the user has clicked while in node_edit_selecting. Clicking a node toggles it
+    (re-click removes); Confirm Merge collapses ≥2 to their median, Delete removes the selection,
+    or clicking a path adds a node.
     """
 
     node_ids: list[str] = field(default_factory=list)
@@ -782,7 +783,7 @@ class PlannerContext:
     map: MapContext = field(default_factory=MapContext)
     click_dedup: ClickDeduplicationContext = field(default_factory=ClickDeduplicationContext)
     pending: PendingContext = field(default_factory=PendingContext)
-    merge: MergeContext = field(default_factory=MergeContext)
+    node_edit: NodeEditContext = field(default_factory=NodeEditContext)
     route_plan: RoutePlanContext = field(default_factory=RoutePlanContext)
     messages: UIMessagesContext = field(default_factory=UIMessagesContext)
     build_mode: BuildModeContext = field(default_factory=BuildModeContext)
@@ -819,9 +820,9 @@ class PlannerContext:
         self.custom_connect.clear()
         self.pending.clear_custom_connect()
 
-    def clear_merge(self) -> None:
-        """Clear the node-merge selection."""
-        self.merge.clear()
+    def clear_node_edit(self) -> None:
+        """Clear the node-editor selection."""
+        self.node_edit.clear()
 
     def clear_route_plan(self) -> None:
         """Clear the route-planner endpoints, computed routes, and filters."""

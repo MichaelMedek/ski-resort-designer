@@ -68,6 +68,15 @@ class InfoBlock:
     bullets: list[str]
 
 
+# Shared InfoBlock bullet fragments — single-sourced so per-state boxes can't drift.
+_CLOSE_BULLET = "✖️ **Close** the right panel to return"
+
+
+def _locked_bullet(noun: str) -> str:
+    """Reason the build-type buttons are greyed while an operation is in progress (all build states)."""
+    return f"⏳ Buttons locked — finish or cancel this {noun} to switch build type"
+
+
 # =============================================================================
 # BUILD STATE
 # =============================================================================
@@ -202,7 +211,7 @@ class _IdleReadyState(BuildState):
                 "🔘 Select **Slope**, **Road** or **Lift** type below",
                 f"{StyleConfig.BUILDING_ICON} Click terrain/node → start building",
                 f"{StyleConfig.VIEWING_ICON} Click existing slope/road/lift → view stats",
-                "🛠️ Or use **Import** / **Node Merge** / **Route Planner** utilities below",
+                "🛠️ Or use **OSM Importer** / **Node Editor** / **Route Planner** utilities below",
             ],
         )
 
@@ -281,8 +290,8 @@ class _EntityViewingState(BuildState):
         # Same bullets for every viewed kind; only lifts add the change-type line.
         # EntityKind is a StrEnum, so `==` is reload-safe (survives Streamlit's class redefinition).
         bullets = ["🔄 Use lift buttons to change type"] if self.kind == EntityKind.LIFT else []
-        bullets.append("✖️ **Close** the right panel to return")
         bullets.append(f"{StyleConfig.BUILDING_ICON} Click terrain/node → new {self.kind.value}")
+        bullets.append(_CLOSE_BULLET)
         return InfoBlock(
             icon=StyleConfig.VIEWING_ICON, label=f"Viewing {self.kind.value.capitalize()}", bullets=bullets
         )
@@ -411,7 +420,7 @@ class _PathBuildingState(BuildState):
         return InfoBlock(
             icon=StyleConfig.BUILDING_ICON,
             label=f"Building {KIND_SPECS[self.kind].display_noun}…",
-            bullets=["⏳ Complete or cancel current build to change type"],
+            bullets=[_locked_bullet(KIND_SPECS[self.kind].display_noun.lower())],
         )
 
     def sidebar_panel(
@@ -480,7 +489,7 @@ class _LiftPlacingState(BuildState):
         return InfoBlock(
             icon=StyleConfig.BUILDING_ICON,
             label="Placing Lift…",
-            bullets=["⏳ Complete or cancel current build to change type"],
+            bullets=[_locked_bullet("lift")],
         )
 
     def sidebar_panel(
@@ -548,8 +557,8 @@ class _ImportSelectingState(BuildState):
     def info_block(self, ctx: PlannerContext) -> InfoBlock:
         return InfoBlock(
             icon=StyleConfig.BUILDING_ICON,
-            label="Importing Area…",
-            bullets=["⏳ Complete or cancel current build to change type"],
+            label="OSM Import…",
+            bullets=[_locked_bullet("import")],
         )
 
     def sidebar_panel(
@@ -561,8 +570,8 @@ class _ImportSelectingState(BuildState):
         return True
 
 
-class _MergeSelectingState(BuildState):
-    state_key = "merge_selecting"
+class _NodeEditingState(BuildState):
+    state_key = "node_edit_selecting"
 
     def control_panel(
         self,
@@ -572,12 +581,12 @@ class _MergeSelectingState(BuildState):
         on_commit: Callable[[int], None],
         on_cancel_connection: Callable[[], None],
     ) -> right_panel.ControlPanel:
-        return right_panel.MergeSelectingControlPanel(
+        return right_panel.NodeEditingControlPanel(
             sm=sm, ctx=ctx, graph=graph, on_commit=on_commit, on_cancel_connection=on_cancel_connection
         )
 
     def click_handler(self) -> ClickHandler:
-        return click_handlers.handle_merge_selecting_click
+        return click_handlers.handle_node_edit_selecting_click
 
     def overlay_layers(
         self,
@@ -598,7 +607,7 @@ class _MergeSelectingState(BuildState):
         return None
 
     def selected_node_ids(self, ctx: PlannerContext) -> list[str] | None:
-        return ctx.merge.node_ids
+        return ctx.node_edit.node_ids
 
     def renders_custom_path(self, ctx: PlannerContext) -> bool:
         return False
@@ -606,14 +615,14 @@ class _MergeSelectingState(BuildState):
     def info_block(self, ctx: PlannerContext) -> InfoBlock:
         return InfoBlock(
             icon=StyleConfig.BUILDING_ICON,
-            label="Merging Nodes…",
-            bullets=["⏳ Complete or cancel current build to change type"],
+            label="Editing Nodes…",
+            bullets=[_locked_bullet("node edit")],
         )
 
     def sidebar_panel(
         self, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph
     ) -> sidebar_panels.SidebarPanel:
-        return sidebar_panels.MergeSidebarPanel(sm=sm, ctx=ctx, graph=graph)
+        return sidebar_panels.NodeEditSidebarPanel(sm=sm, ctx=ctx, graph=graph)
 
     def blocks_build_buttons(self) -> bool:
         return True
@@ -669,7 +678,7 @@ class _RoutePlacingState(BuildState):
         return InfoBlock(
             icon=StyleConfig.BUILDING_ICON,
             label="Planning Route…",
-            bullets=["⏳ Complete or cancel current build to change type"],
+            bullets=[_locked_bullet("route")],
         )
 
     def sidebar_panel(
@@ -735,10 +744,11 @@ class _IdleViewingRouteState(BuildState):
         return False
 
     def info_block(self, ctx: PlannerContext) -> InfoBlock:
+        # A viewing state: build buttons stay live (blocks_build_buttons is False), so NO lock line.
         return InfoBlock(
             icon=StyleConfig.VIEWING_ICON,
             label="Viewing Routes…",
-            bullets=["⏳ Complete or cancel current build to change type"],
+            bullets=[f"{StyleConfig.BUILDING_ICON} Click a node → start a new route", _CLOSE_BULLET],
         )
 
     def sidebar_panel(
@@ -761,7 +771,7 @@ _BUILD_STATE_LIST: list[BuildState] = [
     _PathBuildingState("slope_custom_path", SegmentKind.SLOPE),
     _LiftPlacingState(),
     _ImportSelectingState(),
-    _MergeSelectingState(),
+    _NodeEditingState(),
     _RoutePlacingState(),
     _PathBuildingState("road_starting", SegmentKind.ROAD),
     _PathBuildingState("road_building", SegmentKind.ROAD),
@@ -834,7 +844,7 @@ def _idle_not_building(sm: PlannerStateMachine) -> bool:
         sm.is_any_path_state
         or sm.is_lift_placing
         or sm.is_import_selecting
-        or sm.is_merge_selecting
+        or sm.is_node_edit_selecting
         or sm.is_route_placing
     )
 
@@ -888,10 +898,10 @@ class _ImportOperation(BuilderOperation):
         return False  # a utility has no own kind — idle_ready only
 
 
-class _MergeOperation(BuilderOperation):
-    mode = BuildMode.MERGE
+class _NodeEditOperation(BuilderOperation):
+    mode = BuildMode.NODE_EDIT
     group = OperationGroup.UTILITY
-    first_instruction = "🔗 Click a node to start merging."
+    first_instruction = "🔗 Click a node to edit (select, then add, delete or merge)."
 
     def _enabled_while_viewing_own_kind(self, sm: PlannerStateMachine) -> bool:
         return False  # a utility has no own kind — idle_ready only
@@ -914,7 +924,7 @@ _OPERATION_LIST: list[BuilderOperation] = [
     _LiftOperation(BuildMode.GONDOLA),
     _LiftOperation(BuildMode.AERIAL_TRAM),
     _ImportOperation(),
-    _MergeOperation(),
+    _NodeEditOperation(),
     _RouteOperation(),
 ]
 

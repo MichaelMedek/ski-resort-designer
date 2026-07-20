@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 def _cancel_button(label: str, on_cancel: Callable[[], None], help: str) -> None:
     """Render a full-width cancel button that clears stale click state then transitions.
 
-    Shared by the single-step "placing" panels (lift / import / merge) whose cancel just discards
+    Shared by the single-step "placing" panels (lift / import / node-edit) whose cancel just discards
     the in-progress placement and returns to idle. The state transition triggers st.rerun() via the
     SM listener.
     """
@@ -203,13 +203,13 @@ class ImportSidebarPanel(SidebarPanel):
         )
 
 
-class MergeSidebarPanel(SidebarPanel):
-    """merge_selecting: a Cancel button (selection count + instructions live on the right panel)."""
+class NodeEditSidebarPanel(SidebarPanel):
+    """node_edit_selecting: a Cancel button (selection count + instructions live on the right panel)."""
 
     def controls(self) -> None:
         _cancel_button(
-            label="✖️ Cancel Merge",
-            on_cancel=self.sm.cancel_merge,
+            label="✖️ Cancel Node Edit",
+            on_cancel=self.sm.cancel_node_edit,
             help="Clear the selection and return to idle",
         )
 

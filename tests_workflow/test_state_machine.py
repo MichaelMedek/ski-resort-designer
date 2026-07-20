@@ -501,7 +501,7 @@ class TestImportSelecting:
         # The transitions simply do not exist, so the SM refuses the event.
         from statemachine.exceptions import TransitionNotAllowed
 
-        for event in ("start_import", "start_merge", "start_route"):
+        for event in ("start_import", "start_node_edit", "start_route"):
             sm, _ = self._sm()
             _force_state(sm=sm, state_name=view_state)
             with pytest.raises(TransitionNotAllowed):
@@ -716,7 +716,7 @@ class TestAsMermaid:
 #       -> states: <p>_starting, <p>_building, <p>_custom_path  + viewing idle_viewing_<p>
 #   POINT-TO-POINT ops (lift, route)   two picks placed on the map, then a result to view
 #       -> state:  <p>_placing                                  + viewing idle_viewing_<p>
-#   POINT-ONLY ops     (import, merge) SELECT an area/nodes, mutate the graph, return to idle
+#   POINT-ONLY ops     (import, node_edit) SELECT an area/nodes, mutate the graph, return to idle
 #       -> state:  <p>_selecting                                + NO viewing state
 
 
@@ -730,7 +730,7 @@ def _op_prefix(mode: str) -> str:
 # Category prefixes, DERIVED from the registries (not hand-listed):
 #  - path: the KIND_SPECS kinds (the only multi-segment builders).
 #  - point-to-point: a builder that is not a path kind (lift), plus route (a utility that yields a view).
-#  - point-only: the remaining utilities (import, merge) — mutate then return to idle.
+#  - point-only: the remaining utilities (import, node_edit) — mutate then return to idle.
 _PATH_PREFIXES = {spec.kind.value for spec in KIND_SPECS.values()}
 _POINT_TO_POINT_PREFIXES = {
     _op_prefix(m)
@@ -766,7 +766,7 @@ class TestOperationTaxonomy:
         # Pin concrete membership so a mis-categorised op (e.g. route slipping into point-only) fails.
         assert {"slope", "road"} == _PATH_PREFIXES
         assert {"lift", "route"} == _POINT_TO_POINT_PREFIXES
-        assert {"import", "merge"} == _POINT_ONLY_PREFIXES
+        assert {"import", "node_edit"} == _POINT_ONLY_PREFIXES
 
     @pytest.mark.parametrize("prefix", sorted(_PATH_PREFIXES))
     def test_path_op_has_starting_building_custompath_and_viewing(self, prefix: str) -> None:

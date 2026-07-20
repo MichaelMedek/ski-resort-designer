@@ -30,8 +30,8 @@ from skiresort_planner.model.message import (
     ImportSelectingContextMessage,
     LiftActionMessage,
     LiftPlacingContextMessage,
-    MergeActionMessage,
-    MergeSelectingContextMessage,
+    NodeEditActionMessage,
+    NodeEditContextMessage,
     NoReturnEntityMessage,
     PathActionMessage,
     PathBuildingContextMessage,
@@ -533,28 +533,28 @@ class ImportSelectingControlPanel(ControlPanel):
             confirm_import_action(OSMImportMode.LIFTS_ONLY)
 
 
-class MergeSelectingControlPanel(ControlPanel):
-    """MERGE_SELECTING: selection context + merge action + Confirm Merge button.
+class NodeEditingControlPanel(ControlPanel):
+    """NODE_EDITING: selection context + node actions (Confirm Merge / Delete / add on a path).
 
-    The Confirm button is disabled until at least two nodes are selected. It stays enabled even when
-    the span exceeds the limit — confirm_merge_action shows a too-far toast and changes nothing, so
+    The Confirm Merge button is disabled until at least two nodes are selected. It stays enabled even
+    when the span exceeds the limit — confirm_merge_action shows a too-far toast and changes nothing, so
     the user learns why rather than staring at a silently dead button.
     """
 
     def _span_m(self) -> float:
-        return self.graph.max_node_span_m(self.ctx.merge.node_ids)
+        return self.graph.max_node_span_m(self.ctx.node_edit.node_ids)
 
     def context_message(self) -> "Message | None":
-        return MergeSelectingContextMessage(
-            selected_count=len(self.ctx.merge.node_ids),
+        return NodeEditContextMessage(
+            selected_count=len(self.ctx.node_edit.node_ids),
             span_m=self._span_m(),
         )
 
     def action_message(self) -> "Message | None":
-        return MergeActionMessage(selected_count=len(self.ctx.merge.node_ids))
+        return NodeEditActionMessage(selected_count=len(self.ctx.node_edit.node_ids))
 
     def buttons(self) -> None:
-        count = len(self.ctx.merge.node_ids)
+        count = len(self.ctx.node_edit.node_ids)
         enough = count >= 2
         if st.button(
             "🔗 Confirm Merge",

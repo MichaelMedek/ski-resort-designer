@@ -221,16 +221,16 @@ class TestConfirmMergeAction:
         top, mid = by_lat[0], by_lat[1]  # 300m apart, within MergeConfig.MAX_SPAN_M
         sm, ctx = _session(fake_st, empty_graph, dem=dem)
         count_before = len(empty_graph.nodes)
-        sm.start_merge()
-        sm.toggle_merge_node(node_id=top.id)
-        sm.toggle_merge_node(node_id=mid.id)
+        sm.start_node_edit()
+        sm.toggle_node_edit_node(node_id=top.id)
+        sm.toggle_node_edit_node(node_id=mid.id)
 
         confirm_merge_action()
 
         assert len(empty_graph.nodes) == count_before - 1, "two close nodes collapsed into one"
         assert empty_graph.undo_stack[-1].action_type.name == "MERGE_NODES", "one undoable merge action"
         assert sm.is_idle_ready, "confirm returns to idle"
-        assert ctx.merge.node_ids == [], "selection cleared by the before-hook"
+        assert ctx.node_edit.node_ids == [], "selection cleared by the before-hook"
 
     def test_far_nodes_refused_no_change(self, fake_st, empty_graph, mock_dem_blue_slope, monkeypatch) -> None:
         from skiresort_planner.ui.actions import confirm_merge_action
@@ -242,9 +242,9 @@ class TestConfirmMergeAction:
         sm, ctx = _session(fake_st, empty_graph, dem=dem)
         count_before = len(empty_graph.nodes)
         stack_before = len(empty_graph.undo_stack)
-        sm.start_merge()
-        sm.toggle_merge_node(node_id=top.id)
-        sm.toggle_merge_node(node_id=bottom.id)
+        sm.start_node_edit()
+        sm.toggle_node_edit_node(node_id=top.id)
+        sm.toggle_node_edit_node(node_id=bottom.id)
 
         # MergeTooFarMessage.display() does a function-local `import streamlit as st; st.toast(...)`,
         # so it hits the REAL streamlit module (not the fake `st`); capture it to prove the user is told.
@@ -257,8 +257,8 @@ class TestConfirmMergeAction:
 
         assert len(empty_graph.nodes) == count_before, "nothing merged when the span is too large"
         assert len(empty_graph.undo_stack) == stack_before, "no undo action recorded on refusal"
-        assert sm.is_merge_selecting, "stays in merge so the user can adjust the selection"
-        assert ctx.merge.node_ids == [top.id, bottom.id], "selection preserved for retry"
+        assert sm.is_node_edit_selecting, "stays in node edit so the user can adjust the selection"
+        assert ctx.node_edit.node_ids == [top.id, bottom.id], "selection preserved for retry"
         assert any("too far" in t.lower() for t in toasts), "the user is told why the merge was refused"
 
     def test_fewer_than_two_nodes_raises(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
@@ -286,15 +286,15 @@ class TestDeleteNodesAction:
         slope = empty_graph.finish_slope(segment_ids=list(empty_graph.segments.keys()))
         interior = empty_graph.segments[slope.segment_ids[0]].end_node_id
         sm, ctx = _session(fake_st, empty_graph, dem=dem)
-        sm.start_merge()
-        sm.toggle_merge_node(node_id=interior)
+        sm.start_node_edit()
+        sm.toggle_node_edit_node(node_id=interior)
 
         delete_nodes_action()
 
         assert interior not in empty_graph.nodes, "the interior node was deleted"
         assert empty_graph.undo_stack[-1].action_type.name == "DELETE_NODES", "one DELETE_NODES undo action"
         assert sm.is_idle_ready, "delete returns to idle"
-        assert ctx.merge.node_ids == [], "selection cleared by the before-hook"
+        assert ctx.node_edit.node_ids == [], "selection cleared by the before-hook"
 
     def test_lift_station_refused_no_change(self, fake_st, empty_graph, mock_dem_blue_slope, monkeypatch) -> None:
         from skiresort_planner.ui.actions import delete_nodes_action
@@ -305,8 +305,8 @@ class TestDeleteNodesAction:
         empty_graph.add_lift(start_node_id="A", end_node_id="T", lift_type="chairlift", dem=dem)
         sm, ctx = _session(fake_st, empty_graph, dem=dem)
         stack_before = len(empty_graph.undo_stack)
-        sm.start_merge()
-        sm.toggle_merge_node(node_id="A")
+        sm.start_node_edit()
+        sm.toggle_node_edit_node(node_id="A")
 
         import streamlit
 
@@ -317,7 +317,7 @@ class TestDeleteNodesAction:
 
         assert "A" in empty_graph.nodes, "a lift station is never deleted"
         assert len(empty_graph.undo_stack) == stack_before, "no undo action recorded on refusal"
-        assert sm.is_merge_selecting, "stays in merge so the user can adjust the selection"
+        assert sm.is_node_edit_selecting, "stays in node edit so the user can adjust the selection"
         assert any("lift" in t.lower() for t in toasts), "the user is told why the delete was refused"
 
     def test_no_nodes_raises(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
@@ -340,9 +340,9 @@ class TestDeleteNodesAction:
         interior = empty_graph.segments[slope.segment_ids[0]].end_node_id
         sm, ctx = _session(fake_st, empty_graph, dem=dem)
         stack_before = len(empty_graph.undo_stack)
-        sm.start_merge()
-        sm.toggle_merge_node(node_id=end)
-        sm.toggle_merge_node(node_id=interior)
+        sm.start_node_edit()
+        sm.toggle_node_edit_node(node_id=end)
+        sm.toggle_node_edit_node(node_id=interior)
 
         import streamlit
 
@@ -353,7 +353,7 @@ class TestDeleteNodesAction:
 
         assert slope.id in empty_graph.slopes, "the path is not emptied"
         assert len(empty_graph.undo_stack) == stack_before, "no undo action recorded on refusal"
-        assert sm.is_merge_selecting, "stays in merge so the user can adjust the selection"
+        assert sm.is_node_edit_selecting, "stays in node edit so the user can adjust the selection"
         assert any("whole path" in t.lower() for t in toasts), "the user is told the delete was refused"
 
     def test_branch_junction_refused_no_change(self, fake_st, empty_graph, mock_dem_blue_slope, monkeypatch) -> None:
@@ -391,8 +391,8 @@ class TestDeleteNodesAction:
         empty_graph.finish_slope(segment_ids=list(set(empty_graph.segments) - before))
         sm, ctx = _session(fake_st, empty_graph, dem=dem)
         stack_before = len(empty_graph.undo_stack)
-        sm.start_merge()
-        sm.toggle_merge_node(node_id=junction)
+        sm.start_node_edit()
+        sm.toggle_node_edit_node(node_id=junction)
 
         import streamlit
 
@@ -403,7 +403,7 @@ class TestDeleteNodesAction:
 
         assert junction in empty_graph.nodes, "a branch junction is not deleted"
         assert len(empty_graph.undo_stack) == stack_before, "no undo action recorded on refusal"
-        assert sm.is_merge_selecting, "stays in merge so the user can adjust the selection"
+        assert sm.is_node_edit_selecting, "stays in node edit so the user can adjust the selection"
         assert any("delete that path" in t.lower() for t in toasts), "the user is told to delete a path first"
 
 

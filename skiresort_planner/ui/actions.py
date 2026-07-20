@@ -175,7 +175,7 @@ def confirm_merge_action() -> None:
     """Confirm the node-merge selection: collapse the selected nodes to their median, return to idle.
 
     Validates the span first for a friendly toast — if any pair exceeds MergeConfig.MAX_SPAN_M the
-    merge is refused and nothing changes (the state stays in merge_selecting so the user can adjust the
+    merge is refused and nothing changes (the state stays in node_edit_selecting so the user can adjust the
     selection). On success the merge is one undoable action and we return to idle.
     """
     ctx: PlannerContext = st.session_state.context
@@ -183,7 +183,7 @@ def confirm_merge_action() -> None:
     graph: ResortGraph = st.session_state.graph
     dem = st.session_state.dem_service
 
-    node_ids = list(ctx.merge.node_ids)
+    node_ids = list(ctx.node_edit.node_ids)
     if len(node_ids) < 2:
         # The Confirm button is disabled below 2, so this is a defensive guard, not a user path.
         raise RuntimeError("confirm_merge_action called with fewer than 2 selected nodes")
@@ -197,11 +197,11 @@ def confirm_merge_action() -> None:
     graph.merge_nodes(node_ids=node_ids, dem=dem)
     logger.info(f"Merged {len(node_ids)} nodes into {node_ids[0]}")
     bump_dedup_epoch()
-    sm.complete_merge()  # → idle_ready; the before-hook clears the selection
+    sm.finish_node_edit()  # → idle_ready; the before-hook clears the selection
 
 
 def delete_nodes_action() -> None:
-    """Delete the selected merge-mode nodes (interior fusion / clean-endpoint trim), return to idle.
+    """Delete the selected node-editor nodes (interior fusion / clean-endpoint trim), return to idle.
 
     Pre-checks delete_nodes_rejection and shows an UnableToDeleteMessage if the selection can't be
     deleted (lift station, shared/branch junction, sole segment, or would empty a path) — nothing
@@ -212,7 +212,7 @@ def delete_nodes_action() -> None:
     graph: ResortGraph = st.session_state.graph
     dem = st.session_state.dem_service
 
-    node_ids = list(ctx.merge.node_ids)
+    node_ids = list(ctx.node_edit.node_ids)
     if not node_ids:
         # The Delete button is disabled at 0 selected, so this is a defensive guard, not a user path.
         raise RuntimeError("delete_nodes_action called with no selected nodes")
@@ -225,7 +225,7 @@ def delete_nodes_action() -> None:
 
     graph.delete_nodes(node_ids=node_ids, dem=dem)
     bump_dedup_epoch()
-    sm.complete_merge()  # → idle_ready; the before-hook clears the selection
+    sm.finish_node_edit()  # → idle_ready; the before-hook clears the selection
 
 
 def add_node_on_path_action(segment_id: str, lon: float, lat: float) -> bool:

@@ -423,21 +423,20 @@ class ImportSelectingContextMessage(InfoMessage):
 
 
 @dataclass(frozen=True)
-class MergeSelectingContextMessage(InfoMessage):
-    """RIGHT panel: node-merge selection progress — shows how many nodes are selected + their span."""
+class NodeEditContextMessage(InfoMessage):
+    """RIGHT panel: node-editor selection progress — shows how many nodes are selected + their span."""
 
     selected_count: int = 0
     span_m: float = 0.0
 
     @property
     def message(self) -> str:
+        # One header, body varies by selection count (mirrors LiftPlacingContextMessage's single return).
         if self.selected_count == 0:
-            return "🔗 **Merge Nodes** — Selecting\n\n- 👆 Click node markers, or a path to add a node"
-        return (
-            "🔗 **Merge Nodes** — Selecting\n\n"
-            f"- ⚪ Selected: {self.selected_count} node(s)\n"
-            f"- 📏 Span: {self.span_m:.0f}m"
-        )
+            body = "- 👆 Click node markers, or a path to add a node"
+        else:
+            body = f"- ⚪ Selected: {self.selected_count} node(s)\n- 📏 Span: {self.span_m:.0f}m"
+        return f"🔗 **Edit Nodes** — Selecting\n\n{body}"
 
 
 # =============================================================================
@@ -587,8 +586,8 @@ class ImportActionMessage(WarningMessage):
 
 
 @dataclass(frozen=True)
-class MergeActionMessage(WarningMessage):
-    """RIGHT panel: action instruction while selecting nodes to merge."""
+class NodeEditActionMessage(WarningMessage):
+    """RIGHT panel: action instruction while editing nodes (select → add/delete/merge)."""
 
     selected_count: int = 0
 
