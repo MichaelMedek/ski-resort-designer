@@ -46,7 +46,7 @@ DATASETS = [
         min_segments=100,
         max_segments=300,
         max_nodes=200,
-        min_seg_per_slope=1.4,
+        min_seg_per_slope=1.15,
     ),
     Dataset(
         name="scuol",
@@ -55,7 +55,7 @@ DATASETS = [
         min_segments=30,
         max_segments=120,
         max_nodes=90,
-        min_seg_per_slope=1.2,
+        min_seg_per_slope=1.05,
     ),
 ]
 
@@ -706,7 +706,8 @@ class TestImportRules:
     def test_r29_segments_group_into_fewer_slopes(self, ds):
         """R29: STRICT grouping — path segments must group into whole app-slopes emitted by to_slope_chains, averaging
         at least min_seg_per_slope segments each, with every run in exactly one chain. Prevents a real named piste
-        fragmenting into many single-segment app-slopes.
+        fragmenting into many single-segment app-slopes. (Threshold is deliberately loose because R39 peels avoidable
+        steep sections into honest sub-slopes, lowering the ratio on purpose.)
         """
         runs = ds.graph.slope_runs
         chains = ds.graph.to_slope_chains()  # FINAL app-slopes: list of (per-run point-lists, name)
@@ -888,6 +889,50 @@ class TestImportRules:
         dup_lifts = [nm for nm, c in Counter(lift_names).items() if c > 1]
         assert dup_slopes == [], f"{len(dup_slopes)} app-slope names are not unique: {dup_slopes[:8]}"
         assert dup_lifts == [], f"{len(dup_lifts)} app-lift names are not unique: {dup_lifts[:8]}"
+
+    def test_r39_no_avoidable_over_classification(self, ds):
+        """R39: an app-slope must not straddle an AVOIDABLE difficulty junction — a non-lift node of
+        full-graph degree≥3 where two adjacent segments differ in band and the harder is red/black. There
+        a skier can enter after / leave before the steep pitch, so the whole slope reading that band is
+        over-classification; it must have been split. Bands recomputed via the production classifier.
+        """
+        from skiresort_planner.constants import SlopeConfig
+        from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
+        from skiresort_planner.model.path_segment import PathSegment
+
+        g = ds.graph
+        rank = {d: i for i, d in enumerate(SlopeConfig.DIFFICULTIES)}
+        red = rank["red"]
+        lift_nodes = {n for lf in g.lifts for n in (lf.node_a, lf.node_b)}
+        # full-graph degree over the FINAL runs + lifts; avoidable = non-lift degree≥3 junctions
+        deg: Counter[int] = Counter()
+        for r in g.slope_runs:
+            deg[r.node_a] += 1
+            deg[r.node_b] += 1
+        for lf in g.lifts:
+            deg[lf.node_a] += 1
+            deg[lf.node_b] += 1
+        avoidable_xy = [
+            (g.node_points[n].lon, g.node_points[n].lat) for n, d in deg.items() if d >= 3 and n not in lift_nodes
+        ]
+
+        def band(points):
+            # production path: a real PathSegment's steepest-section max_slope_pct → difficulty band
+            pct = PathSegment(points=list(points)).max_slope_pct
+            return TerrainAnalyzer.classify_difficulty(slope_pct=pct)
+
+        offenders = []
+        for pts_lists, name in g.to_slope_chains():
+            for k in range(len(pts_lists) - 1):
+                junction = pts_lists[k][-1]  # shared endpoint with the next segment
+                if not any(_hav((junction.lon, junction.lat), xy) < 1.0 for xy in avoidable_xy):
+                    continue  # not an avoidable junction — a plain pass-through the split ignores
+                harder = max(rank[band(pts_lists[k])], rank[band(pts_lists[k + 1])])
+                if band(pts_lists[k]) != band(pts_lists[k + 1]) and harder >= red:
+                    offenders.append((name, k))
+        assert offenders == [], (
+            f"{len(offenders)} app-slopes straddle an avoidable difficulty junction (must split): {offenders[:8]}"
+        )
 
 
 class TestGraphImporter:
