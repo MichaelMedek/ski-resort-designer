@@ -13,6 +13,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Literal
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 
 from skiresort_planner.constants import DEMConfig, LiftType, MapConfig
@@ -272,6 +273,10 @@ class MockDEMService(DEMService):
         elev = self.get_elevation(lon=lon, lat=lat)
         assert elev is not None, "MockDEMService always returns elevation"
         return elev
+
+    def get_elevations(self, lons, lats):  # noqa: ANN001, ANN201
+        """Batch lookup mapping the formula `get_elevation` — mirrors DEMService's batch API for mocks."""
+        return np.array([self.get_elevation(lon=lo, lat=la) for lo, la in zip(lons, lats, strict=True)], dtype=float)
 
 
 class ConeDEMService(MockDEMService):

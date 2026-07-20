@@ -284,20 +284,6 @@ class TestMessageHierarchy:
         assert isinstance(toast, WarningToast)
         assert "3D" in toast.message
 
-    def test_custom_path_computing_toast_text(self) -> None:
-        from skiresort_planner.model.message import CustomPathComputingToast, InfoToast
-
-        toast = CustomPathComputingToast()
-        assert isinstance(toast, InfoToast)
-        assert "custom path" in toast.message.lower()
-
-    def test_route_computing_toast_text(self) -> None:
-        from skiresort_planner.model.message import InfoToast, RouteComputingToast
-
-        toast = RouteComputingToast()
-        assert isinstance(toast, InfoToast)
-        assert "route" in toast.message.lower()
-
 
 class TestImportSelectingMessages:
     def test_context_shows_center_and_area(self) -> None:

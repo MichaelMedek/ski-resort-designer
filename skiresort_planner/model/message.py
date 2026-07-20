@@ -284,24 +284,6 @@ class ClickingDisabledIn3DToast(WarningToast):
         return "Clicking disabled in 3D view. Return to 2D to interact with the map."
 
 
-@dataclass(frozen=True)
-class CustomPathComputingToast(InfoToast):
-    """Informational cue while custom-connect path options are being computed (default ℹ️ icon)."""
-
-    @property
-    def message(self) -> str:
-        return "🎯 Computing custom path options…"
-
-
-@dataclass(frozen=True)
-class RouteComputingToast(InfoToast):
-    """Informational cue while the best A→B routes are being computed (default ℹ️ icon)."""
-
-    @property
-    def message(self) -> str:
-        return "🧭 Computing the best routes…"
-
-
 # =============================================================================
 # CENTER (UNDER MAP) - Loading states (BLUE)
 # =============================================================================

@@ -147,7 +147,10 @@ class DEMService:
             logger.info(f"EuroDEM loaded in {elapsed:.2f}s (shape: {self._dem_array.shape}, CRS: {self._dem_crs})")
 
     def get_elevation(self, lon: float, lat: float) -> float | None:
-        """Get elevation at a single point using direct NumPy array lookup.
+        """Get elevation at a single point.
+
+        A thin wrapper over the vectorized `get_elevations` (single sampling implementation); returns
+        None for an out-of-coverage / nodata / invalid point.
 
         Args:
             lon: Longitude in decimal degrees (WGS84)
@@ -156,41 +159,50 @@ class DEMService:
         Returns:
             Elevation in meters, or None if outside coverage or invalid.
         """
+        elev = float(self.get_elevations([lon], [lat])[0])
+        return None if np.isnan(elev) else elev
+
+    def get_elevations(
+        self, lons: "npt.NDArray[np.float64] | list[float]", lats: "npt.NDArray[np.float64] | list[float]"
+    ) -> npt.NDArray[np.float64]:
+        """Batch elevation lookup — vectorized WGS84→CRS transform, inverse-affine, and array gather.
+
+        One `transform` call + numpy indexing over all points at once (the fast path for grid planners).
+        Out-of-coverage / nodata / NaN cells come back as `np.nan` (the scalar `get_elevation` wrapper
+        maps that to None; grid callers raise on any NaN, preserving the no-missing-data invariant).
+
+        Args:
+            lons: Longitudes in decimal degrees (WGS84).
+            lats: Latitudes in decimal degrees (WGS84).
+
+        Returns:
+            1-D float64 array of elevations, `np.nan` where a point is out of coverage or nodata.
+        """
         self._ensure_loaded()
         assert self._dem_transform is not None
         assert self._dem_array is not None
+        lons = np.asarray(lons, dtype=np.float64)
+        lats = np.asarray(lats, dtype=np.float64)
 
-        # Transform WGS84 to DEM CRS if needed
+        # WGS84 → DEM CRS if needed (one batched transform; matches the scalar per-point transform).
         if self._dem_crs != "EPSG:4326":
-            proj_coords = transform("EPSG:4326", self._dem_crs, [lon], [lat])
-            x, y = proj_coords[0][0], proj_coords[1][0]
+            xs, ys = transform("EPSG:4326", self._dem_crs, lons.tolist(), lats.tolist())
+            xs, ys = np.asarray(xs), np.asarray(ys)
         else:
-            x, y = lon, lat
+            xs, ys = lons, lats
 
-        # Convert coordinates to array indices using inverse transform
-        col, row = ~self._dem_transform * (x, y)  # type: ignore[operator]
-        col, row = int(col), int(row)
+        # Inverse affine → array indices (vectorized `~transform * (x, y)`; int() truncates toward zero).
+        inv = ~self._dem_transform  # type: ignore[operator]
+        cols = (inv.a * xs + inv.b * ys + inv.c).astype(np.int64)
+        rows = (inv.d * xs + inv.e * ys + inv.f).astype(np.int64)
 
-        # Check bounds
-        if row < 0 or row >= self._dem_array.shape[0] or col < 0 or col >= self._dem_array.shape[1]:
-            logger.warning(
-                f"Coordinates outside DEM bounds: lon={lon}, lat={lat} (row={row}, col={col}, shape={self._dem_array.shape})"
-            )
-            return None
-
-        elev = self._dem_array[row, col]
-
-        # Check for no-data values
-        if self._dem_nodata is not None and elev == self._dem_nodata:
-            logger.warning(
-                f"No-data value at coordinates: lon={lon}, lat={lat} (raw_value={elev}, nodata={self._dem_nodata})"
-            )
-            return None
-        if np.isnan(elev):
-            logger.warning(f"Invalid {elev} elevation at coordinates: lon={lon}, lat={lat}")
-            return None
-
-        return float(elev)
+        h, w = self._dem_array.shape
+        in_bounds = (rows >= 0) & (rows < h) & (cols >= 0) & (cols < w)
+        out = np.full(lons.shape, np.nan, dtype=np.float64)
+        out[in_bounds] = self._dem_array[rows[in_bounds], cols[in_bounds]]
+        if self._dem_nodata is not None:
+            out[out == self._dem_nodata] = np.nan
+        return out
 
     @property
     def bounds(self) -> tuple[float, float, float, float]:

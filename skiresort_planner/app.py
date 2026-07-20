@@ -31,7 +31,6 @@ from skiresort_planner.model.message import (
     OSMImportErrorMessage,
     OSMImportLoadingMessage,
     SizingMapMessage,
-    ToastMessage,
     WarningToast,
 )
 from skiresort_planner.model.resort_graph import ResortGraph
@@ -186,15 +185,6 @@ def _handle_error_with_recovery(e: Exception, context_tag: str) -> None:
     reset_ui_state()
     if st.button("🔄 Reset and Continue", type="primary"):
         trigger_rerun()
-
-
-def run_pending_action(cue: ToastMessage | None, work: Callable[[], object]) -> None:
-    """FAST in-render pending action: optional transient toast cue, then run. No spinner, no reframe.
-    Used for the light in-memory work (custom-connect, fan generation).
-    """
-    if cue is not None:
-        cue.display()
-    work()
 
 
 def run_pending_load(
@@ -451,11 +441,11 @@ def _run_app_ui() -> None:
         )
         return  # slow helper reframed/warned + reran; skip the normal UI this render
     if ctx.pending.custom_connect:
-        run_pending_action(cue=None, work=process_custom_connect_pending)  # vectorized, no cue
+        process_custom_connect_pending()
     elif ctx.pending.fan_generation:
-        run_pending_action(cue=None, work=process_path_generation_pending)  # fast — no cue needed
+        process_path_generation_pending()
     elif ctx.pending.route_plan_generation:
-        run_pending_action(cue=None, work=process_route_plan_pending)  # scipy shortest paths, no cue
+        process_route_plan_pending()
 
     # Sidebar (fire-and-forget: its panels call actions directly on button clicks)
     sidebar = SidebarRenderer(state_machine=sm, context=ctx, graph=graph)

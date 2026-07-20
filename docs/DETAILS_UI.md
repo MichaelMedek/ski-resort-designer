@@ -154,7 +154,7 @@ If you click **directly on a node marker** (white circle):
 - A connection path is generated to that node
 - Committing this path **auto-finishes the slope** (creates a junction)
 
-**Constraint:** The target must be **downhill** and within **1000m** of the start point; a click outside that range is refused.
+**Constraint:** The target must be **downhill** and within **1500m** of the start point; a click outside that range is refused.
 
 ---
 
@@ -342,7 +342,7 @@ The currently active mode is highlighted.
 
 | Control | Action |
 |---------|--------|
-| **Segment Length Slider** | Adjust path length (100–1000m) |
+| **Segment Length Slider** | Adjust path length (100–1500m) |
 | **🏁 Finish Committed Slope** | Complete and name the current slope |
 | **✖️ Cancel Full Slope** | Discard all uncommitted segments |
 

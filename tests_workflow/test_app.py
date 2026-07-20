@@ -296,7 +296,13 @@ class TestRunPendingLoadFailure:
     def test_failure_message_must_be_a_warning_toast(self, fake_st, monkeypatch) -> None:
         import pytest
 
-        from skiresort_planner.model.message import CustomPathComputingToast, DEMLoadingMessage
+        from skiresort_planner.model.message import DEMLoadingMessage, InfoToast
+
+        # Any InfoToast (not a WarningToast) must be rejected as a failure_message.
+        class _InfoToast(InfoToast):
+            @property
+            def message(self) -> str:
+                return "info"
 
         self._seed_ctx(fake_st)
         monkeypatch.setattr(app, "reload_map", lambda **k: None)
@@ -308,7 +314,7 @@ class TestRunPendingLoadFailure:
                 reset_center=(1.0, 2.0),
                 reset_zoom=12,
                 catch=RuntimeError,
-                failure_message=CustomPathComputingToast(),  # type: ignore[arg-type]  # an InfoToast — must be rejected
+                failure_message=_InfoToast(),  # type: ignore[arg-type]  # an InfoToast — must be rejected
             )
 
 

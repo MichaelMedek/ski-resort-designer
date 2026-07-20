@@ -12,12 +12,12 @@ Reference: DETAILS.md Section 7 for algorithm details.
 """
 
 import logging
-import math
 from dataclasses import dataclass
 from enum import StrEnum
 from math import exp
 
 import numpy as np
+import numpy.typing as npt
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import shortest_path
 
@@ -198,8 +198,13 @@ class LeastCostPathPlanner:
         target_lon: float,
         target_lat: float,
         direct_distance: float,
-    ) -> tuple[list[list[float]], list[list[float]], list[list[float]], GridNode, GridNode]:
-        """Build elevation grid covering the search area."""
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64], GridNode, GridNode]:
+        """Build the elevation grid (metres lattice) covering the search area.
+
+        Vectorized: the cell lon/lats are the same two-step `destination` composition (col-offset along
+        `bearing+90`, then row-offset along `bearing`) as the scalar build, and elevations come from ONE
+        batched `get_elevations` call. Raises if any cell is off-DEM (the no-missing-data invariant).
+        """
         # Calculate grid bounds with buffer
         # TODO(serpentine): this buffer (0.5×direct) is too tight for switchbacks — a
         # zig-zag needs much more lateral room than a near-straight line. When a gentle
@@ -233,45 +238,21 @@ class LeastCostPathPlanner:
             distance_m=total_extent / 2,
         )
 
-        # Build grid arrays
-        elevations = []
-        lons = []
-        lats = []
+        # Same two-step composition as the scalar build, vectorized: step 1 places one start per COLUMN
+        # (col·RES along bearing+90 from origin); step 2 moves each column start by row·RES along bearing.
+        res = GeometricTuningConfig.GRID_RESOLUTION_M
+        col_dist = np.arange(n_cells, dtype=np.float64) * res
+        row_dist = np.arange(n_cells, dtype=np.float64) * res
+        col_lon, col_lat = GeoCalculator.destination_vec(origin_lon, origin_lat, (bearing + 90) % 360, col_dist)
+        lons, lats = GeoCalculator.destination_vec(col_lon[None, :], col_lat[None, :], bearing, row_dist[:, None])
 
-        for row in range(n_cells):
-            elev_row = []
-            lon_row = []
-            lat_row = []
-
-            for col in range(n_cells):
-                # Calculate position
-                lon, lat = GeoCalculator.destination(
-                    lon=origin_lon,
-                    lat=origin_lat,
-                    bearing_deg=(bearing + 90) % 360,
-                    distance_m=col * GeometricTuningConfig.GRID_RESOLUTION_M,
-                )
-                lon, lat = GeoCalculator.destination(
-                    lon=lon,
-                    lat=lat,
-                    bearing_deg=bearing,
-                    distance_m=row * GeometricTuningConfig.GRID_RESOLUTION_M,
-                )
-
-                elev = self.dem.get_elevation(lon=lon, lat=lat)
-                if elev is None:
-                    raise RuntimeError(
-                        f"DEM returned None for grid point at row={row}, col={col} "
-                        f"(lon={lon}, lat={lat}), cannot build grid with missing elevation data"
-                    )
-
-                elev_row.append(elev)
-                lon_row.append(lon)
-                lat_row.append(lat)
-
-            elevations.append(elev_row)
-            lons.append(lon_row)
-            lats.append(lat_row)
+        elevations = self.dem.get_elevations(lons.ravel(), lats.ravel()).reshape(n_cells, n_cells)
+        if np.isnan(elevations).any():
+            r, c = (int(i) for i in np.argwhere(np.isnan(elevations))[0])
+            raise RuntimeError(
+                f"DEM returned None for grid point at row={r}, col={c} "
+                f"(lon={lons[r, c]}, lat={lats[r, c]}), cannot build grid with missing elevation data"
+            )
 
         # Find start and target nodes
         start_node = self._find_nearest_node(target_lon=start_lon, target_lat=start_lat, lons=lons, lats=lats)
@@ -283,99 +264,84 @@ class LeastCostPathPlanner:
         self,
         target_lon: float,
         target_lat: float,
-        lons: list[list[float]],
-        lats: list[list[float]],
+        lons: npt.NDArray[np.float64] | list[list[float]],
+        lats: npt.NDArray[np.float64] | list[list[float]],
     ) -> GridNode:
-        """Find grid node nearest to target coordinates."""
-        best_dist = float("inf")
-        best_node = None
-
-        for row in range(len(lons)):
-            for col in range(len(lons[0])):
-                dist = GeoCalculator.haversine_distance_m(
-                    lat1=lats[row][col],
-                    lon1=lons[row][col],
-                    lat2=target_lat,
-                    lon2=target_lon,
-                )
-                if dist < best_dist:
-                    best_dist = dist
-                    best_node = GridNode(row=row, col=col)
-
-        assert best_node is not None, (
-            f"_find_nearest_node: grid {len(lons)}×{len(lons[0]) if lons else 0} has no cells for "
-            f"target ({target_lon}, {target_lat}) — grid must be non-empty by construction"
+        """Grid node nearest to the target — vectorized haversine + argmin (row-major first-min, the
+        same tie-break as the strict-`<` scan). Accepts numpy arrays or nested lists.
+        """
+        lons_a = np.asarray(lons, dtype=np.float64)
+        lats_a = np.asarray(lats, dtype=np.float64)
+        assert lons_a.size, (
+            f"_find_nearest_node: empty grid for target ({target_lon}, {target_lat}) — must be non-empty by construction"
         )
-        return best_node
+        dist = GeoCalculator.haversine_vec(lats_a, lons_a, target_lat, target_lon)
+        row, col = (int(i) for i in np.unravel_index(int(np.argmin(dist)), dist.shape))
+        return GridNode(row=row, col=col)
 
     def _graph_dijkstra(
         self,
-        elevations: list[list[float]],
+        elevations: npt.NDArray[np.float64] | list[list[float]],
         start: GridNode,
         target: GridNode,
         target_grade_pct: float,
-        lons: list[list[float]],
-        lats: list[list[float]],
+        lons: npt.NDArray[np.float64] | list[list[float]],
+        lats: npt.NDArray[np.float64] | list[list[float]],
         gradient_mode: GradientMode = GradientMode.DOWNHILL,
     ) -> tuple[list[GridNode] | None, int, int]:
         """Least-cost path using SciPy's C-optimized Dijkstra.
 
-        Builds a sparse graph from the elevation grid and uses
-        scipy.sparse.csgraph.shortest_path for efficient pathfinding.
+        Builds the sparse graph vectorized (one masked pass per 8-neighbor offset, mirroring
+        `_calc_edge_cost` elementwise) and feeds scipy.sparse.csgraph.shortest_path for the search.
         """
-        n_rows = len(elevations)
-        n_cols = len(elevations[0])
+        elev = np.asarray(elevations, dtype=np.float64)
+        lon_a = np.asarray(lons, dtype=np.float64)
+        lat_a = np.asarray(lats, dtype=np.float64)
+        n_rows, n_cols = elev.shape
         assert n_cols > 0, f"elevations[0] is empty; grid has {n_rows} rows but 0 columns"
         N = n_rows * n_cols
+        sigma = GeometricTuningConfig.COST_SIGMA
+        ids = np.arange(N).reshape(n_rows, n_cols)  # from_id = r*n_cols + c
 
-        # Build sparse graph (row, col, data) for CSR matrix
-        row_list: list[int] = []
-        col_list: list[int] = []
-        data_list: list[float] = []
+        # One vectorized pass per neighbor offset; slicing replaces the in-bounds check. Each masked
+        # block yields directed (from_id → to_id, cost) triplets; concatenated into the CSR below.
+        row_parts: list[npt.NDArray[np.int64]] = []
+        col_parts: list[npt.NDArray[np.int64]] = []
+        data_parts: list[npt.NDArray[np.float64]] = []
+        for dr, dc in PlannerConfig.NEIGHBORS_8:
+            r0, r1 = max(0, -dr), n_rows - max(0, dr)
+            c0, c1 = max(0, -dc), n_cols - max(0, dc)
+            if r1 <= r0 or c1 <= c0:
+                continue
+            from_elev = elev[r0:r1, c0:c1]
+            to_elev = elev[r0 + dr : r1 + dr, c0 + dc : c1 + dc]
+            horiz = GeoCalculator.haversine_vec(
+                lat_a[r0:r1, c0:c1],
+                lon_a[r0:r1, c0:c1],
+                lat_a[r0 + dr : r1 + dr, c0 + dc : c1 + dc],
+                lon_a[r0 + dr : r1 + dr, c0 + dc : c1 + dc],
+            )
+            mask = ~np.isnan(from_elev) & ~np.isnan(to_elev) & (horiz >= 0.1)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                actual = (from_elev - to_elev) / horiz * 100  # positive = downhill
+                grade_cost = np.exp(np.abs(actual - target_grade_pct) / sigma)
+                wrong_way = actual < 0 if gradient_mode == GradientMode.DOWNHILL else actual > 0
+                against = np.where(wrong_way, np.exp(np.abs(actual) / sigma), 1.0)
+                cost = horiz * grade_cost * against
+            from_ids = ids[r0:r1, c0:c1]
+            to_ids = ids[r0 + dr : r1 + dr, c0 + dc : c1 + dc]
+            row_parts.append(from_ids[mask])
+            col_parts.append(to_ids[mask])
+            data_parts.append(cost[mask])
 
-        for r in range(n_rows):
-            for c in range(n_cols):
-                from_elev = elevations[r][c]
-                if math.isnan(from_elev):
-                    continue
-
-                from_lon = lons[r][c]
-                from_lat = lats[r][c]
-                from_id = r * n_cols + c
-
-                for dr, dc in PlannerConfig.NEIGHBORS_8:
-                    nr, nc = r + dr, c + dc
-                    if not (0 <= nr < n_rows and 0 <= nc < n_cols):
-                        continue
-
-                    to_elev = elevations[nr][nc]
-                    if math.isnan(to_elev):
-                        continue
-
-                    to_lon = lons[nr][nc]
-                    to_lat = lats[nr][nc]
-
-                    edge_cost = self._calc_edge_cost(
-                        from_elev=from_elev,
-                        to_elev=to_elev,
-                        from_lat=from_lat,
-                        to_lat=to_lat,
-                        from_lon=from_lon,
-                        to_lon=to_lon,
-                        target_grade_pct=target_grade_pct,
-                        gradient_mode=gradient_mode,
-                    )
-
-                    if edge_cost < float("inf"):
-                        row_list.append(from_id)
-                        col_list.append(nr * n_cols + nc)
-                        data_list.append(edge_cost)
-
-        if not row_list:
+        row_arr = np.concatenate(row_parts) if row_parts else np.empty(0, dtype=np.int64)
+        if row_arr.size == 0:
             return None, 0, 0
+        col_arr = np.concatenate(col_parts)
+        data_arr = np.concatenate(data_parts)
 
         csgraph = csr_matrix(
-            (data_list, (row_list, col_list)),
+            (data_arr, (row_arr, col_arr)),
             shape=(N, N),
             dtype=np.float64,
         )
@@ -460,18 +426,18 @@ class LeastCostPathPlanner:
     def _path_to_points(
         self,
         path_nodes: list[GridNode],
-        elevations: list[list[float]],
-        lons: list[list[float]],
-        lats: list[list[float]],
+        elevations: npt.NDArray[np.float64] | list[list[float]],
+        lons: npt.NDArray[np.float64] | list[list[float]],
+        lats: npt.NDArray[np.float64] | list[list[float]],
     ) -> list[PathPoint]:
-        """Convert grid path to PathPoints."""
+        """Convert grid path to PathPoints (float()-wrapping so numpy scalars don't leak into PathPoint)."""
         points = []
         for node in path_nodes:
             points.append(
                 PathPoint(
-                    lon=lons[node.row][node.col],
-                    lat=lats[node.row][node.col],
-                    elevation=elevations[node.row][node.col],
+                    lon=float(lons[node.row][node.col]),
+                    lat=float(lats[node.row][node.col]),
+                    elevation=float(elevations[node.row][node.col]),
                 )
             )
         return points

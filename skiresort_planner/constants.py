@@ -193,7 +193,7 @@ class PathConfig:
 
     # Segment length controls (slider range in UI)
     SEGMENT_LENGTH_MIN_M = 100
-    SEGMENT_LENGTH_MAX_M = 1000
+    SEGMENT_LENGTH_MAX_M = 1500
     SEGMENT_LENGTH_DEFAULT_M = 500
 
     # Minimum path points for valid path (less = terrain edge or error)
@@ -211,7 +211,7 @@ class GeometricTuningConfig:
     # --- Grid-Dijkstra planner (connection_planners.py) ---
     GRID_RESOLUTION_M = 15.0  # Grid cell size in meters
     GRID_BUFFER_FACTOR = 1.0  # Lateral room around the direct start→target line, as a fraction of that distance
-    MAX_GRID_SIZE = 100  # Maximum grid cells per dimension (performance cap)
+    MAX_GRID_SIZE = 320  # Max grid cells per dimension — covers a 1500m path at 15m resolution
     COST_SIGMA = 8.0  # Slope-deviation sensitivity in the edge cost (lower = stricter grade matching)
     PATH_SIMILARITY_TOLERANCE = 0.0001  # Overlap-dedup tolerance (~0.0001° ≈ 10m at mid-latitudes)
 

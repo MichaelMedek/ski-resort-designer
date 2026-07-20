@@ -12,6 +12,7 @@ Test Categories:
 
 import math
 
+import numpy as np
 import pytest
 
 from skiresort_planner.constants import GeometricTuningConfig
@@ -44,6 +45,10 @@ class MockDEMForPlanner(DEMService):
         """Return elevation based on latitude (higher north, lower south)."""
         self._call_count += 1
         return self.base_elevation - (lat * self.slope_per_degree)
+
+    def get_elevations(self, lons, lats):  # noqa: ANN001, ANN201
+        """Batch lookup mapping `get_elevation` — mirrors DEMService's batch API for this mock."""
+        return np.array([self.get_elevation(lon=lo, lat=la) for lo, la in zip(lons, lats, strict=True)], dtype=float)
 
 
 @pytest.fixture
