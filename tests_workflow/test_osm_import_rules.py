@@ -9,8 +9,9 @@ from dataclasses import dataclass
 import pytest
 from shapely.geometry import LineString, Point
 
-from skiresort_planner.constants import MapConfig, OSMConfig
+from skiresort_planner.constants import OSMConfig
 from skiresort_planner.core.dem_service import DEMService
+from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.generators.osm_graph_builder import OSMGraphBuilder, _linear_chains, ways_to_lines
 
 # Pure test-assertion thresholds (counts / connectivity) live here; every geometric domain tolerance
@@ -74,11 +75,11 @@ def _polylen(coords):
 
 def _to_local(lon, lat, bbox):
     """Project (lon,lat) to local metres about `bbox`'s origin (flat-earth, fine at this scale), using
-    the production METERS_PER_DEGREE_EQUATOR constant (same basis as model/path_smoothing.py).
+    the production GeoCalculator.meters_per_degree projection (same basis as model/path_smoothing.py).
     """
     lat0 = (bbox[1] + bbox[3]) / 2
-    mlon = MapConfig.METERS_PER_DEGREE_EQUATOR * math.cos(math.radians(lat0))
-    return ((lon - bbox[0]) * mlon, (lat - bbox[1]) * MapConfig.METERS_PER_DEGREE_EQUATOR)
+    mlon, mlat = GeoCalculator.meters_per_degree(lat=lat0)
+    return ((lon - bbox[0]) * mlon, (lat - bbox[1]) * mlat)
 
 
 def _seg_point_dist(pt, poly):
@@ -476,10 +477,7 @@ class TestImportRules:
         from shapely.ops import unary_union
 
         lat0 = (ds.bbox[1] + ds.bbox[3]) / 2
-        mlat, mlon = (
-            MapConfig.METERS_PER_DEGREE_EQUATOR,
-            MapConfig.METERS_PER_DEGREE_EQUATOR * math.cos(math.radians(lat0)),
-        )
+        mlon, mlat = GeoCalculator.meters_per_degree(lat=lat0)
 
         def to_m(lon, lat):
             return ((lon - ds.bbox[0]) * mlon, (lat - ds.bbox[1]) * mlat)

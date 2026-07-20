@@ -128,8 +128,7 @@ class TestComputeGradient:
         """
         from math import asin, atan2, cos, degrees, radians, sin, sqrt
 
-        from skiresort_planner.constants import GeometricTuningConfig
-        from skiresort_planner.core.geo_calculator import EARTH_RADIUS_M
+        from skiresort_planner.constants import GeometricTuningConfig, MapConfig
         from tests_workflow.conftest import RoughDEMService
 
         dem = RoughDEMService()
@@ -138,7 +137,7 @@ class TestComputeGradient:
         def independent_destination(lon: float, lat: float, bearing_deg: float, dist_m: float) -> tuple[float, float]:
             # Hand-rolled spherical destination — deliberately NOT via GeoCalculator, so this is a
             # true independent oracle for the production destination_vec path under test.
-            brng, lat1, lon1, d_r = radians(bearing_deg), radians(lat), radians(lon), dist_m / EARTH_RADIUS_M
+            brng, lat1, lon1, d_r = radians(bearing_deg), radians(lat), radians(lon), dist_m / MapConfig.EARTH_RADIUS_M
             lat2 = asin(sin(lat1) * cos(d_r) + cos(lat1) * sin(d_r) * cos(brng))
             lon2 = lon1 + atan2(sin(brng) * sin(d_r) * cos(lat1), cos(d_r) - sin(lat1) * sin(lat2))
             return degrees(lon2), degrees(lat2)

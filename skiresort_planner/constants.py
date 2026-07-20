@@ -86,9 +86,13 @@ class MapConfig:
     # Node snapping threshold for lift placement (used when creating end nodes)
     LIFT_END_NODE_THRESHOLD_M = 80  # Extra generous for lift top station placement
 
-    # Metres per degree of latitude (and of longitude at the equator), on the WGS84 spherical earth
-    # (EARTH_RADIUS_M · π/180 ≈ 111195 m). Single source for all lat/lon↔metre conversions codebase-wide.
-    # test_geo_calculator asserts this equals GeoCalculator.haversine_distance_m(0,0,1,0) exactly.
+    # Earth's radius in metres (WGS84 spherical approximation) — single source for all geodesy
+    # (haversine/destination in GeoCalculator) and the metres-per-degree constant below.
+    EARTH_RADIUS_M = 6_371_000
+
+    # Metres per degree of latitude (≈ metres per degree of longitude at the equator). The single
+    # source for all lat/lon↔metre conversions across the codebase (tests included).
+    # A round nominal value; exact geodesics use GeoCalculator.haversine_distance_m.
     METERS_PER_DEGREE_EQUATOR = 111320.0
 
     # 2D mode z-offsets (relative layer ordering, no terrain)

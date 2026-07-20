@@ -19,7 +19,6 @@ connected-graph builder's job — see the `LiftOnlyImporter` (lifts only, raw OS
 
 import json
 import logging
-import math
 import re
 import time
 from abc import ABC, abstractmethod
@@ -31,8 +30,9 @@ from urllib.parse import urlencode
 
 import requests
 
-from skiresort_planner.constants import EntitySource, MapConfig, OSMConfig
+from skiresort_planner.constants import EntitySource, OSMConfig
 from skiresort_planner.core.dem_service import DEMService
+from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.model.path_point import PathPoint
 
 logger = logging.getLogger(__name__)
@@ -74,9 +74,9 @@ class OverpassElement(TypedDict, total=False):
 
 def bbox_around(center_lon: float, center_lat: float, half_width_m: float) -> BBox:
     """The square bounding box of the given half-width (metres) centered on (lon, lat)."""
-    m_per_deg = MapConfig.METERS_PER_DEGREE_EQUATOR
-    dlat = half_width_m / m_per_deg
-    dlon = dlat / max(math.cos(math.radians(center_lat)), 1e-6)
+    m_per_deg_lon, m_per_deg_lat = GeoCalculator.meters_per_degree(lat=center_lat)
+    dlat = half_width_m / m_per_deg_lat
+    dlon = half_width_m / m_per_deg_lon
     return (center_lon - dlon, center_lat - dlat, center_lon + dlon, center_lat + dlat)
 
 

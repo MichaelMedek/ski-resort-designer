@@ -16,8 +16,7 @@ from math import atan2, cos, degrees, radians, sin
 import numpy as np
 import numpy.typing as npt
 
-# Earth's radius in meters (WGS84 spherical approximation)
-EARTH_RADIUS_M = 6_371_000
+from skiresort_planner.constants import MapConfig
 
 
 class GeoCalculator:
@@ -28,8 +27,6 @@ class GeoCalculator:
     Bearings are in degrees clockwise from North (0-360).
     Distances are in meters.
     """
-
-    EARTH_RADIUS_M = EARTH_RADIUS_M
 
     @staticmethod
     def haversine_distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -75,6 +72,19 @@ class GeoCalculator:
         return (diff_deg + 180) % 360 - 180
 
     @staticmethod
+    def meters_per_degree(lat: float) -> tuple[float, float]:
+        """Local flat-earth scale at `lat`: (metres per degree longitude, per degree latitude).
+
+        Longitude degrees shrink by cos(lat); latitude degrees are constant. The single source for
+        the lon/lat→metre projection used by every local-frame builder (no per-site cos(lat) copies).
+
+        Returns:
+            (m_per_deg_lon, m_per_deg_lat).
+        """
+        m_per_deg_lat = MapConfig.METERS_PER_DEGREE_EQUATOR
+        return m_per_deg_lat * cos(radians(lat)), m_per_deg_lat
+
+    @staticmethod
     def destination(
         lon: float,
         lat: float,
@@ -111,7 +121,7 @@ class GeoCalculator:
         dlat = np.radians(lat2 - lat1)
         dlon = np.radians(lon2 - lon1)
         a = np.sin(dlat / 2) ** 2 + np.cos(np.radians(lat1)) * np.cos(np.radians(lat2)) * np.sin(dlon / 2) ** 2
-        return EARTH_RADIUS_M * 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))  # type: ignore[no-any-return]
+        return MapConfig.EARTH_RADIUS_M * 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))  # type: ignore[no-any-return]
 
     @staticmethod
     def destination_vec(
@@ -126,7 +136,7 @@ class GeoCalculator:
         brng = np.radians(bearing_deg)
         lat1 = np.radians(lat)
         lon1 = np.radians(lon)
-        d_R = distance_m / EARTH_RADIUS_M
+        d_R = distance_m / MapConfig.EARTH_RADIUS_M
         lat2 = np.arcsin(np.sin(lat1) * np.cos(d_R) + np.cos(lat1) * np.sin(d_R) * np.cos(brng))
         lon2 = lon1 + np.arctan2(
             np.sin(brng) * np.sin(d_R) * np.cos(lat1),

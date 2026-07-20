@@ -18,9 +18,9 @@ from skiresort_planner.model.path_smoothing import resample_cubic_spline, smooth
 def _min_curvature_radius_m(points: list[PathPoint]) -> float:
     """Smallest turn radius (m) along a cubic through points. A cusp (sharp edge) → ~0."""
     lat0 = points[0].lat
-    k = MapConfig.METERS_PER_DEGREE_EQUATOR * math.cos(math.radians(lat0))
+    k, m_per_deg_lat = GeoCalculator.meters_per_degree(lat=lat0)
     xs = [p.lon * k for p in points]
-    ys = [p.lat * MapConfig.METERS_PER_DEGREE_EQUATOR for p in points]
+    ys = [p.lat * m_per_deg_lat for p in points]
     u = [0.0]
     for i in range(1, len(points)):
         u.append(u[-1] + max(1e-9, math.hypot(xs[i] - xs[i - 1], ys[i] - ys[i - 1])))
