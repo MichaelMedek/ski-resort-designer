@@ -579,12 +579,12 @@ class StyleConfig:
 class NameConfig:
     """Creative naming components for slopes and lifts."""
 
-    # Slope name prefixes by difficulty — Austrian piste flavour (Harakiri, Höllental, …).
+    # Slope name prefixes by difficulty — GENERIC Austrian terrain/theme words (no real peaks).
     SLOPE_PREFIXES = {
-        "green": ["Sanfte", "Kinder", "Übungs", "Wiesen", "Zwergen", "Hasen"],
-        "blue": ["Panorama", "Sonnen", "Almen", "Genuss", "Familien", "Bummel"],
-        "red": ["Kühne", "Steile", "Gams", "Adler", "Rasante", "Wilde"],
-        "black": ["Teufels", "Höllen", "Todes", "Wahnsinns", "Harakiri", "Kamikaze"],
+        "green": ["Sonnen", "Wiesen", "Kids", "Übungs", "Almen", "Wald"],
+        "blue": ["Panorama", "Berg", "Genuss", "Familien", "Tal", "See"],
+        "red": ["Gams", "Adler", "Steil", "Gipfel", "Fels", "Wilde"],
+        "black": ["Teufels", "Höllen", "Todes", "Wahnsinns", "Donner", "Schwindel"],
     }
     assert set(SLOPE_PREFIXES.keys()) == set(SlopeConfig.DIFFICULTIES)
 
@@ -607,7 +607,7 @@ class NameConfig:
         "Latschen",
     ]
 
-    # Road name components (roads have no difficulty — Alpine geography words)
+    # Road name components — GENERIC Alpine geography common nouns (no real place names)
     ROAD_PREFIXES = [
         "Alpen",
         "Tal",
@@ -632,20 +632,21 @@ class NameConfig:
         "Gasse",
     ]
 
-    # Lift name prefixes by type — real Austrian mountain/place roots (Gams, Kogel, Valluga, …).
+    # Lift name prefixes by type — GENERIC terrain/landform common nouns that recur across real
+    # Austrian lift names (Alm-, Sonnen-, Wald-, Gipfel-, Kreuz-, Sattel-…). NO real mountains.
     LIFT_PREFIXES = {
-        "surface_lift": ["Hasen", "Übungs", "Zwergen", "Anfänger", "Wiesen", "Bründl"],
-        "chairlift": ["Alm", "Gams", "Hirschen", "Edelweiß", "Sonnen", "Kogel"],
-        "gondola": ["Panorama", "Gipfel", "Adler", "Kristall", "Berg", "Wolken"],
-        "aerial_tram": ["Gletscher", "Nebelhorn", "Falken", "Zugspitz", "Wildspitz", "Valluga"],
+        "surface_lift": ["Hasen", "Übungs", "Zwergen", "Wiesen", "Moos"],
+        "chairlift": ["Alm", "Gams", "Sonnen", "Wald", "Kreuz", "Sattel"],
+        "gondola": ["Panorama", "Gipfel", "Berg", "Kristall", "Wolken", "Adler"],
+        "aerial_tram": ["Gletscher", "Fels", "Sonnen", "Grat", "Joch", "Kar"],
     }
     assert set(LIFT_PREFIXES.keys()) == set(LiftConfig.TYPES)
 
     LIFT_SUFFIXES = {
-        "surface_lift": ["Schlepplift", "Tellerlift", "Bügellift", "Übungslift", "Seillift", "Ziehlift"],
-        "chairlift": ["Sesselbahn", "Sessellift", "Express", "Viererbahn", "Sechserbahn", "Jet"],
-        "gondola": ["Gondelbahn", "Kabinenbahn", "Umlaufbahn", "Gondel", "Kabine", "Express"],
-        "aerial_tram": ["Seilbahn", "Pendelbahn", "Luftseilbahn", "Schwebebahn", "Großkabine", "Bahn"],
+        "surface_lift": ["Schlepplift", "Tellerlift", "Bügellift", "Übungslift"],
+        "chairlift": ["Sesselbahn", "Sessellift", "Express", "Jet", "Flyer"],
+        "gondola": ["Gondelbahn", "Kabinenbahn", "Umlaufbahn", "Gondel", "Express"],
+        "aerial_tram": ["Seilbahn", "Pendelbahn", "Luftseilbahn", "Schwebebahn", "Bahn"],
     }
     assert set(LIFT_SUFFIXES.keys()) == set(LiftConfig.TYPES)
 
