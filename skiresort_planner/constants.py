@@ -564,13 +564,17 @@ class StyleConfig:
     }
     assert set(LIFT_DISPLAY_NAMES.keys()) == set(LiftConfig.TYPES) | {"slope"}
 
+    # How far a connectivity-defect color is pulled toward mid-gray (0 = unchanged, 1 = full gray).
+    DEFECT_GRAY_BLEND = 0.75
+
     @staticmethod
     def gray_out(rgba: list[int]) -> list[int]:
-        """Mute an entity color halfway toward gray — the "half-dead" tone for a connectivity-defect
-        slope/lift, so its difficulty/type hue is still readable but visibly demoted. Alpha kept.
+        """Mute an entity color strongly toward gray — the "half-dead" tone for a connectivity-defect
+        slope/lift: the difficulty/type hue is just barely readable but clearly demoted. Alpha kept.
         """
         r, g, b, a = rgba
-        return [(r + 128) // 2, (g + 128) // 2, (b + 128) // 2, a]
+        t = StyleConfig.DEFECT_GRAY_BLEND
+        return [round(c * (1 - t) + 128 * t) for c in (r, g, b)] + [a]
 
 
 class NameConfig:
