@@ -484,6 +484,7 @@ class MapRenderer:
                         "id": road.id if road is not None else seg_id,
                         "polygon": list(polygon_coords),
                         "center_line": center_line,
+                        "width": segment.width_m,  # real belt width → 3D renders a terrain-draped ribbon
                         "color": list(StyleConfig.ROAD_COLOR_RGBA),
                         "name": f"{StyleConfig.ROAD_ICON} {road.name}"
                         if road is not None
@@ -529,6 +530,7 @@ class MapRenderer:
                     "id": seg_id,
                     "polygon": list(polygon_coords),
                     "center_line": center_line,
+                    "width": segment.width_m,  # real belt width → 3D renders a terrain-draped ribbon
                     "color": color,
                     "name": f"{StyleConfig.SLOPE_ICON} {slope.name}" if slope is not None else f"Segment {seg_id}",
                     "icon_type": ClickConfig.TYPE_SLOPE if slope is not None else ClickConfig.TYPE_SEGMENT,
@@ -579,15 +581,20 @@ class MapRenderer:
                 )
             )
 
-        # Center lines - render in both 2D and 3D
+        # Center line: 2D is a thin line over the belt polygon; 3D has no belt polygon (PolygonLayer
+        # is flat), so the line IS the belt — rendered at each segment's real width_m so it drapes over
+        # terrain as a ribbon. Widths are in metres (deck.gl PathLayer default; same as route/proposal
+        # layers) — do NOT pass width_units, pydeck mangles string props into "@@=" accessors.
         layers.append(
             pdk.Layer(
                 "PathLayer",
                 records,
                 get_path="center_line",
                 get_color="color",
-                get_width=6 if use_3d else 4,  # Thicker in 3D since no belt polygon
+                get_width="width" if use_3d else 4,
                 width_min_pixels=2,
+                cap_rounded=True,
+                joint_rounded=True,
                 pickable=True,
                 id=f"{id_prefix}_centerline",
             )
@@ -693,7 +700,7 @@ class MapRenderer:
                         "pylon_index": i,  # 0-indexed
                         "position": [pylon.lon, pylon.lat, pylon_z],
                         "color": MarkerConfig.PYLON_MARKER_COLOR,
-                        "name": f"Pylon {i + 1} on {lift_id}",
+                        "name": f"Pylon {i + 1} on {StyleConfig.LIFT_ICONS[lift.lift_type]} {lift.name}",
                     }
                 )
 
@@ -737,7 +744,8 @@ class MapRenderer:
                 )
             )
 
-        # Cable lines
+        # Cable lines — CABLE_WIDTH is in metres (deck.gl PathLayer default), so the lift is a 10m-wide
+        # ribbon that drapes over terrain in 3D. Do NOT pass width_units (pydeck mangles string props).
         if cable_data:
             cable_icon_layers.append(
                 pdk.Layer(

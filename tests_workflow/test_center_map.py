@@ -315,6 +315,29 @@ class TestMapRendering:
         assert names, "lift cable/icon records should exist"
         assert all(name == expected for name in names), names
 
+    def test_pylon_tooltip_uses_lift_display_name_not_id(self, empty_graph, mock_dem_blue_slope) -> None:
+        """A pylon's hover tooltip names its lift by display name (icon + name), not the raw "L5" id."""
+        from skiresort_planner.constants import StyleConfig
+        from skiresort_planner.ui.center_map import MapRenderer
+
+        graph = empty_graph
+        dem = mock_dem_blue_slope
+        bottom, _ = graph.get_or_create_node(
+            lon=0.0,
+            lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        )
+        top, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
+        lift = graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
+
+        layers = MapRenderer(graph=graph)._create_lift_layers(use_3d=False)
+        pylon_layer = next(layer for layer in layers["pylons"] if layer.id == "lift_pylons")
+        assert pylon_layer.data, "a lift should have pylons"
+        expected_suffix = f"{StyleConfig.LIFT_ICONS[lift.lift_type]} {lift.name}"
+        for record in pylon_layer.data:
+            assert record["name"].endswith(expected_suffix), record["name"]
+            assert lift.id not in record["name"], "tooltip must not fall back to the raw lift id"
+
     def test_segment_layers_render_parking_at_shared_node(self, empty_graph) -> None:
         """A road sharing a node with a slope renders that node as a parking marker.
 
@@ -456,6 +479,56 @@ class TestFullResortRendering:
             first[2]
             == mock_dem_blue_slope.get_elevation_or_raise(lon=first[0], lat=first[1]) + MarkerConfig.PATH_Z_OFFSET_M
         )
+
+    def test_3d_slope_renders_at_real_belt_width(self, empty_graph, path_points_blue) -> None:
+        """In 3D the center-line PathLayer IS the belt: rendered at each segment's real width_m (a
+        terrain-draped ribbon; deck.gl widths are metres by default). 2D keeps the thin belt+line.
+        """
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
+        from skiresort_planner.ui.center_map import MapRenderer
+
+        graph = empty_graph
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        seg_width = next(iter(graph.segments.values())).width_m
+        renderer = MapRenderer(graph=graph)
+
+        layers_3d = renderer._create_segment_layers(use_3d=True)
+        centerline_3d = next(layer for layer in layers_3d["slopes"] if layer.id == "segments_centerline")
+        # width_units is NOT set (pydeck would mangle the string into a "@@=" accessor and break the
+        # layer); metres is the deck.gl default. get_width="width" reads the per-record width_m.
+        assert getattr(centerline_3d, "width_units", None) is None
+        assert centerline_3d.get_width == "@@=width"
+        assert centerline_3d.data[0]["width"] == seg_width
+        assert not any(layer.id.endswith("_belt") for layer in layers_3d["slopes"]), "3D has no flat belt"
+
+        # 2D: fixed thin line (numeric literal, unmangled) over the belt polygon.
+        layers_2d = renderer._create_segment_layers(use_3d=False)
+        centerline_2d = next(layer for layer in layers_2d["slopes"] if layer.id == "segments_centerline")
+        assert centerline_2d.get_width == 4
+        assert any(layer.id == "segments_belt" for layer in layers_2d["slopes"]), "2D has a belt polygon"
+
+    def test_3d_lift_cable_renders_at_ten_meter_width(self, empty_graph, mock_dem_blue_slope) -> None:
+        """The lift cable is a 10m-wide ribbon (CABLE_WIDTH metres) so it drapes over terrain in 3D."""
+        from skiresort_planner.constants import MarkerConfig
+        from skiresort_planner.ui.center_map import MapRenderer
+
+        graph = empty_graph
+        dem = mock_dem_blue_slope
+        bottom, _ = graph.get_or_create_node(
+            lon=0.0,
+            lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        )
+        top, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
+        graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
+
+        layers = MapRenderer(graph=graph)._create_lift_layers(use_3d=True)
+        cable = next(layer for layer in layers["cables_icons"] if layer.id == "lift_cables")
+        assert (
+            getattr(cable, "width_units", None) is None
+        )  # unset → deck.gl default metres (setting it breaks the layer)
+        assert cable.get_width == MarkerConfig.CABLE_WIDTH == 10  # numeric literal passes through unprefixed
 
     def test_render_with_proposals_and_selection(self, empty_graph, mock_dem_blue_slope, path_points_blue) -> None:
         from skiresort_planner.model.proposed_path import ProposedPathSegment

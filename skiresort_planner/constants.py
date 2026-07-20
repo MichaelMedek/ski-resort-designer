@@ -326,11 +326,10 @@ class MarkerConfig:
 
     # Z-offset for marker elevation to prevent z-fighting with terrain
     # Markers/paths rendered this height above DEM elevation (meters)
-    # Smaller offsets (10m) work with top-down view; nodes slightly higher for clickability
-    MARKER_Z_OFFSET_M = 20
+    MARKER_Z_OFFSET_M = 30
 
-    # Z-offset for paths/lines above terrain to prevent z-fighting
-    PATH_Z_OFFSET_M = 10
+    # Z-offset for paths/lines above terrain to prevent z-fighting (below markers)
+    PATH_Z_OFFSET_M = 20
 
 
 class ClickConfig:
