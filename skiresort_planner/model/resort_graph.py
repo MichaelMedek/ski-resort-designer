@@ -889,15 +889,55 @@ class ResortGraph:
         # (survivor included) needs re-stitching — not just those on the merged-away nodes.
         touched = set(node_ids)
 
-        # Which builders touch the selected nodes — snapshot them BEFORE any mutation so undo can
-        # restore their exact pre-merge state (all mutated in place below).
+        affected_segments, affected_lifts, affected_paths = self._collect_affected_builders(touched=touched)
+        segments_before = tuple(copy.deepcopy(s) for s in affected_segments)
+        lifts_before = tuple(copy.deepcopy(ln) for ln in affected_lifts)
+        paths_before = tuple(copy.deepcopy(p) for p in affected_paths)
+
+        self._repoint_endpoints_to_survivor(merged=merged, survivor_id=survivor_id)
+
+        # Move the survivor to the median point; drop the merged-away nodes.
+        deleted_nodes = tuple(self.nodes[nid] for nid in merged_ids)
+        lats = [self.nodes[nid].lat for nid in node_ids]
+        lons = [self.nodes[nid].lon for nid in node_ids]
+        med_lat, med_lon = statistics.median(lats), statistics.median(lons)
+        med_elev = dem.get_elevation(lon=med_lon, lat=med_lat)
+        if med_elev is None:
+            raise ValueError(f"median point ({med_lat:.5f}, {med_lon:.5f}) has no DEM elevation")
+        survivor.location = PathPoint(lon=med_lon, lat=med_lat, elevation=med_elev)
+        for nid in merged_ids:
+            del self.nodes[nid]
+        self.cleanup_isolated_nodes()
+
+        self._remove_collapsed_and_restitch(
+            affected_segments=affected_segments, affected_lifts=affected_lifts, affected_paths=affected_paths, dem=dem
+        )
+
+        self._push_undo(
+            MergeNodesAction(
+                survivor_id=survivor_id,
+                survivor_before=survivor_before,
+                deleted_nodes=deleted_nodes,
+                segments_before=segments_before,
+                lifts_before=lifts_before,
+                paths_before=paths_before,
+            )
+        )
+        # A merge can collapse a zero-length slope/road and delete its segments (_remove_collapsed_path);
+        # drop any now-stale AddSegmentsAction that referenced them.
+        self.drop_undo_actions_for_removed_segments()
+        logger.info(f"Merged {len(node_ids)} nodes into {survivor_id} at ({med_lat:.5f}, {med_lon:.5f})")
+
+    def _collect_affected_builders(self, touched: set[str]) -> tuple[list[PathSegment], list[Lift], list[SegmentPath]]:
+        """Gather the segments/lifts/paths that touch the selected nodes, for pre-merge snapshotting.
+
+        Slopes/roads mirror their first/last segment's boundary node, so any path that OWNS an
+        affected segment is included too — not only those whose own boundary is touched.
+        """
         affected_segments = [
             s for s in self.segments.values() if s.start_node_id in touched or s.end_node_id in touched
         ]
         affected_lifts = [ln for ln in self.lifts.values() if ln.start_node_id in touched or ln.end_node_id in touched]
-        # Slopes/roads store their own boundary node ids (mirroring their first/last segment), so a
-        # merge that repoints those nodes must repoint the entity boundary too. Include any path that
-        # OWNS an affected segment, not just those whose boundary is touched.
         affected_paths_by_id: dict[str, SegmentPath] = {
             p.id: p for p in self.segment_path_entities if p.start_node_id in touched or p.end_node_id in touched
         }
@@ -905,13 +945,13 @@ class ResortGraph:
             owner = self.get_entity_by_segment_id(seg.id)
             if owner is not None:
                 affected_paths_by_id[owner.id] = owner
-        affected_paths: list[SegmentPath] = list(affected_paths_by_id.values())
-        segments_before = tuple(copy.deepcopy(s) for s in affected_segments)
-        lifts_before = tuple(copy.deepcopy(ln) for ln in affected_lifts)
-        paths_before = tuple(copy.deepcopy(p) for p in affected_paths)
+        return affected_segments, affected_lifts, list(affected_paths_by_id.values())
 
-        # Repoint every segment / lift / slope / road endpoint on a merged-away node onto the survivor
-        # (one uniform rule for every id-holder — the same convention the whole model uses).
+    def _repoint_endpoints_to_survivor(self, merged: set[str], survivor_id: str) -> None:
+        """Repoint every segment/lift/slope/road endpoint on a merged-away node onto the survivor.
+
+        One uniform rule for every id-holder — the same convention the whole model uses.
+        """
         for seg in self.segments.values():
             if seg.start_node_id in merged:
                 seg.start_node_id = survivor_id
@@ -928,19 +968,18 @@ class ResortGraph:
             if path.end_node_id in merged:
                 path.end_node_id = survivor_id
 
-        # Move the survivor to the median point; drop the merged-away nodes.
-        deleted_nodes = tuple(self.nodes[nid] for nid in merged_ids)
-        lats = [self.nodes[nid].lat for nid in node_ids]
-        lons = [self.nodes[nid].lon for nid in node_ids]
-        med_lat, med_lon = statistics.median(lats), statistics.median(lons)
-        med_elev = dem.get_elevation(lon=med_lon, lat=med_lat)
-        if med_elev is None:
-            raise ValueError(f"median point ({med_lat:.5f}, {med_lon:.5f}) has no DEM elevation")
-        survivor.location = PathPoint(lon=med_lon, lat=med_lat, elevation=med_elev)
-        for nid in merged_ids:
-            del self.nodes[nid]
-        self.cleanup_isolated_nodes()
+    def _remove_collapsed_and_restitch(
+        self,
+        affected_segments: list[PathSegment],
+        affected_lifts: list[Lift],
+        affected_paths: list[SegmentPath],
+        dem: "DEMService",
+    ) -> None:
+        """Delete zero-length entities collapsed by the merge, then re-stitch the survivors.
 
+        Collapsed paths/lifts (both boundaries → survivor) are deleted inside the same
+        MergeNodesAction; middle "curl" segments are spliced out; every survivor is recomputed.
+        """
         # A merge collapses an entity onto one node (both boundaries → survivor: zero length) — delete
         # it here, inside the same MergeNodesAction, tracking the segments it drops.
         removed_segment_ids: set[str] = set()
@@ -967,21 +1006,6 @@ class ResortGraph:
                 self._remove_collapsed_lift(lift)
                 continue
             lift.rebuild(start_node=self.nodes[lift.start_node_id], end_node=self.nodes[lift.end_node_id], dem=dem)
-
-        self._push_undo(
-            MergeNodesAction(
-                survivor_id=survivor_id,
-                survivor_before=survivor_before,
-                deleted_nodes=deleted_nodes,
-                segments_before=segments_before,
-                lifts_before=lifts_before,
-                paths_before=paths_before,
-            )
-        )
-        # A merge can collapse a zero-length slope/road and delete its segments (_remove_collapsed_path);
-        # drop any now-stale AddSegmentsAction that referenced them.
-        self.drop_undo_actions_for_removed_segments()
-        logger.info(f"Merged {len(node_ids)} nodes into {survivor_id} at ({med_lat:.5f}, {med_lon:.5f})")
 
     def _remove_collapsed_path(self, path: "SegmentPath") -> list[str]:
         """Remove a collapsed slope/road (+ its segments) during a merge; return the removed segment ids.
