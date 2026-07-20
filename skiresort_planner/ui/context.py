@@ -351,6 +351,13 @@ class ViewingContext(BaseContext):
     panel_visible: bool = False
     view_3d: bool = False
 
+    # Flythrough ("Play") playback — active only while 3D is open. Not a state-machine state: a plain
+    # loop that reframes the camera IN PLACE (Part B mechanism) along the viewed element's polyline.
+    # Stop just clears active; the normal 3D view_state (calculate_3d_view_for_*) restores the entry fit.
+    flythrough_active: bool = False
+    flythrough_frame: int = 0
+    flythrough_points: tuple[PathPoint, ...] = ()  # snapshot at Play
+
     # =========================================================================
     # SETTER METHODS (called by state machine before_* hooks)
     # =========================================================================
@@ -424,6 +431,7 @@ class ViewingContext(BaseContext):
         """
         self.panel_visible = False
         self.view_3d = False
+        self.stop_flythrough()
 
     # =========================================================================
     # 3D VIEW CONTROL
@@ -436,6 +444,29 @@ class ViewingContext(BaseContext):
     def disable_3d(self) -> None:
         """Disable 3D view, return to flat 2D map."""
         self.view_3d = False
+        self.stop_flythrough()
+
+    # =========================================================================
+    # FLYTHROUGH ("Play") PLAYBACK
+    # =========================================================================
+
+    def start_flythrough(self, points: tuple[PathPoint, ...]) -> None:
+        """Begin playback along `points` (≥2, snapshotted at Play) from frame 0."""
+        assert len(points) >= 2, f"flythrough needs ≥2 points, got {len(points)}"
+        self.flythrough_points = points
+        self.flythrough_frame = 0
+        self.flythrough_active = True
+
+    def stop_flythrough(self) -> None:
+        """End playback and forget the snapshot. The normal 3D view_state restores the entry framing."""
+        self.flythrough_active = False
+        self.flythrough_frame = 0
+        self.flythrough_points = ()
+
+    def flythrough_progress(self) -> float:
+        """Arc-length fraction 0..1 for the current frame (single place that maps frame→progress)."""
+        last = MapConfig.FLYTHROUGH_FRAMES - 1
+        return min(self.flythrough_frame, last) / last if last > 0 else 0.0
 
     # =========================================================================
     # QUERY METHODS (for UI to check state)
@@ -460,6 +491,7 @@ class ViewingContext(BaseContext):
         self.road_id = None
         self.panel_visible = False
         self.view_3d = False
+        self.stop_flythrough()
 
 
 # Import-time guard: set_viewed must map every buildable SegmentKind to a real setter, and each named
@@ -508,7 +540,7 @@ class MapContext(BaseContext):
 
     lon: float = MapConfig.START_CENTER_LON
     lat: float = MapConfig.START_CENTER_LAT
-    zoom: int = MapConfig.DEFAULT_ZOOM
+    zoom: int = MapConfig.VIEWING_ZOOM
     pitch: float = MapConfig.DEFAULT_PITCH
     bearing: float = MapConfig.DEFAULT_BEARING
 
@@ -555,7 +587,7 @@ class MapContext(BaseContext):
 
     def reset_view(self) -> None:
         """Reset zoom, pitch, and bearing to defaults for 2D viewing."""
-        self.zoom = MapConfig.DEFAULT_ZOOM
+        self.zoom = MapConfig.VIEWING_ZOOM
         self.pitch = MapConfig.DEFAULT_PITCH
         self.bearing = MapConfig.DEFAULT_BEARING
 
@@ -563,7 +595,7 @@ class MapContext(BaseContext):
         """Reset to default map position and view settings."""
         self.lon = MapConfig.START_CENTER_LON
         self.lat = MapConfig.START_CENTER_LAT
-        self.zoom = MapConfig.DEFAULT_ZOOM
+        self.zoom = MapConfig.VIEWING_ZOOM
         self.pitch = MapConfig.DEFAULT_PITCH
         self.bearing = MapConfig.DEFAULT_BEARING
 

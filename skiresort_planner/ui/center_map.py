@@ -19,6 +19,7 @@ Reference: DETAILS_UI.md for interaction patterns
 """
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -34,6 +35,8 @@ from skiresort_planner.constants import (
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.generators.osm_importer import bbox_around
 from skiresort_planner.model.path_segment import SegmentKind
+from skiresort_planner.model.path_point import PathPoint
+from skiresort_planner.model.path_smoothing import point_at_distance
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 
@@ -102,7 +105,7 @@ class MapRenderer:
         graph: ResortGraph | None = None,
         center_lat: float = MapConfig.START_CENTER_LAT,
         center_lon: float = MapConfig.START_CENTER_LON,
-        zoom: int = MapConfig.DEFAULT_ZOOM,
+        zoom: float = MapConfig.VIEWING_ZOOM,
         pitch: float = MapConfig.DEFAULT_PITCH,
         bearing: float = MapConfig.DEFAULT_BEARING,
     ) -> None:
@@ -122,22 +125,38 @@ class MapRenderer:
         self.zoom = zoom
         self.pitch = pitch
         self.bearing = bearing
+        # Set by the render loop while a flythrough plays (None = normal viewing) so deck.gl eases the
+        # camera between frames instead of jumping.
+        self.transition_duration: int | None = None
 
     def get_view_state(self) -> pdk.ViewState:
-        """Create Pydeck ViewState from current settings."""
+        """Create Pydeck ViewState from current settings.
+
+        While a flythrough plays, emit transition_duration + a LinearInterpolator (via the @@type JSON the
+        8.8.9 converter resolves) so deck.gl GLIDES the camera between sparse keyframes at 60fps client-side —
+        pydeck passes unknown kwargs straight into the deck.gl JSON. Absent otherwise (normal viewing).
+        """
+        extra: dict[str, object] = {}
+        if self.transition_duration is not None:
+            extra["transition_duration"] = self.transition_duration
+            extra["transition_interpolator"] = {
+                "@@type": "LinearInterpolator",
+                "transitionProps": ["longitude", "latitude", "zoom", "pitch", "bearing"],
+            }
         return pdk.ViewState(
             latitude=self.center_lat,
             longitude=self.center_lon,
             zoom=self.zoom,
             pitch=self.pitch,
             bearing=self.bearing,
+            **extra,
         )
 
     def update_view(
         self,
         lat: float | None = None,
         lon: float | None = None,
-        zoom: int | None = None,
+        zoom: float | None = None,
         pitch: float | None = None,
         bearing: float | None = None,
     ) -> None:
@@ -280,7 +299,7 @@ class MapRenderer:
         end_lon: float,
         end_elev: float,
         camera_bearing_offset: float,
-    ) -> tuple[float, float, float, int, float]:
+    ) -> tuple[float, float, float, float, float]:
         """Calculate optimal camera position to view a feature between two endpoints.
 
         Unified helper for both slope and lift 3D view calculations.
@@ -310,20 +329,13 @@ class MapRenderer:
         center_lat = (start_lat + end_lat) / 2
         center_lon = (start_lon + end_lon) / 2
 
-        # Calculate average elevation and adjust zoom accordingly
-        # Higher elevation = slightly more zoomed out to keep camera above terrain
-        avg_elevation = (start_elev + end_elev) / 2
-        # Gentle adjustment: every 1000m elevation, zoom out by 0.5 level
-        elevation_zoom_adjustment = avg_elevation / 2000.0
-        adjusted_zoom = max(MapConfig.VIEW_3D_MIN_ZOOM, MapConfig.VIEW_3D_ZOOM - elevation_zoom_adjustment)
-
-        return (center_lat, center_lon, camera_bearing, int(adjusted_zoom), MapConfig.VIEW_3D_PITCH)
+        return (center_lat, center_lon, camera_bearing, MapConfig.VIEW_3D_ZOOM, MapConfig.VIEW_3D_PITCH)
 
     @staticmethod
     def _calculate_3d_view_for_entity(
         graph: ResortGraph,
         entity: "Slope | Road | Lift",
-    ) -> tuple[float, float, float, int, float]:
+    ) -> tuple[float, float, float, float, float]:
         """Side-view camera for any start/end-node entity (slope, road, or lift).
 
         All three expose start_node_id/end_node_id; the -90 camera offset puts
@@ -353,7 +365,7 @@ class MapRenderer:
     def calculate_3d_view_for_slope(
         graph: ResortGraph,
         slope_id: str,
-    ) -> tuple[float, float, float, int, float]:
+    ) -> tuple[float, float, float, float, float]:
         """Calculate optimal side-view camera to view a slope in 3D."""
         slope = graph.slopes.get(slope_id)
         if not slope:
@@ -364,7 +376,7 @@ class MapRenderer:
     def calculate_3d_view_for_road(
         graph: ResortGraph,
         road_id: str,
-    ) -> tuple[float, float, float, int, float]:
+    ) -> tuple[float, float, float, float, float]:
         """Calculate optimal side-view camera to view a road in 3D."""
         road = graph.roads.get(road_id)
         if not road:
@@ -375,7 +387,7 @@ class MapRenderer:
     def calculate_3d_view_for_lift(
         graph: ResortGraph,
         lift_id: str,
-    ) -> tuple[float, float, float, int, float]:
+    ) -> tuple[float, float, float, float, float]:
         """Calculate optimal side-view camera to view a lift in 3D."""
         lift = graph.lifts.get(lift_id)
         if not lift:
@@ -387,7 +399,7 @@ class MapRenderer:
         graph: ResortGraph,
         start_node_id: str,
         end_node_id: str,
-    ) -> tuple[float, float, float, int, float]:
+    ) -> tuple[float, float, float, float, float]:
         """Side-view camera framing a route between its start and end nodes (same helper as entities)."""
         start, end = graph.nodes[start_node_id], graph.nodes[end_node_id]
         return MapRenderer._calculate_3d_view_for_endpoints(
@@ -398,6 +410,39 @@ class MapRenderer:
             end_lon=end.lon,
             end_elev=end.elevation,
             camera_bearing_offset=-90,
+        )
+
+    @staticmethod
+    def flythrough_view_state(path_points: "Sequence[PathPoint]", *, progress: float) -> tuple[float, float, float, float, float]:
+        """Follow-cam view at arc-length fraction `progress` (0..1) along an ordered PathPoint polyline.
+
+        Constant-speed: arc-length parameterised (equal progress → equal ground distance). Centered on the
+        CURRENT point (deck.gl MapView aims lat/lon at screen centre; pitch+bearing put the eye behind);
+        bearing points down-route toward a look-ahead point. Returns (lat, lon, bearing, zoom, pitch).
+        """
+        if len(path_points) < 2:
+            raise ValueError("flythrough needs at least 2 points")
+        travelled = max(0.0, min(1.0, progress)) * PathPoint.total_length_m(path_points)
+        here = point_at_distance(path_points, travelled)
+        ahead = point_at_distance(path_points, travelled + MapConfig.FLYTHROUGH_LOOKAHEAD_M)
+        bearing = GeoCalculator.initial_bearing_deg(lon1=here.lon, lat1=here.lat, lon2=ahead.lon, lat2=ahead.lat)
+        return (here.lat, here.lon, bearing, MapConfig.VIEW_3D_ZOOM, MapConfig.VIEW_3D_PITCH)
+
+    @staticmethod
+    def flythrough_dot_layer(path_points: "Sequence[PathPoint]", *, progress: float) -> pdk.Layer:
+        """A single marker at the current flythrough position (arc-length `progress`), floated above the
+        terrain so it reads as "you are here" during playback. Stable id so it diffs in place per frame.
+        """
+        here = point_at_distance(path_points, max(0.0, min(1.0, progress)) * PathPoint.total_length_m(path_points))
+        z = here.elevation + MarkerConfig.PATH_Z_OFFSET_M + RoutePlannerConfig.ROUTE_FLOAT_ABOVE_M
+        return pdk.Layer(
+            "ScatterplotLayer",
+            [{"pos": [here.lon, here.lat, z]}],
+            get_position="pos",
+            get_fill_color=[30, 120, 255],
+            get_radius=ClickConfig.NODE_MARKER_RADIUS,
+            radius_min_pixels=8,
+            id="flythrough_dot",
         )
 
     # =========================================================================

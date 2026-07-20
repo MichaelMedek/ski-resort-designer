@@ -1241,11 +1241,15 @@ class TestMapEpochs:
         endpoint_ids = empty_graph.commit_paths(paths=[ProposedPathSegment(points=pts, kind=SegmentKind.ROAD)])
         sm.commit_road(segment_id=list(empty_graph.segments.keys())[-1], endpoint_node_id=endpoint_ids[0])
         camera_before = fake_st.session_state["camera_epoch"]
+        map_before = (ctx.map.lon, ctx.map.lat)
 
         finish_current_build(kind=SegmentKind.ROAD)
 
         assert sm.is_idle_viewing_road
-        assert fake_st.session_state["camera_epoch"] > camera_before, "finish recenters on the entity"
+        # Reframes on the finished entity IN PLACE: ctx.map moves, but camera_epoch is NOT bumped
+        # (bumping remounts the deck.gl iframe → the ~0.5s gray-out). See tests_workflow/test_map_reframe.py.
+        assert (ctx.map.lon, ctx.map.lat) != map_before, "finish recenters on the entity (view moved)"
+        assert fake_st.session_state["camera_epoch"] == camera_before, "in-place reframe: no remount bump"
 
     def test_cancel_does_not_recenter(self, fake_st, empty_graph, path_factory, mock_dem_red_slope_diagonal) -> None:
         from skiresort_planner.ui.actions import cancel_current_build

@@ -241,6 +241,64 @@ class TestInfoPanelButtonClicks:
         _info_panel(EntityKind.SLOPE, sm, ctx, empty_graph)
         assert not ctx.viewing.view_3d, "clicking 'Return to 2D' on a slope must disable 3D"
 
+    def test_play_flythrough_from_slope_3d(self, fake_st, empty_graph, path_points_blue) -> None:
+        slope_id = _build_slope(empty_graph, path_points_blue)
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        sm.view_slope(slope_id=slope_id)
+        ctx.viewing.enable_3d()  # Play only shows in 3D
+        self._bump_ready(fake_st, sm, ctx, empty_graph)
+
+        fake_st.clicked_keys = {"flythrough_play"}
+        _info_panel(EntityKind.SLOPE, sm, ctx, empty_graph)
+        assert ctx.viewing.flythrough_active, "Play must start the flythrough"
+        assert ctx.viewing.flythrough_frame == 0
+        assert len(ctx.viewing.flythrough_points) >= 2, "Play snapshots the slope's polyline"
+
+    def test_stop_flythrough_clears_state(self, fake_st, empty_graph, path_points_blue) -> None:
+        slope_id = _build_slope(empty_graph, path_points_blue)
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        sm.view_slope(slope_id=slope_id)
+        ctx.viewing.enable_3d()
+        ctx.viewing.start_flythrough(
+            (PathPoint(lon=0.0, lat=0.0, elevation=100.0), PathPoint(lon=0.0, lat=0.01, elevation=90.0))
+        )
+        self._bump_ready(fake_st, sm, ctx, empty_graph)
+
+        fake_st.clicked_keys = {"flythrough_stop"}
+        _info_panel(EntityKind.SLOPE, sm, ctx, empty_graph)
+        assert not ctx.viewing.flythrough_active, "Stop must end the flythrough"
+        assert ctx.viewing.flythrough_points == ()
+
+    def test_leaving_3d_stops_flythrough(self, fake_st, empty_graph, path_points_blue) -> None:
+        """Every way OUT of the 3D view must stop playback (single source: stop_flythrough is called by
+        disable_3d, hide_panel, and ViewingContext.clear — covering 2D-toggle, close-panel, and →idle).
+        """
+        slope_id = _build_slope(empty_graph, path_points_blue)
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        sm.view_slope(slope_id=slope_id)
+        pts = (PathPoint(lon=0.0, lat=0.0, elevation=100.0), PathPoint(lon=0.0, lat=0.01, elevation=90.0))
+
+        def _assert_stopped() -> None:
+            assert not ctx.viewing.flythrough_active and ctx.viewing.flythrough_points == ()
+
+        # 1) Return-to-2D toggle (disable_3d).
+        ctx.viewing.enable_3d()
+        ctx.viewing.start_flythrough(pts)
+        ctx.viewing.disable_3d()
+        _assert_stopped()
+
+        # 2) Close the right panel (hide_panel — the close/delete→non-viewing path).
+        ctx.viewing.enable_3d()
+        ctx.viewing.start_flythrough(pts)
+        ctx.viewing.hide_panel()
+        _assert_stopped()
+
+        # 3) Return all the way to idle_ready (ViewingContext.clear — e.g. after delete).
+        ctx.viewing.enable_3d()
+        ctx.viewing.start_flythrough(pts)
+        ctx.viewing.clear()
+        _assert_stopped()
+
     def test_disable_3d_from_road_panel(self, fake_st, empty_graph, path_points_blue) -> None:
         road_id = _build_road(empty_graph, path_points_blue)
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)

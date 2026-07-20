@@ -70,10 +70,8 @@ class MapConfig:
     # Zoom levels for different modes
     # Higher number = more zoomed in, lower = more zoomed out
     # Reduced zoom levels to prevent camera going underground with 3D terrain
-    VIEWING_ZOOM = 13  # Overview after finishing slope/lift (zoomed out)
-    VIEW_3D_ZOOM = 14  # 3D side view - balanced zoom
-    VIEW_3D_MIN_ZOOM = 12  # Minimum zoom for high elevation (prevents camera under terrain)
-    DEFAULT_ZOOM = VIEWING_ZOOM  # Start zoomed out to prevent camera clipping terrain
+    VIEWING_ZOOM = 13  # Overview after finishing slope/lift + program start
+    VIEW_3D_ZOOM = 13.5  # 3D side view + flythrough — one tuned float
     IMPORT_OVERVIEW_ZOOM = 12  # Post-import overview: one step further out than building zoom
 
     # Pitch angles for different modes
@@ -82,6 +80,12 @@ class MapConfig:
     VIEW_3D_PITCH = 25  # 25° angle for 3D - more from above to avoid mountains blocking view
     DEFAULT_PITCH = 0  # Always start top-down
     DEFAULT_BEARING = 0  # Map rotation in degrees (0 = north up)
+
+    # Flythrough ("Play") camera: drives along a viewed 3D element's polyline.
+    FLYTHROUGH_LOOKAHEAD_M = 200.0  # bearing aims this far ahead along the polyline
+    FLYTHROUGH_FRAMES = 80  # total frames start→finish (frame→progress in ViewingContext)
+    FLYTHROUGH_STEP_S = 0.12  # sleep between frames (server-driven ~8fps; deck.gl eases between)
+    FLYTHROUGH_TRANSITION_MS = 130  # deck.gl LinearInterpolator easing per frame
 
     # Node snapping threshold for lift placement (used when creating end nodes)
     LIFT_END_NODE_THRESHOLD_M = 80  # Extra generous for lift top station placement

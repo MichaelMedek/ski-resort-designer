@@ -47,6 +47,7 @@ from skiresort_planner.ui.actions import (
     confirm_import_action,
     confirm_merge_action,
     delete_nodes_action,
+    flythrough_points_for_view,
     rename_entity_action,
     route_plan_shown_routes,
 )
@@ -174,14 +175,19 @@ class _RenameDialog(InputDialog):
 
 
 def _action_button(
-    label: str, *, key: str, help: str, type: Literal["primary", "secondary", "tertiary"] = "secondary"
+    label: str,
+    *,
+    key: str,
+    help: str,
+    type: Literal["primary", "secondary", "tertiary"] = "secondary",
+    disabled: bool = False,
 ) -> bool:
     """Render one right-panel action button. Returns True when clicked.
 
     width="stretch" so the button fills its container — full-width when stacked, or the column
     width when placed inside an st.columns cell (the entity-actions 2x2 grid).
     """
-    return st.button(label, key=key, width="stretch", help=help, type=type)
+    return st.button(label, key=key, width="stretch", help=help, type=type, disabled=disabled)
 
 
 def _render_3d_toggle(
@@ -197,12 +203,33 @@ def _render_3d_toggle(
         if _action_button("🗺️ Return to 2D View", key=f"{key_noun}_2d_view", help="Return to the top-down 2D map"):
             logger.debug(f"Switching to 2D view from {noun}")
             ctx.viewing.disable_3d()
-            reload_map(center=compute_2d_center(), zoom=MapConfig.DEFAULT_ZOOM)  # Never returns
+            reload_map(center=compute_2d_center(), zoom=MapConfig.VIEWING_ZOOM)  # Never returns
     elif _action_button("🏔️ View in 3D", key=f"{key_noun}_3d_view", help=f"View {noun} from the side with terrain"):
         logger.debug(f"Switching to 3D view for {noun}")
         ctx.viewing.enable_3d()
         bump_camera_epoch()  # 3D fit is computed in view_state; bare remount re-reads it
         trigger_rerun()  # Never returns - raises StopExecution
+
+
+def _render_flythrough_controls(ctx: PlannerContext, noun: str) -> None:
+    """Play/Stop flythrough row (call only in 3D) — shown ABOVE the action grid for every 3D element
+    (slope/road/lift/route). Play left, Stop right; each disabled when not applicable so the row is stable.
+    """
+    playing = ctx.viewing.flythrough_active
+    can_play = not playing and len(flythrough_points_for_view()) >= 2
+    left, right = st.columns(2)
+    with left:
+        if _action_button(
+            "▶️ Play", key="flythrough_play", help=f"Fly the camera along this {noun}", disabled=not can_play
+        ):
+            ctx.viewing.start_flythrough(tuple(flythrough_points_for_view()))
+            trigger_rerun()
+    with right:
+        if _action_button(
+            "⏹️ Stop", key="flythrough_stop", help="Stop the flythrough", disabled=not playing
+        ):
+            ctx.viewing.stop_flythrough()
+            trigger_rerun()
 
 
 def _render_entity_3d_toggle(ctx: PlannerContext, graph: ResortGraph, kind: EntityKind, entity_id: str) -> None:
@@ -233,6 +260,10 @@ def _render_entity_actions(
     Close + Delete on the bottom, so every entity panel reads identically.
     """
     noun = kind.value
+
+    # Flythrough Play/Stop row sits ABOVE the 2x2 action grid (3D only).
+    if ctx.viewing.view_3d:
+        _render_flythrough_controls(ctx, noun)
 
     top_left, top_right = st.columns(2)
     bottom_left, bottom_right = st.columns(2)
@@ -642,6 +673,8 @@ class RouteViewingControlPanel(ControlPanel):
             self._render_route_browser(routes)
             self._render_route_stats(routes)
             self._render_3d_toggle()  # side view of the selected route floating above the pistes
+            if self.ctx.viewing.view_3d:
+                _render_flythrough_controls(self.ctx, "route")  # Play/Stop flythrough
         # Idiom: close the panel to leave. To plan again, re-enter Route Planner and pick two nodes.
         if st.button("✖️ Close", width="stretch", help="Close this panel to start building again"):
             self.sm.close_panel()  # type: ignore[attr-defined]  # dynamic python-statemachine event

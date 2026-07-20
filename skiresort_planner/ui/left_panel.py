@@ -236,7 +236,7 @@ class SidebarRenderer:
             return
 
         logger.info(f"UI: Search centered map on {result.display_name!r} ({result.lat:.4f}, {result.lon:.4f})")
-        reload_map(center=(result.lon, result.lat), zoom=MapConfig.DEFAULT_ZOOM)
+        reload_map(center=(result.lon, result.lat), zoom=MapConfig.VIEWING_ZOOM)
 
     def _render_always_available(self) -> None:
         """Render the always-available controls: place search, undo, and reset view."""
@@ -275,7 +275,7 @@ class SidebarRenderer:
                 logger.warning(f"Reset View cleaned {removed} orphaned node(s)")
             # Reset zoom/pitch/bearing (reset_view) but keep the user where they are: reframe on the
             # current center at the default zoom.
-            reload_map(center=(self.ctx.map.lon, self.ctx.map.lat), zoom=MapConfig.DEFAULT_ZOOM)
+            reload_map(center=(self.ctx.map.lon, self.ctx.map.lat), zoom=MapConfig.VIEWING_ZOOM)
 
     def _render_mode_selector(self) -> None:
         """Render unified build type selector with 7 buttons.
@@ -484,7 +484,7 @@ class SidebarRenderer:
                         center = loaded_graph.get_center()
                         if center is not None:
                             logger.info(f"Centered map on mean: ({center[1]:.5f}, {center[0]:.5f})")
-                            reload_map(center=center, zoom=MapConfig.DEFAULT_ZOOM)
+                            reload_map(center=center, zoom=MapConfig.VIEWING_ZOOM)
                         else:
                             bump_camera_epoch()
                             trigger_rerun()

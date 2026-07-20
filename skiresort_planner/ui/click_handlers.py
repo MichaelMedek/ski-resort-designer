@@ -32,7 +32,7 @@ from skiresort_planner.ui.actions import (
     commit_selected_path,
     resolve_build_origin,
 )
-from skiresort_planner.ui.infra import bump_camera_epoch, bump_dedup_epoch, trigger_rerun
+from skiresort_planner.ui.infra import bump_dedup_epoch, trigger_rerun
 from skiresort_planner.ui.kind_spec import KIND_SPECS
 from skiresort_planner.ui.validators import (
     validate_custom_target_distance,
@@ -603,9 +603,9 @@ def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) ->
     )
 
     logger.info(f"Lift {lift.name} created successfully")
-    # Frame the new lift + remount, but do NOT rerun here — sm.complete_lift's listener reruns.
+    # Frame the new lift IN PLACE (no remount); do NOT rerun here — sm.complete_lift's listener reruns.
+    # The new view flows via ctx.map → initialViewState (no camera_epoch bump = no gray-out iframe remount).
     center_on_lift(ctx=ctx, graph=graph, lift=lift, zoom=MapConfig.VIEWING_ZOOM)
-    bump_camera_epoch()
     sm.complete_lift(lift_id=lift.id)
 
 

@@ -589,8 +589,7 @@ class TestThreeDViewCalculators:
         assert pitch == MapConfig.VIEW_3D_PITCH
         feature_bearing = GeoCalculator.initial_bearing_deg(lon1=start.lon, lat1=start.lat, lon2=end.lon, lat2=end.lat)
         assert bearing == (feature_bearing - 90) % 360
-        # High-elevation slope zooms out from the base 3D zoom, but never below the floor.
-        assert MapConfig.VIEW_3D_MIN_ZOOM <= zoom < MapConfig.VIEW_3D_ZOOM
+        assert zoom == MapConfig.VIEW_3D_ZOOM  # fixed 3D zoom (one tuned value, no elevation adjust)
 
     def test_lift_view(self, empty_graph, mock_dem_blue_slope) -> None:
         from skiresort_planner.core.geo_calculator import GeoCalculator
@@ -605,7 +604,7 @@ class TestThreeDViewCalculators:
         assert pitch == MapConfig.VIEW_3D_PITCH
         feature_bearing = GeoCalculator.initial_bearing_deg(lon1=start.lon, lat1=start.lat, lon2=end.lon, lat2=end.lat)
         assert bearing == (feature_bearing - 90) % 360
-        assert MapConfig.VIEW_3D_MIN_ZOOM <= zoom < MapConfig.VIEW_3D_ZOOM
+        assert zoom == MapConfig.VIEW_3D_ZOOM  # fixed 3D zoom
 
     def test_road_view(self, empty_graph, path_points_blue) -> None:
         from skiresort_planner.model.proposed_path import ProposedPathSegment
@@ -625,7 +624,7 @@ class TestThreeDViewCalculators:
         assert pitch == MapConfig.VIEW_3D_PITCH
         feature_bearing = GeoCalculator.initial_bearing_deg(lon1=start.lon, lat1=start.lat, lon2=end.lon, lat2=end.lat)
         assert bearing == (feature_bearing - 90) % 360
-        assert MapConfig.VIEW_3D_MIN_ZOOM <= zoom < MapConfig.VIEW_3D_ZOOM
+        assert zoom == MapConfig.VIEW_3D_ZOOM  # fixed 3D zoom
 
 
 class TestLayerCollection:

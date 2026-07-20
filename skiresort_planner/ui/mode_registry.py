@@ -40,8 +40,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# The camera framing: (lat, lon, bearing, zoom, pitch).
-ViewState = tuple[float, float, float, int, float]
+# The camera framing: (lat, lon, bearing, zoom, pitch). deck.gl zoom is continuous.
+ViewState = tuple[float, float, float, float, float]
 
 # A map-click handler: (click_info, elevation) -> None.
 ClickHandler = Callable[[ClickInfo, float | None], None]
