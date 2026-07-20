@@ -186,7 +186,11 @@ class TestIdleClickRouting:
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
         seg_id = slope.segment_ids[0]
-        mid = graph.segments[seg_id].points[len(graph.segments[seg_id].points) // 2]
+        mid = PathPoint(
+            lon=(graph.segments[seg_id].points[0].lon + graph.segments[seg_id].points[-1].lon) / 2,
+            lat=(graph.segments[seg_id].points[0].lat + graph.segments[seg_id].points[-1].lat) / 2,
+            elevation=0.0,
+        )  # geometric midpoint (interior) — projects onto the leg after finish-simplification
         sm, ctx = _session(fake_st, graph, path_factory, mock_dem_blue_slope)
         ctx.build_mode.mode = BuildMode.NODE_EDIT
         nodes_before = len(graph.nodes)
@@ -1915,7 +1919,11 @@ class TestNodeEditingClick:
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
         seg_id = slope.segment_ids[0]
-        mid = graph.segments[seg_id].points[len(graph.segments[seg_id].points) // 2]
+        mid = PathPoint(
+            lon=(graph.segments[seg_id].points[0].lon + graph.segments[seg_id].points[-1].lon) / 2,
+            lat=(graph.segments[seg_id].points[0].lat + graph.segments[seg_id].points[-1].lat) / 2,
+            elevation=0.0,
+        )  # geometric midpoint (interior) — projects onto the leg after finish-simplification
         sm, ctx = self._merge_session(fake_st, graph, path_factory, mock_dem_blue_slope)
         nodes_before = len(graph.nodes)
 

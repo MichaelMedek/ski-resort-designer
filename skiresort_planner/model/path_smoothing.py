@@ -9,12 +9,13 @@ like a bridge/cut/fill.
 """
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import numpy as np
 import numpy.typing as npt
 from scipy.interpolate import PchipInterpolator, splev, splprep
+from shapely.geometry import LineString
 
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.model.path_point import PathPoint
@@ -211,3 +212,38 @@ def smooth_joined_path(
         start = cut
     result.append(smoothed[start:])
     return result
+
+
+def simplify_path_points(points: list[PathPoint], tolerance_m: float) -> list[PathPoint]:
+    """Douglas–Peucker (Shapely `LineString.simplify`) dropping interior points within `tolerance_m`
+    horizontally of the line between kept neighbours. First/last points are always kept.
+
+    Runs in a local meter frame (lon/lat → metres about the first point) so the tolerance is metres;
+    surviving points keep their real elevation, so the ribbon reconstructs within tolerance. Sheds the
+    dense ~7 m resampling on straight runs at finish time — cutting render/serialize/transport cost.
+    """
+    if len(points) <= 2:
+        return list(points)
+    lon0, lat0 = points[0].lon, points[0].lat
+    m_per_deg_lon, m_per_deg_lat = GeoCalculator.meters_per_degree(lat=lat0)
+    # LineString in metres about the origin; z carries the elevation so simplify keeps it on survivors.
+    line = LineString([((p.lon - lon0) * m_per_deg_lon, (p.lat - lat0) * m_per_deg_lat, p.elevation) for p in points])
+    simplified = line.simplify(tolerance_m, preserve_topology=False)
+    return [
+        PathPoint(lon=lon0 + x / m_per_deg_lon, lat=lat0 + y / m_per_deg_lat, elevation=z)
+        for x, y, z in simplified.coords
+    ]
+
+
+def point_at_fraction(points: Sequence[PathPoint], fraction: float) -> PathPoint:
+    """The PathPoint at normalized arc-length `fraction` (0..1) along `points`, via Shapely
+    `LineString.interpolate` — constant-speed by construction. Used by the flythrough camera + its dot.
+
+    Interpolates in a local meter frame (lon/lat → metres about the first point) so spacing is metric and
+    z (elevation) is carried through; fraction 0→first point, 1→last, so endpoints are hit exactly.
+    """
+    lon0, lat0 = points[0].lon, points[0].lat
+    m_per_deg_lon, m_per_deg_lat = GeoCalculator.meters_per_degree(lat=lat0)
+    line = LineString([((p.lon - lon0) * m_per_deg_lon, (p.lat - lat0) * m_per_deg_lat, p.elevation) for p in points])
+    p = line.interpolate(max(0.0, min(1.0, fraction)), normalized=True)
+    return PathPoint(lon=lon0 + p.x / m_per_deg_lon, lat=lat0 + p.y / m_per_deg_lat, elevation=p.z)

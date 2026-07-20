@@ -34,11 +34,12 @@ from skiresort_planner.model.message import (
     MergeTooFarMessage,
     UnableToDeleteMessage,
 )
+from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.model.routing import Route, RoutePlanner, routes_for_cap
 from skiresort_planner.ui.context import PlannerContext
-from skiresort_planner.ui.infra import bump_camera_epoch, bump_dedup_epoch, trigger_rerun
+from skiresort_planner.ui.infra import bump_dedup_epoch, trigger_rerun
 from skiresort_planner.ui.kind_spec import KIND_SPECS
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
@@ -156,6 +157,31 @@ def route_plan_shown_routes() -> list[Route]:
     return routes_for_cap(rp.routes, max_difficulty=rp.selected_cap)
 
 
+def flythrough_points_for_view() -> list[PathPoint]:
+    """Ordered PathPoint polyline of whatever 3D element is currently being viewed, for the Play
+    flythrough. Dispatches on the viewed entity / selected route; empty when nothing flyable is in view.
+
+    slope/road → committed segment geometry; lift → cable_points (bottom→top, incl. sag);
+    route → the selected route's path_points. One resolver so the shared Play button works for all kinds.
+    """
+    ctx: PlannerContext = st.session_state.context
+    graph: ResortGraph = st.session_state.graph
+    viewing = ctx.viewing
+
+    if viewing.slope_id is not None:
+        return graph.slopes[viewing.slope_id].get_all_points(segments=graph.segments)
+    if viewing.road_id is not None:
+        return graph.roads[viewing.road_id].get_all_points(segments=graph.segments)
+    if viewing.lift_id is not None:
+        return list(graph.lifts[viewing.lift_id].cable_points)
+
+    routes = route_plan_shown_routes()
+    if routes:
+        idx = min(ctx.route_plan.selected_index, len(routes) - 1)
+        return [PathPoint(lon=lon, lat=lat, elevation=elev) for lon, lat, elev in routes[idx].path_points]
+    return []
+
+
 def confirm_import_action(mode: OSMImportMode) -> None:
     """Confirm the placed OSM import box: flag the deferred fetch (with its mode) and return to idle.
 
@@ -240,7 +266,7 @@ def add_node_on_path_action(segment_id: str, lon: float, lat: float) -> bool:
     if rejection is not None:
         InvalidClickMessage(action="add a node", reason=rejection).display()
         return False
-    graph.insert_node_on_path(segment_id=segment_id, lon=lon, lat=lat)
+    graph.insert_node_on_path(segment_id=segment_id, lon=lon, lat=lat, dem=st.session_state.dem_service)
     bump_dedup_epoch()
     return True
 
@@ -551,10 +577,10 @@ def _finalize_entity(kind: SegmentKind) -> "SegmentPath":
 
     entity = KIND_SPECS[kind].finish(graph, build.segments)
     logger.info(f"{kind.value.capitalize()} {entity.name} (id={entity.id}) finalized")
-    # Frame the finished entity + remount, but do NOT rerun here — the caller fires the finish event
-    # whose state-machine listener reruns. (reload_map reruns, which would preempt that send.)
+    # Frame the finished entity IN PLACE (no remount); do NOT rerun here — the caller fires the finish event
+    # whose state-machine listener reruns. The new view flows via ctx.map → initialViewState, which deck.gl
+    # applies to the mounted component (no camera_epoch bump = no gray-out iframe remount).
     center_on_segment_path(ctx=ctx, graph=graph, path=entity, zoom=MapConfig.VIEWING_ZOOM)
-    bump_camera_epoch()
     return entity
 
 

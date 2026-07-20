@@ -20,6 +20,8 @@ from datetime import datetime
 from typing import TYPE_CHECKING, NamedTuple, TypedDict, cast
 
 import networkx as nx
+from shapely.geometry import LineString, Point
+from shapely.ops import substring
 
 from skiresort_planner.constants import (
     ConnectivityConfig,
@@ -59,7 +61,7 @@ from skiresort_planner.model.node_editing import (
 )
 from skiresort_planner.model.path_point import PathPoint, endpoints_match
 from skiresort_planner.model.path_segment import PathSegment, SegmentKind
-from skiresort_planner.model.path_smoothing import smooth_joined_path
+from skiresort_planner.model.path_smoothing import simplify_path_points, smooth_joined_path
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.road import Road
 from skiresort_planner.model.segment_path import SegmentPath
@@ -546,9 +548,19 @@ class ResortGraph:
             corridor_weight=GeometricTuningConfig.CORRIDOR_WEIGHT,
         )
         for seg, pts in zip(segments, smoothed, strict=True):
-            seg.points = pts
+            # Shed the dense ~7m resampling on straight runs (Shapely Douglas–Peucker). Junctions/
+            # endpoints are the first/last of each segment and are always kept.
+            simplified = simplify_path_points(pts, tolerance_m=GeometricTuningConfig.FINISH_SIMPLIFY_TOLERANCE_M)
+            # DP always keeps the first/last point, so endpoints are untouched — assert the invariant the
+            # whole segment-chain model relies on (adjacent segments share a junction point by value).
+            assert len(simplified) >= 2, f"simplify collapsed {seg.id} below 2 points"
+            assert simplified[0] == pts[0] and simplified[-1] == pts[-1], f"simplify moved an endpoint of {seg.id}"
+            seg.points = simplified
         after = max(seg.max_slope_pct for seg in segments)
-        logger.info(f"Smoothed finished path {segment_ids}: max_slope_pct {before:.1f}% -> {after:.1f}%")
+        total_pts = sum(len(seg.points) for seg in segments)
+        logger.info(
+            f"Smoothed finished path {segment_ids}: max_slope_pct {before:.1f}% -> {after:.1f}%, {total_pts} points"
+        )
 
     # =========================================================================
     # Slope Operations
@@ -1099,40 +1111,43 @@ class ResortGraph:
         path.start_node_id = self.segments[new_ids[0]].start_node_id
         path.end_node_id = self.segments[new_ids[-1]].end_node_id
 
-    def _nearest_vertex_index(self, seg: PathSegment, lon: float, lat: float) -> int:
-        """Index of the segment vertex closest to (lon, lat). Segments are dense (~7m), so the click
-        effectively lands ON a vertex — snapping to it needs no projection or DEM (it has elevation).
+    @staticmethod
+    def _project_onto_path(seg: PathSegment, lon: float, lat: float) -> tuple[float, float, float]:
+        """Project (lon, lat) onto the segment centerline via Shapely. Returns (fraction, plon, plat):
+        the normalized position 0..1 along the line to the nearest point, and the projected (plon, plat).
+        Density-agnostic — projects onto the leg, not onto a vertex.
         """
-        return min(range(len(seg.points)), key=lambda i: seg.points[i].distance_to(other=PathPoint(lon, lat, 0.0)))
+        line = LineString([(p.lon, p.lat) for p in seg.points])
+        fraction = line.project(Point(lon, lat), normalized=True)
+        proj = line.interpolate(fraction, normalized=True)
+        return fraction, proj.x, proj.y
 
     def insert_node_rejection(self, segment_id: str, lon: float, lat: float) -> str | None:
         """Why a node can't be inserted on this segment at (lon, lat), or None if it can.
 
-        Single source for the add-node preconditions (unknown/unfinished segment, or the nearest
-        vertex too close to an endpoint node to make a real interior split). The UI pre-checks this
-        for a friendly toast; insert_node_on_path calls it too as a fail-fast backstop.
+        Single source for the add-node preconditions (unknown/unfinished segment, or the projected point
+        too close to an endpoint node to make a real interior split). The UI pre-checks this for a friendly
+        toast; insert_node_on_path calls it too as a fail-fast backstop.
         """
         # segment_id is an external map-click id (may be stale after a rerun/delete) — a tolerated
         # fallback, surfaced as a reason rather than crashing.
         seg = self.segments.get(segment_id)
         if seg is None or self.get_entity_by_segment_id(segment_id) is None:
             return INSERT_REJECT_NOT_FINISHED
-        vertex = seg.points[self._nearest_vertex_index(seg, lon, lat)]
+        # Project onto the centerline (density-independent — segments may be sparse after simplification).
+        _, plon, plat = self._project_onto_path(seg, lon, lat)
         gap = GeometricTuningConfig.STEP_SIZE_M
         start_node, end_node = self.nodes[seg.start_node_id], self.nodes[seg.end_node_id]
-        if (
-            start_node.distance_to(lon=vertex.lon, lat=vertex.lat) < gap
-            or end_node.distance_to(lon=vertex.lon, lat=vertex.lat) < gap
-        ):
+        if start_node.distance_to(lon=plon, lat=plat) < gap or end_node.distance_to(lon=plon, lat=plat) < gap:
             return INSERT_REJECT_TOO_CLOSE.format(gap=gap)
         return None
 
-    def insert_node_on_path(self, segment_id: str, lon: float, lat: float) -> str:
-        """Insert a node on a segment at the vertex nearest (lon, lat), splitting it into two and
-        updating the owning path's segment_ids [seg] -> [A', B']. Returns the new node id.
+    def insert_node_on_path(self, segment_id: str, lon: float, lat: float, dem: "DEMService") -> str:
+        """Insert a node at the PROJECTED point on the centerline nearest (lon, lat), splitting the segment
+        into two and updating the owning path's segment_ids [seg] -> [A', B']. Returns the new node id.
 
-        The new node IS the nearest existing vertex (no new geometry, no DEM). The caller pre-checks
-        insert_node_rejection; this re-checks and raises ValueError as a fail-fast backstop.
+        The split point is projected onto the polyline (Shapely; density-independent) and its elevation is
+        DEM-queried to ground level. Caller pre-checks insert_node_rejection; this re-checks and raises.
         """
         rejection = self.insert_node_rejection(segment_id=segment_id, lon=lon, lat=lat)
         if rejection is not None:
@@ -1144,17 +1159,36 @@ class ResortGraph:
         path_before = copy.deepcopy(owner)
         segment_before = copy.deepcopy(seg)
 
-        # Split at the nearest vertex; it becomes the new node and is shared by both halves (the
-        # junction point A' ends on and B' starts on, exactly as adjacent segments already share nodes).
-        i = self._nearest_vertex_index(seg, lon, lat)
-        split_pt = seg.points[i]
+        # Split the 3D centerline at the projected point (Shapely substring preserves/interpolates z); the
+        # split point becomes a NEW node at DEM ground level, shared by both halves (like any junction).
+        line = LineString([(p.lon, p.lat, p.elevation) for p in seg.points])
+        fraction, plon, plat = self._project_onto_path(seg, lon, lat)
+        elevation = dem.get_elevation(lon=plon, lat=plat)
+        if elevation is None:
+            raise ValueError(f"projected split point ({plat:.5f}, {plon:.5f}) has no DEM elevation")
+        split_pt = PathPoint(lon=plon, lat=plat, elevation=elevation)
         node = Node(id=self._next_node_id(), location=split_pt)
         self.nodes[node.id] = node
 
+        # substring gives each half's geometry; the shared cut point is pinned to the DEM-grounded split_pt
+        # by value so both halves and the node agree exactly (adjacent segments share a junction point).
+        def _pts(part: object, *, head: PathPoint | None, tail: PathPoint | None) -> list[PathPoint]:
+            assert isinstance(part, LineString), f"substring returned {type(part).__name__}, not a LineString"
+            pts = [PathPoint(lon=x, lat=y, elevation=z) for x, y, z in part.coords]
+            if head is not None:
+                pts[0] = head
+            if tail is not None:
+                pts[-1] = tail
+            return pts
+
+        first = _pts(substring(line, 0.0, fraction, normalized=True), head=None, tail=split_pt)
+        second = _pts(substring(line, fraction, 1.0, normalized=True), head=split_pt, tail=None)
+        assert len(first) >= 2 and len(second) >= 2, f"split produced a degenerate half: {len(first)}/{len(second)}"
+
         new_ids: list[str] = []
         for pts, s_node, e_node in (
-            (seg.points[: i + 1], seg.start_node_id, node.id),
-            (seg.points[i:], node.id, seg.end_node_id),
+            (first, seg.start_node_id, node.id),
+            (second, node.id, seg.end_node_id),
         ):
             new_seg = self._build_segment(points=list(pts), start_node_id=s_node, end_node_id=e_node, kind=seg.kind)
             new_ids.append(new_seg.id)

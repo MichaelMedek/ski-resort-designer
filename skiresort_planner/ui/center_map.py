@@ -34,8 +34,8 @@ from skiresort_planner.constants import (
 )
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.generators.osm_importer import bbox_around
-from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.path_point import PathPoint
+from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.path_smoothing import point_at_distance
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
@@ -413,7 +413,9 @@ class MapRenderer:
         )
 
     @staticmethod
-    def flythrough_view_state(path_points: "Sequence[PathPoint]", *, progress: float) -> tuple[float, float, float, float, float]:
+    def flythrough_view_state(
+        path_points: "Sequence[PathPoint]", *, progress: float
+    ) -> tuple[float, float, float, float, float]:
         """Follow-cam view at arc-length fraction `progress` (0..1) along an ordered PathPoint polyline.
 
         Constant-speed: arc-length parameterised (equal progress → equal ground distance). Centered on the

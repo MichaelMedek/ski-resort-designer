@@ -860,9 +860,10 @@ class TestFinishSmoothing:
 
         assert slope is not None
         after = graph.segments[seg_id].points
-        # Smoothing resamples the 5 raw points at RESAMPLE_STEP_M (~7m over 800m → many more),
-        # with the entity endpoints pinned exactly.
-        assert len(after) > len(before), "single-segment path is smoothed (resampled denser)"
+        # Finish smooths (resamples at RESAMPLE_STEP_M) THEN simplifies (Douglas–Peucker) — a dead-straight
+        # run collapses to just its two endpoints. Endpoints are always pinned exactly.
+        assert len(after) >= 2
+        assert len(after) < len(before), "a straight run simplifies to fewer points (here, its 2 ends)"
         assert after[0] == before[0], "start endpoint pinned exactly"
         assert after[-1] == before[-1], "end endpoint pinned exactly"
 
@@ -1814,9 +1815,12 @@ class TestInsertNodeOnPath:
         slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=1)
         seg_id = slope.segment_ids[0]
         seg = empty_graph.segments[seg_id]
-        mid = seg.points[len(seg.points) // 2]
+        # Geometric midpoint (interior): a finished straight run is just its two endpoints after
+        # simplification, so the click projects onto the single leg rather than an existing vertex.
+        mid_lon = (seg.points[0].lon + seg.points[-1].lon) / 2
+        mid_lat = (seg.points[0].lat + seg.points[-1].lat) / 2
 
-        node_id = empty_graph.insert_node_on_path(segment_id=seg_id, lon=mid.lon, lat=mid.lat)
+        node_id = empty_graph.insert_node_on_path(segment_id=seg_id, lon=mid_lon, lat=mid_lat, dem=mock_dem_blue_slope)
 
         assert node_id in empty_graph.nodes, "a new node was created"
         assert seg_id not in empty_graph.segments, "the original segment is replaced"
@@ -1824,15 +1828,17 @@ class TestInsertNodeOnPath:
         a, b = empty_graph.slopes[slope.id].segment_ids
         assert empty_graph.segments[a].end_node_id == node_id
         assert empty_graph.segments[b].start_node_id == node_id
-        # The node snapped to an existing vertex, so it sits exactly on the drawn path.
-        assert empty_graph.nodes[node_id].location == mid
+        # The node is projected onto the centerline at the clicked point (density-independent).
+        assert empty_graph.nodes[node_id].location.distance_to(other=PathPoint(mid_lon, mid_lat, 0.0)) < 1.0
 
     def test_insert_too_close_to_endpoint_raises(self, empty_graph, mock_dem_blue_slope) -> None:
         slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=1)
         seg = empty_graph.segments[slope.segment_ids[0]]
         near_start = seg.points[0]
         with pytest.raises(ValueError, match="too close to an existing node"):
-            empty_graph.insert_node_on_path(segment_id=seg.id, lon=near_start.lon, lat=near_start.lat)
+            empty_graph.insert_node_on_path(
+                segment_id=seg.id, lon=near_start.lon, lat=near_start.lat, dem=mock_dem_blue_slope
+            )
 
     def test_insert_on_unknown_segment_id_is_rejected(self, empty_graph, mock_dem_blue_slope) -> None:
         """A stale/unknown segment id (external click after a rerun/delete) → 'finished path' reason,
@@ -1840,7 +1846,7 @@ class TestInsertNodeOnPath:
         """
         assert empty_graph.insert_node_rejection("S999", lon=0.0, lat=0.0) == "click a finished path to add a node"
         with pytest.raises(ValueError, match="click a finished path"):
-            empty_graph.insert_node_on_path(segment_id="S999", lon=0.0, lat=0.0)
+            empty_graph.insert_node_on_path(segment_id="S999", lon=0.0, lat=0.0, dem=mock_dem_blue_slope)
 
     def test_insert_on_unfinished_segment_is_rejected(self, empty_graph, mock_dem_blue_slope) -> None:
         """A committed-but-not-finished segment belongs to no path (the one-frame race) → rejected."""
@@ -1860,10 +1866,12 @@ class TestInsertNodeOnPath:
     def test_insert_records_single_undo_and_restores_verbatim(self, empty_graph, mock_dem_blue_slope) -> None:
         slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=1)
         seg_id = slope.segment_ids[0]
-        mid = empty_graph.segments[seg_id].points[len(empty_graph.segments[seg_id].points) // 2]
+        seg = empty_graph.segments[seg_id]
+        mid_lon = (seg.points[0].lon + seg.points[-1].lon) / 2
+        mid_lat = (seg.points[0].lat + seg.points[-1].lat) / 2
         chain_before = list(slope.segment_ids)
 
-        node_id = empty_graph.insert_node_on_path(segment_id=seg_id, lon=mid.lon, lat=mid.lat)
+        node_id = empty_graph.insert_node_on_path(segment_id=seg_id, lon=mid_lon, lat=mid_lat, dem=mock_dem_blue_slope)
         assert empty_graph.undo_stack[-1].action_type.name == "INSERT_NODE", "insert pushes one INSERT_NODE entry"
 
         empty_graph.undo_last()
@@ -1914,14 +1922,24 @@ class TestNodeEditHelpers:
     def test_owning_path_none_for_unattached_node(self, empty_graph) -> None:
         assert empty_graph._owning_path("GHOST") is None
 
-    # -- _nearest_vertex_index: geometry pick -----------------------------------------------------
+    # -- _project_onto_path: Shapely projection onto the centerline (density-independent) ----------
 
-    def test_nearest_vertex_index_picks_closest(self) -> None:
+    def test_project_onto_path_picks_fraction(self) -> None:
         graph = ResortGraph()
         seg = self._seg("S1", "N1", "N2", [(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)])
-        assert graph._nearest_vertex_index(seg, lon=0.9, lat=0.0) == 1  # nearest to the middle vertex
-        assert graph._nearest_vertex_index(seg, lon=-5.0, lat=0.0) == 0  # off the start end
-        assert graph._nearest_vertex_index(seg, lon=99.0, lat=0.0) == 2  # off the far end
+        # A click at lon 0.5 projects a quarter along the 2-unit line → (0.5, 0.0).
+        frac, plon, plat = graph._project_onto_path(seg, lon=0.5, lat=0.0)
+        assert abs(frac - 0.25) < 1e-6 and abs(plon - 0.5) < 1e-6 and abs(plat) < 1e-6
+        # Off the far end clamps to the line end (fraction 1).
+        frac, plon, _ = graph._project_onto_path(seg, lon=99.0, lat=0.0)
+        assert frac == 1.0 and abs(plon - 2.0) < 1e-6
+
+    def test_project_onto_straight_two_point_segment(self) -> None:
+        # A simplified straight run is just 2 points; a mid click must still project onto the single leg.
+        graph = ResortGraph()
+        seg = self._seg("S1", "N1", "N2", [(0.0, 0.0), (2.0, 0.0)])
+        frac, plon, _ = graph._project_onto_path(seg, lon=1.0, lat=0.5)
+        assert abs(frac - 0.5) < 1e-6 and abs(plon - 1.0) < 1e-6
 
     # -- _drop_collapsed_segments_in_chain: zero-length curl removal ------------------------------
 

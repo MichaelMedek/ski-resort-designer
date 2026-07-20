@@ -111,7 +111,7 @@ def init_session_state() -> None:
         st.session_state.map_renderer = MapRenderer(
             center_lon=center_lon,
             center_lat=center_lat,
-            zoom=MapConfig.DEFAULT_ZOOM,
+            zoom=MapConfig.VIEWING_ZOOM,
             pitch=MapConfig.DEFAULT_PITCH,
             bearing=MapConfig.DEFAULT_BEARING,
         )
@@ -253,7 +253,7 @@ def load_dem_data() -> None:
         message=DEMLoadingMessage(),
         work=_load,
         reset_center=(MapConfig.START_CENTER_LON, MapConfig.START_CENTER_LAT),
-        reset_zoom=MapConfig.DEFAULT_ZOOM,
+        reset_zoom=MapConfig.VIEWING_ZOOM,
         catch=None,  # DEM load has no soft-failure — any error is a hard fail
         failure_message=None,
     )

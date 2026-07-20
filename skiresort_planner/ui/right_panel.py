@@ -225,9 +225,7 @@ def _render_flythrough_controls(ctx: PlannerContext, noun: str) -> None:
             ctx.viewing.start_flythrough(tuple(flythrough_points_for_view()))
             trigger_rerun()
     with right:
-        if _action_button(
-            "⏹️ Stop", key="flythrough_stop", help="Stop the flythrough", disabled=not playing
-        ):
+        if _action_button("⏹️ Stop", key="flythrough_stop", help="Stop the flythrough", disabled=not playing):
             ctx.viewing.stop_flythrough()
             trigger_rerun()
 

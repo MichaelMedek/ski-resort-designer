@@ -11,6 +11,7 @@ Used by:
 Reference: DETAILS.md
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -70,7 +71,7 @@ class PathPoint:
         )
 
     @staticmethod
-    def cumulative_distances(points: list["PathPoint"]) -> list[float]:
+    def cumulative_distances(points: Sequence["PathPoint"]) -> list[float]:
         """Cumulative along-path distance (m) at each point, starting at 0.
 
         Single source for polyline arc length (was duplicated in path_smoothing + bottom_chart).
@@ -81,7 +82,7 @@ class PathPoint:
         return cum
 
     @staticmethod
-    def total_length_m(points: list["PathPoint"]) -> float:
+    def total_length_m(points: Sequence["PathPoint"]) -> float:
         """Total polyline length (m) — 0 for fewer than two points. Single source for path length."""
         return PathPoint.cumulative_distances(points)[-1] if len(points) >= 2 else 0.0
 

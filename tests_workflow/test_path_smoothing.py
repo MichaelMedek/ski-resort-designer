@@ -12,7 +12,12 @@ from scipy.interpolate import splev, splprep
 from skiresort_planner.constants import GeometricTuningConfig, MapConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.model.path_point import PathPoint
-from skiresort_planner.model.path_smoothing import resample_cubic_spline, smooth_joined_path, smooth_proposal_points
+from skiresort_planner.model.path_smoothing import (
+    resample_cubic_spline,
+    simplify_path_points,
+    smooth_joined_path,
+    smooth_proposal_points,
+)
 
 
 def _min_curvature_radius_m(points: list[PathPoint]) -> float:
@@ -279,3 +284,36 @@ class TestSmoothProposalPoints:
             smooth_proposal_points(points=pts, smoothing_factor=3.0, step_m=7.0, elevation_fn=lambda lon, lat: 0.0)
             is pts
         )
+
+
+class TestSimplifyPathPoints:
+    """Shapely Douglas–Peucker (plan #13): straight runs collapse to few points while junctions/endpoints
+    and real horizontal bends survive — cutting the per-rerun render cost. Elevation rides on survivors.
+    """
+
+    def test_straight_run_collapses_to_endpoints(self) -> None:
+        step = 10 / MapConfig.METERS_PER_DEGREE_EQUATOR
+        pts = _leg(0.0, 0.0, 0.0, -step, 30, z0=2000.0, dz=-1.0)  # dead-straight
+        out = simplify_path_points(pts, tolerance_m=1.0)
+        assert len(out) == 2, "a straight run reduces to just its two ends"
+        assert out[0] == pts[0] and out[-1] == pts[-1], "endpoints preserved exactly"
+
+    def test_horizontal_bend_is_preserved(self) -> None:
+        step = 10 / MapConfig.METERS_PER_DEGREE_EQUATOR
+        pts = _leg(0.0, 0.0, 0.0, -step, 21, z0=2000.0, dz=-1.0)
+        pts[10] = PathPoint(lon=20 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=pts[10].lat, elevation=pts[10].elevation)
+        out = simplify_path_points(pts, tolerance_m=1.0)
+        assert any(abs(p.lon - pts[10].lon) < 1e-12 for p in out), "the 20m horizontal kick is kept"
+        assert 3 <= len(out) < len(pts), "kept the bend + ends, dropped the collinear rest"
+
+    def test_elevation_rides_on_survivors(self) -> None:
+        # Shapely simplify is horizontal-only; the kept endpoints carry their real elevation through.
+        step = 10 / MapConfig.METERS_PER_DEGREE_EQUATOR
+        pts = _leg(0.0, 0.0, 0.0, -step, 30, z0=2000.0, dz=-1.0)
+        out = simplify_path_points(pts, tolerance_m=1.0)
+        assert out[0].elevation == pts[0].elevation and out[-1].elevation == pts[-1].elevation
+
+    def test_short_paths_unchanged(self) -> None:
+        step = 10 / MapConfig.METERS_PER_DEGREE_EQUATOR
+        two = _leg(0.0, 0.0, 0.0, -step, 2, z0=2000.0, dz=-1.0)
+        assert len(simplify_path_points(two, tolerance_m=1.0)) == 2

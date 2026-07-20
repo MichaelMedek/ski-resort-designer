@@ -4,7 +4,6 @@
 bearing. `flythrough_points_for_view` dispatches on the viewed element via the fake session state.
 """
 
-
 import pytest
 
 from skiresort_planner.constants import MapConfig

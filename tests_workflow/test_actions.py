@@ -419,12 +419,16 @@ class TestAddNodeOnPathAction:
 
         slope = _make_slope(empty_graph, path_points_blue)
         seg_id = slope.segment_ids[0]
-        mid = empty_graph.segments[seg_id].points[len(empty_graph.segments[seg_id].points) // 2]
+        # Click the geometric midpoint of the segment (interior). After finish-simplification a straight
+        # run is just its two endpoints, so this projects onto the single leg — not onto an existing vertex.
+        pts = empty_graph.segments[seg_id].points
+        mid_lon = (pts[0].lon + pts[-1].lon) / 2
+        mid_lat = (pts[0].lat + pts[-1].lat) / 2
         _session(fake_st, empty_graph, dem=mock_dem_blue_slope)
         nodes_before = len(empty_graph.nodes)
         epoch_before = fake_st.session_state["dedup_epoch"]
 
-        result = add_node_on_path_action(segment_id=seg_id, lon=mid.lon, lat=mid.lat)
+        result = add_node_on_path_action(segment_id=seg_id, lon=mid_lon, lat=mid_lat)
 
         assert result is True, "a successful insert returns True (callers gate the transition on it)"
         assert len(empty_graph.nodes) == nodes_before + 1, "one node inserted"
