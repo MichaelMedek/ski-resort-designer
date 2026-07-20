@@ -846,6 +846,7 @@ class OSMConfig:
     MAX_STRAIGHT_M = 100.0  # max single straight leg between consecutive points
     TRIM_END_M = 50.0  # trim off each slope end before the hub connector
     SNAP_GRID_M = 12.0  # snap-round grid before noding (collapse near-coincident ends)
+    COORD_GRID_M = 1.0  # integer-metre projection grid (_to_m + post-noding set_precision) → bit-exact vertices
     NODE_TERRAIN_TOL_M = 10.0  # max node vs DEM deviation; also the carve depth + descent-carry cap
     SLOPE_TERRAIN_TOL_M = 50.0  # max slope-point vs DEM deviation
 
@@ -853,3 +854,4 @@ class OSMConfig:
     assert SLOPE_ON_SOURCE_TOL_M < PISTE_TOL_M <= SLOPE_TERRAIN_TOL_M
     assert NODE_TERRAIN_TOL_M < SLOPE_TERRAIN_TOL_M
     assert DEDUP_TOL_M < PARALLEL_TOL_M < MIN_NODE_DIST_M < RELAXED_MERGE_DIST_M
+    assert COORD_GRID_M < DEDUP_TOL_M  # the integer grid must sit below every planar tolerance
