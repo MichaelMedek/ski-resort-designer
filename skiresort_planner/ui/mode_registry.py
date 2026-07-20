@@ -202,7 +202,7 @@ class _IdleReadyState(BuildState):
                 "🔘 Select **Slope**, **Road** or **Lift** type below",
                 f"{StyleConfig.BUILDING_ICON} Click terrain/node → start building",
                 f"{StyleConfig.VIEWING_ICON} Click existing slope/road/lift → view stats",
-                "🛠️ Or use **Import** / **Node Merge** utilities below",
+                "🛠️ Or use **Import** / **Node Merge** / **Route Planner** utilities below",
             ],
         )
 
@@ -492,8 +492,8 @@ class _LiftPlacingState(BuildState):
         return True
 
 
-class _ImportPlacingState(BuildState):
-    state_key = "import_placing"
+class _ImportSelectingState(BuildState):
+    state_key = "import_selecting"
 
     def control_panel(
         self,
@@ -503,12 +503,12 @@ class _ImportPlacingState(BuildState):
         on_commit: Callable[[int], None],
         on_cancel_connection: Callable[[], None],
     ) -> right_panel.ControlPanel:
-        return right_panel.ImportPlacingControlPanel(
+        return right_panel.ImportSelectingControlPanel(
             sm=sm, ctx=ctx, graph=graph, on_commit=on_commit, on_cancel_connection=on_cancel_connection
         )
 
     def click_handler(self) -> ClickHandler:
-        return click_handlers.handle_import_placing_click
+        return click_handlers.handle_import_selecting_click
 
     def overlay_layers(
         self,
@@ -561,8 +561,8 @@ class _ImportPlacingState(BuildState):
         return True
 
 
-class _MergePlacingState(BuildState):
-    state_key = "merge_placing"
+class _MergeSelectingState(BuildState):
+    state_key = "merge_selecting"
 
     def control_panel(
         self,
@@ -572,12 +572,12 @@ class _MergePlacingState(BuildState):
         on_commit: Callable[[int], None],
         on_cancel_connection: Callable[[], None],
     ) -> right_panel.ControlPanel:
-        return right_panel.MergePlacingControlPanel(
+        return right_panel.MergeSelectingControlPanel(
             sm=sm, ctx=ctx, graph=graph, on_commit=on_commit, on_cancel_connection=on_cancel_connection
         )
 
     def click_handler(self) -> ClickHandler:
-        return click_handlers.handle_merge_placing_click
+        return click_handlers.handle_merge_selecting_click
 
     def overlay_layers(
         self,
@@ -711,9 +711,18 @@ class _IdleViewingRouteState(BuildState):
         *,
         use_3d: bool,
     ) -> list[pdk.Layer]:
-        return renderer.create_route_layers(routes=actions.route_plan_filtered_routes(), use_3d=use_3d)
+        return renderer.create_route_layers(
+            routes=actions.route_plan_shown_routes(),
+            selected_index=ctx.route_plan.selected_index,
+            use_3d=use_3d,
+        )
 
     def view_state(self, ctx: PlannerContext, graph: ResortGraph, *, use_3d: bool) -> ViewState:
+        rp = ctx.route_plan
+        if use_3d and rp.start_node_id is not None and rp.end_node_id is not None:
+            return MapRenderer.calculate_3d_view_for_route(
+                graph=graph, start_node_id=rp.start_node_id, end_node_id=rp.end_node_id
+            )
         return _stored_2d_view(ctx)
 
     def bottom_profile(self, ctx: PlannerContext, graph: ResortGraph) -> ProfileSpec | None:
@@ -751,8 +760,8 @@ _BUILD_STATE_LIST: list[BuildState] = [
     _PathBuildingState("slope_building", SegmentKind.SLOPE),
     _PathBuildingState("slope_custom_path", SegmentKind.SLOPE),
     _LiftPlacingState(),
-    _ImportPlacingState(),
-    _MergePlacingState(),
+    _ImportSelectingState(),
+    _MergeSelectingState(),
     _RoutePlacingState(),
     _PathBuildingState("road_starting", SegmentKind.ROAD),
     _PathBuildingState("road_building", SegmentKind.ROAD),
@@ -822,7 +831,11 @@ def _idle_not_building(sm: PlannerStateMachine) -> bool:
     a click leaves the route view and starts building, exactly like the slope/lift/road viewers.
     """
     return not (
-        sm.is_any_path_state or sm.is_lift_placing or sm.is_import_placing or sm.is_merge_placing or sm.is_route_placing
+        sm.is_any_path_state
+        or sm.is_lift_placing
+        or sm.is_import_selecting
+        or sm.is_merge_selecting
+        or sm.is_route_placing
     )
 
 

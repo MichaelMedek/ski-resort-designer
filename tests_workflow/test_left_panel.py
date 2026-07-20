@@ -126,7 +126,7 @@ class TestSidebarRuns:
         # + the "complete or cancel" bullet), not the old plain markdown/caption pair.
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         sm.start_import(lon=0.0, lat=0.0)
-        assert sm.is_import_placing
+        assert sm.is_import_selecting
 
         captured: list[str] = []
         fake_st.markdown = lambda text, *a, **k: captured.append(text)

@@ -293,6 +293,7 @@ class CustomPathComputingToast(InfoToast):
         return "🎯 Computing custom path options…"
 
 
+@dataclass(frozen=True)
 class RouteComputingToast(InfoToast):
     """Informational cue while the best A→B routes are being computed (default ℹ️ icon)."""
 
@@ -433,7 +434,7 @@ class LiftPlacingContextMessage(InfoMessage):
 
 
 @dataclass(frozen=True)
-class ImportPlacingContextMessage(InfoMessage):
+class ImportSelectingContextMessage(InfoMessage):
     """RIGHT panel: OSM import placement progress — shows the placed box center + area size."""
 
     center_lat: float = 0.0
@@ -451,7 +452,7 @@ class ImportPlacingContextMessage(InfoMessage):
 
 
 @dataclass(frozen=True)
-class MergePlacingContextMessage(InfoMessage):
+class MergeSelectingContextMessage(InfoMessage):
     """RIGHT panel: node-merge selection progress — shows how many nodes are selected + their span."""
 
     selected_count: int = 0
@@ -716,28 +717,28 @@ class RoutePlacingActionMessage(WarningMessage):
 
 @dataclass(frozen=True)
 class RouteResultsContextMessage(InfoMessage):
-    """RIGHT panel (blue): how many routes were found and which one is shown."""
+    """RIGHT panel (blue): how many routes were found under the shown difficulty cap, and which one."""
 
     total: int = 0
     selected_index: int = 0  # 0-based
+    difficulty_cap: str = "black"  # the premise: hardest band allowed for the shown routes
 
     @property
     def message(self) -> str:
-        return f"🛣️ **Routes** — showing {self.selected_index + 1} of {self.total}"
+        return f"🛣️ **Routes** — showing {self.selected_index + 1} of {self.total} (max **{self.difficulty_cap}**)"
 
 
 @dataclass(frozen=True)
 class RouteNoResultsMessage(WarningMessage):
-    """RIGHT panel (yellow): no routes to show — distinguish "filters too strict" from "none exist"."""
+    """RIGHT panel (yellow): no routes under the shown cap — distinguish "cap too strict" from "none exist"."""
 
-    filters_active: bool = False  # True when a difficulty/lift-type filter is hiding routes
+    cap_restrictive: bool = False  # True when an easier cap is hiding an otherwise-reachable route
 
     @property
     def message(self) -> str:
-        if self.filters_active:
+        if self.cap_restrictive:
             return (
-                "⚠️ **No routes match the filters**\n\n"
-                "- 🎚️ Loosen the difficulty slider, or\n- ☑️ re-enable more lift types."
+                "⚠️ **No route within this difficulty**\n\n- 🎚️ Raise the max-difficulty selector to allow harder slopes."
             )
         return (
             "⚠️ **No route exists**\n\n"

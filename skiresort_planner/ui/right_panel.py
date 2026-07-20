@@ -19,18 +19,18 @@ from typing import TYPE_CHECKING, Literal
 
 import streamlit as st
 
-from skiresort_planner.constants import LiftConfig, LiftType, MapConfig, OSMImportMode, SlopeConfig, StyleConfig
+from skiresort_planner.constants import LiftType, MapConfig, OSMImportMode, RoutePlannerConfig, SlopeConfig, StyleConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.model.connectivity import CoreMembership
 from skiresort_planner.model.message import (
     DisconnectedEntityMessage,
     ImportActionMessage,
-    ImportPlacingContextMessage,
+    ImportSelectingContextMessage,
     LiftActionMessage,
     LiftPlacingContextMessage,
     MergeActionMessage,
-    MergePlacingContextMessage,
+    MergeSelectingContextMessage,
     NoReturnEntityMessage,
     PathActionMessage,
     PathBuildingContextMessage,
@@ -47,7 +47,7 @@ from skiresort_planner.ui.actions import (
     confirm_merge_action,
     delete_nodes_action,
     rename_entity_action,
-    route_plan_filtered_routes,
+    route_plan_shown_routes,
 )
 from skiresort_planner.ui.context import EntityKind, PlannerContext
 from skiresort_planner.ui.dialogs import ConfirmDialog, InputDialog
@@ -165,28 +165,40 @@ def _action_button(
     return st.button(label, key=key, width="stretch", help=help, type=type)
 
 
-def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, kind: EntityKind, entity_id: str) -> None:
-    """Render 3D/2D view toggle button. Calls reload_map() if button is clicked."""
-    noun = kind.value
+def _render_3d_toggle(
+    ctx: PlannerContext, *, key_noun: str, noun: str, compute_2d_center: Callable[[], tuple[float, float]]
+) -> None:
+    """The single 3D/2D view toggle, shared by every viewing panel (slope/road/lift AND routes).
+
+    The enable-3D branch and the button rendering are identical everywhere; the ONLY thing that
+    differs is where the 2D map reframes when leaving 3D — supplied as `compute_2d_center`. The 3D
+    camera fit itself lives in each state's view_state. Never returns when clicked (reload/rerun).
+    """
     if ctx.viewing.view_3d:
-        if _action_button("🗺️ Return to 2D View", key=f"{noun}_2d_view", help="Return to the top-down 2D map"):
-            logger.debug(f"Switching to 2D view from {noun} {entity_id}")
+        if _action_button("🗺️ Return to 2D View", key=f"{key_noun}_2d_view", help="Return to the top-down 2D map"):
+            logger.debug(f"Switching to 2D view from {noun}")
             ctx.viewing.disable_3d()
-            # Reframe top-down on the viewed entity (not a stale position). EntityKind is a StrEnum,
-            # so `==` is reload-safe.
-            if kind in (EntityKind.SLOPE, EntityKind.ROAD):
-                owner = graph.slopes[entity_id] if kind == EntityKind.SLOPE else graph.roads[entity_id]
-                center = owner.center(segments=graph.segments)
-            elif kind == EntityKind.LIFT:
-                center = graph.lifts[entity_id].center(nodes=graph.nodes)
-            else:
-                raise ValueError(f"Unknown {kind=}")
-            reload_map(center=center, zoom=MapConfig.DEFAULT_ZOOM)  # Never returns - raises StopExecution
-    elif _action_button("🏔️ View in 3D", key=f"{noun}_3d_view", help=f"View {noun} from the side with terrain"):
-        logger.debug(f"Switching to 3D view for {noun} {entity_id}")
+            reload_map(center=compute_2d_center(), zoom=MapConfig.DEFAULT_ZOOM)  # Never returns
+    elif _action_button("🏔️ View in 3D", key=f"{key_noun}_3d_view", help=f"View {noun} from the side with terrain"):
+        logger.debug(f"Switching to 3D view for {noun}")
         ctx.viewing.enable_3d()
         bump_camera_epoch()  # 3D fit is computed in view_state; bare remount re-reads it
         trigger_rerun()  # Never returns - raises StopExecution
+
+
+def _render_entity_3d_toggle(ctx: PlannerContext, graph: ResortGraph, kind: EntityKind, entity_id: str) -> None:
+    """Entity (slope/road/lift) 3D toggle: the shared toggle with the entity's own centre as the 2D reframe."""
+
+    def entity_center() -> tuple[float, float]:
+        # EntityKind is a StrEnum, so `==` is reload-safe.
+        if kind in (EntityKind.SLOPE, EntityKind.ROAD):
+            owner = graph.slopes[entity_id] if kind == EntityKind.SLOPE else graph.roads[entity_id]
+            return owner.center(segments=graph.segments)
+        if kind == EntityKind.LIFT:
+            return graph.lifts[entity_id].center(nodes=graph.nodes)
+        raise ValueError(f"Unknown {kind=}")
+
+    _render_3d_toggle(ctx, key_noun=kind.value, noun=kind.value, compute_2d_center=entity_center)
 
 
 def _render_entity_actions(
@@ -208,7 +220,7 @@ def _render_entity_actions(
 
     # Top-left: 3D / 2D toggle (own reload_map side effects live in the helper).
     with top_left:
-        _render_3d_toggle_button(ctx=ctx, graph=graph, kind=kind, entity_id=entity_id)
+        _render_entity_3d_toggle(ctx=ctx, graph=graph, kind=kind, entity_id=entity_id)
 
     # Top-right: Rename.
     with top_right:
@@ -467,15 +479,15 @@ class LiftPlacingControlPanel(ControlPanel):
         return None
 
 
-class ImportPlacingControlPanel(ControlPanel):
-    """IMPORT_PLACING: box context + confirm-area action + Confirm Import button."""
+class ImportSelectingControlPanel(ControlPanel):
+    """IMPORT_SELECTING: box context + confirm-area action + Confirm Import button."""
 
     def context_message(self) -> "Message | None":
         center_lon = self.ctx.pending.osm_import_center_lon
         center_lat = self.ctx.pending.osm_import_center_lat
         if center_lon is None or center_lat is None:
-            raise RuntimeError("ImportPlacing state requires a placed box center")
-        return ImportPlacingContextMessage(
+            raise RuntimeError("ImportSelecting state requires a placed box center")
+        return ImportSelectingContextMessage(
             center_lat=center_lat,
             center_lon=center_lon,
             half_width_km=self.ctx.pending.osm_import_half_width_km,
@@ -502,8 +514,8 @@ class ImportPlacingControlPanel(ControlPanel):
             confirm_import_action(OSMImportMode.LIFTS_ONLY)
 
 
-class MergePlacingControlPanel(ControlPanel):
-    """MERGE_PLACING: selection context + merge action + Confirm Merge button.
+class MergeSelectingControlPanel(ControlPanel):
+    """MERGE_SELECTING: selection context + merge action + Confirm Merge button.
 
     The Confirm button is disabled until at least two nodes are selected. It stays enabled even when
     the span exceeds the limit — confirm_merge_action shows a too-far toast and changes nothing, so
@@ -514,7 +526,7 @@ class MergePlacingControlPanel(ControlPanel):
         return self.graph.max_node_span_m(self.ctx.merge.node_ids)
 
     def context_message(self) -> "Message | None":
-        return MergePlacingContextMessage(
+        return MergeSelectingContextMessage(
             selected_count=len(self.ctx.merge.node_ids),
             span_m=self._span_m(),
         )
@@ -572,80 +584,82 @@ class RoutePlacingControlPanel(ControlPanel):
 
 
 class RouteViewingControlPanel(ControlPanel):
-    """idle_viewing_route: browse the best routes. Blue = results summary (or none when empty);
-    yellow = no-results guidance when filters/graph yield nothing. Buttons = the ◀▶ browser, the
-    selected route's stats, and a Close button (mirrors EntityInfoControlPanel's viewing surface).
+    """idle_viewing_route: browse the precomputed routes for the selected difficulty cap. Blue =
+    results summary (with the cap premise); yellow = no-route guidance. Buttons = the max-difficulty
+    selector, the ◀▶ browser, the selected route's stats + colour legend, a 3D toggle, and Close.
     """
 
-    def _filtered(self) -> "list[Route]":
-        return route_plan_filtered_routes()
+    def _shown(self) -> "list[Route]":
+        return route_plan_shown_routes()
 
-    def _filters_active(self) -> bool:
-        rp = self.ctx.route_plan
-        return rp.filter_max_difficulty is not None or not all(rp.filter_lift_types.values())
+    def _hardest_cap(self) -> str:
+        return SlopeConfig.DIFFICULTIES[-1]
 
     def context_message(self) -> "Message | None":
-        routes = self._filtered()
+        routes = self._shown()
         if not routes:
-            return None  # the yellow no-results message carries the whole story
+            return None  # the yellow no-route message carries the whole story
         idx = min(self.ctx.route_plan.selected_index, len(routes) - 1)
-        return RouteResultsContextMessage(total=len(routes), selected_index=idx)
+        return RouteResultsContextMessage(
+            total=len(routes), selected_index=idx, difficulty_cap=self.ctx.route_plan.selected_cap
+        )
 
     def action_message(self) -> "Message | None":
-        if self._filtered():
+        if self._shown():
             return None
-        # Distinguish "filters hid them all" from "no route exists at all".
-        return RouteNoResultsMessage(filters_active=bool(self.ctx.route_plan.routes) and self._filters_active())
+        # "Cap too strict" (a broader cap DOES have routes) vs "no route exists at all".
+        from skiresort_planner.model.routing import routes_for_cap
+
+        broader_has_routes = bool(routes_for_cap(self.ctx.route_plan.routes, max_difficulty=self._hardest_cap()))
+        return RouteNoResultsMessage(cap_restrictive=broader_has_routes)
 
     def buttons(self) -> None:
-        # Filters live HERE (the viewing/right panel), next to the results they act on
+        # The difficulty selector picks which PRECOMPUTED cap to show (honest — routes were computed
+        # per cap, not filtered). Shown whenever any route was computed so the user can widen the cap.
         if self.ctx.route_plan.routes:
-            self._render_filters()
-        routes = self._filtered()
+            self._render_cap_selector()
+        routes = self._shown()
         if routes:
             self._render_route_browser(routes)
             self._render_route_stats(routes)
+            self._render_3d_toggle()  # side view of the selected route floating above the pistes
         # Idiom: close the panel to leave. To plan again, re-enter Route Planner and pick two nodes.
         if st.button("✖️ Close", width="stretch", help="Close this panel to start building again"):
             self.sm.close_panel()  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
-    def _render_filters(self) -> None:
-        """Max-difficulty select-slider (snaps to the difficulty bands) + per-lift-type checkboxes.
-        A pure read of the computed routes — changing a filter just reruns, no recompute.
+    def _render_3d_toggle(self) -> None:
+        """Route 3D toggle: the shared viewing toggle with the route's start/end midpoint as the 2D
+        reframe (the 3D camera fit itself lives in _IdleViewingRouteState.view_state).
+        """
+
+        def route_midpoint() -> tuple[float, float]:
+            rp = self.ctx.route_plan
+            assert rp.start_node_id is not None and rp.end_node_id is not None, "route view without endpoints"
+            a, b = self.graph.nodes[rp.start_node_id], self.graph.nodes[rp.end_node_id]
+            return ((a.lon + b.lon) / 2, (a.lat + b.lat) / 2)
+
+        _render_3d_toggle(self.ctx, key_noun="route", noun="route", compute_2d_center=route_midpoint)
+
+    def _render_cap_selector(self) -> None:
+        """Max-difficulty selector — picks which precomputed cap's routes to show (green→black). Each
+        cap was computed over ONLY slopes up to that band, so this is an honest premise, not a filter.
         """
         rp = self.ctx.route_plan
-        st.markdown("**🎚️ Route filters**")
-
-        # "Any" + each difficulty band, easiest→hardest; "Any" means no cap.
-        options = ["Any", *SlopeConfig.DIFFICULTIES]
-        current = rp.filter_max_difficulty or "Any"
         choice = st.select_slider(
             "Max difficulty",
-            options=options,
-            value=current,
+            options=SlopeConfig.DIFFICULTIES,
+            value=rp.selected_cap,
             format_func=str.capitalize,
-            key="route_difficulty_filter",
-            help="Hide routes whose hardest slope exceeds this band.",
+            key="route_difficulty_cap",
+            help="Show the best routes computed using only slopes up to this band.",
         )
-        new_difficulty = None if choice == "Any" else choice
-        if new_difficulty != rp.filter_max_difficulty:
-            rp.filter_max_difficulty = new_difficulty
+        if choice != rp.selected_cap:
+            rp.selected_cap = choice
+            rp.selected_index = 0
             trigger_rerun()
 
-        st.markdown("**Allowed lifts**")
-        for lift_type in LiftConfig.TYPES:
-            checked = st.checkbox(
-                f"{StyleConfig.LIFT_ICONS[lift_type]} {lift_type.replace('_', ' ').title()}",
-                value=rp.filter_lift_types[lift_type],
-                key=f"route_lift_type_{lift_type}",
-                help=f"Include routes that use a {lift_type.replace('_', ' ')}.",
-            )
-            if checked != rp.filter_lift_types[lift_type]:
-                rp.filter_lift_types[lift_type] = checked
-                trigger_rerun()
-
     def _render_route_browser(self, routes: "list[Route]") -> None:
-        """◀ ▶ browser over the filtered routes (mirrors _render_proposal_browser)."""
+        """◀ ▶ browser over the shown routes (mirrors _render_proposal_browser)."""
         if len(routes) <= 1:
             return
         idx = min(self.ctx.route_plan.selected_index, len(routes) - 1)
@@ -662,18 +676,25 @@ class RouteViewingControlPanel(ControlPanel):
                 trigger_rerun()
 
     def _render_route_stats(self, routes: "list[Route]") -> None:
-        """Stats for the selected route: criteria won, totals, and the ordered slope/lift steps."""
+        """Stats for the selected route: a colour-swatch legend naming what it's best for + the premise
+        it was computed under, then totals and the ordered slope/lift steps.
+        """
         idx = min(self.ctx.route_plan.selected_index, len(routes) - 1)
         route = routes[idx]
+        # Colour swatch matching the map line (route colour is keyed by list position, as drawn).
+        rgba = RoutePlannerConfig.ROUTE_COLORS[idx % len(RoutePlannerConfig.ROUTE_COLORS)]
+        swatch = f"<span style='color:rgb({rgba[0]},{rgba[1]},{rgba[2]})'>⬤</span>"
         won = ", ".join(c.value.replace("_", " ") for c in route.criteria)
-        st.caption(f"🏅 Best for: {won}")
+        # e.g. "⬤ Best for: shortest slope · max red" — the colour ties to the map, the cap is the premise.
+        st.markdown(f"{swatch} 🏅 **Best for:** {won} · max **{route.difficulty_cap}**", unsafe_allow_html=True)
         col1, col2 = st.columns(2)
         with col1:
             st.metric("Slope Length", f"{route.total_slope_length_m / 1000:.2f}km")
             st.metric("Slope Drop", f"{route.total_slope_drop_m:.0f}m")
         with col2:
             st.metric("Lifts", f"{route.lift_count}")
-            st.metric("Highest Point", f"{route.highest_elev_m:.0f}m")
+            emoji = StyleConfig.DIFFICULTY_EMOJIS[route.max_difficulty]
+            st.metric("Max Difficulty", f"{emoji} {route.max_difficulty.capitalize()}")
         with st.expander("📋 Route Steps", expanded=False):
             for i, step in enumerate(route.steps, 1):
                 icon = StyleConfig.LIFT_ICONS[step.detail] if step.is_lift else StyleConfig.SLOPE_ICON

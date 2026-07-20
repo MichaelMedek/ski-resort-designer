@@ -1,16 +1,19 @@
-"""Route planner — the best A→B ski routes by four criteria.
+"""Route planner — the best A→B ski routes, precomputed per difficulty cap.
 
 Pure model layer (stdlib + numpy + scipy only, like model.connectivity): no streamlit/ui imports, so
-the core is unit-testable without a browser. We compute FOUR single-objective optimal routes (one per
-criterion) rather than enumerating all paths: single-objective shortest/best paths are polynomial,
-whereas one path optimal across several objectives at once is NP-hard (a Pareto front). Criteria 1–3
-are additive shortest paths (scipy Dijkstra on a re-weighted CSR); criterion 4 (easiest) is a minimax
-(bottleneck) path — a small best-first over the same graph. Every criterion is a genuine shortest/best
-path, so all are stable and cycle-safe even on bidirectional-lift loops.
+the core is unit-testable without a browser. Difficulty is an HONEST computation input, not a
+post-filter: for each cap (green→black) we prune every slope harder than the cap OUT of the graph and
+recompute, so "shortest path with max red" really is the shortest path over green/blue/red slopes —
+never a harder route hidden by a filter. Under each cap we compute TWO single-objective optima
+(polynomial shortest paths; multi-objective-in-one-path is NP-hard):
+
+  - FEWEST_LIFTS   — fewest lift rides.
+  - SHORTEST_SLOPE — least slope distance, with a light drop weight breaking near-ties.
+
+Both are additive scipy-Dijkstra shortest paths on a re-weighted CSR, so all are stable and cycle-safe
+even on bidirectional-lift loops.
 """
 
-import heapq
-from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -18,25 +21,22 @@ import numpy as np
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import dijkstra
 
-from skiresort_planner.constants import SlopeConfig
+from skiresort_planner.constants import RoutePlannerConfig, SlopeConfig
 from skiresort_planner.model.path_segment import PathSegment
 from skiresort_planner.model.resort_graph import ResortGraph, SkiEdge
 
 _NO_PREDECESSOR = -9999  # scipy dijkstra's "unreachable" sentinel in the predecessor array
-
-# A route-finding cost is a totally-ordered tuple (lower is better); its first field is the metric,
-# the last is edge-count (tie-break toward fewer edges). Folder: (cost, from_idx, to_idx, edge) -> cost.
-_Cost = tuple[float, int]
-_Fold = Callable[[_Cost, int, int, tuple[str, str]], _Cost]
 
 
 class RouteCriterion(StrEnum):
     """The metric a route is optimal under (reload-safe StrEnum)."""
 
     FEWEST_LIFTS = "fewest_lifts"
-    LEAST_DISTANCE = "least_distance"  # least total slope distance
-    LEAST_DROP = "least_drop"  # least total vertical descent skied
-    EASIEST = "easiest"  # minimises the hardest slope difficulty on the route
+    SHORTEST_SLOPE = "shortest_slope"  # least slope distance (+ light drop weight)
+
+
+# The overlay palette must cover every criterion (routes are coloured by criterion index).
+assert len(RoutePlannerConfig.ROUTE_COLORS) == len(RouteCriterion), "ROUTE_COLORS must cover every RouteCriterion"
 
 
 @dataclass(frozen=True)
@@ -51,43 +51,39 @@ class RouteStep:
 
 @dataclass(frozen=True)
 class Route:
-    """A computed A→B route: the entities to traverse + per-route totals + which criteria it wins.
+    """A computed A→B route: the entities to traverse + per-route totals + its computation premise.
 
-    node_path is the ordered node ids (for map drawing). criteria lists every RouteCriterion this
-    exact route is optimal under (a route can win several — routes are deduped by node_path).
+    node_path is the ordered node ids; path_points is the drawable polyline (lon, lat, elevation)
+    following the actual slope geometry (straight across lifts). difficulty_cap is the hardest band
+    ALLOWED when this route was computed (the premise, e.g. "red"); criteria lists every RouteCriterion
+    this exact route wins under that cap (routes are deduped by node_path within a cap).
     """
 
     node_path: tuple[str, ...]
+    path_points: tuple[tuple[float, float, float], ...]  # (lon, lat, elevation) along the pistes
     steps: tuple[RouteStep, ...]
     total_slope_length_m: float
     total_slope_drop_m: float
     lift_count: int
-    max_difficulty: str  # hardest slope band on the route ("green" if lift-only)
-    highest_elev_m: float
+    max_difficulty: str  # hardest slope band actually on the route ("green" if lift-only)
+    difficulty_cap: str  # the premise: hardest band allowed when computing this route
     criteria: tuple[RouteCriterion, ...]
 
 
-def filter_routes(routes: list[Route], *, max_difficulty: str | None, allowed_lift_types: set[str]) -> list[Route]:
-    """The routes passing the UI filters: hardest slope ≤ max_difficulty (None = no cap) AND every
-    lift on the route is of an allowed type. Pure — shared by the compute step and the sidebar.
+def routes_for_cap(routes: list[Route], *, max_difficulty: str) -> list[Route]:
+    """The precomputed routes whose computation premise (difficulty_cap) is exactly `max_difficulty`.
+
+    Pure — shared by the compute step and the UI selector. This is an honest SELECT over the
+    per-cap-precomputed set, NOT a post-filter that could hide a reachable harder route.
     """
-    cap = (
-        SlopeConfig.DIFFICULTIES.index(max_difficulty) if max_difficulty is not None else len(SlopeConfig.DIFFICULTIES)
-    )
-
-    def ok(route: Route) -> bool:
-        if SlopeConfig.DIFFICULTIES.index(route.max_difficulty) > cap:
-            return False
-        return all(step.detail in allowed_lift_types for step in route.steps if step.is_lift)
-
-    return [r for r in routes if ok(r)]
+    return [r for r in routes if r.difficulty_cap == max_difficulty]
 
 
 class RoutePlanner:
     """Computes the best A→B ski routes over a ResortGraph's directed skiable graph.
 
     Built once per graph — indexes nodes and the edge→owner map from graph.ski_digraph(); each
-    best_routes() call runs the five criteria and dedupes coincident winners.
+    best_routes() call computes, for every difficulty cap × criterion, one shortest path, deduped.
     """
 
     def __init__(self, graph: ResortGraph) -> None:
@@ -102,37 +98,30 @@ class RoutePlanner:
                 if nid not in self._index:
                     self._index[nid] = len(self._nodes)
                     self._nodes.append(nid)
-        # node index -> [(neighbour index, edge)] for the best-first (non-additive) criteria.
-        self._adj: dict[int, list[tuple[int, tuple[str, str]]]] = {i: [] for i in range(len(self._nodes))}
-        for edge in edges:
-            self._adj[self._index[edge[0]]].append((self._index[edge[1]], edge))
 
     def best_routes(self, start_node_id: str, end_node_id: str) -> list[Route]:
-        """The optimal A→B routes, one per criterion, deduped (each kept route wins ≥1 criterion).
+        """The optimal A→B routes for every difficulty cap × criterion, deduped within each cap.
 
-        Empty when the two nodes aren't both in the ski graph or B is unreachable from A.
+        For each cap (green→black), slopes harder than the cap are pruned from the graph before the
+        shortest-path search, so the result honestly answers "the best route using only slopes up to
+        this band". Empty when the two nodes aren't both in the ski graph.
         """
         if start_node_id not in self._index or end_node_id not in self._index:
             return []
         src, dst = self._index[start_node_id], self._index[end_node_id]
 
-        by_path: dict[tuple[str, ...], list[RouteCriterion]] = {}
-        for criterion in RouteCriterion:
-            path = self._best_path(criterion, src, dst)
-            # A single-node path (start == end reached with no edge) isn't a route — you must move.
-            if path is not None and len(path) >= 2:
-                by_path.setdefault(tuple(path), []).append(criterion)
-
-        return [self._build_route(path, criteria) for path, criteria in by_path.items()]
+        out: list[Route] = []
+        for cap in SlopeConfig.DIFFICULTIES:
+            by_path: dict[tuple[str, ...], list[RouteCriterion]] = {}
+            for criterion in RouteCriterion:
+                path = self._shortest_path(criterion, src, dst, cap=cap)
+                # A single-node path (start == end reached with no edge) isn't a route — you must move.
+                if path is not None and len(path) >= 2:
+                    by_path.setdefault(tuple(path), []).append(criterion)
+            out.extend(self._build_route(path, criteria, cap=cap) for path, criteria in by_path.items())
+        return out
 
     # --- per-criterion path finding -------------------------------------------------
-
-    def _best_path(self, criterion: RouteCriterion, src: int, dst: int) -> list[str] | None:
-        """Node-id path optimal under `criterion`, or None if B is unreachable from A."""
-        if criterion in (RouteCriterion.FEWEST_LIFTS, RouteCriterion.LEAST_DISTANCE, RouteCriterion.LEAST_DROP):
-            return self._dijkstra_path(criterion, src, dst)
-        assert criterion == RouteCriterion.EASIEST, f"unhandled criterion {criterion}"
-        return self._minimax_path(src, dst)
 
     def _segment_of(self, owner: SkiEdge) -> PathSegment:
         """The PathSegment behind a slope edge. Asserts it's a slope edge (segment_id set) — a lift
@@ -142,76 +131,36 @@ class RoutePlanner:
         return self.graph.segments[owner.segment_id]
 
     def _edge_weight(self, criterion: RouteCriterion, owner: SkiEdge) -> float:
-        """Additive edge cost for the Dijkstra criteria. A tiny epsilon keeps every weight strictly
-        positive (Dijkstra needs non-negative) and makes the search prefer fewer edges on ties.
+        """Additive edge cost for `criterion`. A tiny epsilon keeps every weight strictly positive
+        (Dijkstra needs non-negative) and makes the search prefer fewer edges on ties.
         """
         eps = 1e-6
         if criterion == RouteCriterion.FEWEST_LIFTS:
             return 1.0 if owner.is_lift else eps
         if owner.is_lift:
             return eps
-        seg = self._segment_of(owner)
-        if criterion == RouteCriterion.LEAST_DISTANCE:
-            return seg.length_m + eps
-        return abs(seg.total_drop_m) + eps  # LEAST_DROP
+        seg = self._segment_of(owner)  # SHORTEST_SLOPE: distance + a light drop weight for near-ties
+        return seg.length_m + RoutePlannerConfig.SHORTEST_SLOPE_DROP_WEIGHT * abs(seg.total_drop_m) + eps
 
-    def _dijkstra_path(self, criterion: RouteCriterion, src: int, dst: int) -> list[str] | None:
-        """Additive shortest path via scipy Dijkstra on a CSR weighted for `criterion`."""
+    def _within_cap(self, owner: SkiEdge, cap_idx: int) -> bool:
+        """Whether an edge is allowed under a difficulty cap: lifts always; slopes only up to the cap."""
+        return owner.is_lift or SlopeConfig.DIFFICULTIES.index(self._segment_of(owner).difficulty) <= cap_idx
+
+    def _shortest_path(self, criterion: RouteCriterion, src: int, dst: int, *, cap: str) -> list[str] | None:
+        """Shortest path via scipy Dijkstra on a CSR weighted for `criterion`, with slopes harder than
+        `cap` pruned OUT of the graph (so the route is honestly restricted to that band).
+        """
+        cap_idx = SlopeConfig.DIFFICULTIES.index(cap)
+        allowed = [e for e in self._edges if self._within_cap(self._owner[e], cap_idx)]
         n = len(self._nodes)
-        rows = [self._index[a] for a, _ in self._edges]
-        cols = [self._index[b] for _, b in self._edges]
-        data = np.array([self._edge_weight(criterion, self._owner[e]) for e in self._edges], dtype=np.float64)
+        rows = [self._index[a] for a, _ in allowed]
+        cols = [self._index[b] for _, b in allowed]
+        data = np.array([self._edge_weight(criterion, self._owner[e]) for e in allowed], dtype=np.float64)
         graph = csr_matrix((data, (rows, cols)), shape=(n, n))
         _dist, pred = dijkstra(graph, directed=True, indices=src, return_predecessors=True)
         if dst != src and pred[dst] == _NO_PREDECESSOR:
             return None
         return self._walk_predecessors({i: int(pred[i]) for i in range(n)}, src, dst)
-
-    def _minimax_path(self, src: int, dst: int) -> list[str] | None:
-        """Easiest route: minimise the hardest slope-difficulty band crossed (a bottleneck path),
-        tie-broken by fewer edges. Cost per node = (max band so far, edge count); a lift edge is band 0.
-        """
-
-        def band(owner: SkiEdge) -> int:
-            return 0 if owner.is_lift else SlopeConfig.DIFFICULTIES.index(self._segment_of(owner).difficulty)
-
-        def fold(cost: _Cost, _u: int, _v: int, edge: tuple[str, str]) -> _Cost:
-            max_band, edges = cost
-            return (max(max_band, band(self._owner[edge])), edges + 1)
-
-        return self._best_first(src, dst, start_cost=(0.0, 0), fold=fold)
-
-    def _best_first(
-        self,
-        src: int,
-        dst: int,
-        *,
-        start_cost: _Cost,
-        fold: _Fold,
-    ) -> list[str] | None:
-        """Dijkstra-shaped best-first search over a totally-ordered cost tuple (min is best).
-
-        `fold(cost, u, v, edge)` returns v's candidate cost when reached from u; the search keeps the
-        minimum cost per node. Works for any cost whose optimal substructure is preserved by min.
-        """
-        best: dict[int, _Cost] = {src: start_cost}
-        pred: dict[int, int] = {}
-        heap: list[tuple[_Cost, int]] = [(start_cost, src)]
-        while heap:
-            cost, u = heapq.heappop(heap)
-            if cost > best.get(u, cost):
-                continue  # stale entry superseded by a better cost
-            if u == dst:
-                break
-            for v, edge in self._adj[u]:
-                cand = fold(cost, u, v, edge)
-                if v not in best or cand < best[v]:
-                    best[v] = cand
-                    pred[v] = u
-                    heapq.heappush(heap, (cand, v))
-        if dst not in best:
-            return None
-        return self._walk_predecessors(pred, src, dst)
 
     def _walk_predecessors(self, pred: dict[int, int], src: int, dst: int) -> list[str]:
         """Reconstruct the node-id path from a {node: predecessor} map (dst back to src)."""
@@ -223,19 +172,32 @@ class RoutePlanner:
 
     # --- route assembly -------------------------------------------------------------
 
-    def _build_route(self, node_path: tuple[str, ...], criteria: list[RouteCriterion]) -> Route:
-        """Turn a node path into a Route: map each edge to its owning entity, then aggregate stats."""
+    def _build_route(self, node_path: tuple[str, ...], criteria: list[RouteCriterion], *, cap: str) -> Route:
+        """Turn a node path into a Route: map each edge to its owning entity, aggregate stats, and
+        trace the drawable polyline (slope segment geometry oriented per traversal; straight for lifts).
+        """
         steps: list[RouteStep] = []
         slope_len = slope_drop = 0.0
         lift_count = 0
         hardest_idx = -1
-        highest = max(self.graph.nodes[nid].elevation for nid in node_path)
+        points: list[tuple[float, float, float]] = []
+
+        def add_point(lon: float, lat: float, elev: float) -> None:
+            # Dedupe the shared junction point between consecutive edges.
+            p = (lon, lat, elev)
+            if not points or points[-1] != p:
+                points.append(p)
+
         for a, b in zip(node_path, node_path[1:], strict=False):  # consecutive node pairs
             owner = self._owner[(a, b)]
             if owner.is_lift:
                 lift = self.graph.lifts[owner.entity_id]
                 lift_count += 1
                 steps.append(RouteStep(is_lift=True, entity_id=lift.id, name=lift.name, detail=lift.lift_type))
+                # A lift is a straight line between its two stations.
+                for nid in (a, b):
+                    node = self.graph.nodes[nid]
+                    add_point(node.lon, node.lat, node.elevation)
             else:
                 seg = self._segment_of(owner)
                 slope_len += seg.length_m
@@ -245,14 +207,20 @@ class RoutePlanner:
                 # Collapse consecutive segments of the same slope into a single step (reads once).
                 if not (steps and not steps[-1].is_lift and steps[-1].entity_id == slope.id):
                     steps.append(RouteStep(is_lift=False, entity_id=slope.id, name=slope.name, detail=seg.difficulty))
+                # Trace the segment's real geometry, oriented so it runs a→b (points are stored
+                # start_node→end_node; reverse when the route skis it the other way).
+                seg_points = seg.points if seg.start_node_id == a else list(reversed(seg.points))
+                for p in seg_points:
+                    add_point(p.lon, p.lat, p.elevation)
         max_difficulty = SlopeConfig.DIFFICULTIES[hardest_idx] if hardest_idx >= 0 else SlopeConfig.DIFFICULTIES[0]
         return Route(
             node_path=node_path,
+            path_points=tuple(points),
             steps=tuple(steps),
             total_slope_length_m=slope_len,
             total_slope_drop_m=slope_drop,
             lift_count=lift_count,
             max_difficulty=max_difficulty,
-            highest_elev_m=highest,
+            difficulty_cap=cap,
             criteria=tuple(criteria),
         )

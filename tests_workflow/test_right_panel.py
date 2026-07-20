@@ -17,9 +17,9 @@ from skiresort_planner.ui.context import BuildMode, EntityKind, PlannerContext
 from skiresort_planner.ui.mode_registry import ENTITY_KIND_SPECS, render_control_panel
 from skiresort_planner.ui.right_panel import (
     EntityInfoControlPanel,
-    ImportPlacingControlPanel,
+    ImportSelectingControlPanel,
     LiftStatsPanel,
-    MergePlacingControlPanel,
+    MergeSelectingControlPanel,
     PathStatsPanel,
 )
 from skiresort_planner.ui.state_machine import PlannerStateMachine
@@ -604,11 +604,11 @@ class TestMergeAndImportPanels:
     button-body logic and disabled-state, asserting the real action fires and the guard raises.
     """
 
-    def _merge_panel(self, sm, ctx, graph) -> MergePlacingControlPanel:
-        return MergePlacingControlPanel(sm=sm, ctx=ctx, graph=graph, on_commit=_noop, on_cancel_connection=_noop)
+    def _merge_panel(self, sm, ctx, graph) -> MergeSelectingControlPanel:
+        return MergeSelectingControlPanel(sm=sm, ctx=ctx, graph=graph, on_commit=_noop, on_cancel_connection=_noop)
 
-    def _import_panel(self, sm, ctx, graph) -> ImportPlacingControlPanel:
-        return ImportPlacingControlPanel(sm=sm, ctx=ctx, graph=graph, on_commit=_noop, on_cancel_connection=_noop)
+    def _import_panel(self, sm, ctx, graph) -> ImportSelectingControlPanel:
+        return ImportSelectingControlPanel(sm=sm, ctx=ctx, graph=graph, on_commit=_noop, on_cancel_connection=_noop)
 
     def test_confirm_merge_disabled_below_two_nodes(self, fake_st, empty_graph, monkeypatch) -> None:
         # Confirm Merge is disabled with 0 or 1 selected nodes, enabled at 2; Delete needs only 1.

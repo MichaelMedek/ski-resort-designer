@@ -46,15 +46,15 @@ class TestBuildStateBijection:
         sm_ids = {s.id for s in PlannerStateMachine.states}
         assert set(BUILD_STATES) == sm_ids
 
-    def test_merge_placing_is_registered(self) -> None:
-        assert "merge_placing" in BUILD_STATES
+    def test_merge_selecting_is_registered(self) -> None:
+        assert "merge_selecting" in BUILD_STATES
 
 
 class TestExitHookBijection:
     """EXIT_HOOKS (owned by state_lifecycle, used by the state machine's force/undo dispatch) lists
     only states whose exit does real cleanup; no-op states are simply absent (dispatch uses .get).
     The states with real cleanup MUST be present or a force_* would skip their teardown — e.g.
-    undoing an OSM import from import_placing would leak the placed box (the class of bug this guards).
+    undoing an OSM import from import_selecting would leak the placed box (the class of bug this guards).
     """
 
     def test_exit_hook_keys_are_all_real_states(self) -> None:
@@ -67,7 +67,7 @@ class TestExitHookBijection:
         # These three have non-trivial exit teardown and MUST be dispatched on force/undo.
         from skiresort_planner.ui.state_lifecycle import EXIT_HOOKS
 
-        for state_id in ("lift_placing", "import_placing", "merge_placing"):
+        for state_id in ("lift_placing", "import_selecting", "merge_selecting"):
             assert state_id in EXIT_HOOKS, f"{state_id} exit cleanup must run on force_*"
 
 
@@ -262,7 +262,7 @@ class TestRendersCustomPath:
     def test_non_build_states_never_render_custom_path(self) -> None:
         ctx = PlannerContext()
         ctx.custom_connect.target_location = (0.0, 0.0, 2000.0)  # even with force_mode set, non-build states ignore it
-        for key in ("idle_ready", "idle_viewing_slope", "idle_viewing_road", "lift_placing", "merge_placing"):
+        for key in ("idle_ready", "idle_viewing_slope", "idle_viewing_road", "lift_placing", "merge_selecting"):
             assert BUILD_STATES[key].renders_custom_path(ctx) is False, key
 
 

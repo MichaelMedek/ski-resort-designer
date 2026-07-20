@@ -377,6 +377,24 @@ class MapRenderer:
             raise ValueError(f"Lift {lift_id} not found")
         return MapRenderer._calculate_3d_view_for_entity(graph=graph, entity=lift)
 
+    @staticmethod
+    def calculate_3d_view_for_route(
+        graph: ResortGraph,
+        start_node_id: str,
+        end_node_id: str,
+    ) -> tuple[float, float, float, int, float]:
+        """Side-view camera framing a route between its start and end nodes (same helper as entities)."""
+        start, end = graph.nodes[start_node_id], graph.nodes[end_node_id]
+        return MapRenderer._calculate_3d_view_for_endpoints(
+            start_lat=start.lat,
+            start_lon=start.lon,
+            start_elev=start.elevation,
+            end_lat=end.lat,
+            end_lon=end.lon,
+            end_elev=end.elevation,
+            camera_bearing_offset=-90,
+        )
+
     # =========================================================================
     # SEGMENT LAYERS
     # =========================================================================
@@ -1224,33 +1242,36 @@ class MapRenderer:
 
         return layers
 
-    def create_route_layers(self, routes: "list[Route]", *, use_3d: bool) -> list[pdk.Layer]:
-        """One coloured polyline per route, drawn through each route's node path.
-
-        Colour is by the route's first winning criterion (its index into RoutePlannerConfig.ROUTE_COLORS),
-        so a route reads as "the fewest-lifts one" etc. Empty when there are no routes to show.
+    def create_route_layers(self, routes: "list[Route]", *, selected_index: int, use_3d: bool) -> list[pdk.Layer]:
+        """One thick, semi-transparent polyline for the SELECTED route, tracing the actual slope
+        geometry. Wider than any slope belt (ROUTE_WIDTH_M) so it reads as an overlay; in 3D it floats
+        ROUTE_FLOAT_ABOVE_M above the pistes/lifts it traces. Only the selected route is drawn (others
+        appear as the ◀▶ browser cycles); its colour is keyed to its list position. Empty when none.
         """
-        if not self.graph or not routes:
+        if not routes:
             return []
-        route_z = MapConfig.Z_OFFSET_2D_MARKERS if not use_3d else 0
-        layers: list[pdk.Layer] = []
-        for i, route in enumerate(routes):
-            color = RoutePlannerConfig.ROUTE_COLORS[i % len(RoutePlannerConfig.ROUTE_COLORS)]
-            path = [[self.graph.nodes[nid].lon, self.graph.nodes[nid].lat, route_z] for nid in route.node_path]
-            data = [{"path": path, "color": color, "name": ", ".join(c.value for c in route.criteria)}]
-            layers.append(
-                pdk.Layer(
-                    "PathLayer",
-                    data,
-                    get_path="path",
-                    get_color="color",
-                    get_width=MarkerConfig.DIRECTION_ARROW_WIDTH,
-                    width_min_pixels=4,
-                    cap_rounded=True,
-                    id=f"route_{i}",
-                )
+        idx = min(selected_index, len(routes) - 1)
+        route = routes[idx]
+        color = RoutePlannerConfig.ROUTE_COLORS[idx % len(RoutePlannerConfig.ROUTE_COLORS)]
+        # In 3D, hover the line above the terrain; the flat 2D z-offset is unchanged.
+        z_offset = MarkerConfig.PATH_Z_OFFSET_M + (RoutePlannerConfig.ROUTE_FLOAT_ABOVE_M if use_3d else 0)
+        path = [
+            [lon, lat, self._get_z(elevation=elev, z_offset=z_offset, use_3d=use_3d)]
+            for lon, lat, elev in route.path_points
+        ]
+        data = [{"path": path, "color": color, "name": ", ".join(c.value for c in route.criteria)}]
+        return [
+            pdk.Layer(
+                "PathLayer",
+                data,
+                get_path="path",
+                get_color="color",
+                get_width=RoutePlannerConfig.ROUTE_WIDTH_M,
+                width_min_pixels=6,
+                cap_rounded=True,
+                id=f"route_{idx}",
             )
-        return layers
+        ]
 
     def create_import_bbox_layers(
         self,

@@ -174,7 +174,7 @@ class TestEnumDispatchCompleteness:
         msglevel = [m.name for m in MessageLevel]
         buildmode = [m.upper() for m in BuildMode.ALL]  # attr names, e.g. SLOPE, CHAIRLIFT
 
-        # IMPORT_CENTER only appears in import_placing; the idle & slope-building handlers legitimately
+        # IMPORT_CENTER only appears in import_selecting; the idle & slope-building handlers legitimately
         # don't route it (it hits their safety-net raise), so they may omit exactly that one member.
         idle_omit = {"IMPORT_CENTER"}
 

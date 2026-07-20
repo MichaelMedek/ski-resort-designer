@@ -36,7 +36,7 @@ from skiresort_planner.model.message import (
 )
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.resort_graph import ResortGraph
-from skiresort_planner.model.routing import Route, RoutePlanner, filter_routes
+from skiresort_planner.model.routing import Route, RoutePlanner, routes_for_cap
 from skiresort_planner.ui.context import PlannerContext
 from skiresort_planner.ui.infra import bump_camera_epoch, bump_dedup_epoch, trigger_rerun
 from skiresort_planner.ui.kind_spec import KIND_SPECS
@@ -128,34 +128,32 @@ def process_custom_connect_pending() -> bool:
     return True
 
 
-def process_route_plan_pending() -> bool:
+def process_route_plan_pending() -> None:
     """Compute the best routes between the two picked nodes (deferred, mirrors the fan/custom flow).
 
     Reads ctx.route_plan.start/end_node_id, runs the RoutePlanner (scipy shortest paths — fast, no
-    network), stores the ≤5 deduped routes, and resets the shown selection. No-op if nothing pending.
+    network) to precompute routes for every difficulty cap, and resets the shown selection.
     """
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
 
     if not ctx.pending.route_plan_generation:
-        return False
+        return
     ctx.pending.route_plan_generation = False
 
     start, end = ctx.route_plan.start_node_id, ctx.route_plan.end_node_id
     assert start is not None and end is not None, "route computation armed without both endpoints"
     ctx.route_plan.routes = RoutePlanner(graph).best_routes(start_node_id=start, end_node_id=end)
     ctx.route_plan.selected_index = 0
-    return True
 
 
-def route_plan_filtered_routes() -> list[Route]:
-    """The current route-plan routes passing the active difficulty/lift-type filters (shared by the
-    right panel, sidebar, and map overlay so all three agree on what's shown).
+def route_plan_shown_routes() -> list[Route]:
+    """The precomputed routes for the currently-selected difficulty cap (shared by the right panel
+    and the map overlay so both agree on what's shown). An honest per-cap select, not a post-filter.
     """
     ctx: PlannerContext = st.session_state.context
     rp = ctx.route_plan
-    allowed = {t for t, on in rp.filter_lift_types.items() if on}
-    return filter_routes(rp.routes, max_difficulty=rp.filter_max_difficulty, allowed_lift_types=allowed)
+    return routes_for_cap(rp.routes, max_difficulty=rp.selected_cap)
 
 
 def confirm_import_action(mode: OSMImportMode) -> None:
@@ -177,7 +175,7 @@ def confirm_merge_action() -> None:
     """Confirm the node-merge selection: collapse the selected nodes to their median, return to idle.
 
     Validates the span first for a friendly toast — if any pair exceeds MergeConfig.MAX_SPAN_M the
-    merge is refused and nothing changes (the state stays in merge_placing so the user can adjust the
+    merge is refused and nothing changes (the state stays in merge_selecting so the user can adjust the
     selection). On success the merge is one undoable action and we return to idle.
     """
     ctx: PlannerContext = st.session_state.context

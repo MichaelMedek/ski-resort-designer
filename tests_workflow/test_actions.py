@@ -248,7 +248,7 @@ class TestConfirmMergeAction:
 
         assert len(empty_graph.nodes) == count_before, "nothing merged when the span is too large"
         assert len(empty_graph.undo_stack) == stack_before, "no undo action recorded on refusal"
-        assert sm.is_merge_placing, "stays in merge so the user can adjust the selection"
+        assert sm.is_merge_selecting, "stays in merge so the user can adjust the selection"
         assert ctx.merge.node_ids == [top.id, bottom.id], "selection preserved for retry"
         assert any("too far" in t.lower() for t in toasts), "the user is told why the merge was refused"
 
@@ -308,7 +308,7 @@ class TestDeleteNodesAction:
 
         assert "A" in empty_graph.nodes, "a lift station is never deleted"
         assert len(empty_graph.undo_stack) == stack_before, "no undo action recorded on refusal"
-        assert sm.is_merge_placing, "stays in merge so the user can adjust the selection"
+        assert sm.is_merge_selecting, "stays in merge so the user can adjust the selection"
         assert any("lift" in t.lower() for t in toasts), "the user is told why the delete was refused"
 
     def test_no_nodes_raises(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
@@ -344,7 +344,7 @@ class TestDeleteNodesAction:
 
         assert slope.id in empty_graph.slopes, "the path is not emptied"
         assert len(empty_graph.undo_stack) == stack_before, "no undo action recorded on refusal"
-        assert sm.is_merge_placing, "stays in merge so the user can adjust the selection"
+        assert sm.is_merge_selecting, "stays in merge so the user can adjust the selection"
         assert any("whole path" in t.lower() for t in toasts), "the user is told the delete was refused"
 
     def test_branch_junction_refused_no_change(self, fake_st, empty_graph, mock_dem_blue_slope, monkeypatch) -> None:
@@ -386,7 +386,7 @@ class TestDeleteNodesAction:
 
         assert junction in empty_graph.nodes, "a branch junction is not deleted"
         assert len(empty_graph.undo_stack) == stack_before, "no undo action recorded on refusal"
-        assert sm.is_merge_placing, "stays in merge so the user can adjust the selection"
+        assert sm.is_merge_selecting, "stays in merge so the user can adjust the selection"
         assert any("delete that path" in t.lower() for t in toasts), "the user is told to delete a path first"
 
 
@@ -887,7 +887,7 @@ class TestOSMImport:
 
         sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
         sm.start_import(lon=0.1, lat=0.3)  # first map click places the box center
-        assert sm.is_import_placing
+        assert sm.is_import_selecting
         assert ctx.pending.osm_import_center_lon == 0.1 and ctx.pending.osm_import_center_lat == 0.3
 
         confirm_import_action(OSMImportMode.LIFTS_AND_SLOPES)  # center-dot click / import button

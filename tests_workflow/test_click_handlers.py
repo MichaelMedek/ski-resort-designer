@@ -122,7 +122,7 @@ class TestIdleClickRouting:
             ClickInfo(click_type=MapClickType.TERRAIN, lat=0.01, lon=0.02),
             elevation=dem.get_elevation_or_raise(lon=0.02, lat=0.01),
         )
-        assert sm.is_import_placing
+        assert sm.is_import_selecting
         assert ctx.pending.osm_import_center_lon == 0.02 and ctx.pending.osm_import_center_lat == 0.01
 
     def test_import_mode_node_click_places_box_at_node(
@@ -138,7 +138,7 @@ class TestIdleClickRouting:
         handle_idle_click(
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id), elevation=None
         )
-        assert sm.is_import_placing
+        assert sm.is_import_selecting
         assert ctx.pending.osm_import_center_lon == 0.03 and ctx.pending.osm_import_center_lat == 0.04
 
     def test_merge_mode_node_click_starts_merge_and_selects(
@@ -154,7 +154,7 @@ class TestIdleClickRouting:
         handle_idle_click(
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id), elevation=None
         )
-        assert sm.is_merge_placing, "first node click starts merge (like other modes' first click)"
+        assert sm.is_merge_selecting, "first node click starts merge (like other modes' first click)"
         assert ctx.merge.node_ids == [node.id], "the clicked node is the first merge selection"
 
     def test_merge_mode_terrain_click_is_invalid_and_stays_idle(
@@ -201,7 +201,7 @@ class TestIdleClickRouting:
             elevation=None,
         )
         assert len(graph.nodes) == nodes_before + 1, "a belt click in merge mode adds a node"
-        assert sm.is_merge_placing, "the click enters merge mode (does not open the slope panel)"
+        assert sm.is_merge_selecting, "the click enters merge mode (does not open the slope panel)"
         assert ctx.viewing.slope_id is None, "no slope panel opened"
 
     def test_merge_mode_segment_click_rejected_stays_idle(
@@ -1745,32 +1745,32 @@ class TestBuildStateMarkerCompleteness:
             assert len(graph.segments) == 0, f"{marker_type.name} must not add graph segments"
             assert sm.is_road_starting, f"{marker_type.name} must not leave road building"
 
-    def test_merge_placing_rejects_every_entity_marker(
+    def test_merge_selecting_rejects_every_entity_marker(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
     ) -> None:
-        from skiresort_planner.ui.click_handlers import handle_merge_placing_click
+        from skiresort_planner.ui.click_handlers import handle_merge_selecting_click
 
         for _marker_type, ci in self._entity_marker_clicks():
             sm, ctx = _session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
             sm.start_merge()
-            handle_merge_placing_click(click_info=ci, elevation=None)
+            handle_merge_selecting_click(click_info=ci, elevation=None)
             assert ctx.merge.node_ids == [], "no entity marker adds to the merge selection"
-            assert sm.is_merge_placing, "an entity marker must not navigate away from merge placing"
+            assert sm.is_merge_selecting, "an entity marker must not navigate away from merge placing"
 
-    def test_import_placing_rejects_every_entity_marker(
+    def test_import_selecting_rejects_every_entity_marker(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
     ) -> None:
         # The import handler was the one build-state handler missing from this completeness suite.
         # An entity marker clicked while placing an import box must be inert: no confirm, no move,
         # no crash, still placing.
-        from skiresort_planner.ui.click_handlers import handle_import_placing_click
+        from skiresort_planner.ui.click_handlers import handle_import_selecting_click
 
         for marker_type, ci in self._entity_marker_clicks():
             sm, ctx = _session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
             ctx.build_mode.mode = BuildMode.IMPORT
             sm.start_import(lon=0.02, lat=0.03)  # a distinctive placed center, so a stray re-place shows
-            handle_import_placing_click(click_info=ci, elevation=None)
-            assert sm.is_import_placing, f"{marker_type.name} must not leave import placing"
+            handle_import_selecting_click(click_info=ci, elevation=None)
+            assert sm.is_import_selecting, f"{marker_type.name} must not leave import placing"
             assert ctx.pending.osm_import_mode is None, f"{marker_type.name} must not confirm the import"
             assert (ctx.pending.osm_import_center_lon, ctx.pending.osm_import_center_lat) == (0.02, 0.03), (
                 f"{marker_type.name} must not move the placed box center"
@@ -1778,13 +1778,13 @@ class TestBuildStateMarkerCompleteness:
 
 
 # =============================================================================
-# handle_import_placing_click — center-dot re-click confirms; terrain re-places
+# handle_import_selecting_click — center-dot re-click confirms; terrain re-places
 # =============================================================================
 
 
-class TestImportPlacingClick:
+class TestImportSelectingClick:
     def _placing(self, fake_st, factory, dem):
-        """Enter import_placing with a box center already placed."""
+        """Enter import_selecting with a box center already placed."""
         sm, ctx = _session(fake_st, ResortGraph(), factory, dem)
         ctx.build_mode.mode = BuildMode.IMPORT
         sm.start_import(lon=0.0, lat=0.0)
@@ -1792,23 +1792,23 @@ class TestImportPlacingClick:
 
     def test_center_dot_click_is_inert(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         # The center dot no longer confirms — it can't say WHICH import. Only the buttons confirm.
-        from skiresort_planner.ui.click_handlers import handle_import_placing_click
+        from skiresort_planner.ui.click_handlers import handle_import_selecting_click
 
         sm, ctx = self._placing(fake_st, path_factory, mock_dem_red_slope_diagonal)
-        handle_import_placing_click(
+        handle_import_selecting_click(
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.IMPORT_CENTER), elevation=None
         )
         assert ctx.pending.osm_import_mode is None, "a center-dot click must NOT confirm any import"
-        assert sm.is_import_placing, "still placing — confirm is done by the panel buttons"
+        assert sm.is_import_selecting, "still placing — confirm is done by the panel buttons"
 
     def test_terrain_click_replaces_center_and_keeps_placing(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
     ) -> None:
-        from skiresort_planner.ui.click_handlers import handle_import_placing_click
+        from skiresort_planner.ui.click_handlers import handle_import_selecting_click
 
         sm, ctx = self._placing(fake_st, path_factory, mock_dem_red_slope_diagonal)
-        handle_import_placing_click(ClickInfo(click_type=MapClickType.TERRAIN, lat=0.05, lon=0.06), elevation=2000.0)
-        assert sm.is_import_placing, "re-placing keeps us in import mode"
+        handle_import_selecting_click(ClickInfo(click_type=MapClickType.TERRAIN, lat=0.05, lon=0.06), elevation=2000.0)
+        assert sm.is_import_selecting, "re-placing keeps us in import mode"
         assert ctx.pending.osm_import_center_lon == 0.06 and ctx.pending.osm_import_center_lat == 0.05
         assert ctx.pending.osm_import_mode is None, "re-placing does not confirm"
 
@@ -1816,57 +1816,57 @@ class TestImportPlacingClick:
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
     ) -> None:
         # Nudging the box must leave the LAST-placed center staged for whichever button confirms it.
-        from skiresort_planner.ui.click_handlers import handle_import_placing_click
+        from skiresort_planner.ui.click_handlers import handle_import_selecting_click
 
         sm, ctx = self._placing(fake_st, path_factory, mock_dem_red_slope_diagonal)
-        handle_import_placing_click(ClickInfo(click_type=MapClickType.TERRAIN, lat=0.01, lon=0.02), elevation=2000.0)
-        handle_import_placing_click(ClickInfo(click_type=MapClickType.TERRAIN, lat=0.05, lon=0.06), elevation=2000.0)
-        assert sm.is_import_placing
+        handle_import_selecting_click(ClickInfo(click_type=MapClickType.TERRAIN, lat=0.01, lon=0.02), elevation=2000.0)
+        handle_import_selecting_click(ClickInfo(click_type=MapClickType.TERRAIN, lat=0.05, lon=0.06), elevation=2000.0)
+        assert sm.is_import_selecting
         assert ctx.pending.osm_import_center_lon == 0.06 and ctx.pending.osm_import_center_lat == 0.05, (
             "the last-placed center wins"
         )
 
 
 # =============================================================================
-# handle_merge_placing_click — toggle node selection, reject non-node clicks
+# handle_merge_selecting_click — toggle node selection, reject non-node clicks
 # =============================================================================
 
 
-class TestMergePlacingClick:
+class TestMergeSelectingClick:
     def _merge_session(self, fake_st, graph, factory, dem):
         sm, ctx = _session(fake_st, graph, factory, dem)
         sm.start_merge()
         return sm, ctx
 
     def test_node_click_toggles_selection(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
-        from skiresort_planner.ui.click_handlers import handle_merge_placing_click
+        from skiresort_planner.ui.click_handlers import handle_merge_selecting_click
 
         graph = ResortGraph()
         node, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=2000.0)
         sm, ctx = self._merge_session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
 
-        handle_merge_placing_click(
+        handle_merge_selecting_click(
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id), elevation=None
         )
         assert ctx.merge.node_ids == [node.id]
-        assert sm.is_merge_placing, "selecting a node keeps us in merge placing"
+        assert sm.is_merge_selecting, "selecting a node keeps us in merge placing"
 
     def test_reclick_node_removes_it(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
-        from skiresort_planner.ui.click_handlers import handle_merge_placing_click
+        from skiresort_planner.ui.click_handlers import handle_merge_selecting_click
 
         graph = ResortGraph()
         node, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=2000.0)
         sm, ctx = self._merge_session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
         click = ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id)
 
-        handle_merge_placing_click(click, elevation=None)
-        handle_merge_placing_click(click, elevation=None)
+        handle_merge_selecting_click(click, elevation=None)
+        handle_merge_selecting_click(click, elevation=None)
         assert ctx.merge.node_ids == [], "re-clicking a selected node deselects it"
 
     def test_segment_body_click_inserts_a_node(
         self, fake_st, path_factory, mock_dem_blue_slope, path_points_blue
     ) -> None:
-        from skiresort_planner.ui.click_handlers import handle_merge_placing_click
+        from skiresort_planner.ui.click_handlers import handle_merge_selecting_click
 
         graph = ResortGraph()
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
@@ -1876,7 +1876,7 @@ class TestMergePlacingClick:
         sm, ctx = self._merge_session(fake_st, graph, path_factory, mock_dem_blue_slope)
         nodes_before = len(graph.nodes)
 
-        handle_merge_placing_click(
+        handle_merge_selecting_click(
             ClickInfo(
                 click_type=MapClickType.MARKER,
                 marker_type=MarkerType.SEGMENT,
@@ -1888,12 +1888,12 @@ class TestMergePlacingClick:
         )
         assert len(graph.nodes) == nodes_before + 1, "a path-body click adds one node"
         assert len(graph.slopes[slope.id].segment_ids) == 2, "the clicked segment was split"
-        assert sm.is_merge_placing, "adding a node stays in merge placing"
+        assert sm.is_merge_selecting, "adding a node stays in merge placing"
 
     def test_slope_icon_click_is_rejected_not_inserted(
         self, fake_st, path_factory, mock_dem_blue_slope, path_points_blue, monkeypatch
     ) -> None:
-        from skiresort_planner.ui.click_handlers import handle_merge_placing_click
+        from skiresort_planner.ui.click_handlers import handle_merge_selecting_click
 
         graph = ResortGraph()
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
@@ -1903,18 +1903,18 @@ class TestMergePlacingClick:
         nodes_before = len(graph.nodes)
 
         # The slope ICON marker is position-less (only the SEGMENT belt inserts nodes) → rejected.
-        handle_merge_placing_click(
+        handle_merge_selecting_click(
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SLOPE, slope_id=slope.id),
             elevation=None,
         )
         assert len(graph.nodes) == nodes_before, "a slope-icon click adds no node"
         assert any("select for merge" in t.lower() for t in toasts), "the icon click is rejected"
-        assert sm.is_merge_placing
+        assert sm.is_merge_selecting
 
     def test_path_body_click_too_close_to_endpoint_shows_toast(
         self, fake_st, path_factory, mock_dem_blue_slope, path_points_blue, monkeypatch
     ) -> None:
-        from skiresort_planner.ui.click_handlers import handle_merge_placing_click
+        from skiresort_planner.ui.click_handlers import handle_merge_selecting_click
 
         graph = ResortGraph()
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
@@ -1925,7 +1925,7 @@ class TestMergePlacingClick:
         toasts = _capture_toasts(monkeypatch)
         nodes_before = len(graph.nodes)
 
-        handle_merge_placing_click(
+        handle_merge_selecting_click(
             ClickInfo(
                 click_type=MapClickType.MARKER,
                 marker_type=MarkerType.SEGMENT,
@@ -1937,24 +1937,24 @@ class TestMergePlacingClick:
         )
         assert len(graph.nodes) == nodes_before, "a too-close click adds no node"
         assert any("add a node" in t for t in toasts), "the user is told why the insert was rejected"
-        assert sm.is_merge_placing
+        assert sm.is_merge_selecting
 
     def test_terrain_click_is_rejected_without_crashing(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
     ) -> None:
-        from skiresort_planner.ui.click_handlers import handle_merge_placing_click
+        from skiresort_planner.ui.click_handlers import handle_merge_selecting_click
 
         graph = ResortGraph()
         _sm, ctx = self._merge_session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
 
-        handle_merge_placing_click(
+        handle_merge_selecting_click(
             ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
             elevation=mock_dem_red_slope_diagonal.get_elevation_or_raise(lon=0.0, lat=0.0),
         )
         assert ctx.merge.node_ids == [], "terrain clicks never add to the merge selection"
 
     def test_slope_marker_click_is_rejected(self, fake_st, path_factory, mock_dem_blue_slope, path_points_blue) -> None:
-        from skiresort_planner.ui.click_handlers import handle_merge_placing_click
+        from skiresort_planner.ui.click_handlers import handle_merge_selecting_click
 
         graph = ResortGraph()
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
@@ -1963,7 +1963,7 @@ class TestMergePlacingClick:
         _sm, ctx = self._merge_session(fake_st, graph, path_factory, mock_dem_blue_slope)
 
         # A non-node marker must be rejected (InvalidClickMessage), never crash, never select.
-        handle_merge_placing_click(
+        handle_merge_selecting_click(
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SLOPE, slope_id=slope.id), elevation=None
         )
         assert ctx.merge.node_ids == []
@@ -1971,47 +1971,47 @@ class TestMergePlacingClick:
     def test_second_distinct_node_grows_the_selection(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         # Existing tests select one node or re-click the same one; this exercises the multi-select
         # path — a second DISTINCT node must be appended (the state a real merge always needs).
-        from skiresort_planner.ui.click_handlers import handle_merge_placing_click
+        from skiresort_planner.ui.click_handlers import handle_merge_selecting_click
 
         graph = ResortGraph()
         first, _ = graph.get_or_create_node(lon=0.02, lat=0.03, elevation=2000.0)
         second, _ = graph.get_or_create_node(lon=0.05, lat=0.07, elevation=1950.0)
         sm, ctx = self._merge_session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
 
-        handle_merge_placing_click(
+        handle_merge_selecting_click(
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=first.id), elevation=None
         )
-        handle_merge_placing_click(
+        handle_merge_selecting_click(
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=second.id), elevation=None
         )
         assert ctx.merge.node_ids == [first.id, second.id], "a second distinct node joins the selection"
-        assert sm.is_merge_placing, "selecting nodes keeps us in merge placing"
+        assert sm.is_merge_selecting, "selecting nodes keeps us in merge placing"
 
     def test_stale_node_id_still_toggles_without_crashing(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
     ) -> None:
         # A NODE marker id missing from the graph (deleted-but-still-drawn) must be recorded by the
         # toggle without raising — the selection is a pure id set, robust to a one-frame desync.
-        from skiresort_planner.ui.click_handlers import handle_merge_placing_click
+        from skiresort_planner.ui.click_handlers import handle_merge_selecting_click
 
         sm, ctx = self._merge_session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
 
-        handle_merge_placing_click(
+        handle_merge_selecting_click(
             ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id="GHOST"), elevation=None
         )
         assert ctx.merge.node_ids == ["GHOST"], "the toggle records the id even when the node is gone"
-        assert sm.is_merge_placing, "a stale node id does not crash or leave merge placing"
+        assert sm.is_merge_selecting, "a stale node id does not crash or leave merge placing"
 
-    def test_terrain_reject_stays_in_merge_placing(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
+    def test_terrain_reject_stays_in_merge_selecting(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         # Strengthen the reject path: a rejected terrain click must not just leave the selection
         # empty, it must also NOT navigate away (a regression that fired a cancel/finish would slip
         # past an assertion that only checks node_ids).
-        from skiresort_planner.ui.click_handlers import handle_merge_placing_click
+        from skiresort_planner.ui.click_handlers import handle_merge_selecting_click
 
         sm, ctx = self._merge_session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
-        handle_merge_placing_click(
+        handle_merge_selecting_click(
             ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
             elevation=mock_dem_red_slope_diagonal.get_elevation_or_raise(lon=0.0, lat=0.0),
         )
         assert ctx.merge.node_ids == []
-        assert sm.is_merge_placing, "a rejected terrain click keeps us in merge placing"
+        assert sm.is_merge_selecting, "a rejected terrain click keeps us in merge placing"

@@ -32,7 +32,15 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, ClassVar
 
-from skiresort_planner.constants import ClickConfig, LiftConfig, MapConfig, OSMConfig, OSMImportMode, PathConfig
+from skiresort_planner.constants import (
+    ClickConfig,
+    LiftConfig,
+    MapConfig,
+    OSMConfig,
+    OSMImportMode,
+    PathConfig,
+    SlopeConfig,
+)
 from skiresort_planner.model.path_segment import SegmentKind
 
 if TYPE_CHECKING:
@@ -676,7 +684,7 @@ class PendingContext(BaseContext):
 class MergeContext(BaseContext):
     """Selection state for the manual node-merge tool.
 
-    Holds the node ids the user has clicked while in merge_placing. Clicking a node toggles it
+    Holds the node ids the user has clicked while in merge_selecting. Clicking a node toggles it
     (re-click removes); on confirm the nodes collapse to their median position (see merge_nodes).
     """
 
@@ -695,28 +703,27 @@ class MergeContext(BaseContext):
 
 @dataclass
 class RoutePlanContext(BaseContext):
-    """Route-planner state: the two picked endpoints, the computed routes, and the active filters.
+    """Route-planner state: the two picked endpoints, the precomputed routes, and which cap is shown.
 
-    Flow: click start → start_node_id set; click end → end_node_id set + routes computed; then the
-    difficulty/lift-type filters narrow which of the computed routes are shown. Roads never appear
-    (routing is over the skiable graph only).
+    Flow: click start → start_node_id set; click end → end_node_id set + routes precomputed for EVERY
+    difficulty cap; then selected_cap picks which cap's routes to display. Difficulty is a computation
+    premise, not a post-filter (see model.routing). Roads never appear (skiable graph only).
     """
 
     start_node_id: str | None = None
     end_node_id: str | None = None
-    routes: list[Route] = field(default_factory=list)  # the ≤5 best-by-criterion routes, deduped
-    selected_index: int = 0  # index into the FILTERED routes currently shown
-    filter_max_difficulty: str | None = None  # None = no cap; else a SlopeConfig.DIFFICULTIES band
-    # Lift types allowed on a shown route; all enabled by default (single source: LiftConfig.TYPES).
-    filter_lift_types: dict[str, bool] = field(default_factory=lambda: {t: True for t in LiftConfig.TYPES})
+    routes: list[Route] = field(default_factory=list)  # all precomputed routes across every cap
+    selected_index: int = 0  # index into the shown (selected-cap) routes
+    # Which difficulty cap's precomputed routes to show. Defaults to the hardest band (black) = the
+    # broadest result (every slope allowed). A single source: SlopeConfig.DIFFICULTIES.
+    selected_cap: str = SlopeConfig.DIFFICULTIES[-1]
 
     def clear(self) -> None:
         self.start_node_id = None
         self.end_node_id = None
         self.routes = []
         self.selected_index = 0
-        self.filter_max_difficulty = None
-        self.filter_lift_types = {t: True for t in LiftConfig.TYPES}
+        self.selected_cap = SlopeConfig.DIFFICULTIES[-1]
 
 
 @dataclass

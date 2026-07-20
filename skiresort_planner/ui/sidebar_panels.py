@@ -65,20 +65,6 @@ class SidebarPanel(ABC):
     def controls(self) -> None:
         """Render this state's mode-specific sidebar buttons/sliders (fire actions directly)."""
 
-    def _render_close_panel_button(self) -> None:
-        """The kind-agnostic 'Close Right Panel' button shared by every viewing state's sidebar.
-
-        Fires the shared close_panel event; the SM resolves it to the right per-state transition.
-        """
-        if st.button(
-            "✖️ Close Right Panel",
-            width="stretch",
-            help="Close the right panel to start building",
-            key="close_panel_btn",
-        ):
-            bump_dedup_epoch()  # closing the panel keeps the user's pan (no recenter)
-            self.sm.close_panel()  # type: ignore[attr-defined]  # dynamic python-statemachine event
-
 
 class IdleSidebarPanel(SidebarPanel):
     """idle_ready: no mode-specific controls (mirrors EmptyControlPanel)."""
@@ -88,14 +74,21 @@ class IdleSidebarPanel(SidebarPanel):
 
 
 class ViewingSidebarPanel(SidebarPanel):
-    """idle_viewing_{slope,road,lift}: a kind-agnostic Close Right Panel button.
+    """idle_viewing_{slope,road,lift,route}: one kind-agnostic Close Right Panel button.
 
-    Unlike the right panel (which needs a per-kind EntityKindSpec for stats/delete), the left close
-    button is identical for every viewed kind, so one panel covers all three viewing states.
+    The left close button is identical for every viewed kind (and for the route viewer), so one panel
+    covers them all. Fires the shared close_panel event; the SM resolves it to the right transition.
     """
 
     def controls(self) -> None:
-        self._render_close_panel_button()
+        if st.button(
+            "✖️ Close Right Panel",
+            width="stretch",
+            help="Close the right panel to start building",
+            key="close_panel_btn",
+        ):
+            bump_dedup_epoch()  # closing the panel keeps the user's pan (no recenter)
+            self.sm.close_panel()  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
 
 class PathBuildSidebarPanel(SidebarPanel):
@@ -183,7 +176,7 @@ class LiftSidebarPanel(SidebarPanel):
 
 
 class ImportSidebarPanel(SidebarPanel):
-    """import_placing: the area half-width slider + a Cancel button.
+    """import_selecting: the area half-width slider + a Cancel button.
 
     The slider mirrors slope's Segment Length slider (only visible while placing). Changing it writes
     the new half-width into the deferred state and redraws the box. Confirming happens from the right
@@ -211,7 +204,7 @@ class ImportSidebarPanel(SidebarPanel):
 
 
 class MergeSidebarPanel(SidebarPanel):
-    """merge_placing: a Cancel button (selection count + instructions live on the right panel)."""
+    """merge_selecting: a Cancel button (selection count + instructions live on the right panel)."""
 
     def controls(self) -> None:
         _cancel_button(

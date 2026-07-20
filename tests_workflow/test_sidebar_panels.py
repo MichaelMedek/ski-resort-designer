@@ -225,14 +225,14 @@ class TestImportSidebarPanel:
         sm.start_import(lon=0.0, lat=0.0)
 
         ImportSidebarPanel(sm=sm, ctx=ctx, graph=ResortGraph()).controls()  # no button fired
-        assert sm.is_import_placing and ctx.pending.osm_import_mode is None, "rendering does not confirm the import"
+        assert sm.is_import_selecting and ctx.pending.osm_import_mode is None, "rendering does not confirm the import"
 
 
 class TestMergeSidebarPanel:
     def test_renders_while_placing_without_leaving(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         sm, ctx = _session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
         sm.start_merge()
-        assert sm.is_merge_placing
+        assert sm.is_merge_selecting
 
         MergeSidebarPanel(sm=sm, ctx=ctx, graph=ResortGraph()).controls()  # no button fired
-        assert sm.is_merge_placing, "rendering the merge cancel button does not itself cancel"
+        assert sm.is_merge_selecting, "rendering the merge cancel button does not itself cancel"

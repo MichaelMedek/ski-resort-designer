@@ -299,11 +299,11 @@ class TestMessageHierarchy:
         assert "route" in toast.message.lower()
 
 
-class TestImportPlacingMessages:
+class TestImportSelectingMessages:
     def test_context_shows_center_and_area(self) -> None:
-        from skiresort_planner.model.message import ImportPlacingContextMessage
+        from skiresort_planner.model.message import ImportSelectingContextMessage
 
-        msg = ImportPlacingContextMessage(center_lat=47.05, center_lon=10.32, half_width_km=2.0).message
+        msg = ImportSelectingContextMessage(center_lat=47.05, center_lon=10.32, half_width_km=2.0).message
         assert "47.05" in msg and "10.32" in msg, "center coordinates shown"
         assert "4.0 × 4.0 km" in msg, "half-width 2.0 → 4×4 km area"
 
@@ -316,18 +316,18 @@ class TestImportPlacingMessages:
         assert "center dot" not in msg, "center dot no longer confirms — must not be advertised"
 
 
-class TestMergePlacingMessages:
+class TestMergeSelectingMessages:
     def test_context_zero_selected_prompts_to_click(self) -> None:
-        from skiresort_planner.model.message import MergePlacingContextMessage
+        from skiresort_planner.model.message import MergeSelectingContextMessage
 
-        msg = MergePlacingContextMessage(selected_count=0, span_m=0.0).message
+        msg = MergeSelectingContextMessage(selected_count=0, span_m=0.0).message
         assert "Merge Nodes" in msg
         assert "Click node markers" in msg
 
     def test_context_shows_count_and_span(self) -> None:
-        from skiresort_planner.model.message import MergePlacingContextMessage
+        from skiresort_planner.model.message import MergeSelectingContextMessage
 
-        msg = MergePlacingContextMessage(selected_count=3, span_m=89.0).message
+        msg = MergeSelectingContextMessage(selected_count=3, span_m=89.0).message
         assert "3 node" in msg
         assert "89m" in msg
 

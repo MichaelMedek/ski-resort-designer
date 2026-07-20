@@ -720,16 +720,26 @@ class ConnectivityConfig:
 
 
 class RoutePlannerConfig:
-    """Route planner (model/routing.py + ui route views): overlay colours for the ≤4 shown routes."""
+    """Route planner (model/routing.py + ui route views): overlay colours + line geometry."""
 
-    # One distinct RGBA per route criterion, in RouteCriterion order (fewest-lifts, least-distance,
-    # least-drop, easiest). Coincident routes share the first winning criterion's colour.
+    # One distinct RGBA per route criterion, in RouteCriterion order (fewest-lifts, shortest-slope).
+    # Hues deliberately AVOID every existing map meaning. Semi-transparent so the slope colour shows through.
     ROUTE_COLORS = [
-        [227, 26, 28, 230],  # red
-        [31, 120, 180, 230],  # blue
-        [51, 160, 44, 230],  # green
-        [255, 127, 0, 230],  # orange
+        [0, 200, 210, 150],  # cyan — fewest lifts
+        [240, 200, 20, 150],  # gold — shortest slope
     ]
+
+    # "Shortest slope" is primarily least slope distance; drop is folded in with a light weight so a
+    # gentler descent breaks near-ties (distance and drop are usually the same route anyway).
+    SHORTEST_SLOPE_DROP_WEIGHT = 0.1
+
+    # The route line is drawn WIDER than any slope belt (EarthworkConfig max ≈ 35m) so it reads as an
+    # overlay on top of the pistes, not another run. PathLayer get_width is in metres (deck.gl default).
+    ROUTE_WIDTH_M = 60
+
+    # In 3D, the route floats this far above the terrain/piste points so it hovers clearly above the
+    # slopes and lifts it traces, rather than z-fighting with them.
+    ROUTE_FLOAT_ABOVE_M = 100
 
 
 class OSMConfig:
