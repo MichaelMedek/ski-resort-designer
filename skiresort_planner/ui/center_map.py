@@ -36,7 +36,7 @@ from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.generators.osm_importer import bbox_around
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
-from skiresort_planner.model.path_smoothing import point_at_distance
+from skiresort_planner.model.path_smoothing import point_at_fraction
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 
@@ -424,9 +424,11 @@ class MapRenderer:
         """
         if len(path_points) < 2:
             raise ValueError("flythrough needs at least 2 points")
-        travelled = max(0.0, min(1.0, progress)) * PathPoint.total_length_m(path_points)
-        here = point_at_distance(path_points, travelled)
-        ahead = point_at_distance(path_points, travelled + MapConfig.FLYTHROUGH_LOOKAHEAD_M)
+        travelled = max(0.0, min(1.0, progress))
+        here = point_at_fraction(path_points, travelled)
+        # Look ahead a fixed ground distance (as a fraction of total length) for the bearing.
+        lookahead_frac = MapConfig.FLYTHROUGH_LOOKAHEAD_M / max(PathPoint.total_length_m(path_points), 1.0)
+        ahead = point_at_fraction(path_points, travelled + lookahead_frac)
         bearing = GeoCalculator.initial_bearing_deg(lon1=here.lon, lat1=here.lat, lon2=ahead.lon, lat2=ahead.lat)
         return (here.lat, here.lon, bearing, MapConfig.VIEW_3D_ZOOM, MapConfig.VIEW_3D_PITCH)
 
@@ -435,7 +437,7 @@ class MapRenderer:
         """A single marker at the current flythrough position (arc-length `progress`), floated above the
         terrain so it reads as "you are here" during playback. Stable id so it diffs in place per frame.
         """
-        here = point_at_distance(path_points, max(0.0, min(1.0, progress)) * PathPoint.total_length_m(path_points))
+        here = point_at_fraction(path_points, max(0.0, min(1.0, progress)))
         z = here.elevation + MarkerConfig.PATH_Z_OFFSET_M + RoutePlannerConfig.ROUTE_FLOAT_ABOVE_M
         return pdk.Layer(
             "ScatterplotLayer",

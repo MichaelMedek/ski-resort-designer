@@ -248,6 +248,10 @@ class GeometricTuningConfig:
     # Node weight vs corridor weight in the weighted spline fit.
     NODE_WEIGHT = 10.0  # Smooth spline should mathc very well at nodes
     CORRIDOR_WEIGHT = 1.0  # In between path points are less stricly used for attraction
+    # Shapely Douglas–Peucker tolerance applied after finish-smoothing: drop interior points within this
+    # horizontal distance of the line between kept neighbours. Straight runs collapse (~5x fewer points),
+    # cutting per-rerun render/serialize cost and saved size; 1m is far below the 60m DEM resolution.
+    FINISH_SIMPLIFY_TOLERANCE_M = 1.0
 
 
 class EarthworkConfig:

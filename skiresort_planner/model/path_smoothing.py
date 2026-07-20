@@ -229,10 +229,13 @@ def simplify_path_points(points: list[PathPoint], tolerance_m: float) -> list[Pa
     # LineString in metres about the origin; z carries the elevation so simplify keeps it on survivors.
     line = LineString([((p.lon - lon0) * m_per_deg_lon, (p.lat - lat0) * m_per_deg_lat, p.elevation) for p in points])
     simplified = line.simplify(tolerance_m, preserve_topology=False)
-    return [
+    out = [
         PathPoint(lon=lon0 + x / m_per_deg_lon, lat=lat0 + y / m_per_deg_lat, elevation=z)
         for x, y, z in simplified.coords
     ]
+    # DP always keeps the endpoints; restore the originals so the meter-frame round-trip can't drift them.
+    out[0], out[-1] = points[0], points[-1]
+    return out
 
 
 def point_at_fraction(points: Sequence[PathPoint], fraction: float) -> PathPoint:
