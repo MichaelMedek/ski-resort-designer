@@ -673,11 +673,12 @@ def handle_merge_selecting_click(click_info: ClickInfo, elevation: float | None)
 
 
 def handle_route_placing_click(click_info: ClickInfo, elevation: float | None) -> None:
-    """Handle a click while picking the route's start/end nodes (route_placing).
+    """Handle a click while picking the route's end node (route_placing).
 
-    Routes run node-to-node, so only NODE markers act: clicking the SAME node as the start re-picks
-    it (redraw in place, no transition); clicking a DIFFERENT node sets the end, arms the deferred
-    route computation, and completes to idle_viewing_route. Every other click is an InvalidClickMessage.
+    Routes run node-to-node, so only NODE markers act. Clicking a DIFFERENT node sets the end →
+    point-to-point shortest routes. Clicking the SAME node as the start closes the loop (end == start)
+    → scenic tours of every reachable lift. Either way we arm the deferred compute and complete to
+    idle_viewing_route. Every other click is an InvalidClickMessage.
     """
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
@@ -685,18 +686,17 @@ def handle_route_placing_click(click_info: ClickInfo, elevation: float | None) -
     if click_info.click_type == MapClickType.MARKER and click_info.marker_type == MarkerType.NODE:
         assert click_info.node_id is not None  # Validated in ClickInfo
         clicked = click_info.node_id
-        if clicked == ctx.route_plan.start_node_id:
-            # Re-picking the same node as start is a no-op re-selection; redraw in place.
-            bump_dedup_epoch()
-            trigger_rerun()
-            return
-        logger.debug(f"[ROUTE] End node = {clicked}; computing routes from {ctx.route_plan.start_node_id}")
-        ctx.route_plan.end_node_id = clicked
+        same = clicked == ctx.route_plan.start_node_id
+        logger.debug(
+            f"[ROUTE] End node = {clicked}; {'closed scenic loop' if same else 'point-to-point'} "
+            f"from {ctx.route_plan.start_node_id}"
+        )
+        ctx.route_plan.end_node_id = clicked  # == start for a closed scenic loop
         ctx.pending.route_plan_generation = True  # compute after the rerun (deferred-work pattern)
         sm.complete_route()
         return
 
     InvalidClickMessage(
         action="plan a route",
-        reason="Click a node to set the route end.",
+        reason="Click a node to set the route end (or the SAME node again for a scenic tour of every lift).",
     ).display()

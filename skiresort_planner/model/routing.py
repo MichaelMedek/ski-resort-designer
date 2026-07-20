@@ -1,42 +1,76 @@
 """Route planner — the best A→B ski routes, precomputed per difficulty cap.
 
-Pure model layer (stdlib + numpy + scipy only, like model.connectivity): no streamlit/ui imports, so
-the core is unit-testable without a browser. Difficulty is an HONEST computation input, not a
-post-filter: for each cap (green→black) we prune every slope harder than the cap OUT of the graph and
-recompute, so "shortest path with max red" really is the shortest path over green/blue/red slopes —
-never a harder route hidden by a filter. Under each cap we compute TWO single-objective optima
-(polynomial shortest paths; multi-objective-in-one-path is NP-hard):
+Pure model layer (stdlib + numpy + scipy + networkx only, like model.connectivity): no streamlit/ui
+imports, so the core is unit-testable without a browser. Difficulty is an HONEST computation input, not
+a post-filter: for each cap (green→black) we prune every slope harder than the cap OUT of the graph and
+recompute, so "shortest path with max red" really is the shortest path over green/blue/red slopes.
 
-  - FEWEST_LIFTS   — fewest lift rides.
-  - SHORTEST_SLOPE — least slope distance, with a light drop weight breaking near-ties.
-
-Both are additive scipy-Dijkstra shortest paths on a re-weighted CSR, so all are stable and cycle-safe
-even on bidirectional-lift loops.
+Two route CATEGORIES, per cap:
+  - Point-to-point (start ≠ end): the two shortest optima —
+      FEWEST_LIFTS (fewest lift rides) and SHORTEST_SLOPE (least slope distance + light drop weight).
+      Additive scipy-Dijkstra shortest paths on a re-weighted CSR; stable and cycle-safe.
+  - Scenic closed tour (start == end): visit EVERY reachable lift and return, by the same two metrics
+      (SCENIC_FEWEST_LIFTS / SCENIC_SHORTEST_SLOPE). This is an asymmetric TSP over the reachable lifts
+      (arc-routing → ATSP; Rural-Postman is NP-hard so the ORDER is networkx's approximate ATSP, ~a few %
+      of optimal). COMPLETENESS is exact — every reachable lift is a TSP city — and asserted.
 """
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import cast
 
+import networkx as nx
 import numpy as np
+import numpy.typing as npt
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import dijkstra
 
 from skiresort_planner.constants import RoutePlannerConfig, SlopeConfig
+from skiresort_planner.model.connectivity import component_labels
 from skiresort_planner.model.path_segment import PathSegment
 from skiresort_planner.model.resort_graph import ResortGraph, SkiEdge
 
 _NO_PREDECESSOR = -9999  # scipy dijkstra's "unreachable" sentinel in the predecessor array
+_ATSP_SEED = 20260720  # fixed seed → deterministic scenic tour order (same graph ⇒ same route)
 
 
 class RouteCriterion(StrEnum):
-    """The metric a route is optimal under (reload-safe StrEnum)."""
+    """The metric a route is optimal under (reload-safe StrEnum). The SCENIC_* variants are the
+    closed-tour "visit every lift" category; the others are point-to-point shortest paths.
+    """
 
     FEWEST_LIFTS = "fewest_lifts"
     SHORTEST_SLOPE = "shortest_slope"  # least slope distance (+ light drop weight)
+    SCENIC_FEWEST_LIFTS = "scenic_fewest_lifts"  # closed tour of every reachable lift, fewest rides
+    SCENIC_SHORTEST_SLOPE = "scenic_shortest_slope"  # closed tour of every reachable lift, least slope
+
+    @property
+    def is_scenic(self) -> bool:
+        """Whether this criterion is a scenic visit-every-lift tour (vs a point-to-point shortest path)."""
+        return self in (RouteCriterion.SCENIC_FEWEST_LIFTS, RouteCriterion.SCENIC_SHORTEST_SLOPE)
+
+    @property
+    def base_metric(self) -> "RouteCriterion":
+        """The point-to-point metric a scenic criterion optimises with (its edge weights). Identity for
+        the non-scenic criteria.
+        """
+        if self.is_scenic:
+            if self == RouteCriterion.SCENIC_FEWEST_LIFTS:
+                return RouteCriterion.FEWEST_LIFTS
+            if self == RouteCriterion.SCENIC_SHORTEST_SLOPE:
+                return RouteCriterion.SHORTEST_SLOPE
+            raise ValueError(f"Unexpected {self} for {self.is_scenic=}")
+        return self
 
 
-# The overlay palette must cover every criterion (routes are coloured by criterion index).
-assert len(RoutePlannerConfig.ROUTE_COLORS) == len(RouteCriterion), "ROUTE_COLORS must cover every RouteCriterion"
+# Point-to-point criteria (start ≠ end) and scenic criteria (start == end), in browser/colour order.
+_SHORTEST_CRITERIA = (RouteCriterion.FEWEST_LIFTS, RouteCriterion.SHORTEST_SLOPE)
+_SCENIC_CRITERIA = (RouteCriterion.SCENIC_FEWEST_LIFTS, RouteCriterion.SCENIC_SHORTEST_SLOPE)
+
+# The overlay palette must name a colour for every criterion (routes are coloured by their criterion).
+assert set(RoutePlannerConfig.ROUTE_COLORS) == {c.value for c in RouteCriterion}, (
+    "ROUTE_COLORS must key every RouteCriterion"
+)
 
 
 @dataclass(frozen=True)
@@ -51,12 +85,12 @@ class RouteStep:
 
 @dataclass(frozen=True)
 class Route:
-    """A computed A→B route: the entities to traverse + per-route totals + its computation premise.
+    """A computed route: the entities to traverse + per-route totals + its computation premise.
 
     node_path is the ordered node ids; path_points is the drawable polyline (lon, lat, elevation)
-    following the actual slope geometry (straight across lifts). difficulty_cap is the hardest band
-    ALLOWED when this route was computed (the premise, e.g. "red"); criteria lists every RouteCriterion
-    this exact route wins under that cap (routes are deduped by node_path within a cap).
+    following the actual slope/cable geometry. difficulty_cap is the hardest band ALLOWED when this
+    route was computed (the premise, e.g. "red"); criteria lists every RouteCriterion this exact route
+    wins under that cap. For a scenic tour, scenic_lifts_visited/target report lift coverage.
     """
 
     node_path: tuple[str, ...]
@@ -68,6 +102,20 @@ class Route:
     max_difficulty: str  # hardest slope band actually on the route ("green" if lift-only)
     difficulty_cap: str  # the premise: hardest band allowed when computing this route
     criteria: tuple[RouteCriterion, ...]
+    scenic_lifts_visited: int = 0  # distinct lifts ridden on a scenic tour (0 for point-to-point)
+    scenic_lifts_target: int = 0  # distinct lifts reachable under the cap (== visited: coverage is exact)
+
+    @property
+    def is_scenic(self) -> bool:
+        """Whether this is a scenic visit-every-lift tour (any of its criteria is scenic)."""
+        return any(c.is_scenic for c in self.criteria)
+
+    @property
+    def color(self) -> list[int]:
+        """The overlay RGBA for this route, keyed by its first (representative) criterion — so a colour
+        always means the same metric, regardless of how many routes a cap yields or their order.
+        """
+        return RoutePlannerConfig.ROUTE_COLORS[self.criteria[0].value]
 
 
 def routes_for_cap(routes: list[Route], *, max_difficulty: str) -> list[Route]:
@@ -100,25 +148,45 @@ class RoutePlanner:
                     self._nodes.append(nid)
 
     def best_routes(self, start_node_id: str, end_node_id: str) -> list[Route]:
-        """The optimal A→B routes for every difficulty cap × criterion, deduped within each cap.
+        """The best routes for every difficulty cap, deduped within each cap.
 
-        For each cap (green→black), slopes harder than the cap are pruned from the graph before the
-        shortest-path search, so the result honestly answers "the best route using only slopes up to
-        this band". Empty when the two nodes aren't both in the ski graph.
+        For each cap (green→black), slopes harder than the cap are pruned before search. Two categories:
+        - start ≠ end → the two point-to-point shortest routes (fewest-lifts / shortest-slope).
+        - start == end → the two scenic closed tours visiting every reachable lift and returning.
+        Empty when the two nodes aren't both in the ski graph.
         """
         if start_node_id not in self._index or end_node_id not in self._index:
             return []
         src, dst = self._index[start_node_id], self._index[end_node_id]
+        closed = src == dst
 
         out: list[Route] = []
         for cap in SlopeConfig.DIFFICULTIES:
             by_path: dict[tuple[str, ...], list[RouteCriterion]] = {}
-            for criterion in RouteCriterion:
-                path = self._shortest_path(criterion, src, dst, cap=cap)
-                # A single-node path (start == end reached with no edge) isn't a route — you must move.
+            counts: dict[tuple[str, ...], tuple[int, int]] = {}  # node_path -> (visited, target) for scenic
+            criteria = _SCENIC_CRITERIA if closed else _SHORTEST_CRITERIA
+            for criterion in criteria:
+                path: list[str] | None
+                if criterion.is_scenic:
+                    result = self._scenic_tour(src, cap=cap, criterion=criterion)
+                    path = result[0] if result is not None else None
+                    if result is not None:
+                        counts[tuple(result[0])] = (result[1], result[1])  # closed-tour coverage is exact
+                else:
+                    path = self._shortest_path(criterion, src, dst, cap=cap)
+                # A single-node path (start == end with no edge) isn't a route — you must move.
                 if path is not None and len(path) >= 2:
                     by_path.setdefault(tuple(path), []).append(criterion)
-            out.extend(self._build_route(path, criteria, cap=cap) for path, criteria in by_path.items())
+            out.extend(
+                self._build_route(
+                    path,
+                    crits,
+                    cap=cap,
+                    # Scenic paths MUST have a recorded count (strict); shortest paths carry none.
+                    scenic_counts=counts[path] if any(c.is_scenic for c in crits) else (0, 0),
+                )
+                for path, crits in by_path.items()
+            )
         return out
 
     # --- per-criterion path finding -------------------------------------------------
@@ -131,11 +199,12 @@ class RoutePlanner:
         return self.graph.segments[owner.segment_id]
 
     def _edge_weight(self, criterion: RouteCriterion, owner: SkiEdge) -> float:
-        """Additive edge cost for `criterion`. A tiny epsilon keeps every weight strictly positive
-        (Dijkstra needs non-negative) and makes the search prefer fewer edges on ties.
+        """Additive edge cost for `criterion` (scenic criteria use their base_metric). A tiny epsilon
+        keeps every weight strictly positive (Dijkstra needs non-negative) and prefers fewer edges on ties.
         """
+        metric = criterion.base_metric
         eps = 1e-6
-        if criterion == RouteCriterion.FEWEST_LIFTS:
+        if metric == RouteCriterion.FEWEST_LIFTS:
             return 1.0 if owner.is_lift else eps
         if owner.is_lift:
             return eps
@@ -146,20 +215,33 @@ class RoutePlanner:
         """Whether an edge is allowed under a difficulty cap: lifts always; slopes only up to the cap."""
         return owner.is_lift or SlopeConfig.DIFFICULTIES.index(self._segment_of(owner).difficulty) <= cap_idx
 
-    def _shortest_path(self, criterion: RouteCriterion, src: int, dst: int, *, cap: str) -> list[str] | None:
-        """Shortest path via scipy Dijkstra on a CSR weighted for `criterion`, with slopes harder than
-        `cap` pruned OUT of the graph (so the route is honestly restricted to that band).
+    def _cap_edges(self, cap: str) -> list[tuple[str, str]]:
+        """The edges allowed under `cap` (slopes harder than the cap pruned OUT). Shared by the
+        shortest-path search, the reachable-lift SCC, and the scenic cost matrix.
         """
         cap_idx = SlopeConfig.DIFFICULTIES.index(cap)
-        allowed = [e for e in self._edges if self._within_cap(self._owner[e], cap_idx)]
+        return [e for e in self._edges if self._within_cap(self._owner[e], cap_idx)]
+
+    def _dijkstra(
+        self, criterion: RouteCriterion, src: int, allowed: list[tuple[str, str]]
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.int32]]:
+        """Single-source scipy Dijkstra over `allowed` edges weighted for `criterion`. Returns
+        (dist, pred) arrays over all node indices (dist == inf / pred == sentinel where unreachable).
+        """
         n = len(self._nodes)
         rows = [self._index[a] for a, _ in allowed]
         cols = [self._index[b] for _, b in allowed]
         data = np.array([self._edge_weight(criterion, self._owner[e]) for e in allowed], dtype=np.float64)
         graph = csr_matrix((data, (rows, cols)), shape=(n, n))
-        _dist, pred = dijkstra(graph, directed=True, indices=src, return_predecessors=True)
+        dist, pred = dijkstra(graph, directed=True, indices=src, return_predecessors=True)
+        return cast(npt.NDArray[np.float64], dist), cast(npt.NDArray[np.int32], pred)
+
+    def _shortest_path(self, criterion: RouteCriterion, src: int, dst: int, *, cap: str) -> list[str] | None:
+        """Shortest path via scipy Dijkstra on the cap-pruned graph (route honestly restricted to `cap`)."""
+        _dist, pred = self._dijkstra(criterion, src, self._cap_edges(cap))
         if dst != src and pred[dst] == _NO_PREDECESSOR:
             return None
+        n = len(self._nodes)
         return self._walk_predecessors({i: int(pred[i]) for i in range(n)}, src, dst)
 
     def _walk_predecessors(self, pred: dict[int, int], src: int, dst: int) -> list[str]:
@@ -170,11 +252,127 @@ class RoutePlanner:
         idx_path.reverse()
         return [self._nodes[i] for i in idx_path]
 
+    # --- scenic closed-tour (visit every reachable lift) ----------------------------
+
+    def _reachable_lifts(self, src: int, allowed: list[tuple[str, str]]) -> list[SkiEdge]:
+        """Lifts whose BOTH stations sit in the start node's strongly-connected component of the
+        cap-pruned graph — exactly the lifts you can ride AND still return from (a provable set; a
+        disconnected sub-resort's lifts fall out). Uses the shared SCC primitive (component_labels),
+        the same one get_core_resort/can_loop_back derive from, just seeded from `src` instead of the core.
+        """
+        start_node = self._nodes[src]
+        # Label every ski node in the cap-pruned graph; isolated nodes (start with no allowed edge)
+        # land in their own component → no lift shares it → empty, which is correct.
+        labels = component_labels(self._nodes, allowed, strong=True)
+        scc = labels[start_node]
+        seen: set[str] = set()
+        lifts: list[SkiEdge] = []
+        for a, b in allowed:
+            owner = self._owner[(a, b)]
+            # A lift is "ridden" on its UP edge (start_node→end_node); the down edge is only a connector.
+            if owner.is_lift and owner.entity_id not in seen:
+                lift = self.graph.lifts[owner.entity_id]
+                if labels[lift.start_node_id] == scc and labels[lift.end_node_id] == scc:
+                    seen.add(owner.entity_id)
+                    lifts.append(owner)
+        return lifts
+
+    def _scenic_tour(self, src: int, *, cap: str, criterion: RouteCriterion) -> tuple[list[str], int] | None:
+        """A closed walk from `src` visiting EVERY reachable lift (under `cap`) and returning, ordered
+        near-optimally for `criterion`. Returns (node_path, distinct_lifts_visited) or None if no lift is
+        reachable. Order is networkx's approximate ATSP (Rural-Postman is NP-hard); COMPLETENESS is exact
+        (every reachable lift is a TSP city) and asserted.
+        """
+        allowed = self._cap_edges(cap)
+        lifts = self._reachable_lifts(src, allowed)
+        if not lifts:
+            return None
+        # TSP cities: 0 = start node; city i+1 = lift i (represented by its TOP node, reached by riding up).
+        tops = [self._index[self.graph.lifts[lf.entity_id].end_node_id] for lf in lifts]
+        cities = [src, *tops]
+        bottoms = [src, *[self._index[self.graph.lifts[lf.entity_id].start_node_id] for lf in lifts]]
+        # Asymmetric cost city_i → city_j = shortest cost (city_i → lift_j bottom) + the lift-j ride.
+        big = float(len(allowed) + 1) * 1e9  # sentinel; never chosen (all cities share one SCC)
+        m = len(cities)
+        cost = np.full((m, m), big)
+        ride = {lf.entity_id: self._edge_weight(criterion, lf) for lf in lifts}
+        for i, ci in enumerate(cities):
+            dist, _pred = self._dijkstra(criterion, ci, allowed)  # one sweep serves every target j
+            cost[i][0] = dist[src] if np.isfinite(dist[src]) else big  # return to the anchor (no ride)
+            for j in range(1, m):  # ski to lift-j's bottom, then ride it up
+                d = dist[bottoms[j]]
+                cost[i][j] = (d + ride[lifts[j - 1].entity_id]) if np.isfinite(d) else big
+        cost[np.diag_indices(m)] = 0.0
+        order = self._atsp_order(cost)
+        node_path = self._stitch_tour(order, cities, bottoms, criterion, allowed)
+        visited = {
+            self._owner[(a, b)].entity_id
+            for a, b in zip(node_path, node_path[1:], strict=False)
+            if self._owner[(a, b)].is_lift
+        }
+        required = {lf.entity_id for lf in lifts}
+        assert required <= visited, f"scenic tour dropped reachable lifts: {required - visited}"
+        return node_path, len(required)
+
+    @staticmethod
+    def _atsp_order(cost: npt.NDArray[np.float64]) -> list[int]:
+        """Near-optimal closed-tour visiting order over an asymmetric cost matrix, via networkx's
+        approximate ATSP (threshold-accepting from a greedy start), seeded for determinism. City 0 is
+        the tour anchor. Returns the city sequence (may repeat the anchor at the end).
+        """
+        n = cost.shape[0]
+        weighted_edges = [(i, j, float(cost[i][j])) for i in range(n) for j in range(n) if i != j]
+        g = nx.DiGraph((a, b, {"weight": w}) for a, b, w in weighted_edges)
+        # networkx's approximate-ATSP returns Any; the call is deterministic (seeded greedy init).
+        tour = nx.approximation.traveling_salesman_problem(
+            g,
+            weight="weight",
+            cycle=True,
+            method=lambda gg, weight: nx.approximation.threshold_accepting_tsp(
+                gg, init_cycle="greedy", weight=weight, seed=_ATSP_SEED
+            ),
+        )
+        return cast(list[int], tour)
+
+    def _stitch_tour(
+        self,
+        order: list[int],
+        cities: list[int],
+        bottoms: list[int],
+        criterion: RouteCriterion,
+        allowed: list[tuple[str, str]],
+    ) -> list[str]:
+        """Expand a city visiting order into a real edge walk: for each city hop, ski to the next lift's
+        bottom (shortest path) then ride its UP edge; the anchor city (0) contributes no ride.
+        """
+        node_path: list[str] = [self._nodes[cities[order[0]]]]
+
+        def append_path(a: int, b: int) -> None:
+            _dist, pred = self._dijkstra(criterion, a, allowed)
+            seg = self._walk_predecessors({i: int(pred[i]) for i in range(len(self._nodes))}, a, b)
+            node_path.extend(seg[1:])  # skip the first node (already the current tail)
+
+        for city in order[1:]:
+            if city == 0:  # returning to the anchor: just ski there, no lift
+                append_path(self._index[node_path[-1]], cities[0])
+            else:
+                append_path(self._index[node_path[-1]], bottoms[city])  # ski to lift bottom
+                node_path.append(self._nodes[cities[city]])  # ride the lift UP (bottom→top edge)
+        return node_path
+
     # --- route assembly -------------------------------------------------------------
 
-    def _build_route(self, node_path: tuple[str, ...], criteria: list[RouteCriterion], *, cap: str) -> Route:
+    def _build_route(
+        self,
+        node_path: tuple[str, ...],
+        criteria: list[RouteCriterion],
+        *,
+        cap: str,
+        scenic_counts: tuple[int, int] = (0, 0),
+    ) -> Route:
         """Turn a node path into a Route: map each edge to its owning entity, aggregate stats, and
-        trace the drawable polyline (slope segment geometry oriented per traversal; straight for lifts).
+        trace the drawable polyline (slope segment + lift cable geometry, oriented per traversal).
+        scenic_counts = (visited, target) distinct lifts for a scenic tour; (0, 0) for point-to-point.
         """
         steps: list[RouteStep] = []
         slope_len = slope_drop = 0.0
@@ -194,10 +392,11 @@ class RoutePlanner:
                 lift = self.graph.lifts[owner.entity_id]
                 lift_count += 1
                 steps.append(RouteStep(is_lift=True, entity_id=lift.id, name=lift.name, detail=lift.lift_type))
-                # A lift is a straight line between its two stations.
-                for nid in (a, b):
-                    node = self.graph.nodes[nid]
-                    add_point(node.lon, node.lat, node.elevation)
+                # Trace the actual sagged cable geometry (like slopes trace their segment points), oriented
+                # a→b: cable_points run start_node→end_node; reverse when riding the lift the other way.
+                cable = lift.cable_points if lift.start_node_id == a else list(reversed(lift.cable_points))
+                for p in cable:
+                    add_point(p.lon, p.lat, p.elevation)
             else:
                 seg = self._segment_of(owner)
                 slope_len += seg.length_m
@@ -213,6 +412,7 @@ class RoutePlanner:
                 for p in seg_points:
                     add_point(p.lon, p.lat, p.elevation)
         max_difficulty = SlopeConfig.DIFFICULTIES[hardest_idx] if hardest_idx >= 0 else SlopeConfig.DIFFICULTIES[0]
+        visited, target = scenic_counts
         return Route(
             node_path=node_path,
             path_points=tuple(points),
@@ -223,4 +423,6 @@ class RoutePlanner:
             max_difficulty=max_difficulty,
             difficulty_cap=cap,
             criteria=tuple(criteria),
+            scenic_lifts_visited=visited,
+            scenic_lifts_target=target,
         )

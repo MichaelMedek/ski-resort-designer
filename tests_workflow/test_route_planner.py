@@ -8,9 +8,11 @@ Topologies are built with the shared conftest builders so each route is exact. T
 return values — the chosen node path, the mapped entities, the premise (difficulty_cap), and totals.
 """
 
+from dataclasses import replace
+
 import pytest
 
-from skiresort_planner.constants import LiftType, MapConfig, SlopeConfig
+from skiresort_planner.constants import LiftType, MapConfig, RoutePlannerConfig, SlopeConfig
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import PathSegment, SegmentKind
 from skiresort_planner.model.resort_graph import ResortGraph
@@ -73,7 +75,7 @@ class TestSingleSlopeRoute:
         assert [s.entity_id for s in route.steps] == ["SL1"]
         assert route.lift_count == 0
         assert route.total_slope_drop_m == pytest.approx(600.0)
-        assert set(route.criteria) == set(RouteCriterion)  # wins every criterion
+        assert set(route.criteria) == {RouteCriterion.FEWEST_LIFTS, RouteCriterion.SHORTEST_SLOPE}  # both P2P optima
 
     def test_interior_junction_maps_to_owning_slope(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
         """A route through a slope's mid-chain node still reads as one slope step (not per-segment)."""
@@ -120,9 +122,96 @@ class TestLiftRoutes:
 
         routes = _at_cap(RoutePlanner(empty_graph).best_routes("A", "B"), BLACK)
         won = {c for r in routes for c in r.criteria}
-        assert won == set(RouteCriterion), "both criteria resolve on a cyclic graph"
+        assert won == {RouteCriterion.FEWEST_LIFTS, RouteCriterion.SHORTEST_SLOPE}, (
+            "both P2P criteria resolve on a cycle"
+        )
         fewest = _route_for(routes, RouteCriterion.FEWEST_LIFTS)
         assert fewest.node_path == ("A", "B") and fewest.lift_count == 0, "fewest-lifts takes the direct slope"
+
+    def test_route_follows_lift_cable_geometry_not_straight(
+        self, empty_graph: ResortGraph, dem: MockDEMService
+    ) -> None:
+        """A route crossing a lift traces the sagged cable_points, not a straight chord between stations."""
+        add_node(empty_graph, "Base", 0.0, 0.0, 1400.0)
+        add_node(empty_graph, "Top", 0.0, 500 / M, 2000.0)
+        lift = empty_graph.add_lift(
+            start_node_id="Base", end_node_id="Top", lift_type=LiftType.GONDOLA, dem=dem, name="Gondi"
+        )
+        assert len(lift.cable_points) > 2, "the cable has interior sag points to trace"
+
+        route = _at_cap(RoutePlanner(empty_graph).best_routes("Top", "Base"), BLACK)[0]  # ride down
+        pts = route.path_points
+        # An interior cable point (elevation strictly between the two stations) must appear in the polyline.
+        interior = [p for p in lift.cable_points if 1400.0 < p.elevation < 2000.0]
+        assert interior, "cable has a mid point"
+        assert any((p.lon, p.lat, p.elevation) in pts for p in interior), "route traces the cable, not a chord"
+        # Riding Top→Base reverses the stored Base→Top order: descending elevation overall.
+        assert pts[0][2] > pts[-1][2], "the ride descends Top→Base"
+
+
+def _ladder_scc(graph: ResortGraph, dem: MockDEMService, n_lifts: int) -> None:
+    """A base hub 'B' + n peaks, each reached by a chairlift UP and a slope back DOWN → one SCC through
+    B holding n_lifts lifts (every lift reachable-and-returnable from B).
+    """
+    add_node(graph, "B", 0.0, 0.0, 1400.0)
+    for i in range(1, n_lifts + 1):
+        peak = f"P{i}"
+        add_node(graph, peak, 0.0, (500 * i) / M, 2000.0)
+        graph.add_lift(start_node_id="B", end_node_id=peak, lift_type=LiftType.CHAIRLIFT, dem=dem, name=f"L{i}")
+        add_slope(graph, f"S{i}", top=peak, bottom="B")
+
+
+class TestScenicTour:
+    """Closed-walk 'visit every reachable lift' tours (start == end). Completeness is EXACT (every
+    reachable lift is a TSP city); the ORDER is networkx's approximate ATSP (deterministic via seed).
+    """
+
+    def test_closed_tour_visits_every_reachable_lift_and_returns(
+        self, empty_graph: ResortGraph, dem: MockDEMService
+    ) -> None:
+        _ladder_scc(empty_graph, dem, n_lifts=3)
+        routes = RoutePlanner(empty_graph).best_routes("B", "B")  # closed loop
+        assert routes, "a scenic tour exists"
+        for r in routes:
+            assert r.is_scenic
+            assert r.node_path[0] == r.node_path[-1] == "B", "closed loop returns to start"
+            assert r.scenic_lifts_visited == 3 == r.scenic_lifts_target, "every reachable lift ridden"
+            ridden = {s.entity_id for s in r.steps if s.is_lift}
+            assert ridden == {"L1", "L2", "L3"}, "all three lifts appear as ridden steps"
+
+    def test_open_route_has_no_scenic_only_shortest(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
+        _ladder_scc(empty_graph, dem, n_lifts=2)
+        routes = RoutePlanner(empty_graph).best_routes("B", "P1")  # start != end
+        assert routes, "a point-to-point route exists"
+        assert not any(r.is_scenic for r in routes), "start != end never yields scenic tours"
+
+    def test_scenic_excludes_a_disconnected_sub_resort(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
+        """A lift in a disconnected pocket (no way back to the start's SCC) is NOT in the tour."""
+        _ladder_scc(empty_graph, dem, n_lifts=1)  # B ⇄ P1 via L1
+        # Disconnected pocket: X→Y lift with a down slope among themselves, unreachable from B.
+        add_node(empty_graph, "X", 1.0, 0.0, 1400.0)
+        add_node(empty_graph, "Y", 1.0, 500 / M, 2000.0)
+        empty_graph.add_lift(start_node_id="X", end_node_id="Y", lift_type=LiftType.CHAIRLIFT, dem=dem, name="LX")
+        add_slope(empty_graph, "SX", top="Y", bottom="X")
+
+        routes = RoutePlanner(empty_graph).best_routes("B", "B")
+        for r in routes:
+            ridden = {s.entity_id for s in r.steps if s.is_lift}
+            assert "LX" not in ridden, "the disconnected lift is unreachable → excluded"
+            assert r.scenic_lifts_target == 1, "only L1 is reachable from B"
+
+    def test_scenic_tour_is_deterministic(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
+        _ladder_scc(empty_graph, dem, n_lifts=3)
+        a = RoutePlanner(empty_graph).best_routes("B", "B")
+        b = RoutePlanner(empty_graph).best_routes("B", "B")
+        assert [r.node_path for r in a] == [r.node_path for r in b], "seeded ATSP → identical tours"
+
+    def test_scenic_node_path_is_a_valid_edge_sequence(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
+        _ladder_scc(empty_graph, dem, n_lifts=3)
+        planner = RoutePlanner(empty_graph)
+        for r in planner.best_routes("B", "B"):
+            for a, b in zip(r.node_path, r.node_path[1:], strict=False):
+                assert (a, b) in planner._owner, f"({a},{b}) must be a real graph edge"
 
 
 class TestCriteriaDiverge:
@@ -297,6 +386,32 @@ class TestRoutesForCap:
         red = _mk_route(difficulty_cap="red")
         black = _mk_route(difficulty_cap="black")
         assert routes_for_cap([green, red, black], max_difficulty="red") == [red]
+
+
+class TestRouteColor:
+    """A route's overlay colour is keyed by its criterion, not its list position — so a colour always
+    means the same metric regardless of ordering, and scenic tones stay in their metric's hue family.
+    """
+
+    @staticmethod
+    def _route_with(criterion: RouteCriterion) -> Route:
+        r = _mk_route(difficulty_cap="black")
+        return replace(r, criteria=(criterion,))
+
+    def test_color_is_keyed_by_criterion(self) -> None:
+        for c in RouteCriterion:
+            assert self._route_with(c).color == RoutePlannerConfig.ROUTE_COLORS[c.value]
+
+    def test_scenic_shares_hue_family_with_its_base_metric(self) -> None:
+        # Scenic is a darker tone of the same hue: the dominant RGB channel matches its base metric.
+        for scenic, base in (
+            (RouteCriterion.SCENIC_FEWEST_LIFTS, RouteCriterion.FEWEST_LIFTS),
+            (RouteCriterion.SCENIC_SHORTEST_SLOPE, RouteCriterion.SHORTEST_SLOPE),
+        ):
+            sc = self._route_with(scenic).color
+            bc = self._route_with(base).color
+            assert sc[:3].index(max(sc[:3])) == bc[:3].index(max(bc[:3])), "same dominant channel = same hue"
+            assert sum(sc[:3]) < sum(bc[:3]), "scenic is a DARKER tone than its shortest-path base"
 
     def test_empty_when_no_route_computed_for_that_cap(self) -> None:
         assert routes_for_cap([_mk_route(difficulty_cap="black")], max_difficulty="green") == []

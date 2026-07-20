@@ -1248,13 +1248,13 @@ class MapRenderer:
         """One thick, semi-transparent polyline for the SELECTED route, tracing the actual slope
         geometry. Wider than any slope belt (ROUTE_WIDTH_M) so it reads as an overlay; in 3D it floats
         ROUTE_FLOAT_ABOVE_M above the pistes/lifts it traces. Only the selected route is drawn (others
-        appear as the ◀▶ browser cycles); its colour is keyed to its list position. Empty when none.
+        appear as the ◀▶ browser cycles); its colour is keyed to its criterion. Empty when none.
         """
         if not routes:
             return []
         idx = min(selected_index, len(routes) - 1)
         route = routes[idx]
-        color = RoutePlannerConfig.ROUTE_COLORS[idx % len(RoutePlannerConfig.ROUTE_COLORS)]
+        color = route.color
         # In 3D, hover the line above the terrain; the flat 2D z-offset is unchanged.
         z_offset = MarkerConfig.PATH_Z_OFFSET_M + (RoutePlannerConfig.ROUTE_FLOAT_ABOVE_M if use_3d else 0)
         path = [

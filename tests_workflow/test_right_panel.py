@@ -9,10 +9,12 @@ state change (3D toggle, close panel) is asserted.
 from contextlib import nullcontext
 from typing import Literal
 
+from skiresort_planner.constants import RoutePlannerConfig, StyleConfig
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
+from skiresort_planner.model.routing import RouteStep
 from skiresort_planner.ui.context import BuildMode, EntityKind, PlannerContext
 from skiresort_planner.ui.mode_registry import ENTITY_KIND_SPECS, render_control_panel
 from skiresort_planner.ui.right_panel import (
@@ -21,6 +23,7 @@ from skiresort_planner.ui.right_panel import (
     LiftStatsPanel,
     MergeSelectingControlPanel,
     PathStatsPanel,
+    route_legs,
 )
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
@@ -691,3 +694,52 @@ class TestMergeAndImportPanels:
         assert ctx.pending.osm_import_center_lon is None
         with pytest.raises(RuntimeError, match="requires a placed box center"):
             panel.context_message()
+
+
+class TestRouteLegs:
+    """route_legs collapses a route's flat steps into readable legs (lifts kept, slopes grouped)."""
+
+    @staticmethod
+    def _slope(name: str, difficulty: str) -> RouteStep:
+        return RouteStep(is_lift=False, entity_id=name, name=name, detail=difficulty)
+
+    @staticmethod
+    def _lift(name: str) -> RouteStep:
+        return RouteStep(is_lift=True, entity_id=name, name=name, detail="chairlift")
+
+    def test_lift_is_its_own_leg_with_type_icon(self) -> None:
+        legs = route_legs((self._lift("Gondi"),))
+        assert legs == [f"{StyleConfig.LIFT_ICONS['chairlift']} **Gondi**"]
+
+    def test_consecutive_slopes_fold_into_one_leg(self) -> None:
+        steps = (self._slope("A", "blue"), self._slope("B", "red"))
+        legs = route_legs(steps)
+        assert len(legs) == 1, "two consecutive slopes collapse to a single leg"
+        assert "A" in legs[0] and "B" in legs[0]
+
+    def test_difficulty_shown_as_colour_emoji_not_text(self) -> None:
+        legs = route_legs((self._slope("Steep", "black"),))
+        assert StyleConfig.DIFFICULTY_EMOJIS["black"] in legs[0]
+        assert "black" not in legs[0], "difficulty is the colour emoji, never the '(black)' word"
+
+    def test_more_than_preview_slopes_truncate_with_ellipsis(self) -> None:
+        n = RoutePlannerConfig.ROUTE_STEP_SLOPE_PREVIEW
+        steps = tuple(self._slope(f"S{i}", "blue") for i in range(n + 2))
+        legs = route_legs(steps)
+        assert legs[0].endswith("…"), "a leg with more than the preview count ends with an ellipsis"
+        assert "S0" in legs[0] and f"S{n - 1}" in legs[0]
+        assert f"S{n}" not in legs[0], "slopes beyond the preview count are not named"
+
+    def test_exactly_preview_slopes_have_no_ellipsis(self) -> None:
+        n = RoutePlannerConfig.ROUTE_STEP_SLOPE_PREVIEW
+        legs = route_legs(tuple(self._slope(f"S{i}", "blue") for i in range(n)))
+        assert not legs[0].endswith("…"), "exactly the preview count fits without an ellipsis"
+
+    def test_lift_slope_lift_alternation_splits_legs(self) -> None:
+        steps = (self._lift("Up1"), self._slope("Run", "red"), self._lift("Up2"))
+        legs = route_legs(steps)
+        assert len(legs) == 3, "a lift boundary flushes the slope run into its own leg"
+        assert "Up1" in legs[0] and "Run" in legs[1] and "Up2" in legs[2]
+
+    def test_empty_steps_yield_no_legs(self) -> None:
+        assert route_legs(()) == []

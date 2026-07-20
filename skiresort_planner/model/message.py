@@ -708,11 +708,17 @@ class RoutePlacingContextMessage(InfoMessage):
 
 @dataclass(frozen=True)
 class RoutePlacingActionMessage(WarningMessage):
-    """RIGHT panel (yellow): instruction to click the end node (mirrors LiftActionMessage)."""
+    """RIGHT panel (yellow): instruction to click the end node — a DIFFERENT node for shortest routes,
+    or the SAME start node again for a scenic tour of every reachable lift.
+    """
 
     @property
     def message(self) -> str:
-        return "🏁 **Select End Node**\n\n- 👆 Click another **node** to finish the route."
+        return (
+            "🏁 **Select End Node**\n\n"
+            "- 👆 Click another **node** for the fastest routes there.\n"
+            "- 🔁 Click the **same start node** again for a scenic tour of every lift, back to start."
+        )
 
 
 @dataclass(frozen=True)

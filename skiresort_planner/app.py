@@ -26,12 +26,10 @@ from skiresort_planner.generators.path_factory import PathFactory
 from skiresort_planner.logging_setup import configure_logging
 from skiresort_planner.model.message import (
     ClickingDisabledIn3DToast,
-    CustomPathComputingToast,
     DEMLoadingMessage,
     Message,
     OSMImportErrorMessage,
     OSMImportLoadingMessage,
-    RouteComputingToast,
     SizingMapMessage,
     ToastMessage,
     WarningToast,
@@ -453,11 +451,11 @@ def _run_app_ui() -> None:
         )
         return  # slow helper reframed/warned + reran; skip the normal UI this render
     if ctx.pending.custom_connect:
-        run_pending_action(cue=CustomPathComputingToast(), work=process_custom_connect_pending)
+        run_pending_action(cue=None, work=process_custom_connect_pending)  # vectorized, no cue
     elif ctx.pending.fan_generation:
         run_pending_action(cue=None, work=process_path_generation_pending)  # fast — no cue needed
     elif ctx.pending.route_plan_generation:
-        run_pending_action(cue=RouteComputingToast(), work=process_route_plan_pending)  # scipy shortest paths
+        run_pending_action(cue=None, work=process_route_plan_pending)  # scipy shortest paths, no cue
 
     # Sidebar (fire-and-forget: its panels call actions directly on button clicks)
     sidebar = SidebarRenderer(state_machine=sm, context=ctx, graph=graph)

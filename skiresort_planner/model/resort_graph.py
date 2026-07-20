@@ -15,10 +15,11 @@ Reference: DETAILS.md
 import copy
 import logging
 import statistics
-from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, NamedTuple, TypedDict, cast
+
+import networkx as nx
 
 from skiresort_planner.constants import (
     ConnectivityConfig,
@@ -1401,53 +1402,36 @@ class ResortGraph:
     def greatest_descent(self) -> GreatestDescent:
         """Greatest continuous ski descent skiable top-to-bottom without riding a lift (max vertical drop).
 
-        Globally-optimal DAG longest-path (Kahn topological order → exact DP, not greedy), MAXIMISING
-        vertical drop, tie-broken by horizontal length. Slope-segment edges only (no lifts/roads).
-        A cycle in the slopes-only graph means a wrong-direction segment — asserts rather than looping.
-        Returns zeros when there are no slopes.
+        Standard DAG longest-path (networkx.dag_longest_path) weighted by each edge's vertical drop
+        (elev[start] − elev[end]). Slope-segment edges only (no lifts/roads). Returns zeros when there
+        are no slopes; dag_longest_path raises on a cycle (a segment pointing uphill).
+
+        A descent's drop is endpoint-determined and telescopes, so two segments between the same node
+        pair carry the SAME drop — collapsing them is harmless; we keep the longer one only so the
+        reported length reflects the actual piste travelled.
         """
-        # Slope-segment edges only: node -> [(to, length, drop)]. Roads/lifts excluded.
-        adj: dict[str, list[tuple[str, float, float]]] = {}
-        indeg: dict[str, int] = {}
+        # Dedup parallel segments (same drop) to the longest, so the reported length is the real piste.
+        edges: dict[tuple[str, str], float] = {}
         for slope in self.slopes.values():
             for sid in slope.segment_ids:
                 seg = self.segments[sid]
-                adj.setdefault(seg.start_node_id, []).append((seg.end_node_id, seg.length_m, seg.total_drop_m))
-                indeg[seg.end_node_id] = indeg.get(seg.end_node_id, 0) + 1
-                indeg.setdefault(seg.start_node_id, indeg.get(seg.start_node_id, 0))
-        if not indeg:
+                key = (seg.start_node_id, seg.end_node_id)
+                edges[key] = max(edges.get(key, 0.0), seg.length_m)
+        if not edges:
             return GreatestDescent(drop_m=0.0, length_m=0.0, top_elev_m=0.0, bottom_elev_m=0.0)
 
-        # Kahn topological order: pop in-degree-0 nodes; a valid order guarantees each node's best-
-        # descent-so-far is final before it is extended. Fewer popped than total ⇒ a cycle exists.
-        queue = deque(nid for nid, d in indeg.items() if d == 0)
-        topo: list[str] = []
-        remaining = dict(indeg)
-        while queue:
-            nid = queue.popleft()
-            topo.append(nid)
-            for to, _length, _drop in adj.get(nid, []):
-                remaining[to] -= 1
-                if remaining[to] == 0:
-                    queue.append(to)
-        assert len(topo) == len(indeg), "slopes-only graph has a cycle — a segment points uphill"
-
-        # best[node] = (drop, length, top_node) of the deepest descent ENDING at node; maximise drop,
-        # tie-break length. top_node is carried so the winner's elevation range can be reported.
-        best: dict[str, tuple[float, float, str]] = {nid: (0.0, 0.0, nid) for nid in indeg}
-        for nid in topo:
-            base_drop, base_len, base_top = best[nid]
-            for to, length, drop in adj.get(nid, []):
-                cand = (base_drop + drop, base_len + length, base_top)
-                if cand[:2] > best[to][:2]:  # compare (drop, length) lexicographically
-                    best[to] = cand
-        end_node = max(best, key=lambda nid: best[nid][:2])
-        drop_m, length_m, top_node = best[end_node]
+        dag = nx.DiGraph(
+            (u, v, {"drop": self.nodes[u].elevation - self.nodes[v].elevation, "length": length})
+            for (u, v), length in edges.items()
+        )
+        path = nx.dag_longest_path(dag, weight="drop")  # raises NetworkXUnfeasible on a cycle
+        top, bottom = path[0], path[-1]
+        length_m = sum(dag.edges[u, v]["length"] for u, v in zip(path, path[1:], strict=False))
         return GreatestDescent(
-            drop_m=drop_m,
+            drop_m=self.nodes[top].elevation - self.nodes[bottom].elevation,
             length_m=length_m,
-            top_elev_m=self.nodes[top_node].elevation,
-            bottom_elev_m=self.nodes[end_node].elevation,
+            top_elev_m=self.nodes[top].elevation,
+            bottom_elev_m=self.nodes[bottom].elevation,
         )
 
     def get_stats(self) -> ResortStats:

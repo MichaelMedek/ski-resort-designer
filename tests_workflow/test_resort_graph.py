@@ -2041,3 +2041,32 @@ class TestResortStats:
         descent = graph.greatest_descent()
         assert descent.drop_m == pytest.approx(800.0), "picks the deeper plunge, not the longer traverse"
         assert descent.bottom_elev_m == pytest.approx(1200.0)
+
+    def test_greatest_descent_parallel_segments_report_longer_piste(self, empty_graph) -> None:
+        """Two slope segments sharing the SAME (start, end) node pair have the SAME drop (drop is
+        endpoint-determined); the descent reports the LONGER one's length (the real piste travelled).
+        """
+        graph = empty_graph
+        for nid, elev in (("A", 2000.0), ("B", 1500.0)):
+            graph.nodes[nid] = Node(id=nid, location=PathPoint(lon=0.0, lat=0.0, elevation=elev))
+        top = PathPoint(lon=0.0, lat=0.0, elevation=2000.0)
+        # Both run A→B (identical 500m drop) but different geometry: a straight short one and a winding
+        # longer one. Insert the SHORTER last to prove the longer length is kept, not last-inserted.
+        for sid, bot in (
+            ("Slong", PathPoint(lon=0.02, lat=-0.02, elevation=1500.0)),
+            ("Sshort", PathPoint(lon=0.0, lat=-0.005, elevation=1500.0)),
+        ):
+            graph.segments[sid] = PathSegment(
+                id=sid,
+                name=sid,
+                start_node_id="A",
+                end_node_id="B",
+                kind=SegmentKind.SLOPE,
+                points=[top, bot],
+            )
+        graph.slopes["SLl"] = Slope(id="SLl", name="l", segment_ids=["Slong"], start_node_id="A", end_node_id="B")
+        graph.slopes["SLs"] = Slope(id="SLs", name="s", segment_ids=["Sshort"], start_node_id="A", end_node_id="B")
+
+        descent = graph.greatest_descent()
+        assert descent.drop_m == pytest.approx(500.0), "drop is endpoint-determined, identical for both"
+        assert descent.length_m == pytest.approx(graph.segments["Slong"].length_m), "reports the longer piste"

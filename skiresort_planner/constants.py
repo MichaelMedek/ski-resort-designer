@@ -722,12 +722,16 @@ class ConnectivityConfig:
 class RoutePlannerConfig:
     """Route planner (model/routing.py + ui route views): overlay colours + line geometry."""
 
-    # One distinct RGBA per route criterion, in RouteCriterion order (fewest-lifts, shortest-slope).
-    # Hues deliberately AVOID every existing map meaning. Semi-transparent so the slope colour shows through.
-    ROUTE_COLORS = [
-        [0, 200, 210, 150],  # cyan — fewest lifts
-        [240, 200, 20, 150],  # gold — shortest slope
-    ]
+    # RGBA per route criterion, keyed by RouteCriterion's string value.
+    # Hue = the metric (cyan = fewest lifts, gold = shortest slope); the SCENIC tour of each metric
+    # is a DARKER tone of the same hue, so path length alone reads shortest-vs-scenic. Semi-transparent so
+    # the slope colour shows through. model/routing.py asserts this covers every RouteCriterion.
+    ROUTE_COLORS = {
+        "fewest_lifts": [0, 200, 210, 150],  # bright cyan
+        "shortest_slope": [240, 200, 20, 150],  # bright gold
+        "scenic_fewest_lifts": [0, 110, 120, 170],  # deep teal — cyan, darker tone
+        "scenic_shortest_slope": [150, 120, 10, 170],  # dark amber — gold, darker tone
+    }
 
     # "Shortest slope" is primarily least slope distance; drop is folded in with a light weight so a
     # gentler descent breaks near-ties (distance and drop are usually the same route anyway).
@@ -740,6 +744,10 @@ class RoutePlannerConfig:
     # In 3D, the route floats this far above the terrain/piste points so it hovers clearly above the
     # slopes and lifts it traces, rather than z-fighting with them.
     ROUTE_FLOAT_ABOVE_M = 100
+
+    # Route Steps groups the slopes between two lifts into one leg; a leg names at most this many slopes,
+    # then a trailing "…" if it has more. Keeps the step list short, especially on scenic tours.
+    ROUTE_STEP_SLOPE_PREVIEW = 3
 
 
 class OSMConfig:

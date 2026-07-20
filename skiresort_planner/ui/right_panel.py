@@ -15,6 +15,7 @@ Design Principles:
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
+from itertools import groupby
 from typing import TYPE_CHECKING, Literal
 
 import streamlit as st
@@ -60,12 +61,30 @@ if TYPE_CHECKING:
     from skiresort_planner.model.message import Message
     from skiresort_planner.model.proposed_path import ProposedPathSegment
     from skiresort_planner.model.road import Road
-    from skiresort_planner.model.routing import Route
+    from skiresort_planner.model.routing import Route, RouteStep
     from skiresort_planner.model.segment_path import SegmentPath
     from skiresort_planner.model.slope import Slope
     from skiresort_planner.ui.mode_registry import EntityKindSpec
 
 logger = logging.getLogger(__name__)
+
+
+def route_legs(steps: "tuple[RouteStep, ...]") -> list[str]:
+    """Collapse a route's flat step list into readable legs: each lift is its own leg; consecutive
+    slopes between lifts fold into ONE leg naming up to ROUTE_STEP_SLOPE_PREVIEW of them (colour-emoji
+    per difficulty, not "(black)" text), then "…" if more. Keeps the list short on scenic tours.
+    """
+    legs: list[str] = []
+    for is_lift, group in groupby(steps, key=lambda s: s.is_lift):
+        run = list(group)
+        if is_lift:
+            legs.extend(f"{StyleConfig.LIFT_ICONS[s.detail]} **{s.name}**" for s in run)
+        else:
+            preview = run[: RoutePlannerConfig.ROUTE_STEP_SLOPE_PREVIEW]
+            named = " · ".join(f"{StyleConfig.DIFFICULTY_EMOJIS[s.detail]} {s.name}" for s in preview)
+            tail = " …" if len(run) > len(preview) else ""
+            legs.append(f"{StyleConfig.SLOPE_ICON} {named}{tail}")
+    return legs
 
 
 def _render_connectivity_warnings(graph: ResortGraph, start_node_id: str, end_node_id: str, noun: str) -> None:
@@ -681,12 +700,15 @@ class RouteViewingControlPanel(ControlPanel):
         """
         idx = min(self.ctx.route_plan.selected_index, len(routes) - 1)
         route = routes[idx]
-        # Colour swatch matching the map line (route colour is keyed by list position, as drawn).
-        rgba = RoutePlannerConfig.ROUTE_COLORS[idx % len(RoutePlannerConfig.ROUTE_COLORS)]
+        # Colour swatch matching the map line (keyed by the route's criterion, as drawn).
+        rgba = route.color
         swatch = f"<span style='color:rgb({rgba[0]},{rgba[1]},{rgba[2]})'>⬤</span>"
         won = ", ".join(c.value.replace("_", " ") for c in route.criteria)
         # e.g. "⬤ Best for: shortest slope · max red" — the colour ties to the map, the cap is the premise.
         st.markdown(f"{swatch} 🏅 **Best for:** {won} · max **{route.difficulty_cap}**", unsafe_allow_html=True)
+        if route.is_scenic:
+            # A scenic tour visits every reachable lift under the cap (coverage is exact).
+            st.caption(f"🎿 Visits all {route.scenic_lifts_visited} reachable lift(s), back to the start.")
         col1, col2 = st.columns(2)
         with col1:
             st.metric("Slope Length", f"{route.total_slope_length_m / 1000:.2f}km")
@@ -696,10 +718,8 @@ class RouteViewingControlPanel(ControlPanel):
             emoji = StyleConfig.DIFFICULTY_EMOJIS[route.max_difficulty]
             st.metric("Max Difficulty", f"{emoji} {route.max_difficulty.capitalize()}")
         with st.expander("📋 Route Steps", expanded=False):
-            for i, step in enumerate(route.steps, 1):
-                icon = StyleConfig.LIFT_ICONS[step.detail] if step.is_lift else StyleConfig.SLOPE_ICON
-                kind = "lift" if step.is_lift else step.detail
-                st.markdown(f"{i}. {icon} **{step.name}** ({kind})")
+            for i, leg in enumerate(route_legs(route.steps), 1):
+                st.markdown(f"{i}. {leg}")
 
 
 def _render_proposal_browser(ctx: PlannerContext, *, key_prefix: str, noun: str) -> None:
