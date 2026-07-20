@@ -23,7 +23,7 @@ Output is an ImportGraph the ResortGraph materializes with shared nodes as one u
 
 import logging
 import math
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,7 +34,7 @@ import numpy.typing as npt
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import dijkstra
 from scipy.spatial import cKDTree
-from shapely import STRtree, distance, get_parts, line_interpolate_point, line_merge, set_precision
+from shapely import STRtree, distance, line_interpolate_point, line_merge, set_precision
 from shapely.geometry import LineString, MultiLineString, Point
 from shapely.ops import substring, unary_union
 
@@ -71,6 +71,7 @@ class SlopeRun:
     node_b: int
     name: str | None = None
     fabricated: list[bool] = field(default_factory=list)  # per-point: True where the point off source OSM piste
+    difficulty: str = ""  # steepest-section band, set in _group_slopes (single source for the app's classifier)
 
 
 @dataclass
@@ -111,15 +112,27 @@ class ImportGraph:
     def to_slope_chains(self) -> list[tuple[list[list[PathPoint]], str | None]]:
         """Convert named piste segments into linear app-slopes ready for display, each a contiguous point-list.
         Each ImportSlope's runs decompose by longest-path into linear chains, split at interior lift nodes
-        (R37) so lifts end slopes; names shared by several chains are disambiguated with a (k) suffix (R38).
+        (R37) and at avoidable difficulty junctions (R39); names shared by several chains get a (k) suffix (R38).
         """
         elev = {k: v.elevation for k, v in self.node_points.items()}
         lift_nodes = OSMGraphBuilder._lift_nodes(self)
+        rank = {d: i for i, d in enumerate(SlopeConfig.DIFFICULTIES)}
+        # Avoidable junctions: non-lift nodes with degree≥3 over slope runs + lifts — a skier can enter
+        # after / leave before a steep pitch there, so a harder section behind one is over-classification.
+        deg: Counter[int] = Counter()
+        for r in self.slope_runs:
+            deg[r.node_a] += 1
+            deg[r.node_b] += 1
+        for lf in self.lifts:
+            deg[lf.node_a] += 1
+            deg[lf.node_b] += 1
+        avoidable = {n for n, d in deg.items() if d >= 3} - lift_nodes
         chained: list[tuple[list[SlopeRun], str | None]] = []
         for sl in self.slopes:
             for chain in _linear_chains([self.slope_runs[ri] for ri in sl.run_indices], elev):
                 for piece in _split_chain_at_lifts(chain, lift_nodes):
-                    chained.append((piece, sl.name))
+                    for sub in _split_chain_at_difficulty(piece, avoidable, rank):
+                        chained.append((sub, sl.name))
         # R38: disambiguate names shared by >1 app-slope with a 1-based (k) suffix (bare when unique).
         counts: dict[str, int] = defaultdict(int)
         for _piece, nm in chained:
@@ -194,6 +207,26 @@ def _split_chain_at_lifts(chain: list[SlopeRun], lift_nodes: set[int]) -> list[l
         shared = {prev.node_a, prev.node_b} & {cur.node_a, cur.node_b}
         if shared and next(iter(shared)) in lift_nodes:
             pieces.append([cur])  # break the chain at the lift junction
+        else:
+            pieces[-1].append(cur)
+    return pieces
+
+
+def _split_chain_at_difficulty(
+    chain: list[SlopeRun], avoidable: set[int], rank: dict[str, int]
+) -> list[list[SlopeRun]]:
+    """Split a run-chain where a harder section can be AVOIDED via a degree≥3 junction. Cut between two
+    runs of differing difficulty band whose shared node is an avoidable junction and the harder band is
+    red/black — so a skier can enter after / leave before the steep pitch instead of over-classifying the
+    whole slope. Never merges across a cut. Returns ≥1 contiguous sub-chains.
+    """
+    red = rank["red"]
+    pieces: list[list[SlopeRun]] = [[chain[0]]] if chain else []
+    for prev, cur in zip(chain, chain[1:], strict=False):
+        shared = {prev.node_a, prev.node_b} & {cur.node_a, cur.node_b}
+        harder = max(rank[prev.difficulty], rank[cur.difficulty])
+        if shared and next(iter(shared)) in avoidable and prev.difficulty != cur.difficulty and harder >= red:
+            pieces.append([cur])  # peel the harder section at the avoidable junction
         else:
             pieces[-1].append(cur)
     return pieces
@@ -355,10 +388,15 @@ class OSMGraphBuilder:
         logger.debug(f"[IMPORT] merge: {before} → {len(graph.slope_runs)} runs (fork/twin/degree-2 collapse)")
 
         on_progress(0.8, "Removing duplicate runs…")
-        # Cross-pair coverage dedup of near-duplicates, then re-prune any dead-end / isolated run (R2).
-        self._dedup_final_runs(graph)
-        self._prune_dead_end_slopes(graph)
-        self._drop_isolated_slopes(graph)
+        self._dedup_final_runs(graph)  # cross-pair coverage dedup (R2)
+        self._reclean_after_drop(graph)
+        # Drop twins LAST: a twin only hugs its sibling over its full length once the earlier passes
+        # settle the topology (R34). No reachability re-run — the drop is already stranding-guarded, and
+        # re-running it re-drapes runs and cascades new orphans.
+        before_twin = len(graph.slope_runs)
+        self._drop_parallel_twins(graph)
+        if len(graph.slope_runs) != before_twin:
+            self._reclean_after_drop(graph)
         logger.debug(f"[IMPORT] dedup-final: {len(graph.slope_runs)} runs, {len(graph.node_points)} nodes")
 
         on_progress(0.9, "Grouping into slopes…")
@@ -907,6 +945,8 @@ class OSMGraphBuilder:
         band = SlopeConfig.DIFFICULTIES  # ["green","blue","red","black"], ascending
         rank = {d: i for i, d in enumerate(band)}
         run_diff = [TerrainAnalyzer.classify_difficulty(slope_pct=self._run_max_slope_pct(r)) for r in runs]
+        for r, d in zip(runs, run_diff, strict=True):
+            r.difficulty = d  # single source: the app re-derives the same band per split piece downstream
 
         # 1) named groups
         by_name = self._group_runs_by_name(runs)
@@ -968,9 +1008,11 @@ class OSMGraphBuilder:
             A node below every lift base is a valley terminus and is excluded (not stranded).
             """
             good = self._hubs_reaching_lift(g, lift_nodes)
+            # sorted() so seed order is deterministic: each seed mutates the graph in _reconnect_pass,
+            # so a hash-ordered set iteration would make build() output depend on PYTHONHASHSEED.
             return [
                 (n, good)
-                for n in {a for r in g.slope_runs for a in (r.node_a, r.node_b)}
+                for n in sorted({a for r in g.slope_runs for a in (r.node_a, r.node_b)})
                 if n not in good and n not in lift_nodes and elev[n] > min_lift_base
             ]
 
@@ -995,7 +1037,7 @@ class OSMGraphBuilder:
             """
             reachable = self._skier_reachable(g, elev)
             tops = {(r.node_a if elev[r.node_a] >= elev[r.node_b] else r.node_b) for r in g.slope_runs} - reachable
-            return [(t, reachable) for t in tops]
+            return [(t, reachable) for t in sorted(tops)]  # sorted → deterministic seed order (see down_sinks)
 
         self._reconnect_pass(graph, down_sinks, segments, hubs, premerge, want_higher=False)
         self._reconnect_pass(graph, own_base, segments, hubs, premerge, want_higher=False)
@@ -1238,6 +1280,18 @@ class OSMGraphBuilder:
             if elev is not None:
                 pts[i] = PathPoint(lon=lon, lat=lat, elevation=elev)
 
+    def _reclean_after_drop(self, graph: ImportGraph) -> None:
+        """Re-settle topology after runs were removed, to a fixpoint (each step feeds the next). The one
+        shared post-drop cleanup, so the build() drop sites can't drift in ordering.
+        """
+        while True:
+            before = len(graph.slope_runs)
+            self._prune_dead_end_slopes(graph)  # removed run → dangling degree-1 neighbour (R22)
+            self._collapse_degree2_nodes(graph)  # removal turns a degree-3 junction into a pass-through (R36)
+            self._drop_isolated_slopes(graph)  # prune/collapse can sever a component from every lift (R4)
+            if len(graph.slope_runs) == before:
+                return
+
     def _prune_dead_end_slopes(self, graph: ImportGraph) -> None:
         """Iteratively drop any slope with a degree-1 non-lift endpoint (R22 frozen rule: every
         slope endpoint must connect onward — vertex of another segment or lift). Repeat to
@@ -1295,12 +1349,17 @@ class OSMGraphBuilder:
         if not self._valid_pull_shape(pts, source_union):
             graph.dropped_isolated += 1
             return None
-        # Match R12 exactly: ≤15% of points may lie >45 m from the nearest source-piste VERTEX. A
-        # connector that pushes a run past this is invented geometry — drop it rather than keep off-piste.
+        # Match R12 exactly: ≤15% of points may lie >PISTE_VERTEX_TOL_M from the nearest source-piste
+        # VERTEX. A connector that pushes a run past this is invented geometry — drop it rather than keep
+        # off-piste. Per-point STRtree.nearest (library call): query_nearest's vectorized array diverges
+        # on ties, so the scalar nearest is the bit-exact match for the R12 validator.
         if self._vtree is not None:
-            qs = np.array([Point(self._to_m(p.lon, p.lat)) for p in pts], dtype=object)
-            dists = self._vtree.query_nearest(qs, return_distance=True)[1]  # vectorized nearest-vertex dist
-            if int(np.count_nonzero(dists > 45.0)) / len(pts) > 0.15:
+            off = 0
+            for p in pts:
+                q = Point(self._to_m(p.lon, p.lat))
+                if q.distance(self._piste_vertices[self._vtree.nearest(q)]) > OSMConfig.PISTE_VERTEX_TOL_M:
+                    off += 1
+            if off / len(pts) > 0.15:
                 graph.dropped_isolated += 1
                 return None
         # A real piste descends monotonically; the run keeps its real DEM elevations. DEM point-sampling
@@ -1351,8 +1410,8 @@ class OSMGraphBuilder:
 
     def _drop_parallel_twins(self, graph: ImportGraph) -> None:
         """Drop redundant parallel twins (R34): runs that hug a longer same-named sibling within
-        the 18–60m band for ≥85% of their own length (one wide piste drawn as two offset
-        ribbons). Reachability-guarded, iterated to fixpoint.
+        the DEDUP_TOL_M–PARALLEL_TOL_M band for ≥PARALLEL_TWIN_FRAC of their own length (one wide piste
+        drawn as two offset ribbons). Reachability-guarded, iterated to fixpoint.
         """
         lo, hi, frac = OSMConfig.DEDUP_TOL_M, OSMConfig.PARALLEL_TOL_M, OSMConfig.PARALLEL_TWIN_FRAC
 
@@ -1373,26 +1432,32 @@ class OSMGraphBuilder:
         frac: float,
         keep_unsafe: set[int],
     ) -> int | None:
-        """Index of a run that is a redundant parallel twin of a longer same-named sibling, or
-        None. A twin hugs the sibling within the lo–hi OFFSET band contiguously for ≥frac of its own
-        length; safe-blocked runs and unnamed runs are skipped.
+        """Index of a run that is a redundant parallel twin of a longer same-named sibling, or None. A
+        twin hugs the sibling within the lo–hi OFFSET band contiguously for ≥frac of its own length;
+        safe-blocked and unnamed runs are skipped.
+
+        Per-VERTEX nearest distance (cKDTree), not a shapely buffer band: point-to-line ≤ point-to-vertex
+        pulls near vertices below `lo`, so a band would undercount the in-band arc.
         """
-        lines = [LineString(a) if len(a) > 1 else None for a in pm]
+        trees = [cKDTree(a) if len(a) > 1 else None for a in pm]
         for i in range(len(runs)):
-            li = lines[i]
-            if id(runs[i]) in keep_unsafe or plen[i] == 0 or not runs[i].name or li is None:
+            ai = pm[i]
+            if id(runs[i]) in keep_unsafe or plen[i] == 0 or not runs[i].name or len(ai) < 2:
                 continue
+            seg = np.hypot(*(ai[1:] - ai[:-1]).T)  # arc length between consecutive twin vertices
             for j in range(len(runs)):
-                lj = lines[j]
-                if i == j or lj is None or runs[i].name != runs[j].name or plen[i] > plen[j]:
+                tj = trees[j]
+                if i == j or tj is None or runs[i].name != runs[j].name or plen[i] > plen[j]:
                     continue
-                # Offset band = points between lo and hi of the sibling (buffer(hi) minus buffer(lo));
-                # the twin's longest CONTIGUOUS arc inside it, via shapely intersection, must be ≥ frac.
-                band = lj.buffer(hi).difference(lj.buffer(lo))
-                inband = li.intersection(band)
-                # get_parts splits a single/multi result uniformly; the longest contiguous arc must be ≥frac.
-                longest = max((p.length for p in get_parts(inband) if p.geom_type == "LineString"), default=0.0)
-                if longest >= frac * plen[i]:
+                # Longest CONTIGUOUS in-band arc: a leg into vertex k counts iff k is in the offset band;
+                # a run of in-band vertices resets at any out-of-band break. The largest run-sum ≥ frac.
+                d, _ = tj.query(ai, k=1)
+                inband = (d > lo) & (d <= hi)
+                contrib = np.zeros(len(ai))
+                contrib[1:] = np.where(inband[1:], seg, 0.0)  # leg (k-1→k) counts when k is in-band
+                grp = np.cumsum(~inband)  # group id bumps at every out-of-band vertex (the reset)
+                best = max((contrib[inband & (grp == g)].sum() for g in np.unique(grp[inband])), default=0.0)
+                if best >= frac * plen[i]:
                     return i
         return None
 
@@ -1579,7 +1644,7 @@ class OSMGraphBuilder:
             victim = next(
                 (
                     n
-                    for n in g.nodes
+                    for n in sorted(g.nodes)  # deterministic victim order (each collapse mutates the graph)
                     if n not in lift_nodes
                     and g.degree(n) == 2
                     and len({d["ri"] for _, _, d in g.edges(n, data=True)}) == 2
