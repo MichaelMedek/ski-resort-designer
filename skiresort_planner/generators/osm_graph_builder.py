@@ -54,6 +54,7 @@ from skiresort_planner.generators.osm_importer import (
 )
 from skiresort_planner.model.connectivity import component_labels
 from skiresort_planner.model.path_point import PathPoint
+from skiresort_planner.model.path_segment import PathSegment
 
 logger = logging.getLogger(__name__)
 
@@ -891,34 +892,11 @@ class OSMGraphBuilder:
                 r.name = names[best]
 
     def _run_max_slope_pct(self, run: SlopeRun) -> float:
-        """Steepest-section slope magnitude (%) rolled over ROLLING_WINDOW_M — the same metric the app's
-        difficulty classifier uses, so an imported run's band matches a hand-drawn one. Falls back to the
-        average grade on a run shorter than the window, where a rolling window has no room.
+        """Steepest-section slope magnitude (%) of a run, via the PRODUCTION PathSegment.max_slope_pct —
+        the exact metric finish_slope re-applies when the app materialises the run. Delegating (not
+        re-rolling a window here) keeps the import-time band and the final app band from drifting.
         """
-        pts = run.points
-        if len(pts) < 2:
-            return 0.0
-        es = np.array([p.elevation for p in pts])
-        seg = np.array([pts[i - 1].distance_to(other=pts[i]) for i in range(1, len(pts))])
-        cum = np.concatenate([[0.0], np.cumsum(seg)])
-        total = float(cum[-1])
-        if total <= 0:
-            return 0.0
-        avg = float(abs(es[0] - es[-1]) / total * 100.0)
-        win = SlopeConfig.ROLLING_WINDOW_M
-        if total < win:
-            return avg
-        # For each start i, the first j with cum[j]-cum[i] >= win; only starts with a full window (j in
-        # range) contribute. Vectorized rolling steepest-section — same predicate as the R-rule classifier.
-        j = np.searchsorted(cum, cum + win, side="left")
-        valid = j < len(pts)
-        i_idx = np.nonzero(valid)[0]
-        if i_idx.size == 0:
-            return avg
-        j_idx = j[valid]
-        run_m = cum[j_idx] - cum[i_idx]
-        slopes = np.where(run_m > 0, np.abs(es[i_idx] - es[j_idx]) / np.where(run_m > 0, run_m, 1.0) * 100.0, 0.0)
-        return float(max(avg, slopes.max()))
+        return PathSegment(points=list(run.points)).max_slope_pct
 
     def _group_slopes(self, graph: ImportGraph) -> None:
         """Group segment runs into whole named slopes with difficulty = steepest member's band. Each run
