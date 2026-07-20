@@ -29,6 +29,10 @@ pandas>=2.0.0
 numpy>=1.24.0
 scipy
 
+# Graph algorithms — scipy.sparse.csgraph (shortest-path/SCC) + networkx (approximate ATSP for the
+# scenic visit-every-lift route tours). networkx>=3.3 (osmnx also requires 3.x).
+networkx>=3.3
+
 # State machine
 python-statemachine>=3.1.0
 

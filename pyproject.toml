@@ -133,6 +133,7 @@ module = [
     "statemachine.*",
     "gpxpy.*",
     "scipy.*",
+    "networkx.*",
 ]
 ignore_missing_imports = true
 
