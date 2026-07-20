@@ -484,22 +484,23 @@ Click **🧭 Route Planner** in the sidebar, then pick two nodes to see the best
 
 1. Click the **🧭 Route Planner** button (a utility tool, like Node Merge).
 2. **Click a start node**, then **click an end node** (routes run node-to-node — a bare terrain click is guided, not acted on).
-3. The app computes up to **best routes**, each optimal under one criterion, and draws each in its own colour on the map.
+3. The app computes the best routes for **each difficulty band** and draws the selected one in its own colour on the map.
 
-### The criteria
+### The two criteria
+
+For each difficulty band the planner finds the best route under two criteria:
 
 | Criterion | Picks the route with… |
 |-----------|-----------------------|
 | **Fewest lifts** | the least number of lift rides |
-| **Least distance** | the least total slope kilometres |
-| **Least drop** | the least vertical descent skied |
-| **Easiest** | the gentlest slope |
+| **Shortest slope** | the least skied distance (a gentler descent breaks near-ties) |
 
-### Browsing and filtering
+### Difficulty
 
-- Use the **◀ ▶** browser in the right panel to step through the routes.
-- In the sidebar, a **max-difficulty slider** (snaps to 🟢🔵🔴⚫) hides routes whose hardest slope exceeds your level, and **per-lift-type checkboxes** hide routes that use lift types you unchecked.
-- If filters hide every route, you're prompted to loosen them; if **no route exists** at all, you're told to build connecting slopes or lifts.
+- The **max-difficulty selector** (🟢🔵🔴⚫) chooses which precomputed set to show. Each band's routes are computed using **only slopes up to that band**.
+- So "shortest slope, max **red**" really is the shortest route over green/blue/red slopes — never a harder route hidden by a filter.
+- Use the **◀ ▶** browser to step through the routes for the selected band. If no route exists **within that band** you're told to raise the selector; if none exists **at all**, to build connecting slopes or lifts.
+- **🏔️ View in 3D** shows the route from the side (like the slope/lift/road 3D view).
 
 ---
 
