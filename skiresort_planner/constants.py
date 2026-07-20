@@ -844,13 +844,14 @@ class OSMConfig:
     DEDUP_TOL_M = 20.0  # near-coincidence band for the duplicate-piste test
     PARALLEL_TOL_M = 60.0  # near-but-offset band for the redundant-parallel
     PARALLEL_TWIN_FRAC = 0.70  # a same-name run parallel to a longer sibling ≥this of ITS length is a twin
-    DEDUP_COVER_FRAC = 0.78  # covered fraction to call a piste a duplicate
+    DEDUP_COVER_FRAC = 0.90  # covered fraction to call a piste a duplicate (below this = genuinely distinct)
     MIN_NODE_DIST_M = 100.0  # min hub spacing (closer nodes merge)
     RELAXED_MERGE_DIST_M = 200.0  # slope-node→lift pull radius
     MAX_BACKCLIMB_M = 30.0  # max uphill RISE over any BACKCLIMB_WINDOW_M span (60m-DEM sampling-noise tolerance)
     BACKCLIMB_WINDOW_M = 80.0  # window for the strict per-span uphill check
     SLOPE_ON_SOURCE_TOL_M = 30.0  # strict on-piste band (slope body hugs OSM)
     PISTE_TOL_M = 40.0  # off-piste threshold (~a wide piste's half-width)
+    PISTE_VERTEX_TOL_M = 45.0  # R12 fidelity: max point→nearest-source-VERTEX gap (~1 piste width)
     MAX_PULL_M = 300.0  # max straight hub connector (longer → drop the segment)
     MAX_STRAIGHT_M = 100.0  # max single straight leg between consecutive points
     TRIM_END_M = 50.0  # trim off each slope end before the hub connector
@@ -861,6 +862,7 @@ class OSMConfig:
 
     # Consistency
     assert SLOPE_ON_SOURCE_TOL_M < PISTE_TOL_M <= SLOPE_TERRAIN_TOL_M
+    assert PISTE_TOL_M < PISTE_VERTEX_TOL_M  # vertex gap is looser than the line off-piste band
     assert NODE_TERRAIN_TOL_M < SLOPE_TERRAIN_TOL_M
     assert DEDUP_TOL_M < PARALLEL_TOL_M < MIN_NODE_DIST_M < RELAXED_MERGE_DIST_M
     assert COORD_GRID_M < DEDUP_TOL_M  # the integer grid must sit below every planar tolerance
