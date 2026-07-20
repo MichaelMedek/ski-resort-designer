@@ -172,10 +172,10 @@ class TargetTooFarMessage(WarningToast):
 
     @property
     def message(self) -> str:
-        # Round the distance UP to 0.1 m so it never renders equal to the max: this fires
-        # only when distance strictly exceeds the max, and ".0f" could show "1000m (max: 1000m)".
-        distance_shown = math.ceil(self.distance_m * 10) / 10
-        return f"Target Too Far — {distance_shown:.1f}m (max: {self.max_distance_m:.0f}m)"
+        # Round the distance UP to the next whole metre so it never renders equal to the max: this
+        # fires only when distance strictly exceeds the max, and ".0f" could show "1000m (max: 1000m)".
+        distance_shown = math.ceil(self.distance_m)
+        return f"Target Too Far — {distance_shown:.0f}m (max: {self.max_distance_m:.0f}m)"
 
 
 @dataclass(frozen=True)
@@ -190,10 +190,10 @@ class TargetNotDownhillMessage(WarningToast):
     def message(self) -> str:
         drop = self.start_elevation_m - self.target_elevation_m
         drop_explainer = f" (Target is {abs(drop):.0f}m above your current point)" if drop < 0 else ""
-        # Round the drop DOWN to 0.1 m so it never renders equal to the minimum: this fires
-        # only when drop is strictly under min_drop_m, and ".0f" could show "drop: 5m, need at least 5m".
-        drop_shown = math.floor(drop * 10) / 10
-        return f"Not Downhill Enough — drop: {drop_shown:.1f}m, need at least {self.min_drop_m:.0f}m" + drop_explainer
+        # Round the drop DOWN to the next whole metre so it never renders equal to the minimum: this
+        # fires only when drop is strictly under min_drop_m, and ".0f" could show "drop: 5m, need at least 5m".
+        drop_shown = math.floor(drop)
+        return f"Not Downhill Enough — drop: {drop_shown:.0f}m, need at least {self.min_drop_m:.0f}m" + drop_explainer
 
 
 @dataclass(frozen=True)
@@ -247,10 +247,10 @@ class MergeTooFarMessage(WarningToast):
 
     @property
     def message(self) -> str:
-        # Round the span UP to 0.1 m so it never renders equal to the max (this fires only when
-        # the span strictly exceeds the max, and ".0f" could show "500m (max: 500m)").
-        span_shown = math.ceil(self.span_m * 10) / 10
-        return f"Nodes Too Far Apart — {span_shown:.1f}m (max: {self.max_span_m:.0f}m)"
+        # Round the span UP to the next whole metre so it never renders equal to the max (this fires
+        # only when the span strictly exceeds the max, and ".0f" could show "500m (max: 500m)").
+        span_shown = math.ceil(self.span_m)
+        return f"Nodes Too Far Apart — {span_shown:.0f}m (max: {self.max_span_m:.0f}m)"
 
 
 @dataclass(frozen=True)

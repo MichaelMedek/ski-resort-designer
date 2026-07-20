@@ -129,6 +129,8 @@ class TestTargetTooFarMessage:
         # Fires only when distance strictly exceeds the max; must not render "1000m (max: 1000m)".
         msg = TargetTooFarMessage(distance_m=1000.4, max_distance_m=1000.0).message
         assert "(max: 1000m)" in msg
+        # Meters render as whole integers (no decimal), and strictly above the max: "1001m".
+        assert msg == "Target Too Far — 1001m (max: 1000m)", msg
         shown = _first_number(msg.split("—")[1])
         assert shown > 1000.0, f"distance must read strictly above the max: {msg}"
 
@@ -138,6 +140,8 @@ class TestTargetNotDownhillMessage:
         # Fires only when drop is strictly under the minimum; must not render "drop: 5m, need at least 5m".
         msg = TargetNotDownhillMessage(start_elevation_m=2000.0, target_elevation_m=1995.4, min_drop_m=5.0).message
         assert "need at least 5m" in msg
+        # Meters render as whole integers (no decimal), and strictly below the minimum: "4m".
+        assert "drop: 4m," in msg, msg
         shown = _first_number(msg.split("drop:")[1])
         assert shown < 5.0, f"drop must read strictly below the minimum: {msg}"
 
@@ -342,6 +346,8 @@ class TestMergeSelectingMessages:
         # Fires only when the span strictly exceeds the max; the shown span must read above it.
         msg = MergeTooFarMessage(span_m=612.34, max_span_m=500.0).message
         assert "Too Far" in msg and "max: 500m" in msg
+        # Meters render as whole integers (no decimal), rounded up: "613m".
+        assert msg == "Nodes Too Far Apart — 613m (max: 500m)", msg
         shown = _first_number(msg)
         assert shown > 500.0, f"span must read strictly above the max: {msg}"
 

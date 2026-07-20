@@ -711,7 +711,7 @@ class RouteViewingControlPanel(ControlPanel):
             st.caption(f"🎿 Visits all {route.scenic_lifts_visited} reachable lift(s), back to the start.")
         col1, col2 = st.columns(2)
         with col1:
-            st.metric("Slope Length", f"{route.total_slope_length_m / 1000:.2f}km")
+            st.metric("Slope Length", f"{route.total_slope_length_m / 1000:.1f}km")
             st.metric("Slope Drop", f"{route.total_slope_drop_m:.0f}m")
         with col2:
             st.metric("Lifts", f"{route.lift_count}")

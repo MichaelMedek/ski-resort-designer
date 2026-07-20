@@ -67,16 +67,16 @@ def _populate_full_resort(graph, dem):
 class TestGrayOut:
     """StyleConfig.gray_out — the pure color-muting helper behind the connectivity-defect dimming."""
 
-    def test_blends_each_channel_halfway_to_128_and_keeps_alpha(self) -> None:
+    def test_blends_each_channel_strongly_to_128_and_keeps_alpha(self) -> None:
         from skiresort_planner.constants import StyleConfig
 
-        # chairlift purple [168,85,247,200] → each rgb averaged with 128, alpha untouched.
-        assert StyleConfig.gray_out([168, 85, 247, 200]) == [148, 106, 187, 200]
-        # A fully opaque black stays opaque; 31→(31+128)//2=79 etc.
-        assert StyleConfig.gray_out([31, 41, 55, 255]) == [79, 84, 91, 255]
+        # chairlift purple [168,85,247,200] pulled 75% toward 128; alpha untouched.
+        assert StyleConfig.gray_out([168, 85, 247, 200]) == [138, 117, 158, 200]
+        # A fully opaque black stays opaque; 31→round(31*.25+128*.75)=104 etc.
+        assert StyleConfig.gray_out([31, 41, 55, 255]) == [104, 106, 110, 255]
 
     def test_gray_is_a_fixed_point(self) -> None:
-        """Pure gray is already halfway to 128 only at 128 itself — the muting converges there."""
+        """Mid-gray blended toward mid-gray is unchanged — the muting converges there."""
         from skiresort_planner.constants import StyleConfig
 
         assert StyleConfig.gray_out([128, 128, 128, 200]) == [128, 128, 128, 200]
