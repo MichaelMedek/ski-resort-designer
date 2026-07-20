@@ -606,8 +606,8 @@ def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) ->
     sm.complete_lift(lift_id=lift.id)
 
 
-def handle_import_placing_click(click_info: ClickInfo, elevation: float | None) -> None:
-    """Handle a click while placing an OSM import box (IMPORT_PLACING).
+def handle_import_selecting_click(click_info: ClickInfo, elevation: float | None) -> None:
+    """Handle a click while placing an OSM import box (IMPORT_SELECTING).
 
     Clicking terrain re-places the box center. Confirming the import is done ONLY by the right-panel
     buttons ("Import lifts + slopes" / "Import lifts only"). The center-dot marker is inert here.
@@ -632,8 +632,8 @@ def handle_import_placing_click(click_info: ClickInfo, elevation: float | None) 
     logger.debug(f"[IMPORT] Ignoring {click_info.display_name} — click terrain to re-place, or a button to import")
 
 
-def handle_merge_placing_click(click_info: ClickInfo, elevation: float | None) -> None:
-    """Handle a click while selecting nodes to merge (MERGE_PLACING).
+def handle_merge_selecting_click(click_info: ClickInfo, elevation: float | None) -> None:
+    """Handle a click while selecting nodes to merge (MERGE_SELECTING).
 
     A NODE marker click toggles that node in the selection (re-click removes it) via the
     toggle_merge_node self-loop, then redraws so the selection colour updates. A SEGMENT marker (a
@@ -662,7 +662,7 @@ def handle_merge_placing_click(click_info: ClickInfo, elevation: float | None) -
         assert click_info.lon is not None and click_info.lat is not None
         logger.debug(f"[MERGE] Path click: adding a node on segment {click_info.segment_id}")
         if add_node_on_path_action(segment_id=click_info.segment_id, lon=click_info.lon, lat=click_info.lat):
-            trigger_rerun()  # stay in merge_placing; redraw with the new node in place (no recenter)
+            trigger_rerun()  # stay in merge_selecting; redraw with the new node in place (no recenter)
         return
 
     # Anything else (terrain or a non-node marker) is not selectable for merge.

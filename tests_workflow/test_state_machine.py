@@ -815,7 +815,7 @@ class TestOperationTransitions:
         # The entity viewers (slope/road/lift) open directly from idle by clicking an entity. Route's
         # viewing state is reached via its placing flow (complete_route), NOT from idle.
         targets = _sm_edges()["idle_ready"]
-        for prefix in _PATH_PREFIXES | "lift":
+        for prefix in _PATH_PREFIXES | {"lift"}:
             assert f"idle_viewing_{prefix}" in targets, f"idle_ready cannot view {prefix}"
 
     @pytest.mark.parametrize("prefix", sorted(_PATH_PREFIXES | _POINT_TO_POINT_PREFIXES))
@@ -836,11 +836,21 @@ class TestOperationTransitions:
         source = f"{prefix}_custom_path"
         assert viewing in edges[source], f"{source} cannot finish into {viewing}"
 
-    def test_path_op_custom_path_reachable_from_its_build_state():
-        raise NotImplementedError("Add it!")
+    @pytest.mark.parametrize("prefix", sorted(_PATH_PREFIXES))
+    def test_path_op_custom_path_reachable_from_its_build_state(self, prefix: str) -> None:
+        # The custom_path state is entered (select_custom_target) from BOTH fan states — the
+        # 0-segment starting state and the 1+-segment building state.
+        edges = _sm_edges()
+        custom = f"{prefix}_custom_path"
+        assert custom in edges[f"{prefix}_starting"], f"{prefix}_starting cannot reach {custom}"
+        assert custom in edges[f"{prefix}_building"], f"{prefix}_building cannot reach {custom}"
 
-    def test_path_op_custom_path_reaches_its_build_state():
-        raise NotImplementedError("Add it!")
+    @pytest.mark.parametrize("prefix", sorted(_PATH_PREFIXES))
+    def test_path_op_custom_path_reaches_its_build_state(self, prefix: str) -> None:
+        # From custom_path, committing/continuing (or cancel-with-segments) returns to the building state.
+        edges = _sm_edges()
+        building = f"{prefix}_building"
+        assert building in edges[f"{prefix}_custom_path"], f"{prefix}_custom_path cannot reach {building}"
 
     def test_every_state_returns_to_idle_ready(self) -> None:
         # No dead-ends: every state can reach idle_ready (transitively) via cancel/close/finish.
