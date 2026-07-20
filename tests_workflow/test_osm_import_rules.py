@@ -12,7 +12,7 @@ from shapely.geometry import LineString, Point
 from skiresort_planner.constants import OSMConfig
 from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.core.geo_calculator import GeoCalculator
-from skiresort_planner.generators.osm_graph_builder import OSMGraphBuilder, _linear_chains, ways_to_lines
+from skiresort_planner.generators.osm_graph_builder import OSMGraphBuilder, SlopeRun, _linear_chains, ways_to_lines
 
 # Pure test-assertion thresholds (counts / connectivity) live here; every geometric domain tolerance
 # comes from OSMConfig (single source of truth — no drift between the builder and the rules it must meet).
@@ -89,7 +89,7 @@ def _seg_point_dist(pt, poly):
     return Point(pt).distance(LineString(poly))
 
 
-def _backclimb(pts):
+def _backclimb(pts) -> float:
     """ULTRA-STRICT uphill metric (R3): the largest elevation RISE over any BACKCLIMB_WINDOW_M span of
     the descending-oriented run. A real piste must go strictly DOWN — over every ~80 m window the far
     end sits no higher than the near end. Returns the worst window's rise (0 for a clean descent). Raw
@@ -218,10 +218,15 @@ class TestImportRules:
         assert dupes == 0, f"{dupes} slopes are near-duplicates of another slope"
 
     def test_r3_no_uphill_slope(self, ds):
-        """R3: STRICT descent — every slope must go downhill, with no back-climb over MAX_BACKCLIMB_M on any
-        BACKCLIMB_WINDOW_M window of the descending run, measured on raw DEM elevations without smoothing. Prevents
-        an uphill segment surviving import and violating the piste-descends invariant.
+        """R3: STRICT descent. Two independent conditions, both mandatory:
+        (a) NET DROP — a run's two hub endpoints must strictly differ in elevation (end node lower than
+            start node, zero tolerance): a run whose endpoints are level can't be oriented downhill.
+        (b) NO BACK-CLIMB — no rise over MAX_BACKCLIMB_M on any BACKCLIMB_WINDOW_M window of the
+            descending run, on raw DEM elevations. Prevents an uphill segment surviving import.
         """
+        elev = {k: v.elevation for k, v in ds.graph.node_points.items()}
+        level = [r for r in ds.graph.slope_runs if elev[r.node_a] == elev[r.node_b]]
+        assert level == [], f"{len(level)} slope runs have level endpoints (no strict net drop start→end)"
         offenders = [r for r in ds.graph.slope_runs if _backclimb(r.points) > OSMConfig.MAX_BACKCLIMB_M]
         assert offenders == [], f"{len(offenders)} slope runs go uphill (> {OSMConfig.MAX_BACKCLIMB_M}m back-climb)"
 
@@ -362,7 +367,7 @@ class TestImportRules:
         els = ds.elements
         pistes, _lifts = ways_to_lines(els, ds.bbox)
         src = [verts for verts, _nm in pistes if len(verts) >= 2]  # raw OSM piste polylines (lon/lat)
-        tol = 45.0  # ~1 piste-width; the builder's on-source gate (SLOPE_ON_SOURCE_TOL_M) drops worse
+        tol = OSMConfig.PISTE_VERTEX_TOL_M  # ~1 piste-width; the builder's R12 gate uses the same constant
         phantom = 0
         for r in ds.graph.slope_runs:
             # a slope is valid only if (almost) all of its points sit within tol of SOME source piste
@@ -855,13 +860,35 @@ class TestImportRules:
     def test_r36_no_needless_degree2_node(self, ds):
         """R36: every non-lift node must be a real junction (run-degree ≥3) — a degree-2 pass-through
         node (one run in, one out, nothing branching) must have been collapsed, its two runs merged.
+
+        EXEMPT: a degree-2 node whose two runs form a terrain roller across the join — fusing them
+        would yield a run climbing >MAX_BACKCLIMB_M over an 80m window and violate R3. R3 (piste
+        descends) outranks the cosmetic collapse, so the junction legitimately stays (the builder
+        correctly refuses that merge). Only a collapse that keeps R3 is 'needless'.
         """
         deg: dict[int, int] = defaultdict(int)
+        runs_at: dict[int, list[SlopeRun]] = defaultdict(list)
         for r in ds.graph.slope_runs:
             deg[r.node_a] += 1
             deg[r.node_b] += 1
+            runs_at[r.node_a].append(r)
+            runs_at[r.node_b].append(r)
         lift_nodes = {n for lf in ds.graph.lifts for n in (lf.node_a, lf.node_b)}
-        offenders = [n for n, d in deg.items() if d == 2 and n not in lift_nodes]
+
+        def merge_would_climb(n: int) -> bool:
+            """True if fusing the node's two runs into one through-run would back-climb over the R3 cap
+            (a real dip-then-rise across the join), so the junction must stay (R3 wins over R36).
+            """
+            r1, r2 = runs_at[n]
+            arm1 = list(r1.points) if r1.node_b == n else list(reversed(r1.points))  # …→ n
+            arm2 = list(r2.points) if r2.node_a == n else list(reversed(r2.points))  # n →…
+            return _backclimb(arm1 + arm2[1:]) > OSMConfig.MAX_BACKCLIMB_M
+
+        offenders = [
+            n
+            for n, d in deg.items()
+            if d == 2 and n not in lift_nodes and len(runs_at[n]) == 2 and not merge_would_climb(n)
+        ]
         assert offenders == [], f"{len(offenders)} degree-2 non-lift pass-through nodes must collapse: {offenders[:8]}"
 
     def test_r37_no_app_slope_crosses_a_lift(self, ds):
@@ -974,7 +1001,7 @@ class TestDegree2CollapseGeometry:
 
     def _chain_graph(self):
         """A→B→C oriented downhill (2000→1900→1800 m), each run carrying an INTERIOR vertex."""
-        from skiresort_planner.generators.osm_graph_builder import ImportGraph, SlopeRun
+        from skiresort_planner.generators.osm_graph_builder import ImportGraph
         from skiresort_planner.model.path_point import PathPoint
 
         lon0, lat0 = DATASETS[0].bbox[0], DATASETS[0].bbox[1]
