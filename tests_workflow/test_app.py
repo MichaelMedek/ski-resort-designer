@@ -571,19 +571,19 @@ class TestReframeInPlace:
         app._render_map_fragment_inner()  # flying
         assert highlight_layer_ids() == ["flythrough_highlight"], "highlight ribbon shown while flying"
 
-    def test_flythrough_dwells_at_end_before_stopping(
+    def test_flythrough_parks_at_end_until_stopped(
         self, fake_st, monkeypatch, mock_dem_blue_slope, path_points_blue
     ) -> None:
-        """At the final keyframe the driver DWELLS (glide finishes + the viewer takes the finish in) before
-        stopping — so the camera doesn't snap back to the entry view the instant it arrives.
+        """At the final keyframe the driver PARKS: it stops advancing (no more reruns) but stays flying,
+        so the camera holds the finish view until the user presses Stop or closes the panel.
         """
         import time
 
         _stub_deckgl(monkeypatch)
+        reruns = {"n": 0}
         monkeypatch.setattr(infra, "trigger_rerun", lambda *a, **k: None)
-        monkeypatch.setattr(app, "trigger_rerun", lambda *a, **k: None)
-        sleeps: list[float] = []
-        monkeypatch.setattr(time, "sleep", lambda s: sleeps.append(s))
+        monkeypatch.setattr(app, "trigger_rerun", lambda *a, **k: reruns.__setitem__("n", reruns["n"] + 1))
+        monkeypatch.setattr(time, "sleep", lambda s: None)
         graph, sm, ctx = _seed_full_session(fake_st, mock_dem_blue_slope)
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
@@ -592,9 +592,10 @@ class TestReframeInPlace:
 
         ctx.viewing.start_flythrough()
         for _ in range(50):
-            if not ctx.viewing.flythrough_active:
-                break
             app._advance_flythrough_if_playing()
 
-        assert not ctx.viewing.flythrough_active, "the flythrough terminates"
-        assert MapConfig.FLYTHROUGH_END_DWELL_S in sleeps, "must dwell at the final keyframe before stopping"
+        # A single slope → 2 keyframes; the driver advances to the last frame, then parks: still flying,
+        # no stop, and no further reruns queued once parked.
+        assert ctx.viewing.flythrough_active, "parked at the finish, still flying (not stopped)"
+        assert ctx.viewing.flythrough_frame == 1, "held on the final keyframe"
+        assert reruns["n"] == 1, "one rerun to reach the final frame, then no more (parked)"

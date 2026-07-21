@@ -86,7 +86,6 @@ class MapConfig:
     FLYTHROUGH_LOOK_AHEAD_M = 900.0  # center this far ahead (nav-style: "here" below centre)
     FLYTHROUGH_STEP_S = 1.0  # sleep between keyframes ≈ glide duration
     FLYTHROUGH_TRANSITION_MS = 1600  # deck.gl glide per keyframe (> STEP_S so it never stalls)
-    FLYTHROUGH_END_DWELL_S = 3.0  # hold at the final keyframe before reverting
     # Current-element highlight ribbon while flying (hot orange, distinct from route/arrow palettes).
     FLYTHROUGH_HIGHLIGHT_FLOAT_ABOVE_M = 110.0  # 10m above the 100m route overlay (no z-fight)
     FLYTHROUGH_HIGHLIGHT_COLOR = [255, 120, 0, 235]

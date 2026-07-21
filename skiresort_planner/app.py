@@ -416,23 +416,19 @@ def _render_map_fragment_inner() -> None:
 def _advance_flythrough_if_playing() -> None:
     """Flythrough frame driver — call AFTER the control panel renders so the Stop button is drawn before
     this rerun fires (trigger_rerun raises StopExecution). Advances one keyframe per rerun; the camera
-    glides IN PLACE (constant key). At the last keyframe it DWELLS (glide finishes + the viewer takes the
-    finish in) before stopping → only then does the next render restore the normal 3D entry fit.
+    glides IN PLACE (constant key). At the last keyframe it PARKS (stops advancing, no rerun) so the view
+    stays on the finish until the user presses Stop or closes the panel.
     """
     ctx: PlannerContext = st.session_state.context
     viewing = ctx.viewing
-    keyframes = MapRenderer.flythrough_keyframes(active_flythrough_groups())
+    keyframes = MapRenderer.flythrough_keyframes(groups=active_flythrough_groups())
     if not keyframes:
         return
     if viewing.flythrough_frame >= len(keyframes) - 1:
-        # The final keyframe was just rendered (its glide is playing). Hold before reverting.
-        time.sleep(MapConfig.FLYTHROUGH_END_DWELL_S)
-        viewing.stop_flythrough()
-        trigger_rerun()
-    else:
-        time.sleep(MapConfig.FLYTHROUGH_STEP_S)
-        viewing.advance_flythrough()
-        trigger_rerun()
+        return  # parked on the final keyframe — hold here (no rerun) until Stop/Close
+    time.sleep(MapConfig.FLYTHROUGH_STEP_S)
+    viewing.advance_flythrough()
+    trigger_rerun()
 
 
 # =============================================================================
