@@ -6,6 +6,7 @@ _render_map_fragment_inner) is driven end-to-end with a seeded session and a
 stubbed st_deckgl so the deck.gl component call returns no event.
 """
 
+import pydeck as pdk
 import pytest
 
 import skiresort_planner.ui.pydeck_click_handler as pch
@@ -44,7 +45,11 @@ def _seed_full_session(fake_st, dem):
 def _stub_deckgl(monkeypatch, event=None):
     """Stub st_deckgl + terrain layer + window-height JS so the map render loop needs no browser."""
     monkeypatch.setattr(pch, "st_deckgl", lambda *a, **k: event)
-    monkeypatch.setattr(app, "create_aws_terrain_layer", lambda *a, **k: object())
+    # A real (empty) pdk.Layer, not a bare object — so every layer in the built deck has a `.id` and
+    # tests can strict-access layer.id without a defensive getattr.
+    monkeypatch.setattr(
+        app, "create_aws_terrain_layer", lambda *a, **k: pdk.Layer("ScatterplotLayer", [], id="terrain")
+    )
     monkeypatch.setattr(infra, "streamlit_js_eval", lambda *a, **k: 1080)  # browser height resolved
 
 
@@ -548,10 +553,13 @@ class TestReframeInPlace:
         sm.view_slope(slope_id=slope.id)
         ctx.viewing.enable_3d()
 
-        decks: list[object] = []
-        monkeypatch.setattr(
-            app, "render_pydeck_map", lambda *, deck, height, key: decks.append(deck) or pch.PydeckClickResult.empty()
-        )
+        decks: list[pdk.Deck] = []
+
+        def _capture(*, deck: pdk.Deck, height: int, key: str) -> pch.PydeckClickResult:
+            decks.append(deck)
+            return pch.PydeckClickResult.empty()
+
+        monkeypatch.setattr(app, "render_pydeck_map", _capture)
 
         def highlight_layer_ids() -> list[str]:
             return [layer.id for layer in decks[-1].layers if layer.id == "flythrough_highlight"]
