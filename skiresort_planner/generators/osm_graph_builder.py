@@ -465,6 +465,7 @@ class OSMGraphBuilder:
         self._mlon, self._mlat = GeoCalculator.meters_per_degree(lat=lat0)
         self._source_lines: list[LineString] = []  # source pistes (metres) for piste-following pulls
         self._named_sources: list[tuple[LineString, str]] = []  # (piste metres, OSM name) for run naming
+        self._osm_lift_pairs: set[tuple[int, int]] = set()  # lift→lift descents OSM offers (R40 drop guard)
 
     def _to_m(self, lon: float, lat: float) -> XY:
         # Quantise the projection to the COORD_GRID_M (1 m) grid so shared vertices are bit-exact (no
@@ -538,6 +539,9 @@ class OSMGraphBuilder:
         # Merge hubs, DEM-drape each run, orient downhill, reconnect stranded sinks.
         graph = self._assemble(segments, lift_lines, source=kept)
         logger.debug(f"[IMPORT] assemble: {len(graph.slope_runs)} runs, {len(graph.node_points)} nodes")
+        # Ground truth for the R40 drop guard: the lift→lift descents OSM offers (final-node-id pairs).
+        # Lift nodes are fixed after assemble, so this target is stable for the rest of the pipeline.
+        self._osm_lift_pairs = LiftReachabilityCheck(builder=self, pistes=pistes).osm_pairs(graph)
 
         on_progress(0.6, "Naming runs…")
         # Attach each run's original OSM piste name (best-covering named source).
@@ -991,23 +995,26 @@ class OSMGraphBuilder:
 
         source_union = MultiLineString([s for s in source if s.length > 0]) if source else None
         self._source_lines = [s for s in source if s.length > 0]  # for piste-following connectors
-        # R12 measures a run point's distance to the nearest source-piste VERTEX (not the line). Build a
-        # vertex STRtree of ALL piste vertices so the builder's final gate matches R12 exactly.
-        self._piste_vertices = [Point(c) for s in self._source_lines for c in s.coords]
-        self._vtree = STRtree(self._piste_vertices) if self._piste_vertices else None
+        # R12 gate: an STRtree of the source-piste LINES, so a run point's distance to the nearest piste is
+        # one indexed nearest-line query (not a scan over every line, nor a vertex-only distance).
+        self._stree = STRtree(self._source_lines) if self._source_lines else None
 
         # component per hub; keep only segments reaching a lift
         comp = component_labels(nodes=range(len(hubs)), edges=seg_ab + lift_ab, strong=False)
         lift_comps = {comp[a] for a, b in lift_ab} | {comp[b] for a, b in lift_ab}
 
-        # dedup: one run per hub-pair (keep the longest) — kills copies the split creates.
-        by_pair: dict[frozenset[int], tuple[LineString, int, int]] = {}
+        # dedup: one run per hub-pair, preferring the longest that BUILDS (R3/R7). The longest can roller
+        # past R3 while a shorter sibling descends cleanly; blind-by-length would drop the pair's descent.
+        by_pair_cands: dict[frozenset[int], list[tuple[LineString, int, int]]] = {}
         for seg, (a, b) in zip(segments, seg_ab, strict=True):
             if a == b:
                 continue
-            key = frozenset((a, b))
-            if key not in by_pair or seg.length > by_pair[key][0].length:
-                by_pair[key] = (seg, a, b)
+            by_pair_cands.setdefault(frozenset((a, b)), []).append((seg, a, b))
+        by_pair: dict[frozenset[int], tuple[LineString, int, int]] = {}
+        for key, cands in by_pair_cands.items():
+            cands.sort(key=lambda t: t[0].length, reverse=True)
+            buildable = next((c for c in cands if self._builds_valid_run(c[0], c[1], c[2], hubs, source_union)), None)
+            by_pair[key] = buildable if buildable is not None else cands[0]
 
         graph = ImportGraph()
         kept: list[tuple[LineString, int, int]] = []
@@ -1064,10 +1071,39 @@ class OSMGraphBuilder:
         self._prune_dead_end_slopes(graph)
         self._drop_isolated_slopes(graph)
         self._reconnect_stranded_sinks(graph)  # rebuild descents for sinks stranded after drops (never uphill, R3)
+        self._prune_stranded_sinks(graph)  # a sink reconnect couldn't fix (real OSM roller) → drop its feeders
         self._prune_dead_end_slopes(graph)  # final: a drop above can leave a fresh dead-end
         self._drop_isolated_slopes(graph)
         self._mark_fabricated(graph)  # tag off-piste points for the red reference overlay
         return graph
+
+    def _prune_stranded_sinks(self, graph: ImportGraph) -> None:
+        """Drop runs touching a node stranded EITHER direction (R22), to a fixpoint: above the lowest lift
+        base and unable to ski DOWN to a lift, or unreachable FROM one. R40 outranks R22 — a drop that
+        severs a lift→lift descent OSM offers is refused (the run stays, guarded).
+        """
+        lift_nodes = self._lift_nodes(graph)
+        if not lift_nodes:
+            return
+        while True:
+            elev = self._node_elevations(graph)
+            min_base = min(elev[n] for n in lift_nodes)
+            reaches_lift = self._hubs_reaching_lift(graph, lift_nodes)  # can ski DOWN to a lift
+            from_lift = self._skier_reachable(graph, elev)  # reachable FROM a lift (down-ski + ride up)
+            stranded = {
+                n
+                for r in graph.slope_runs
+                for n in (r.node_a, r.node_b)
+                if n not in lift_nodes and elev[n] > min_base and (n not in reaches_lift or n not in from_lift)
+            }
+            if not stranded:
+                return
+            keep = [r for r in graph.slope_runs if r.node_a not in stranded and r.node_b not in stranded]
+            cand = ImportGraph(node_points=graph.node_points, slope_runs=keep, lifts=graph.lifts)
+            if len(keep) == len(graph.slope_runs) or self._breaks_lift_pair(graph, cand):
+                return  # nothing to drop, or the drop would sever a lift→lift descent OSM offers (R40 wins)
+            graph.dropped_isolated += len(graph.slope_runs) - len(keep)
+            graph.slope_runs = keep
 
     def _mark_fabricated(self, graph: ImportGraph) -> None:
         """Flag each run point that lies >PISTE_TOL_M from every source OSM piste as off-piste (fabricated).
@@ -1462,6 +1498,7 @@ class OSMGraphBuilder:
         while True:
             before = len(graph.slope_runs)
             self._prune_dead_end_slopes(graph)  # removed run → dangling degree-1 neighbour (R22)
+            self._prune_stranded_sinks(graph)  # a drop can leave a node that can't ski down to a lift (R22)
             self._collapse_degree2_nodes(graph)  # removal turns a degree-3 junction into a pass-through (R36)
             self._drop_isolated_slopes(graph)  # prune/collapse can sever a component from every lift (R4)
             if len(graph.slope_runs) == before:
@@ -1486,6 +1523,22 @@ class OSMGraphBuilder:
                 break
             graph.dropped_isolated += len(graph.slope_runs) - len(keep)
             graph.slope_runs = keep
+
+    def _builds_valid_run(
+        self, seg: LineString, a: int, b: int, hubs: list[XY], source_union: MultiLineString | None
+    ) -> bool:
+        """Whether `seg` between hubs a,b would build into a valid SlopeRun (R3/R7 gates). Runs the real
+        _build_slope_run on a throwaway graph holding just the two hub points, so the dedup can prefer a
+        buildable candidate over a longer one that rollers past R3. Uses the exact build gate — no drift.
+        """
+        probe = ImportGraph()
+        for h in (a, b):
+            lon, lat = self._to_deg(*hubs[h])
+            elev = self.dem.get_elevation(lon=lon, lat=lat)
+            if elev is None:
+                return False
+            probe.node_points[h] = PathPoint(lon=lon, lat=lat, elevation=elev)
+        return self._build_slope_run(seg, a, b, probe, source_union) is not None
 
     def _build_slope_run(
         self, seg: LineString, a: int, b: int, graph: ImportGraph, source_union: MultiLineString | None
@@ -1519,20 +1572,24 @@ class OSMGraphBuilder:
             a, b = b, a
         pts[0] = graph.node_points[a]
         pts[-1] = graph.node_points[b]
+        # R3 strict net descent: a run whose two hub endpoints sit at the same elevation is a flat ridge
+        # traverse, not a ski run — it can't be oriented downhill. Drop it (a real slope always drops).
+        if pts[0].elevation <= pts[-1].elevation:
+            graph.dropped_uphill += 1
+            return None
         # Enforce the pull/fidelity model on the FINAL geometry: OSM body on-piste, off-piste points only
         # a contiguous END connector ≤ MAX_PULL_M (no mid-run tunnel). Wrong slope worse than missing.
         if not self._valid_pull_shape(pts, source_union):
             graph.dropped_isolated += 1
             return None
         # Match R12 exactly: ≤15% of points may lie >PISTE_VERTEX_TOL_M from the nearest source-piste
-        # VERTEX. A connector that pushes a run past this is invented geometry — drop it rather than keep
-        # off-piste. Per-point STRtree.nearest (library call): query_nearest's vectorized array diverges
-        # on ties, so the scalar nearest is the bit-exact match for the R12 validator.
-        if self._vtree is not None:
+        # LINE (not just a vertex — a point on a long straight OSM leg between sparse vertices is still
+        # on-piste). A connector that pushes a run past this is invented geometry — drop it.
+        if self._stree is not None:
             off = 0
             for p in pts:
                 q = Point(self._to_m(p.lon, p.lat))
-                if q.distance(self._piste_vertices[self._vtree.nearest(q)]) > OSMConfig.PISTE_VERTEX_TOL_M:
+                if q.distance(self._source_lines[self._stree.nearest(q)]) > OSMConfig.PISTE_VERTEX_TOL_M:
                     off += 1
             if off / len(pts) > 0.15:
                 graph.dropped_isolated += 1
@@ -1573,8 +1630,8 @@ class OSMGraphBuilder:
             cand = ImportGraph(
                 node_points=graph.node_points, slope_runs=runs[:victim] + runs[victim + 1 :], lifts=graph.lifts
             )
-            if self._newly_stranded(cand):
-                keep_unsafe.add(id(runs[victim]))  # dropping would strand a skier — keep it
+            if self._newly_stranded(cand) or self._breaks_lift_pair(graph, cand):
+                keep_unsafe.add(id(runs[victim]))  # dropping would strand a skier / sever a lift-pair — keep it
                 continue
             logger.debug(f"[IMPORT] drop {label} '{runs[victim].name}'")
             graph.slope_runs = cand.slope_runs
@@ -1675,7 +1732,9 @@ class OSMGraphBuilder:
             pts = pts[::-1]
             pa, ida, pb, idb = pb, idb, pa, ida
         pts[0], pts[-1] = pa, pb  # R18/R33: endpoints ARE the hub points (shared object → exact)
-        if len(pts) < 2 or self._backclimb(pts) > OSMConfig.MAX_BACKCLIMB_M:
+        if len(pts) < 2 or pts[0].elevation <= pts[-1].elevation:
+            return None  # not a strict net descent (R3): level or inverted endpoints
+        if self._backclimb(pts) > OSMConfig.MAX_BACKCLIMB_M:
             return None  # climbs (R3)
         if any(pts[k].distance_to(other=pts[k + 1]) > OSMConfig.MAX_STRAIGHT_M for k in range(len(pts) - 1)):
             return None  # a long straight chord would tunnel through terrain (R7)
@@ -1795,13 +1854,20 @@ class OSMGraphBuilder:
         )
         if trunk is None or branch_long is None or branch_short is None:
             return False
+        # R40 outranks R35: refuse a fork that would re-route the descent so a lift→lift connection OSM
+        # offers is severed (e.g. N landing below a far end orphans it and any lift it fed). Same oracle
+        # guard the twin/coverage drops use — leave the pair un-forked for R34 rather than break skiing.
+        cand = ImportGraph(
+            node_points={**graph.node_points, new_id: n_pt},
+            slope_runs=[r for r in graph.slope_runs if r is not short_run and r is not long_run]
+            + [trunk, branch_long, branch_short],
+            lifts=graph.lifts,
+        )
+        if self._breaks_lift_pair(graph, cand):
+            return False
         # commit atomically
         graph.node_points[new_id] = n_pt
-        graph.slope_runs = [r for r in graph.slope_runs if r is not short_run and r is not long_run] + [
-            trunk,
-            branch_long,
-            branch_short,
-        ]
+        graph.slope_runs = cand.slope_runs
         logger.debug(f"[IMPORT] fork-split '{long_run.name}': hinge {hinge} → node {new_id} → ({far_long},{far_short})")
         return True
 
@@ -1934,6 +2000,16 @@ class OSMGraphBuilder:
         stranded_down = any(n not in good_down and n not in lift_nodes and elev[n] > min_base for n in after_nodes)
         stranded_up = any(n not in reachable for n in after_nodes)
         return stranded_down or stranded_up
+
+    def _breaks_lift_pair(self, before: ImportGraph, after: ImportGraph) -> bool:
+        """True if a drop severs a lift→lift slope-only descent OSM offers (R40 outranks R34/R2 dedup).
+        Only OSM-offered pairs (self._osm_lift_pairs) matter; no-op when none was recorded (lift-free).
+        """
+        if not self._osm_lift_pairs:
+            return False
+        offered = self._osm_lift_pairs
+        lost = (LiftReachabilityCheck.final_pairs(before) & offered) - LiftReachabilityCheck.final_pairs(after)
+        return bool(lost)
 
     def _drop_slopes_floating_past_hubs(self, graph: ImportGraph) -> None:
         """Drop slopes passing within MIN_NODE_DIST of a hub that is not their own endpoint.
