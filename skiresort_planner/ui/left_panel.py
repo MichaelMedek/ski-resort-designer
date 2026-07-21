@@ -90,13 +90,13 @@ class _UndoDialog(ConfirmDialog):
 
 
 def _perform_reset_resort() -> None:
-    """Delete the current resort's backup and prime a fresh empty one.
+    """Soft-delete the current resort's backup (renamed _DELETED, kept for recovery) and prime a fresh one.
 
     Drops all session data so init_session_state rebuilds from scratch.
     """
     current = st.session_state.get("resort_id")
     if current:
-        logger.info(f"Resetting resort: deleting backup for resort_id={current}")
+        logger.info(f"Resetting resort: soft-deleting backup for resort_id={current}")
         backup_store.delete(resort_id=current)
     st.query_params["resort"] = backup_store.new_resort_id()
     # Drop all session data so init_session_state rebuilds fresh.
