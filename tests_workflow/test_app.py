@@ -529,10 +529,39 @@ class TestReframeInPlace:
         ctx.viewing.start_flythrough()  # a single slope → 2 keyframes (start, end)
 
         key0 = _render_key(fake_st)
-        ctx.viewing.flythrough_frame = 1
+        ctx.viewing.advance_flythrough()
         key1 = _render_key(fake_st)
 
         assert key0 == key1, f"flythrough frames must render on a constant key; {key0!r}/{key1!r}"
+
+    def test_flythrough_highlight_ribbon_only_while_flying(
+        self, fake_st, monkeypatch, mock_dem_blue_slope, path_points_blue
+    ) -> None:
+        """The hot-orange current-element ribbon (id 'flythrough_highlight') is in the built deck ONLY
+        while flying — applied once at the render choke-point, never per viewing-state.
+        """
+        _stub_deckgl(monkeypatch)
+        monkeypatch.setattr(infra, "trigger_rerun", lambda *a, **k: None)
+        graph, sm, ctx = _seed_full_session(fake_st, mock_dem_blue_slope)
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        sm.view_slope(slope_id=slope.id)
+        ctx.viewing.enable_3d()
+
+        decks: list[object] = []
+        monkeypatch.setattr(
+            app, "render_pydeck_map", lambda *, deck, height, key: decks.append(deck) or pch.PydeckClickResult.empty()
+        )
+
+        def highlight_layer_ids() -> list[str]:
+            return [layer.id for layer in decks[-1].layers if layer.id == "flythrough_highlight"]
+
+        app._render_map_fragment_inner()  # not flying
+        assert highlight_layer_ids() == [], "no highlight ribbon when idle in 3D"
+
+        ctx.viewing.start_flythrough()
+        app._render_map_fragment_inner()  # flying
+        assert highlight_layer_ids() == ["flythrough_highlight"], "highlight ribbon shown while flying"
 
     def test_flythrough_dwells_at_end_before_stopping(
         self, fake_st, monkeypatch, mock_dem_blue_slope, path_points_blue
