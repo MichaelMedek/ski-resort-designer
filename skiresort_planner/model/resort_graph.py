@@ -1371,6 +1371,12 @@ class ResortGraph:
         }
         return by_kind[kind]
 
+    def segment_owner_map(self, kind: SegmentKind) -> dict[str, SegmentPath]:
+        """`{segment_id: owning entity}` for one kind — the single builder of segment→owner maps, so
+        every caller (map click-routing, orphan sweep) shares one construction. `set(...)` it for ids.
+        """
+        return {sid: owner for owner in self.entity_dict_for_kind(kind).values() for sid in owner.segment_ids}
+
     def get_entity_by_segment_id(self, segment_id: str) -> SegmentPath | None:
         """Find the finished entity (slope OR road) that owns a segment, or None.
 
@@ -1570,7 +1576,7 @@ class ResortGraph:
         fresh so it always tracks the current roads (appears/disappears as
         roads are added or removed).
         """
-        road_segment_ids = {sid for road in self.roads.values() for sid in road.segment_ids}
+        road_segment_ids = set(self.segment_owner_map(SegmentKind.ROAD))
         if not road_segment_ids:
             return []
 
@@ -1582,7 +1588,7 @@ class ResortGraph:
             road_nodes.add(seg.end_node_id)
 
         # Nodes touched by slopes (their segments) or lift stations.
-        slope_segment_ids = {sid for slope in self.slopes.values() for sid in slope.segment_ids}
+        slope_segment_ids = set(self.segment_owner_map(SegmentKind.SLOPE))
         ski_nodes: set[str] = set()
         for sid in slope_segment_ids:
             seg = self.segments[sid]
@@ -1772,8 +1778,9 @@ class ResortGraph:
 
         # Discard orphan segments: any segment owned by no slope or road.
         # Drop them (and any nodes they orphan) rather than keep undeletable data in the graph.
-        owned_segment_ids = {sid for slope in graph.slopes.values() for sid in slope.segment_ids}
-        owned_segment_ids |= {sid for road in graph.roads.values() for sid in road.segment_ids}
+        owned_segment_ids = set(graph.segment_owner_map(SegmentKind.SLOPE)) | set(
+            graph.segment_owner_map(SegmentKind.ROAD)
+        )
         orphan_segment_ids = [sid for sid in graph.segments if sid not in owned_segment_ids]
         if orphan_segment_ids:
             logger.warning(

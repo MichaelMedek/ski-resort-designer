@@ -18,6 +18,7 @@ from skiresort_planner.generators.osm_graph_builder import (
     NodeReachabilityCheck,
     OSMGraphBuilder,
     SlopeRun,
+    _lift_nodes,
     _linear_chains,
     ways_to_lines,
 )
@@ -283,7 +284,7 @@ class TestImportRules:
         component holding a lift station. A run reaching no lift must be dropped as unreachable. Prevents
         disconnected slope fragments surviving detached from the skiable system.
         """
-        lift_nodes = {n for lf in ds.graph.lifts for n in (lf.node_a, lf.node_b)}
+        lift_nodes = _lift_nodes(ds.graph)
         comp_of = {}
         for i, c in enumerate(_components(ds.graph)):
             for n in c:
@@ -381,7 +382,7 @@ class TestImportRules:
         slope floating in a near-miss beside ski infrastructure.
         """
         pts = {k: (v.lon, v.lat) for k, v in ds.graph.node_points.items()}
-        lift_nodes = {n for lf in ds.graph.lifts for n in (lf.node_a, lf.node_b)}
+        lift_nodes = _lift_nodes(ds.graph)
         slope_keys = [k for k in pts if k not in lift_nodes]
         offenders = [
             (sk, lk)
@@ -399,7 +400,7 @@ class TestImportRules:
         referencing a node missing from the registry.
         """
         node_pt = ds.graph.node_points
-        lift_nodes = {n for lf in ds.graph.lifts for n in (lf.node_a, lf.node_b)}
+        lift_nodes = _lift_nodes(ds.graph)
         # every lift references its own node coords exactly (lift geometry is authoritative)
         for lf in ds.graph.lifts:
             assert lf.node_a in node_pt and lf.node_b in node_pt
@@ -435,7 +436,7 @@ class TestImportRules:
         where a single merged hub belongs.
         """
         pts = {k: (v.lon, v.lat) for k, v in ds.graph.node_points.items()}
-        lift_nodes = {n for lf in ds.graph.lifts for n in (lf.node_a, lf.node_b)}
+        lift_nodes = _lift_nodes(ds.graph)
         slope_keys = [k for k in pts if k not in lift_nodes]
         clusters = 0
         for i, ki in enumerate(slope_keys):
@@ -704,9 +705,7 @@ class TestImportRules:
         node breaking the complete node partition.
         """
         nodes = set(ds.graph.node_points)
-        referenced = {n for r in ds.graph.slope_runs for n in (r.node_a, r.node_b)} | {
-            n for lf in ds.graph.lifts for n in (lf.node_a, lf.node_b)
-        }
+        referenced = {n for r in ds.graph.slope_runs for n in (r.node_a, r.node_b)} | _lift_nodes(ds.graph)
         dangling = sorted(referenced - nodes)
         orphaned = sorted(nodes - referenced)
         assert dangling == [], (
@@ -853,7 +852,7 @@ class TestImportRules:
         frac = OSMConfig.PARALLEL_TWIN_FRAC
         sruns = ds.graph.slope_runs
         runs = [[(p.lon, p.lat) for p in r.points] for r in sruns]
-        lift_nodes = {n for lf in ds.graph.lifts for n in (lf.node_a, lf.node_b)}
+        lift_nodes = _lift_nodes(ds.graph)
         by_name = defaultdict(list)
         for i, r in enumerate(sruns):
             if r.name:
@@ -908,7 +907,7 @@ class TestImportRules:
             deg[r.node_b] += 1
             runs_at[r.node_a].append(r)
             runs_at[r.node_b].append(r)
-        lift_nodes = {n for lf in ds.graph.lifts for n in (lf.node_a, lf.node_b)}
+        lift_nodes = _lift_nodes(ds.graph)
 
         def merge_would_climb(n: int) -> bool:
             """True if fusing the node's two runs into one through-run would back-climb over the R3 cap
@@ -930,7 +929,7 @@ class TestImportRules:
         """R37: no app-slope may span a lift station — a slope ends where you enter/exit a lift. For each
         chain from to_slope_chains, the shared node between consecutive segments must not be a lift node.
         """
-        lift_nodes = {n for lf in ds.graph.lifts for n in (lf.node_a, lf.node_b)}
+        lift_nodes = _lift_nodes(ds.graph)
         node_pt = ds.graph.node_points
         lift_xy = [(node_pt[n].lon, node_pt[n].lat) for n in lift_nodes]
         offenders = []

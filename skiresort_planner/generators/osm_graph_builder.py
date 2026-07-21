@@ -305,10 +305,7 @@ def _lift_pairs_via_dijkstra(
     idx: dict[Hashable, int] = {}
 
     def index(n: Hashable) -> int:
-        i = idx.get(n)
-        if i is None:
-            i = idx[n] = len(idx)
-        return i
+        return idx.setdefault(n, len(idx))
 
     rows: list[int] = []
     cols: list[int] = []
@@ -435,15 +432,9 @@ class LiftReachabilityCheck:
         return {(cast(int, s), cast(int, t)) for s, t in raw}
 
     def osm_pairs(self, graph: "ImportGraph") -> set[tuple[int, int]]:
-        """OSM ground truth as FINAL-node-id pairs {(ni, nj)}: skiing DOWN raw pistes reaches nj's station
-        circle from ni's downhill exits. Raw pistes are planar-noded (crossings shared, via _full_split)
-        and DEM-oriented; a MIN_NODE_DIST_M circle round each FINAL lift-node gives its EXIT verts (at/
-        below it → ski away) and ENTRY verts (any in-circle vertex → arriving = you're there). Only demands
-        a pair when nj is ≥MIN_DROP_M below ni (a real descent, not near-equal-peak DEM noise).
-
-        Reachability is ONE vectorized dijkstra: a virtual ("src", n) node feeds ni's exit verts and each
-        entry vert feeds a virtual ("tgt", n), so ni→nj iff ("src",ni) reaches ("tgt",nj) — no per-station
-        Python traversal.
+        """OSM ground truth {(ni, nj)}: from each FINAL lift-node's MIN_NODE_DIST_M circle, skiing DOWN
+        raw planar-noded pistes reaches nj's circle, demanded only when nj is ≥MIN_DROP_M below ni.
+        One vectorized dijkstra over virtual ("src",n)→exit-verts and entry-verts→("tgt",n) markers.
         """
         b, dem = self.builder, self.builder.dem
 
@@ -885,13 +876,9 @@ class OSMGraphBuilder:
         want_higher: bool,
         max_records: int | None = None,
     ) -> tuple[dict[int, int], list[int]]:
-        """Min-AGAINST-grade shortest path over the pre-merge node graph from `starts`, via scipy
-        Dijkstra. Cost is movement against the wanted direction (uphill when descending, downhill when
-        `want_higher`), each hop capped at NODE_TERRAIN_TOL_M (a DEM-sampling dip, not a real wall).
-
-        A `record`-true node is a goal: it's collected but NOT expanded through (a sink), so the walk
-        keeps routing around it for others. Returns ({node: predecessor node}, recorded goal nodes,
-        nearest-first). `max_records` caps how many goals to keep (nearest by cost).
+        """Min-against-grade shortest path from `starts` over the pre-merge graph (scipy Dijkstra): cost is
+        movement against the wanted direction, each hop capped at NODE_TERRAIN_TOL_M. A `record`-true node
+        is a goal-sink (collected, not expanded). Returns ({node: pred}, goals nearest-first, ≤max_records).
         """
         m = len(pn_elev)
         goal = [record(x) for x in range(m)]  # a goal node is a sink: no outgoing edges built for it
@@ -1926,8 +1913,11 @@ class OSMGraphBuilder:
             name = r1.name
         elif r2.name and not r1.name:
             name = r2.name
-        else:  # both named or both unnamed → the LONGER run's name (None if both unnamed)
-            name = (r1 if self._polylen_m(r1.points) >= self._polylen_m(r2.points) else r2).name
+        # both named or both unnamed → the LONGER run's name (None if both unnamed)
+        elif self._polylen_m(r1.points) >= self._polylen_m(r2.points):
+            name = r1.name
+        else:
+            name = r2.name
         merged = self._finalize_fork_run(merged_pts, graph.node_points[far1], far1, graph.node_points[far2], far2, name)
         if merged is None:
             return False

@@ -21,7 +21,7 @@ Reference: DETAILS_UI.md for interaction patterns
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pydeck as pdk
 
@@ -496,11 +496,13 @@ class MapRenderer:
         if not self.graph:
             return {"slopes": [], "roads": []}
 
-        highlight_ids = highlight_ids or []
-        defect_ids = defect_ids or set()  # entity ids to gray out; here matched against slope ids
+        if highlight_ids is None:
+            highlight_ids = []
+        if defect_ids is None:
+            defect_ids = set()  # entity ids to gray out; here matched against slope ids
         # Segment → owner maps, built once — used only for click/panel routing.
-        road_of = {sid: road for road in self.graph.roads.values() for sid in road.segment_ids}
-        slope_of = {sid: slope for slope in self.graph.slopes.values() for sid in slope.segment_ids}
+        road_of = self.graph.segment_owner_map(SegmentKind.ROAD)
+        slope_of = self.graph.segment_owner_map(SegmentKind.SLOPE)
 
         # One record per segment, sorted into its owner's bucket by segment.kind.
         # Roads are flat brown; slopes are difficulty-colored. In-build segments
@@ -566,7 +568,7 @@ class MapRenderer:
                 raise ValueError(f"segment {seg_id} has unhandled kind for rendering: {segment.kind!r}")
             slope = slope_of.get(seg_id)
             if slope is not None:
-                difficulty = slope.get_difficulty(segments=self.graph.segments)
+                difficulty = cast("Slope", slope).get_difficulty(segments=self.graph.segments)
                 slope_id: str | None = slope.id
             else:
                 difficulty = segment.difficulty
@@ -865,7 +867,7 @@ class MapRenderer:
             return pdk.Layer("ScatterplotLayer", [], id="nodes")
 
         parking_ids = {n.id for n in self.graph.get_parking_nodes()}
-        selected_ids = set(selected_node_ids or [])
+        selected_ids = set(selected_node_ids) if selected_node_ids is not None else set()
 
         node_data = []
         for node_id, node in self.graph.nodes.items():
