@@ -84,7 +84,6 @@ class MapConfig:
     # Flythrough ("Play") camera: few element-anchored keyframes, glided between by deck.gl client-side.
     FLYTHROUGH_ANCHOR_FRACTION = 0.5  # route: camera sits this far along each element
     FLYTHROUGH_LOOK_AHEAD_M = 900.0  # center this far ahead (nav-style: "here" below centre)
-    FLYTHROUGH_MAX_KEYFRAMES = 40  # cap on route keyframes (bounds reruns)
     FLYTHROUGH_STEP_S = 1.0  # sleep between keyframes ≈ glide duration
     FLYTHROUGH_TRANSITION_MS = 1600  # deck.gl glide per keyframe (> STEP_S so it never stalls)
     FLYTHROUGH_END_DWELL_S = 3.0  # hold at the final keyframe before reverting

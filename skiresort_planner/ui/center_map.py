@@ -423,7 +423,7 @@ class MapRenderer:
         A single group → 2 keyframes (start, end): deck.gl glides the camera its whole length in one smooth
         move. A multi-group route → one keyframe per group at FLYTHROUGH_ANCHOR_FRACTION + a final end
         keyframe. Bearing is the group's gross straight-line heading (start→end), so a folded slope run is
-        one steady lift→lift sightline, not a curve-tracking wobble. Route keyframes capped at MAX_KEYFRAMES.
+        one steady lift→lift sightline, not a curve-tracking wobble.
         """
         if not groups:  # nothing viewed / not flying — a real empty state, not a bad group
             return []
@@ -432,7 +432,7 @@ class MapRenderer:
             # A viewing group is always real committed geometry (slope/cable/route element) — never <2 pts.
             assert len(group.actual_polyline) >= 2, f"viewing group has <2 points: {group.actual_polyline}"
             points = [PathPoint(lon=lon, lat=lat, elevation=elev) for lon, lat, elev in group.actual_polyline]
-            here = point_at_fraction(points, fraction)
+            here = point_at_fraction(points=points, fraction=fraction)
             (s_lon, s_lat, _), (e_lon, e_lat, _) = group.straight_line
             bearing = GeoCalculator.initial_bearing_deg(lon1=s_lon, lat1=s_lat, lon2=e_lon, lat2=e_lat)
             # Nav-style: center the map AHEAD of the real position along the bearing, so "here" sits below
@@ -446,7 +446,7 @@ class MapRenderer:
             return [keyframe_at(groups[0], 0.0), keyframe_at(groups[0], 1.0)]
         keyframes = [keyframe_at(g, MapConfig.FLYTHROUGH_ANCHOR_FRACTION) for g in groups]
         keyframes.append(keyframe_at(groups[-1], 1.0))
-        return keyframes[: MapConfig.FLYTHROUGH_MAX_KEYFRAMES]
+        return keyframes
 
     @staticmethod
     def flythrough_view_state(

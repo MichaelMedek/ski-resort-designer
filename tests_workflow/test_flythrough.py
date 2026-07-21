@@ -47,10 +47,11 @@ class TestFlythroughKeyframes:
         kfs = MapRenderer.flythrough_keyframes([_SOUTH])
         assert all(abs(b - 180.0) < 1.0 for _, _, b in kfs), f"south group faces ~180, got {[k[2] for k in kfs]}"
 
-    def test_route_keyframes_capped(self) -> None:
-        # A route with more groups than the cap can't emit unbounded keyframes (bounds the rerun count).
-        many = [_SOUTH, _EAST] * MapConfig.FLYTHROUGH_MAX_KEYFRAMES
-        assert len(MapRenderer.flythrough_keyframes(many)) == MapConfig.FLYTHROUGH_MAX_KEYFRAMES
+    def test_long_grand_tour_is_not_truncated(self) -> None:
+        # A grand tour visits EVERY element — no cap. K groups → K anchor keyframes + 1 final end keyframe,
+        # so the whole tour plays (regression: a fixed cap stopped a big tour halfway).
+        groups = [_SOUTH, _EAST] * 50  # 100 groups
+        assert len(MapRenderer.flythrough_keyframes(groups)) == len(groups) + 1
 
     def test_route_one_keyframe_per_group(self) -> None:
         # Two groups (south then east) → one keyframe each + a final end keyframe, each facing its group.
