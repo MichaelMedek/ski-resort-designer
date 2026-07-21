@@ -1204,6 +1204,61 @@ class TestUndoToZeroAfterFinish:
             resolve_build_origin(build=build, graph=empty_graph)  # must not raise
         process_path_generation_pending()  # the deferred fan pass must not raise either
 
+    def test_undo_all_then_custom_connect_overlay_no_keyerror(
+        self, fake_st, empty_graph, path_factory, mock_dem_red_slope_diagonal
+    ) -> None:
+        """Regression (KeyError: 'N#' @ overlay_layers): finish a slope, undo the finish, then undo
+        every segment back to zero, then click a custom-connect target. Undoing the finish restores
+        start_node_id to the origin node; undoing all segments then cleans that node as isolated — so
+        start_node_id must NOT survive dangling into custom_connect.start_node, else the overlay crashes.
+        """
+        from skiresort_planner.ui.actions import undo_last_action
+        from skiresort_planner.ui.center_map import MapRenderer
+        from skiresort_planner.ui.mode_registry import BUILD_STATES
+
+        dem = mock_dem_red_slope_diagonal
+        sm, ctx = _session(fake_st, empty_graph, path_factory, dem)
+        ctx.build_mode.mode = SegmentKind.SLOPE.value
+
+        # Build a slope from fresh terrain, committing two segments (ADD_SEGMENTS undo actions).
+        sm.start_slope(lon=0.0, lat=0.0, elevation=2000.0, node_id=None)
+        for i in range(1, 3):
+            pts = [
+                PathPoint(
+                    lon=(i - 1) * 300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=2000.0 - (i - 1) * 10
+                ),
+                PathPoint(lon=i * 300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=2000.0 - i * 10),
+            ]
+            endpoint_ids = empty_graph.commit_paths(paths=[ProposedPathSegment(points=pts, target_difficulty="blue")])
+            seg = list(empty_graph.segments.keys())[-1]
+            sm.commit_path(segment_id=seg, endpoint_node_id=endpoint_ids[0])
+
+        # Finish → the finish-undo restores start_node_id to the origin (the node the undos then clean).
+        slope = empty_graph.finish_slope(segment_ids=ctx.build(SegmentKind.SLOPE).segments)
+        sm.finish_slope(entity_id=slope.id)
+
+        # Undo finish, then each segment → back to slope_starting; the last undo cleans the origin node.
+        while empty_graph.undo_stack:
+            undo_last_action()
+        assert sm.is_slope_starting
+        build = ctx.build(SegmentKind.SLOPE)
+        assert build.start_node_id is None, "undo-to-zero must not leave a dangling origin id"
+
+        # Click a custom-connect target from starting: start_node is copied from build.start_node_id.
+        sm.select_custom_target(target_location=(300 / MapConfig.METERS_PER_DEGREE_EQUATOR, 0.0, 1990.0))
+        assert ctx.custom_connect.start_node is None, "no live origin node → no dangling custom_connect.start_node"
+
+        # The overlay render that crashed with KeyError must succeed (the origin arrow simply isn't drawn).
+        renderer = MapRenderer(center_lon=0.0, center_lat=0.0, zoom=13, pitch=0, bearing=0)
+        BUILD_STATES[sm.get_current_state_id()].overlay_layers(
+            ctx=ctx,
+            graph=empty_graph,
+            renderer=renderer,
+            terrain_analyzer=path_factory.terrain_analyzer,
+            dem=dem,
+            use_3d=False,
+        )  # must not raise
+
 
 class TestMapEpochs:
     """camera_epoch (remount → recenter) moves ONLY on finish; dedup_epoch (click-id) moves on
