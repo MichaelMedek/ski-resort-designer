@@ -15,7 +15,7 @@ duplicate runs, ≥90% connectivity:
   5. RE-CUT ON THE PISTE: each split segment is trimmed to the arc between its two hubs ALONG the
      original piste (never a straight chord to a far hub), so geometry stays on the real OSM piste.
   6. ORIENT + DROP: orient each run downhill; drop sustained climbs, off-source runs, and runs whose
-     component holds no lift. One run per hub-pair (keep longest). Lifts ALWAYS kept.
+     component holds no lift. One run per hub-pair (keep the longest that BUILDS). Lifts ALWAYS kept.
   7. DEM-drape each kept run; endpoints pinned to hub nodes.
 
 Output is an ImportGraph the ResortGraph materializes with shared nodes as one undoable batch.
@@ -116,8 +116,8 @@ class ImportGraph:
         Each ImportSlope's runs decompose by longest-path into linear chains, split at interior lift nodes
         (R37) and at avoidable difficulty junctions (R39); names shared by several chains get a (k) suffix (R38).
         """
-        elev = {k: v.elevation for k, v in self.node_points.items()}
-        lift_nodes = OSMGraphBuilder._lift_nodes(self)
+        elev = _node_elevations(self)
+        lift_nodes = _lift_nodes(self)
         rank = {d: i for i, d in enumerate(SlopeConfig.DIFFICULTIES)}
         # Avoidable junctions: non-lift nodes with degree≥3 over slope runs + lifts — a skier can enter
         # after / leave before a steep pitch there, so a harder section behind one is over-classification.
@@ -337,14 +337,56 @@ def _lift_pairs_via_dijkstra(
     return pairs
 
 
+def _node_elevations(graph: "ImportGraph") -> dict[int, float]:
+    """Node id → elevation, read off each node's PathPoint. The single elevation lookup every reachability,
+    orientation, and spacing pass shares, so they never disagree on a node's height.
+    """
+    return {k: v.elevation for k, v in graph.node_points.items()}
+
+
+def _lift_nodes(graph: "ImportGraph") -> set[int]:
+    """Every lift-station node id (both ends of every lift). One source for 'is this a lift node' so every
+    pass agrees which nodes anchor a station and must never be treated as a plain slope junction.
+    """
+    return {n for lf in graph.lifts for n in (lf.node_a, lf.node_b)}
+
+
 def _downhill_adjacency(graph: "ImportGraph") -> dict[int, set[int]]:
     """hi→{lo} over the FINAL graph's slope runs, each oriented by its endpoints' DEM elevations."""
-    elev = {k: v.elevation for k, v in graph.node_points.items()}
+    elev = _node_elevations(graph)
     down: dict[int, set[int]] = defaultdict(set)
     for r in graph.slope_runs:
         hi, lo = (r.node_a, r.node_b) if elev[r.node_a] >= elev[r.node_b] else (r.node_b, r.node_a)
         down[hi].add(lo)
     return down
+
+
+def _uphill_adjacency(graph: "ImportGraph") -> dict[int, set[int]]:
+    """lo→{hi}: the reverse of `_downhill_adjacency`, so reachability from a set answers 'who can ski DOWN
+    to here'. The single reversed-edge construction every down-reaches query shares.
+    """
+    up: dict[int, set[int]] = defaultdict(set)
+    for hi, los in _downhill_adjacency(graph).items():
+        for lo in los:
+            up[lo].add(hi)
+    return up
+
+
+def _reaches(seeds: set[int], adjacency: dict[int, set[int]]) -> set[int]:
+    """Every node reachable from any seed over directed `adjacency` (seeds included), via scipy
+    `dijkstra(min_only=True)` — finite distance ⇒ reachable. The one reachability primitive every
+    down/up traversal shares (sinks, unreachable tops, lift coverage, stranding).
+    """
+    if not seeds:
+        return set()
+    nodes = set(seeds) | set(adjacency) | {v for vs in adjacency.values() for v in vs}
+    order = sorted(nodes)
+    idx = {n: i for i, n in enumerate(order)}
+    rows = [idx[u] for u, vs in adjacency.items() for _ in vs]
+    cols = [idx[v] for vs in adjacency.values() for v in vs]
+    mat = csr_matrix((np.ones(len(rows), dtype=np.int8), (rows, cols)), shape=(len(order), len(order)))
+    dist = dijkstra(mat, directed=True, indices=[idx[s] for s in seeds], min_only=True, unweighted=True)
+    return {order[i] for i in range(len(order)) if np.isfinite(dist[i])}
 
 
 class LiftReachabilityCheck:
@@ -370,7 +412,7 @@ class LiftReachabilityCheck:
         'Greitspitzbahn_bottom' or 'Greitspitzbahn_top / Greitspitzlift_top' when one node is two lifts'
         station. Roles rank bottom/top/mid_k by elevation within each lift's own nodes. Display only.
         """
-        elev = {k: v.elevation for k, v in graph.node_points.items()}
+        elev = _node_elevations(graph)
         by_name: dict[str, set[int]] = defaultdict(set)
         for lf in graph.lifts:
             by_name[_base_lift_name(lf.name) or f"@{lf.node_a}"] |= {lf.node_a, lf.node_b}
@@ -387,7 +429,7 @@ class LiftReachabilityCheck:
         """FINAL graph, EXACT (no circle): from each lift node, ski DOWN slope runs and collect every
         OTHER lift node reached — {(ni, nj)} in node-id space (one vectorized dijkstra).
         """
-        lift_nodes = {n for lf in graph.lifts for n in (lf.node_a, lf.node_b)}
+        lift_nodes = _lift_nodes(graph)
         down: dict[Hashable, set[Hashable]] = {k: set(v) for k, v in _downhill_adjacency(graph).items()}
         raw = _lift_pairs_via_dijkstra(down, sorted(lift_nodes), set(lift_nodes))
         return {(cast(int, s), cast(int, t)) for s, t in raw}
@@ -426,7 +468,7 @@ class LiftReachabilityCheck:
                 hi, lo = (ka, kb) if ea >= eb else (kb, ka)
                 down[hi].add(lo)
 
-        lift_nodes = sorted({n for lf in graph.lifts for n in (lf.node_a, lf.node_b)})
+        lift_nodes = sorted(_lift_nodes(graph))
         verts = list(vert_elev)
         tree = cKDTree(np.array(verts, dtype=float)) if verts else None
         radius = OSMConfig.MIN_NODE_DIST_M
@@ -453,6 +495,30 @@ class LiftReachabilityCheck:
     def missing(self, graph: "ImportGraph") -> set[tuple[int, int]]:
         """Lift→lift downhill connections OSM offers but the final graph dropped — {(ni, nj)} node ids."""
         return self.osm_pairs(graph) - self.final_pairs(graph)
+
+
+class NodeReachabilityCheck:
+    """Sanity check (R22): no slope node is stranded. Over descending slope edges a node must reach a lift
+    going DOWN (unless it sits below the lowest lift base — a valley terminus) AND be reachable FROM a lift
+    going down. Pure graph function (node ids + elevations + lifts).
+    """
+
+    @staticmethod
+    def stranded(graph: "ImportGraph") -> set[int]:
+        """Slope nodes stranded EITHER direction: can't ski DOWN to a lift (above the lowest lift base), or
+        aren't reachable FROM a lift. Empty ⇒ every skier position connects both ways.
+        """
+        elev = _node_elevations(graph)
+        lift_nodes = _lift_nodes(graph)
+        if not lift_nodes:
+            return set()
+        min_base = min(elev[n] for n in lift_nodes)
+        nodes = {n for r in graph.slope_runs for n in (r.node_a, r.node_b)}
+        reaches_lift_down = _reaches(lift_nodes, _uphill_adjacency(graph))  # can ski DOWN to a lift
+        reachable_from_lift = _reaches(lift_nodes, _downhill_adjacency(graph))  # a lift skis DOWN to it
+        stranded_down = {n for n in nodes if n not in reaches_lift_down and n not in lift_nodes and elev[n] > min_base}
+        stranded_up = {n for n in nodes if n not in reachable_from_lift}
+        return stranded_down | stranded_up
 
 
 class OSMGraphBuilder:
@@ -1082,11 +1148,11 @@ class OSMGraphBuilder:
         base and unable to ski DOWN to a lift, or unreachable FROM one. R40 outranks R22 — a drop that
         severs a lift→lift descent OSM offers is refused (the run stays, guarded).
         """
-        lift_nodes = self._lift_nodes(graph)
+        lift_nodes = _lift_nodes(graph)
         if not lift_nodes:
             return
         while True:
-            elev = self._node_elevations(graph)
+            elev = _node_elevations(graph)
             min_base = min(elev[n] for n in lift_nodes)
             reaches_lift = self._hubs_reaching_lift(graph, lift_nodes)  # can ski DOWN to a lift
             from_lift = self._skier_reachable(graph, elev)  # reachable FROM a lift (down-ski + ride up)
@@ -1192,14 +1258,14 @@ class OSMGraphBuilder:
         fixpoint. A slope whose HIGH node is not in this set can never be entered — the mirror of a downhill
         sink — so it flags an unreachable top for the reconnection pass.
         """
-        down = OSMGraphBuilder._down_adjacency(graph, elev)
+        down = _downhill_adjacency(graph)
         adjacency: dict[int, set[int]] = defaultdict(set, {k: set(v) for k, v in down.items()})
         seeds: set[int] = set()
         for lf in graph.lifts:
             base, top = (lf.node_a, lf.node_b) if elev[lf.node_a] <= elev[lf.node_b] else (lf.node_b, lf.node_a)
             adjacency[base].add(top)  # a skier at a lift base can ride up
             seeds.add(top)  # every lift top is a place a skier can start
-        return OSMGraphBuilder._reachable(seeds, adjacency)
+        return _reaches(seeds, adjacency)
 
     def _reconnect_stranded_sinks(self, graph: ImportGraph) -> None:
         """Rebuild descending runs for slope nodes stranded after drop/dedup/gate passes. Walks stored
@@ -1207,10 +1273,10 @@ class OSMGraphBuilder:
         reachable nodes, and from lift tops to their own bases. Iterated to a fixpoint (R3, R21 safe).
         """
         segments, seg_ab, hubs = self._pre_segments, self._pre_seg_ab, self._pre_hubs
-        lift_nodes = self._lift_nodes(graph)
+        lift_nodes = _lift_nodes(graph)
         if not lift_nodes:
             return
-        min_lift_base = min(self._node_elevations(graph)[n] for n in lift_nodes)
+        min_lift_base = min(_node_elevations(graph)[n] for n in lift_nodes)
         premerge = self._build_premerge_graph(segments, seg_ab)
 
         def down_sinks(g: ImportGraph, elev: dict[int, float]) -> list[tuple[int, set[int]]]:
@@ -1236,7 +1302,7 @@ class OSMGraphBuilder:
             for lf in g.lifts:
                 top = lf.node_a if elev[lf.node_a] >= elev[lf.node_b] else lf.node_b
                 base = lf.node_b if top == lf.node_a else lf.node_a
-                reach_base = self._down_reaches(g, {base}, elev)
+                reach_base = self._down_reaches(g, {base})
                 if top not in reach_base:
                     seeds.append((top, reach_base))
             return seeds
@@ -1270,7 +1336,7 @@ class OSMGraphBuilder:
         """
         pn_xy, pn_hub, pn_elev, padj = premerge
         for _ in range(20):
-            elev = self._node_elevations(graph)
+            elev = _node_elevations(graph)
             seeds = seeds_fn(graph, elev)
             if not seeds:
                 return
@@ -1282,14 +1348,6 @@ class OSMGraphBuilder:
                     added = True
             if not added:
                 return
-
-    @staticmethod
-    def _lift_nodes(graph: ImportGraph) -> set[int]:
-        """The set of all lift-station node ids (both ends of every lift). One source for 'is this a lift node'
-        so the degree-2 collapse, spacing gates, prune, and dedup all agree on which nodes anchor a station
-        and must never be treated as a plain slope junction.
-        """
-        return {n for lf in graph.lifts for n in (lf.node_a, lf.node_b)}
 
     @staticmethod
     def _group_runs_by_name(runs: list[SlopeRun]) -> dict[str, list[int]]:
@@ -1312,64 +1370,12 @@ class OSMGraphBuilder:
         return (node_a, node_b) if elev[node_a] >= elev[node_b] else (node_b, node_a)
 
     @staticmethod
-    def _node_elevations(graph: ImportGraph) -> dict[int, float]:
-        """Node id → elevation for the current graph nodes, read straight off each node's PathPoint. The single
-        elevation lookup the reachability, orientation, and spacing passes share, so they never disagree on
-        a node's height. Rebuilt per call since node_points changes across passes.
-        """
-        return {k: v.elevation for k, v in graph.node_points.items()}
-
-    @staticmethod
-    def _down_adjacency(graph: ImportGraph, elev: dict[int, float]) -> dict[int, set[int]]:
-        """Hi → {lo}: descending slope adjacency, each run oriented by its endpoints' elevations. The forward
-        direction for every reachability query (sinks, unreachable tops, lift coverage), built from one
-        orientation rule so all traversals see the same edges.
-        """
-        down: dict[int, set[int]] = defaultdict(set)
-        for r in graph.slope_runs:
-            hi, lo = OSMGraphBuilder._orient_downhill(r.node_a, r.node_b, elev)
-            down[hi].add(lo)
-        return down
-
-    @staticmethod
-    def _up_adjacency(graph: ImportGraph, elev: dict[int, float]) -> dict[int, set[int]]:
-        """Lo → {hi}: the reverse of _down_adjacency, so reachability from a set answers 'who can ski
-        DOWN to here'. Single source for the reversed-edge construction the down-reaches queries share.
-        """
-        up: dict[int, set[int]] = defaultdict(set)
-        for hi, los in OSMGraphBuilder._down_adjacency(graph, elev).items():
-            for lo in los:
-                up[lo].add(hi)
-        return up
-
-    @staticmethod
-    def _reachable(seeds: Iterable[int], adjacency: dict[int, set[int]]) -> set[int]:
-        """Every node reachable from any seed over the directed `adjacency` (seeds included).
-
-        Multi-source directed reachability via scipy `dijkstra(min_only=True)` — finite distance ⇒
-        reachable. Replaces hand-rolled BFS so every traversal uses the C-optimized primitive.
-        """
-        seeds = list(seeds)
-        if not seeds:
-            return set()
-        # Index every node that appears as a seed or in the adjacency (source or target).
-        nodes = set(seeds) | set(adjacency) | {v for vs in adjacency.values() for v in vs}
-        order = sorted(nodes)
-        idx = {n: i for i, n in enumerate(order)}
-        rows = [idx[u] for u, vs in adjacency.items() for _ in vs]
-        cols = [idx[v] for vs in adjacency.values() for v in vs]
-        n = len(order)
-        graph = csr_matrix((np.ones(len(rows), dtype=np.int8), (rows, cols)), shape=(n, n))
-        dist = dijkstra(graph, directed=True, indices=[idx[s] for s in seeds], min_only=True, unweighted=True)
-        return {order[i] for i in range(n) if np.isfinite(dist[i])}
-
-    @staticmethod
-    def _down_reaches(graph: ImportGraph, targets: set[int], elev: dict[int, float]) -> set[int]:
+    def _down_reaches(graph: ImportGraph, targets: set[int]) -> set[int]:
         """Every node that reaches any target following DESCENDING slope edges (targets included). Walks the
         reverse of the down-adjacency from the targets, so it answers 'who can ski down to here'. Used to
         test whether a lift top can still reach its own base after drops (R21/R22).
         """
-        return OSMGraphBuilder._reachable(targets, OSMGraphBuilder._up_adjacency(graph, elev))
+        return _reaches(targets, _uphill_adjacency(graph))
 
     @staticmethod
     def _hubs_reaching_lift(graph: ImportGraph, lift_nodes: set[int]) -> set[int]:
@@ -1379,8 +1385,8 @@ class OSMGraphBuilder:
         """
         # "Reaches a lift going down" == reachable FROM a lift node over the REVERSED down edges; restrict
         # to real node_points (the caller's domain). Lift nodes trivially reach themselves (distance 0).
-        up = OSMGraphBuilder._up_adjacency(graph, OSMGraphBuilder._node_elevations(graph))
-        return OSMGraphBuilder._reachable(lift_nodes, up) & set(graph.node_points)
+        up = _uphill_adjacency(graph)
+        return _reaches(lift_nodes, up) & set(graph.node_points)
 
     def _reconnect_one_sink(
         self,
@@ -1509,7 +1515,7 @@ class OSMGraphBuilder:
         slope endpoint must connect onward — vertex of another segment or lift). Repeat to
         fixpoint since pruning one can expose another.
         """
-        lift_nodes = self._lift_nodes(graph)
+        lift_nodes = _lift_nodes(graph)
         while True:
             # MultiGraph so parallel runs (same node pair) each add to endpoint degree.
             g: nx.MultiGraph = nx.MultiGraph()  # networkx untyped
@@ -1800,9 +1806,9 @@ class OSMGraphBuilder:
         # Node N spacing, in the builder's own local-metre metric. R5/R13: ≥MIN_NODE_DIST_M from every
         # node; R10: ≥RELAXED_MERGE_DIST_M from every LIFT node. Walk upstream from the true divergence
         # toward the hinge until both hold (a node too close to a lift would be pulled into its hub).
-        lift_nodes = self._lift_nodes(graph)
+        lift_nodes = _lift_nodes(graph)
         node_m = [(nid, self._to_m(p.lon, p.lat)) for nid, p in graph.node_points.items()]
-        elev = self._node_elevations(graph)
+        elev = _node_elevations(graph)
         # R6: N must not float within MIN_NODE_DIST_M of ANOTHER run's interior whose elevation SPANS N
         # (it would be a missed split). Precompute those runs' metre lines + elevation ranges once.
         other_lines = [
@@ -1876,7 +1882,7 @@ class OSMGraphBuilder:
         fuses into one A→B run through the node (shapely line_merge, in _merge_at_node), longer run's
         name wins. Iterated to fixpoint; a merge the R3/R7 gates reject leaves the node uncollapsed.
         """
-        lift_nodes = self._lift_nodes(graph)
+        lift_nodes = _lift_nodes(graph)
         for _ in range(500):  # fixpoint guard; each pass collapses one node
             # MultiGraph carrying each run's index: a degree-2 non-lift node with two DISTINCT incident
             # runs is a pass-through to collapse (a parallel-pair node has degree 2 but one shared run).
@@ -1985,21 +1991,10 @@ class OSMGraphBuilder:
         return None
 
     def _newly_stranded(self, after: ImportGraph) -> bool:
-        """True if the graph would leave any slope node orphaned after a drop.
-        Guards both R22 clauses: (a) a descent sink above a lift base, (b) an unreachable slope top.
-        Rejects drops that break skier traversal, preventing reachability violations.
+        """True if the graph would leave any slope node orphaned after a drop (R22, either direction).
+        Delegates to NodeReachabilityCheck — the one stranding definition, shared with the R22/R34 tests.
         """
-        elev = self._node_elevations(after)
-        lift_nodes = self._lift_nodes(after)
-        if not lift_nodes:
-            return False
-        min_base = min(elev[n] for n in lift_nodes)
-        good_down = self._hubs_reaching_lift(after, lift_nodes)  # nodes that reach a lift going DOWN
-        reachable = self._skier_reachable(after, elev)  # nodes reachable FROM a lift (down slopes + up lifts)
-        after_nodes = {n for r in after.slope_runs for n in (r.node_a, r.node_b)}
-        stranded_down = any(n not in good_down and n not in lift_nodes and elev[n] > min_base for n in after_nodes)
-        stranded_up = any(n not in reachable for n in after_nodes)
-        return stranded_down or stranded_up
+        return bool(NodeReachabilityCheck.stranded(after))
 
     def _breaks_lift_pair(self, before: ImportGraph, after: ImportGraph) -> bool:
         """True if a drop severs a lift→lift slope-only descent OSM offers (R40 outranks R34/R2 dedup).
@@ -2018,7 +2013,7 @@ class OSMGraphBuilder:
         """
         tol = OSMConfig.MIN_NODE_DIST_M
         hub_m = {k: self._to_m(v.lon, v.lat) for k, v in graph.node_points.items()}
-        elev = self._node_elevations(graph)
+        elev = _node_elevations(graph)
         keep: list[SlopeRun] = []
         for r in graph.slope_runs:
             line = LineString([self._to_m(p.lon, p.lat) for p in r.points])
@@ -2052,7 +2047,7 @@ class OSMGraphBuilder:
             graph.dropped_isolated += len(graph.slope_runs) - len(keep)
             graph.slope_runs = keep
         # drop now-unused slope-only nodes (keep lift stations)
-        used = {n for r in graph.slope_runs for n in (r.node_a, r.node_b)} | OSMGraphBuilder._lift_nodes(graph)
+        used = {n for r in graph.slope_runs for n in (r.node_a, r.node_b)} | _lift_nodes(graph)
         graph.node_points = {k: v for k, v in graph.node_points.items() if k in used}
 
     def _connector(self, frm: PathPoint, to_lonlat: Vertex) -> list[Vertex] | None:
