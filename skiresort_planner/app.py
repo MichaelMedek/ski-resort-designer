@@ -6,6 +6,7 @@ Features fan-pattern path generation, lift placement, and elevation profiles.
 Run: streamlit run skiresort_planner/app.py
 """
 
+import time
 import traceback
 import uuid
 from collections.abc import Callable
@@ -26,13 +27,11 @@ from skiresort_planner.generators.path_factory import PathFactory
 from skiresort_planner.logging_setup import configure_logging
 from skiresort_planner.model.message import (
     ClickingDisabledIn3DToast,
-    CustomPathComputingToast,
     DEMLoadingMessage,
     Message,
     OSMImportErrorMessage,
     OSMImportLoadingMessage,
     SizingMapMessage,
-    ToastMessage,
     WarningToast,
 )
 from skiresort_planner.model.resort_graph import ResortGraph
@@ -43,6 +42,7 @@ from skiresort_planner.ui import (
     PlannerContext,
     PlannerStateMachine,
     SidebarRenderer,
+    active_flythrough_groups,
     bump_camera_epoch,
     cancel_custom_path,
     commit_selected_path,
@@ -50,6 +50,7 @@ from skiresort_planner.ui import (
     process_custom_connect_pending,
     process_osm_import_pending,
     process_path_generation_pending,
+    process_route_plan_pending,
     reload_map,
     render_control_panel,
     trigger_rerun,
@@ -112,7 +113,7 @@ def init_session_state() -> None:
         st.session_state.map_renderer = MapRenderer(
             center_lon=center_lon,
             center_lat=center_lat,
-            zoom=MapConfig.DEFAULT_ZOOM,
+            zoom=MapConfig.VIEWING_ZOOM,
             pitch=MapConfig.DEFAULT_PITCH,
             bearing=MapConfig.DEFAULT_BEARING,
         )
@@ -188,15 +189,6 @@ def _handle_error_with_recovery(e: Exception, context_tag: str) -> None:
         trigger_rerun()
 
 
-def run_pending_action(cue: ToastMessage | None, work: Callable[[], object]) -> None:
-    """FAST in-render pending action: optional transient toast cue, then run. No spinner, no reframe.
-    Used for the light in-memory work (custom-connect, fan generation).
-    """
-    if cue is not None:
-        cue.display()
-    work()
-
-
 def run_pending_load(
     message: Message,
     work: Callable[[ProgressFn], object],
@@ -263,7 +255,7 @@ def load_dem_data() -> None:
         message=DEMLoadingMessage(),
         work=_load,
         reset_center=(MapConfig.START_CENTER_LON, MapConfig.START_CENTER_LAT),
-        reset_zoom=MapConfig.DEFAULT_ZOOM,
+        reset_zoom=MapConfig.VIEWING_ZOOM,
         catch=None,  # DEM load has no soft-failure — any error is a hard fail
         failure_message=None,
     )
@@ -319,11 +311,30 @@ def _render_map_fragment_inner() -> None:
         ctx=ctx, graph=graph, use_3d=use_3d
     )
 
+    # Flythrough ("Play"): resolve the viewed element's groups ONCE, here at the single render
+    # choke-point. Groups drive both the camera keyframes (deck.gl GLIDES between them client-side) and
+    # the hot-orange highlight over the current element — so the highlight is applied in ONE place, never
+    # scattered per viewing-state. Groups resolve LIVE (single source, never a stale snapshot).
+    fly_groups = active_flythrough_groups()
+    fly_keyframes = MapRenderer.flythrough_keyframes(groups=fly_groups)
+    assert len(fly_keyframes) != 1, "flythrough must yield 0 (nothing to fly) or ≥2 keyframes, never 1"
+    flying = bool(fly_keyframes)
+    if flying:
+        # ONE index off the current frame (keyframes are the authoritative count the driver advances).
+        # The highlighted group maps through that same index — clamped into the (shorter) group list, so
+        # the ribbon and the camera can never point at different elements.
+        keyframe_index = ctx.viewing.flythrough_index(count=len(fly_keyframes))
+        current = fly_groups[min(keyframe_index, len(fly_groups) - 1)]
+        extra_layers = extra_layers + renderer.create_highlight_ribbon(polyline=current.actual_polyline, use_3d=use_3d)
+        view_lat, view_lon, view_bearing, view_zoom, view_pitch = MapRenderer.flythrough_view_state(
+            keyframes=fly_keyframes, index=keyframe_index
+        )
+
     # Detect a view change by comparing the current framing to the last rendered one.
     last_view_3d = st.session_state.get("last_rendered_view_3d", False)
     last_pitch = st.session_state.get("last_rendered_pitch", 0.0)
     last_bearing = st.session_state.get("last_rendered_bearing", 0.0)
-    is_view_change = (
+    is_view_change = not flying and (
         use_3d != last_view_3d or abs(view_pitch - last_pitch) > 0.1 or abs(view_bearing - last_bearing) > 0.1
     )
 
@@ -335,13 +346,17 @@ def _render_map_fragment_inner() -> None:
             f"[REMOUNT] View change: 3D={last_view_3d}->{use_3d}, pitch={last_pitch:.1f}->{view_pitch:.1f}, key={new_key[:8]}..."
         )
 
-    # Store current state for next comparison
-    st.session_state.last_rendered_view_3d = use_3d
-    st.session_state.last_rendered_pitch = view_pitch
-    st.session_state.last_rendered_bearing = view_bearing
+    # Store current state for next comparison — but NOT while flying, so the pitch/bearing the flythrough
+    # sweeps through don't trip is_view_change on the frame Stop restores the entry fit.
+    if not flying:
+        st.session_state.last_rendered_view_3d = use_3d
+        st.session_state.last_rendered_pitch = view_pitch
+        st.session_state.last_rendered_bearing = view_bearing
 
-    # Update renderer with calculated view state BEFORE creating deck
+    # Update renderer with calculated view state BEFORE creating deck. While flying, request deck.gl
+    # easing so the camera glides between keyframes instead of jumping.
     renderer.update_view(lat=view_lat, lon=view_lon, zoom=view_zoom, pitch=view_pitch, bearing=view_bearing)
+    renderer.set_flythrough_easing(flying=flying)
 
     def _build_deck() -> pdk.Deck:
         return renderer.render(
@@ -352,7 +367,7 @@ def _render_map_fragment_inner() -> None:
             extra_layers=extra_layers,
             terrain_layer=basemap_layer,
             use_3d=use_3d,
-            merge_node_ids=build_state.merge_highlight_node_ids(ctx),
+            selected_node_ids=build_state.selected_node_ids(ctx),
         )
 
     deck = _build_deck()
@@ -362,6 +377,9 @@ def _render_map_fragment_inner() -> None:
     # None only on first load, before the js-eval round-trip resolves (cached thereafter, so reruns keep the size).
     height = viewport_map_height()
     if height is None:
+        # A None height mid-session blanks the map for this rerun (placeholder instead of the deck) — a
+        # flicker source distinct from a key remount. Flagged so a reproduction shows it in the log.
+        logger.debug("[MAP] height=None → SizingMapMessage placeholder (map blank this rerun, not a remount)")
         SizingMapMessage().display()
         return
 
@@ -369,11 +387,12 @@ def _render_map_fragment_inner() -> None:
     # height must change the key to force a remount when it changes.
     force_key = st.session_state.get("force_remount_key", "init")
     map_key = f"main_map_{st.session_state.camera_epoch}_{force_key}_{'3d' if use_3d else '2d'}_h{height}"
-    # Diagnostic: a CHANGED map_key remounts the deck.gl iframe (camera snaps to initial_view_state).
+    # A CHANGED map_key remounts the deck.gl iframe (WebGL teardown + tile re-fetch = the ~0.5s gray-out);
+    # a same-pitch reframe must stay key_changed=False (in-place). is_view_change is the intended 2D↔3D remount.
     last_map_key = st.session_state.get("_last_map_key")
     logger.debug(
-        f"[MAP] key={map_key} (changed={last_map_key != map_key}) height={height} "
-        f"camera_epoch={st.session_state.camera_epoch} force_key={force_key} "
+        f"[MAP] key={map_key} changed={last_map_key is not None and last_map_key != map_key} "
+        f"is_view_change={is_view_change} height={height} camera_epoch={st.session_state.camera_epoch} "
         f"view=({view_lat:.5f},{view_lon:.5f},z{view_zoom},p{view_pitch:.1f},b{view_bearing:.1f})"
     )
     st.session_state._last_map_key = map_key
@@ -392,6 +411,24 @@ def _render_map_fragment_inner() -> None:
         )
         if click_info:
             dispatch_click(click_info=click_info)
+
+
+def _advance_flythrough_if_playing() -> None:
+    """Flythrough frame driver — call AFTER the control panel renders so the Stop button is drawn before
+    this rerun fires (trigger_rerun raises StopExecution). Advances one keyframe per rerun; the camera
+    glides IN PLACE (constant key). At the last keyframe it PARKS (stops advancing, no rerun) so the view
+    stays on the finish until the user presses Stop or closes the panel.
+    """
+    ctx: PlannerContext = st.session_state.context
+    viewing = ctx.viewing
+    keyframes = MapRenderer.flythrough_keyframes(groups=active_flythrough_groups())
+    if not keyframes:
+        return
+    if viewing.flythrough_frame >= len(keyframes) - 1:
+        return  # parked on the final keyframe — hold here (no rerun) until Stop/Close
+    time.sleep(MapConfig.FLYTHROUGH_STEP_S)
+    viewing.advance_flythrough()
+    trigger_rerun()
 
 
 # =============================================================================
@@ -451,9 +488,11 @@ def _run_app_ui() -> None:
         )
         return  # slow helper reframed/warned + reran; skip the normal UI this render
     if ctx.pending.custom_connect:
-        run_pending_action(cue=CustomPathComputingToast(), work=process_custom_connect_pending)
+        process_custom_connect_pending()
     elif ctx.pending.fan_generation:
-        run_pending_action(cue=None, work=process_path_generation_pending)  # fast — no cue needed
+        process_path_generation_pending()
+    elif ctx.pending.route_plan_generation:
+        process_route_plan_pending()
 
     # Sidebar (fire-and-forget: its panels call actions directly on button clicks)
     sidebar = SidebarRenderer(state_machine=sm, context=ctx, graph=graph)
@@ -473,6 +512,10 @@ def _run_app_ui() -> None:
             on_commit=commit_selected_path,
             on_cancel_connection=cancel_custom_path,
         )
+
+    # Advance the flythrough LAST — after the panel (incl. its Stop button) has rendered, so this rerun
+    # doesn't preempt the Stop control. Only reruns while a flythrough is playing.
+    _advance_flythrough_if_playing()
 
 
 if __name__ == "__main__":

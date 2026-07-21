@@ -90,13 +90,13 @@ class _UndoDialog(ConfirmDialog):
 
 
 def _perform_reset_resort() -> None:
-    """Delete the current resort's backup and prime a fresh empty one.
+    """Soft-delete the current resort's backup (renamed _DELETED, kept for recovery) and prime a fresh one.
 
     Drops all session data so init_session_state rebuilds from scratch.
     """
     current = st.session_state.get("resort_id")
     if current:
-        logger.info(f"Resetting resort: deleting backup for resort_id={current}")
+        logger.info(f"Resetting resort: soft-deleting backup for resort_id={current}")
         backup_store.delete(resort_id=current)
     st.query_params["resort"] = backup_store.new_resort_id()
     # Drop all session data so init_session_state rebuilds fresh.
@@ -142,24 +142,18 @@ class SidebarRenderer:
         self.ctx = context
         self.graph = graph
 
-    def _disabled_button_reason(self, mode: str, *, is_building_or_placing: bool) -> str:
-        """Why the button for `mode` is greyed out (helper for _get_button_help's disabled branch)."""
+    def _disabled_button_reason(self, *, is_building_or_placing: bool) -> str:
+        """Why a greyed-out build button is disabled (helper for _get_button_help's disabled branch)."""
         if is_building_or_placing:
             return "Finish or cancel current action first"
-        if self.sm.is_idle_viewing_slope and not BuildMode.is_slope(mode):
-            return "Close slope panel to switch build mode"
-        if self.sm.is_idle_viewing_lift and not BuildMode.is_lift(mode):
-            return "Close lift panel to switch build mode"
-        if self.sm.is_idle_viewing_road and not BuildMode.is_road(mode):
-            return "Close road panel to switch build mode"
-        raise ValueError(
-            f"Button {mode} is disabled but no known reason (building_or_placing={is_building_or_placing})"
-        )
+        # The ONLY other way a builder is disabled is a viewing panel being open.
+        assert not self.sm.is_idle_ready, "a builder button is only disabled while building/placing or viewing"
+        return "Close the open panel to switch build mode"
 
     def _get_button_help(self, *, mode: str, label: str, is_disabled: bool, is_building_or_placing: bool) -> str:
         """Generate contextual help text for a build-mode button (disabled reason or enabled action)."""
         if is_disabled:
-            return self._disabled_button_reason(mode, is_building_or_placing=is_building_or_placing)
+            return self._disabled_button_reason(is_building_or_placing=is_building_or_placing)
         if self.sm.is_idle_viewing_lift and BuildMode.is_lift(mode):
             return f"Change viewed lift to {label}"
         if BuildMode.is_slope(mode):
@@ -170,8 +164,10 @@ class SidebarRenderer:
             return f"Select, then click on map to start placing a {label}"
         if BuildMode.is_import(mode):
             return "Select, then click the map to place an OpenStreetMap import area."
-        if BuildMode.is_merge(mode):
-            return "Select, then click node markers to merge them into one."
+        if BuildMode.is_node_edit(mode):
+            return "Select, then click node markers to edit them (add, delete or merge)."
+        if BuildMode.is_route(mode):
+            return "Select, then click a start node and an end node to see the best routes."
         raise ValueError(f"Button {mode} has no help text (is_disabled={is_disabled})")
 
     def render(self) -> None:
@@ -240,7 +236,7 @@ class SidebarRenderer:
             return
 
         logger.info(f"UI: Search centered map on {result.display_name!r} ({result.lat:.4f}, {result.lon:.4f})")
-        reload_map(center=(result.lon, result.lat), zoom=MapConfig.DEFAULT_ZOOM)
+        reload_map(center=(result.lon, result.lat), zoom=MapConfig.VIEWING_ZOOM)
 
     def _render_always_available(self) -> None:
         """Render the always-available controls: place search, undo, and reset view."""
@@ -279,7 +275,7 @@ class SidebarRenderer:
                 logger.warning(f"Reset View cleaned {removed} orphaned node(s)")
             # Reset zoom/pitch/bearing (reset_view) but keep the user where they are: reframe on the
             # current center at the default zoom.
-            reload_map(center=(self.ctx.map.lon, self.ctx.map.lat), zoom=MapConfig.DEFAULT_ZOOM)
+            reload_map(center=(self.ctx.map.lon, self.ctx.map.lat), zoom=MapConfig.VIEWING_ZOOM)
 
     def _render_mode_selector(self) -> None:
         """Render unified build type selector with 7 buttons.
@@ -339,7 +335,7 @@ class SidebarRenderer:
                 with col:
                     render_op_button(op)
 
-        # UTILITY group (import + node-merge): visually separated by a divider — same category
+        # UTILITY group (OSM importer + node editor): visually separated by a divider — same category
         # technically, but optically distinct from the real builders.
         utilities = [op for op in OPERATIONS.values() if op.group == OperationGroup.UTILITY]
         if utilities:
@@ -368,13 +364,18 @@ class SidebarRenderer:
             # Header with counts
             st.markdown(f"**{total_slopes} Slopes • {total_lifts} Lifts • {total_roads} Roads**")
 
-            # Connectivity badges — surfaced here so they're seen without clicking each entity.
-            disconnected = stats["disconnected_count"]
-            if disconnected > 0:
-                st.markdown(f"⚠️ {disconnected} disconnected from core area")
-            no_return = stats["no_return_count"]
-            if no_return > 0:
-                st.markdown(f"⚠️ {no_return} one-way (can't loop back)")
+            # Connectivity — one block per category (count in heading + biggest offenders) so
+            # they're seen without clicking each entity. One loop so the two lists can't drift apart.
+            defects = stats["defects"]
+            for attr, heading in (
+                ("disconnected", "Disconnected from core area"),
+                ("no_return", "One-way (can't loop back)"),
+            ):
+                offenders = sorted((d for d in defects if getattr(d, attr)), key=lambda d: d.length_m, reverse=True)
+                if offenders:
+                    st.markdown(f"⚠️ **{len(offenders)} {heading}** (largest {min(3, len(offenders))}):")
+                    for d in offenders[:3]:
+                        st.markdown(f"&nbsp;&nbsp;• {d.name} — {d.length_m / 1000:.1f}km")
 
             # Elevation range across all nodes
             elev_range = self.graph.get_elevation_range()
@@ -483,7 +484,7 @@ class SidebarRenderer:
                         center = loaded_graph.get_center()
                         if center is not None:
                             logger.info(f"Centered map on mean: ({center[1]:.5f}, {center[0]:.5f})")
-                            reload_map(center=center, zoom=MapConfig.DEFAULT_ZOOM)
+                            reload_map(center=center, zoom=MapConfig.VIEWING_ZOOM)
                         else:
                             bump_camera_epoch()
                             trigger_rerun()

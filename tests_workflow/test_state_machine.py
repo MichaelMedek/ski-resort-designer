@@ -18,6 +18,9 @@ from statemachine.exceptions import TransitionNotAllowed
 
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
+from skiresort_planner.ui.context import BuildMode
+from skiresort_planner.ui.kind_spec import KIND_SPECS
+from skiresort_planner.ui.mode_registry import OPERATIONS
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 from tests_workflow.conftest import SMAndCtx
 
@@ -474,7 +477,7 @@ class TestViewingEntity:
         assert sm.viewing_entity == (EntityKind.LIFT, "L3")
 
 
-class TestImportPlacing:
+class TestImportSelecting:
     """The click-to-place OSM import mode: start_import from any idle state stores the box center;
     retarget re-places it; cancel/complete return to idle (cancel also clears the center).
     """
@@ -484,22 +487,31 @@ class TestImportPlacing:
 
         return PlannerStateMachine.create(graph=ResortGraph(), add_ui_listener=False)
 
-    @pytest.mark.parametrize(
-        "idle_state",
-        ["idle_ready", "idle_viewing_slope", "idle_viewing_lift", "idle_viewing_road"],
-    )
-    def test_start_import_from_every_idle_state(self, idle_state) -> None:
+    def test_start_import_from_idle_ready(self) -> None:
+        # Import is a utility: it starts ONLY from idle_ready (no "own kind" to click from a view).
         sm, ctx = self._sm()
-        _force_state(sm=sm, state_name=idle_state)
         sm.start_import(lon=10.3, lat=47.0)
-        assert sm.is_import_placing
+        assert sm.is_import_selecting
         assert ctx.pending.osm_import_center_lon == 10.3 and ctx.pending.osm_import_center_lat == 47.0
+
+    @pytest.mark.parametrize("view_state", ["idle_viewing_slope", "idle_viewing_lift", "idle_viewing_road"])
+    def test_utility_starts_not_allowed_from_a_view(self, view_state) -> None:
+        # Regression: the utilities (import/merge/route) must NOT be enterable from a viewing state —
+        # unlike the builders (slope/lift/road), they have no own kind to click, so they are idle-only.
+        # The transitions simply do not exist, so the SM refuses the event.
+        from statemachine.exceptions import TransitionNotAllowed
+
+        for event in ("start_import", "start_node_edit", "start_route"):
+            sm, _ = self._sm()
+            _force_state(sm=sm, state_name=view_state)
+            with pytest.raises(TransitionNotAllowed):
+                sm.send(event)
 
     def test_retarget_keeps_placing(self) -> None:
         sm, ctx = self._sm()
         sm.start_import(lon=1.0, lat=2.0)
         sm.retarget_import()
-        assert sm.is_import_placing, "retarget is a self-loop"
+        assert sm.is_import_selecting, "retarget is a self-loop"
 
     def test_cancel_returns_to_idle_and_clears_center(self) -> None:
         sm, ctx = self._sm()
@@ -515,14 +527,14 @@ class TestImportPlacing:
         sm.complete_import()
         assert sm.is_idle_ready
 
-    def test_import_placing_is_not_idle(self) -> None:
+    def test_import_selecting_is_not_idle(self) -> None:
         sm, _ = self._sm()
         sm.start_import(lon=1.0, lat=2.0)
         assert not sm.is_idle and not sm.is_any_slope_state and not sm.is_any_road_state
 
     def test_force_idle_from_import_runs_exit_teardown(self) -> None:
         # force_idle (the undo path) bypasses transitions but MUST still run the real exit teardown
-        # via _set_current_state → _EXIT_HOOKS. Undoing an OSM import from import_placing has to clear
+        # via _set_current_state → _EXIT_HOOKS. Undoing an OSM import from import_selecting has to clear
         # the placed box center, or a stale box resurfaces. Guards the force/undo exit dispatch.
         sm, ctx = self._sm()
         sm.start_import(lon=1.0, lat=2.0)
@@ -532,7 +544,7 @@ class TestImportPlacing:
             sm.force_idle()
 
         assert sm.is_idle_ready
-        assert ctx.pending.osm_import_center_lon is None, "force_idle must run exit_import_placing (clears center)"
+        assert ctx.pending.osm_import_center_lon is None, "force_idle must run exit_import_selecting (clears center)"
         assert ctx.pending.osm_import_center_lat is None
 
 
@@ -691,3 +703,184 @@ class TestAsMermaid:
         sm.send("cancel_slope")
         sm.start_road(location=PathPoint(lon=0.0, lat=0.0, elevation=2000.0))
         assert sm.as_mermaid().startswith("stateDiagram-v2")
+
+
+# =============================================================================
+# OPERATION TAXONOMY vs STATE MACHINE STRUCTURE
+# =============================================================================
+# Every left-panel OPERATION maps onto the state machine in ONE of three shapes. These tests derive
+# the expected structure from the registries (OPERATIONS / KIND_SPECS) and assert the live state
+# graph matches, so an inconsistent machine fails here until fixed.
+#
+#   PATH ops           (slope, road)   builder, multi-segment
+#       -> states: <p>_starting, <p>_building, <p>_custom_path  + viewing idle_viewing_<p>
+#   POINT-TO-POINT ops (lift, route)   two picks placed on the map, then a result to view
+#       -> state:  <p>_placing                                  + viewing idle_viewing_<p>
+#   POINT-ONLY ops     (import, node_edit) SELECT an area/nodes, mutate the graph, return to idle
+#       -> state:  <p>_selecting                                + NO viewing state
+
+
+def _op_prefix(mode: str) -> str:
+    """The state-id prefix an operation's states use. The four lift types collapse to 'lift' (one
+    lift_placing/idle_viewing_lift), matching the SM naming; every other op is its own mode string.
+    """
+    return "lift" if BuildMode.is_lift(mode) else mode
+
+
+# Category prefixes, DERIVED from the registries (not hand-listed):
+#  - path: the KIND_SPECS kinds (the only multi-segment builders).
+#  - point-to-point: a builder that is not a path kind (lift), plus route (a utility that yields a view).
+#  - point-only: the remaining utilities (import, node_edit) — mutate then return to idle.
+_PATH_PREFIXES = {spec.kind.value for spec in KIND_SPECS.values()}
+_POINT_TO_POINT_PREFIXES = {
+    _op_prefix(m)
+    for m, op in OPERATIONS.items()
+    if _op_prefix(m) not in _PATH_PREFIXES and (op.group == "builder" or m == BuildMode.ROUTE)
+}
+_POINT_ONLY_PREFIXES = {
+    _op_prefix(m) for m in OPERATIONS if _op_prefix(m) not in (_PATH_PREFIXES | _POINT_TO_POINT_PREFIXES)
+}
+
+
+def _sm_state_ids_set() -> set[str]:
+    return {s.id for s in PlannerStateMachine.states}
+
+
+def _sm_edges() -> dict[str, set[str]]:
+    """State id -> set of directly reachable target state ids (live library graph)."""
+    return {s.id: {t.target.id for t in s.transitions} for s in PlannerStateMachine.states}
+
+
+class TestOperationTaxonomy:
+    """The three categories partition the operation set, and each op maps to the right SM states."""
+
+    def test_categories_partition_all_operations(self) -> None:
+        all_prefixes = {_op_prefix(m) for m in OPERATIONS}
+        union = _PATH_PREFIXES | _POINT_TO_POINT_PREFIXES | _POINT_ONLY_PREFIXES
+        assert union == all_prefixes, f"categories miss/extra vs OPERATIONS: {union ^ all_prefixes}"
+        assert not (_PATH_PREFIXES & _POINT_TO_POINT_PREFIXES)
+        assert not (_PATH_PREFIXES & _POINT_ONLY_PREFIXES)
+        assert not (_POINT_TO_POINT_PREFIXES & _POINT_ONLY_PREFIXES)
+
+    def test_expected_membership(self) -> None:
+        # Pin concrete membership so a mis-categorised op (e.g. route slipping into point-only) fails.
+        assert {"slope", "road"} == _PATH_PREFIXES
+        assert {"lift", "route"} == _POINT_TO_POINT_PREFIXES
+        assert {"import", "node_edit"} == _POINT_ONLY_PREFIXES
+
+    @pytest.mark.parametrize("prefix", sorted(_PATH_PREFIXES))
+    def test_path_op_has_starting_building_custompath_and_viewing(self, prefix: str) -> None:
+        states = _sm_state_ids_set()
+        for suffix in ("starting", "building", "custom_path"):
+            assert f"{prefix}_{suffix}" in states, f"path op {prefix} missing {prefix}_{suffix}"
+        assert f"idle_viewing_{prefix}" in states, f"path op {prefix} missing its viewing state"
+        assert f"{prefix}_placing" not in states, f"path op {prefix} must NOT have a *_placing state"
+        assert f"{prefix}_selecting" not in states, f"path op {prefix} must NOT have a *_selecting state"
+
+    @pytest.mark.parametrize("prefix", sorted(_POINT_TO_POINT_PREFIXES))
+    def test_point_to_point_op_has_placing_and_viewing(self, prefix: str) -> None:
+        states = _sm_state_ids_set()
+        assert f"{prefix}_placing" in states, f"point-to-point op {prefix} missing {prefix}_placing"
+        assert f"idle_viewing_{prefix}" in states, f"point-to-point op {prefix} missing its viewing state"
+        for suffix in ("starting", "building", "custom_path", "selecting"):
+            assert f"{prefix}_{suffix}" not in states, f"point-to-point op {prefix} must not have {prefix}_{suffix}"
+
+    @pytest.mark.parametrize("prefix", sorted(_POINT_ONLY_PREFIXES))
+    def test_point_only_op_has_selecting_and_no_viewing(self, prefix: str) -> None:
+        # Point-only utilities SELECT an area/nodes (they don't place map points), so their state is
+        # <p>_selecting, NOT <p>_placing — and they have nothing to view afterwards.
+        states = _sm_state_ids_set()
+        assert f"{prefix}_selecting" in states, f"point-only op {prefix} missing {prefix}_selecting"
+        assert f"idle_viewing_{prefix}" not in states, (
+            f"point-only op {prefix} mutates then returns to idle — it must have NO viewing state"
+        )
+        for suffix in ("starting", "building", "custom_path", "placing"):
+            assert f"{prefix}_{suffix}" not in states, f"point-only op {prefix} must NOT have {prefix}_{suffix}"
+
+
+class TestOperationTransitions:
+    """Each operation's entry/exit wiring, derived from its category and asserted on the live graph."""
+
+    def test_idle_ready_enters_every_operation(self) -> None:
+        # idle_ready is the single hub: it must start EVERY operation (its entry state).
+        targets = _sm_edges()["idle_ready"]
+        for prefix in _PATH_PREFIXES:
+            assert f"{prefix}_starting" in targets, f"idle_ready cannot start path op {prefix}"
+        for prefix in _POINT_TO_POINT_PREFIXES:
+            assert f"{prefix}_placing" in targets, f"idle_ready cannot start point-to-point op {prefix}"
+        for prefix in _POINT_ONLY_PREFIXES:
+            assert f"{prefix}_selecting" in targets, f"idle_ready cannot start point-only op {prefix}"
+
+    def test_idle_ready_opens_every_entity_viewing_state(self) -> None:
+        # The entity viewers (slope/road/lift) open directly from idle by clicking an entity. Route's
+        # viewing state is reached via its placing flow (complete_route), NOT from idle.
+        targets = _sm_edges()["idle_ready"]
+        for prefix in _PATH_PREFIXES | {"lift"}:
+            assert f"idle_viewing_{prefix}" in targets, f"idle_ready cannot view {prefix}"
+
+    @pytest.mark.parametrize("prefix", sorted(_PATH_PREFIXES | _POINT_TO_POINT_PREFIXES))
+    def test_op_reaches_its_viewing_state(self, prefix: str) -> None:
+        # Every result-producing op (path + point-to-point) lands in ITS viewing state when it
+        # finishes/completes — from its terminal build/placing state.
+        edges = _sm_edges()
+        viewing = f"idle_viewing_{prefix}"
+        source = f"{prefix}_building" if prefix in _PATH_PREFIXES else f"{prefix}_placing"
+        assert viewing in edges[source], f"{source} cannot finish into {viewing}"
+
+    @pytest.mark.parametrize("prefix", sorted(_PATH_PREFIXES))
+    def test_path_op_custom_path_reaches_its_viewing_state(self, prefix: str) -> None:
+        # Every custom path op lands in ITS viewing state when it
+        # finishes/completes — from its alternative terminal custom path state.
+        edges = _sm_edges()
+        viewing = f"idle_viewing_{prefix}"
+        source = f"{prefix}_custom_path"
+        assert viewing in edges[source], f"{source} cannot finish into {viewing}"
+
+    @pytest.mark.parametrize("prefix", sorted(_PATH_PREFIXES))
+    def test_path_op_custom_path_reachable_from_its_build_state(self, prefix: str) -> None:
+        # The custom_path state is entered (select_custom_target) from BOTH fan states — the
+        # 0-segment starting state and the 1+-segment building state.
+        edges = _sm_edges()
+        custom = f"{prefix}_custom_path"
+        assert custom in edges[f"{prefix}_starting"], f"{prefix}_starting cannot reach {custom}"
+        assert custom in edges[f"{prefix}_building"], f"{prefix}_building cannot reach {custom}"
+
+    @pytest.mark.parametrize("prefix", sorted(_PATH_PREFIXES))
+    def test_path_op_custom_path_reaches_its_build_state(self, prefix: str) -> None:
+        # From custom_path, committing/continuing (or cancel-with-segments) returns to the building state.
+        edges = _sm_edges()
+        building = f"{prefix}_building"
+        assert building in edges[f"{prefix}_custom_path"], f"{prefix}_custom_path cannot reach {building}"
+
+    def test_every_state_returns_to_idle_ready(self) -> None:
+        # No dead-ends: every state can reach idle_ready (transitively) via cancel/close/finish.
+        edges = _sm_edges()
+        reverse: dict[str, set[str]] = {s: set() for s in edges}
+        for src, tgts in edges.items():
+            for t in tgts:
+                reverse[t].add(src)
+        seen: set[str] = set()
+        stack = ["idle_ready"]
+        while stack:
+            n = stack.pop()
+            if n in seen:
+                continue
+            seen.add(n)
+            stack.extend(reverse[n])
+        assert set(edges) == seen, f"states with no path back to idle_ready: {set(edges) - seen}"
+
+    @pytest.mark.parametrize("prefix", sorted(_PATH_PREFIXES | _POINT_TO_POINT_PREFIXES))
+    def test_viewing_state_closes_to_idle_ready(self, prefix: str) -> None:
+        assert "idle_ready" in _sm_edges()[f"idle_viewing_{prefix}"], f"idle_viewing_{prefix} can't close to idle"
+
+    def test_entity_viewers_switch_among_each_other(self) -> None:
+        # The three entity viewers can switch directly to each other (click a different entity while a
+        # panel is open). Route-view can switch INTO them too.
+        edges = _sm_edges()
+        entity_viewers = ["idle_viewing_slope", "idle_viewing_road", "idle_viewing_lift"]
+        for src in entity_viewers:
+            for dst in entity_viewers:
+                if src != dst:
+                    assert dst in edges[src], f"{src} cannot switch to {dst}"
+        for dst in entity_viewers:
+            assert dst in edges["idle_viewing_route"], f"idle_viewing_route cannot switch to {dst}"

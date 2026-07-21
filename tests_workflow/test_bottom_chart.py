@@ -1,6 +1,6 @@
 """Unit tests for ProfileChart elevation-profile rendering (ui/bottom_chart.py)."""
 
-M = 111320.0
+from skiresort_planner.constants import MapConfig
 
 
 class TestProfileChartRendering:
@@ -19,7 +19,10 @@ class TestProfileChartRendering:
         from skiresort_planner.ui.bottom_chart import render_building_profile
 
         # A long segment whose steepest 300m section is markedly steeper than its average.
-        pts = [PathPoint(lon=0.0, lat=-d / M, elevation=2000.0 - e) for d, e in [(0, 0), (300, 120), (700, 150)]]
+        pts = [
+            PathPoint(lon=0.0, lat=-d / MapConfig.METERS_PER_DEGREE_EQUATOR, elevation=2000.0 - e)
+            for d, e in [(0, 0), (300, 120), (700, 150)]
+        ]
         empty_graph.commit_paths(paths=[ProposedPathSegment(points=pts, target_difficulty="red")])
         seg_ids = list(empty_graph.segments.keys())
         segs = [empty_graph.segments[s] for s in seg_ids]
@@ -80,7 +83,10 @@ class TestProfileChartRendering:
         from skiresort_planner.model.proposed_path import ProposedPathSegment
         from skiresort_planner.ui.bottom_chart import ProfileChart
 
-        pts = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=300 / M, lat=0.0, elevation=1990.0)]
+        pts = [
+            PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
+            PathPoint(lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=1990.0),
+        ]
         empty_graph.commit_paths(
             paths=[ProposedPathSegment(points=pts, is_connector=True, kind=SegmentKind.ROAD)], record_undo=False
         )
@@ -102,7 +108,9 @@ class TestProfileChartRendering:
 
         dem = mock_dem_blue_slope
         bottom, _ = empty_graph.get_or_create_node(
-            lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M)
+            lon=0.0,
+            lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         )
         top, _ = empty_graph.get_or_create_node(
             lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)
@@ -232,7 +240,9 @@ class TestProfileChartRendering:
 
         dem = mock_dem_blue_slope
         bottom, _ = empty_graph.get_or_create_node(
-            lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M)
+            lon=0.0,
+            lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         )
         top, _ = empty_graph.get_or_create_node(
             lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)

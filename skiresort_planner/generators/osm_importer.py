@@ -19,7 +19,6 @@ connected-graph builder's job — see the `LiftOnlyImporter` (lifts only, raw OS
 
 import json
 import logging
-import math
 import re
 import time
 from abc import ABC, abstractmethod
@@ -75,9 +74,9 @@ class OverpassElement(TypedDict, total=False):
 
 def bbox_around(center_lon: float, center_lat: float, half_width_m: float) -> BBox:
     """The square bounding box of the given half-width (metres) centered on (lon, lat)."""
-    m_per_deg = GeoCalculator.haversine_distance_m(lat1=0.0, lon1=0.0, lat2=1.0, lon2=0.0)
-    dlat = half_width_m / m_per_deg
-    dlon = dlat / max(math.cos(math.radians(center_lat)), 1e-6)
+    m_per_deg_lon, m_per_deg_lat = GeoCalculator.meters_per_degree(lat=center_lat)
+    dlat = half_width_m / m_per_deg_lat
+    dlon = half_width_m / m_per_deg_lon
     return (center_lon - dlon, center_lat - dlat, center_lon + dlon, center_lat + dlat)
 
 

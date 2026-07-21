@@ -9,20 +9,23 @@ import math
 
 from scipy.interpolate import splev, splprep
 
-from skiresort_planner.constants import GeometricTuningConfig
+from skiresort_planner.constants import GeometricTuningConfig, MapConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.model.path_point import PathPoint
-from skiresort_planner.model.path_smoothing import resample_cubic_spline, smooth_joined_path, smooth_proposal_points
-
-M = 111320.0  # metres per degree near the equator
+from skiresort_planner.model.path_smoothing import (
+    resample_cubic_spline,
+    simplify_path_points,
+    smooth_joined_path,
+    smooth_proposal_points,
+)
 
 
 def _min_curvature_radius_m(points: list[PathPoint]) -> float:
     """Smallest turn radius (m) along a cubic through points. A cusp (sharp edge) → ~0."""
     lat0 = points[0].lat
-    k = M * math.cos(math.radians(lat0))
+    k, m_per_deg_lat = GeoCalculator.meters_per_degree(lat=lat0)
     xs = [p.lon * k for p in points]
-    ys = [p.lat * M for p in points]
+    ys = [p.lat * m_per_deg_lat for p in points]
     u = [0.0]
     for i in range(1, len(points)):
         u.append(u[-1] + max(1e-9, math.hypot(xs[i] - xs[i - 1], ys[i] - ys[i - 1])))
@@ -72,7 +75,7 @@ def _turn_deg(a: PathPoint, b: PathPoint, c: PathPoint) -> float:
 
 def _sharp_L_path() -> list[list[PathPoint]]:
     """Two legs meeting at a ~90° corner: east then north, ~10m point spacing, gentle descent."""
-    step = 10 / M
+    step = 10 / MapConfig.METERS_PER_DEGREE_EQUATOR
     seg1 = _leg(0.0, 0.0, step, 0.0, 30, z0=2100.0, dz=-0.5)  # heads east
     j = seg1[-1]
     seg2 = _leg(j.lon, j.lat, 0.0, step, 30, z0=j.elevation, dz=-0.5)  # heads north
@@ -124,7 +127,7 @@ class TestSmoothJoinedPath:
         assert len(out[0]) >= 2 and len(out[1]) >= 2, "each segment keeps >=2 points"
 
     def test_three_segments_share_every_junction(self) -> None:
-        step = 10 / M
+        step = 10 / MapConfig.METERS_PER_DEGREE_EQUATOR
         s1 = _leg(0.0, 0.0, step, 0.0, 20, z0=2100.0, dz=-0.5)
         s2 = _leg(s1[-1].lon, s1[-1].lat, 0.0, step, 20, z0=s1[-1].elevation, dz=-0.5)
         s3 = _leg(s2[-1].lon, s2[-1].lat, step, 0.0, 20, z0=s2[-1].elevation, dz=-0.5)
@@ -146,7 +149,7 @@ class TestSmoothJoinedPath:
         # committed corridor as a ROAD (skiers are flexible → less earthwork). This guards the
         # feature against a future edit swapping ROAD/SLOPE_SMOOTHING_FACTOR while leaving the
         # exact values free to be re-tuned.
-        step = 10 / M
+        step = 10 / MapConfig.METERS_PER_DEGREE_EQUATOR
         s1 = _leg(0.0, 0.0, step, 0.0, 25, z0=2100.0, dz=-0.5)
         j = s1[-1]
         s2 = _leg(j.lon, j.lat, step * 0.7, step * 0.7, 25, z0=j.elevation, dz=-0.5)  # ~45° junction
@@ -178,7 +181,7 @@ class TestSmoothJoinedPath:
     def test_single_segment_is_smoothed(self) -> None:
         # A single segment has no junction but is still smoothed: endpoints pinned exactly,
         # resampled at step spacing, and a jittery corridor rounded into a broad radius.
-        step = 10 / M
+        step = 10 / MapConfig.METERS_PER_DEGREE_EQUATOR
         pts = [PathPoint(lon=step * i, lat=(step if i % 2 else 0.0), elevation=2000.0 - 0.5 * i) for i in range(20)]
         out = _smooth([pts], [pts[0], pts[-1]])
         assert len(out) == 1, "single segment stays a single segment"
@@ -189,8 +192,14 @@ class TestSmoothJoinedPath:
 
     def test_short_path_returns_inputs_unchanged(self) -> None:
         # Fewer than 4 joined points → spline can't fit; inputs come back untouched.
-        a = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=1 / M, lat=0.0, elevation=1999.0)]
-        b = [PathPoint(lon=1 / M, lat=0.0, elevation=1999.0), PathPoint(lon=2 / M, lat=0.0, elevation=1998.0)]
+        a = [
+            PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
+            PathPoint(lon=1 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=1999.0),
+        ]
+        b = [
+            PathPoint(lon=1 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=1999.0),
+            PathPoint(lon=2 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=1998.0),
+        ]
         out = _smooth([a, b], [a[0], a[-1], b[-1]])
         assert out == [a, b]
 
@@ -217,7 +226,15 @@ class TestSmoothJoinedPath:
         # Elevation is now a shape-preserving PCHIP over arc length:
         # on a MONOTONE-descending corridor the smoothed elevation must also be monotone (never rise)
         # and never leave the input band.
-        seg = _leg(8.0, 46.0, 8 / M, 2 / M, 30, z0=3000.0, dz=-8.0)  # steep, strictly descending
+        seg = _leg(
+            8.0,
+            46.0,
+            8 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            2 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            30,
+            z0=3000.0,
+            dz=-8.0,
+        )  # steep, strictly descending
         out = _smooth([seg], anchors=[seg[0], seg[-1]])[0]
         elevs = [p.elevation for p in out]
         assert max(elevs) <= 3000.0 + 0.5 and min(elevs) >= elevs[-1] - 0.5, "elevation left the input band"
@@ -227,11 +244,16 @@ class TestSmoothJoinedPath:
 
 class TestResampleCubicSpline:
     def test_too_few_points_unchanged(self) -> None:
-        pts = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=1 / M, lat=0.0, elevation=1999.0)]
+        pts = [
+            PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
+            PathPoint(lon=1 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=1999.0),
+        ]
         assert resample_cubic_spline(points=pts, smoothing_factor=3.0, step_m=7.0) is pts
 
     def test_resamples_a_long_path(self) -> None:
-        pts = _leg(0.0, 0.0, 10 / M, 0.0, 40, z0=2200.0, dz=-1.0)  # ~390m, jittered-free straight
+        pts = _leg(
+            0.0, 0.0, 10 / MapConfig.METERS_PER_DEGREE_EQUATOR, 0.0, 40, z0=2200.0, dz=-1.0
+        )  # ~390m, jittered-free straight
         out = resample_cubic_spline(points=pts, smoothing_factor=3.0, step_m=7.0)
         assert len(out) > 2
         # Endpoints stay close to the input extremes (spline is not wildly off).
@@ -242,20 +264,56 @@ class TestSmoothProposalPoints:
     """smooth_proposal_points: spline-round then DEM-requery — shared by the fan and grid planner."""
 
     def test_requeries_elevation_from_the_callable(self) -> None:
-        pts = _leg(0.0, 0.0, 10 / M, 0.0, 40, z0=2200.0, dz=-1.0)
+        pts = _leg(0.0, 0.0, 10 / MapConfig.METERS_PER_DEGREE_EQUATOR, 0.0, 40, z0=2200.0, dz=-1.0)
         # A DEM stub returning a fixed elevation: every output point must take that value.
         out = smooth_proposal_points(points=pts, smoothing_factor=3.0, step_m=7.0, elevation_fn=lambda lon, lat: 1234.0)
         assert len(out) > 2
         assert all(p.elevation == 1234.0 for p in out), "elevations come from the DEM callable, not the spline"
 
     def test_falls_back_to_point_elevation_when_dem_none(self) -> None:
-        pts = _leg(0.0, 0.0, 10 / M, 0.0, 40, z0=2200.0, dz=-1.0)
+        pts = _leg(0.0, 0.0, 10 / MapConfig.METERS_PER_DEGREE_EQUATOR, 0.0, 40, z0=2200.0, dz=-1.0)
         out = smooth_proposal_points(points=pts, smoothing_factor=3.0, step_m=7.0, elevation_fn=lambda lon, lat: None)
         assert all(p.elevation is not None for p in out), "None DEM lookup falls back to the spline elevation"
 
     def test_too_short_returns_input_unchanged(self) -> None:
-        pts = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=1 / M, lat=0.0, elevation=1999.0)]
+        pts = [
+            PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
+            PathPoint(lon=1 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=1999.0),
+        ]
         assert (
             smooth_proposal_points(points=pts, smoothing_factor=3.0, step_m=7.0, elevation_fn=lambda lon, lat: 0.0)
             is pts
         )
+
+
+class TestSimplifyPathPoints:
+    """Shapely Douglas–Peucker (plan #13): straight runs collapse to few points while junctions/endpoints
+    and real horizontal bends survive — cutting the per-rerun render cost. Elevation rides on survivors.
+    """
+
+    def test_straight_run_collapses_to_endpoints(self) -> None:
+        step = 10 / MapConfig.METERS_PER_DEGREE_EQUATOR
+        pts = _leg(0.0, 0.0, 0.0, -step, 30, z0=2000.0, dz=-1.0)  # dead-straight
+        out = simplify_path_points(pts, tolerance_m=1.0)
+        assert len(out) == 2, "a straight run reduces to just its two ends"
+        assert out[0] == pts[0] and out[-1] == pts[-1], "endpoints preserved exactly"
+
+    def test_horizontal_bend_is_preserved(self) -> None:
+        step = 10 / MapConfig.METERS_PER_DEGREE_EQUATOR
+        pts = _leg(0.0, 0.0, 0.0, -step, 21, z0=2000.0, dz=-1.0)
+        pts[10] = PathPoint(lon=20 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=pts[10].lat, elevation=pts[10].elevation)
+        out = simplify_path_points(pts, tolerance_m=1.0)
+        assert any(abs(p.lon - pts[10].lon) < 1e-12 for p in out), "the 20m horizontal kick is kept"
+        assert 3 <= len(out) < len(pts), "kept the bend + ends, dropped the collinear rest"
+
+    def test_elevation_rides_on_survivors(self) -> None:
+        # Shapely simplify is horizontal-only; the kept endpoints carry their real elevation through.
+        step = 10 / MapConfig.METERS_PER_DEGREE_EQUATOR
+        pts = _leg(0.0, 0.0, 0.0, -step, 30, z0=2000.0, dz=-1.0)
+        out = simplify_path_points(pts, tolerance_m=1.0)
+        assert out[0].elevation == pts[0].elevation and out[-1].elevation == pts[-1].elevation
+
+    def test_short_paths_unchanged(self) -> None:
+        step = 10 / MapConfig.METERS_PER_DEGREE_EQUATOR
+        two = _leg(0.0, 0.0, 0.0, -step, 2, z0=2000.0, dz=-1.0)
+        assert len(simplify_path_points(two, tolerance_m=1.0)) == 2

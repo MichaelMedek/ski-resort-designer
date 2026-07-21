@@ -11,10 +11,12 @@ All calculations use WGS84 spherical Earth approximation (R = 6,371 km).
 Reference: DETAILS.md Section 1
 """
 
-from math import asin, atan2, cos, degrees, radians, sin, sqrt
+from math import atan2, cos, degrees, radians, sin
 
-# Earth's radius in meters (WGS84 spherical approximation)
-EARTH_RADIUS_M = 6_371_000
+import numpy as np
+import numpy.typing as npt
+
+from skiresort_planner.constants import MapConfig
 
 
 class GeoCalculator:
@@ -25,8 +27,6 @@ class GeoCalculator:
     Bearings are in degrees clockwise from North (0-360).
     Distances are in meters.
     """
-
-    EARTH_RADIUS_M = EARTH_RADIUS_M
 
     @staticmethod
     def haversine_distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -41,10 +41,7 @@ class GeoCalculator:
         Returns:
             Distance in meters.
         """
-        dlat = radians(lat2 - lat1)
-        dlon = radians(lon2 - lon1)
-        a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2) ** 2
-        return EARTH_RADIUS_M * 2 * atan2(sqrt(a), sqrt(1 - a))
+        return float(GeoCalculator.haversine_vec(lat1=lat1, lon1=lon1, lat2=lat2, lon2=lon2))
 
     @staticmethod
     def initial_bearing_deg(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
@@ -75,6 +72,19 @@ class GeoCalculator:
         return (diff_deg + 180) % 360 - 180
 
     @staticmethod
+    def meters_per_degree(lat: float) -> tuple[float, float]:
+        """Local flat-earth scale at `lat`: (metres per degree longitude, per degree latitude).
+
+        Longitude degrees shrink by cos(lat); latitude degrees are constant. The single source for
+        the lon/lat→metre projection used by every local-frame builder (no per-site cos(lat) copies).
+
+        Returns:
+            (m_per_deg_lon, m_per_deg_lat).
+        """
+        m_per_deg_lat = MapConfig.METERS_PER_DEGREE_EQUATOR
+        return m_per_deg_lat * cos(radians(lat)), m_per_deg_lat
+
+    @staticmethod
     def destination(
         lon: float,
         lat: float,
@@ -95,14 +105,41 @@ class GeoCalculator:
         Returns:
             Tuple (lon, lat) of destination point in decimal degrees.
         """
-        brng = radians(bearing_deg)
-        lat1 = radians(lat)
-        lon1 = radians(lon)
-        d_R = distance_m / EARTH_RADIUS_M
+        lon2, lat2 = GeoCalculator.destination_vec(lon=lon, lat=lat, bearing_deg=bearing_deg, distance_m=distance_m)
+        return float(lon2), float(lat2)
 
-        lat2 = asin(sin(lat1) * cos(d_R) + cos(lat1) * sin(d_R) * cos(brng))
-        lon2 = lon1 + atan2(
-            sin(brng) * sin(d_R) * cos(lat1),
-            cos(d_R) - sin(lat1) * sin(lat2),
+    @staticmethod
+    def haversine_vec(
+        lat1: "npt.NDArray[np.float64] | float",
+        lon1: "npt.NDArray[np.float64] | float",
+        lat2: "npt.NDArray[np.float64] | float",
+        lon2: "npt.NDArray[np.float64] | float",
+    ) -> "npt.NDArray[np.float64]":
+        """Vectorized `haversine_distance_m` — numpy mirror, same formula/operand order, elementwise
+        over broadcastable arrays/scalars. Returns great-circle distances in metres.
+        """
+        dlat = np.radians(lat2 - lat1)
+        dlon = np.radians(lon2 - lon1)
+        a = np.sin(dlat / 2) ** 2 + np.cos(np.radians(lat1)) * np.cos(np.radians(lat2)) * np.sin(dlon / 2) ** 2
+        return MapConfig.EARTH_RADIUS_M * 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))  # type: ignore[no-any-return]
+
+    @staticmethod
+    def destination_vec(
+        lon: "npt.NDArray[np.float64] | float",
+        lat: "npt.NDArray[np.float64] | float",
+        bearing_deg: "npt.NDArray[np.float64] | float",
+        distance_m: "npt.NDArray[np.float64] | float",
+    ) -> "tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]":
+        """Vectorized `destination` — numpy mirror, same formula/operand order, broadcasting over
+        array start-coords and/or distances. Returns (lon, lat) arrays in decimal degrees.
+        """
+        brng = np.radians(bearing_deg)
+        lat1 = np.radians(lat)
+        lon1 = np.radians(lon)
+        d_R = distance_m / MapConfig.EARTH_RADIUS_M
+        lat2 = np.arcsin(np.sin(lat1) * np.cos(d_R) + np.cos(lat1) * np.sin(d_R) * np.cos(brng))
+        lon2 = lon1 + np.arctan2(
+            np.sin(brng) * np.sin(d_R) * np.cos(lat1),
+            np.cos(d_R) - np.sin(lat1) * np.sin(lat2),
         )
-        return degrees(lon2), degrees(lat2)
+        return np.degrees(lon2), np.degrees(lat2)

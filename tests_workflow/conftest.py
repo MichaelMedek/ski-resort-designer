@@ -13,17 +13,20 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Literal
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 
-from skiresort_planner.constants import DEMConfig, MapConfig
+from skiresort_planner.constants import DEMConfig, LiftType, MapConfig
 from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.core.path_tracer import PathTracer
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.generators.path_factory import PathFactory
 from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint
+from skiresort_planner.model.path_segment import PathSegment, SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
+from skiresort_planner.model.slope import Slope
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
 if TYPE_CHECKING:
@@ -262,14 +265,21 @@ class MockDEMService(DEMService):
 
     def get_elevation(self, lon: float, lat: float) -> float | None:
         """Return elevation using simple linear formula."""
-        M = MapConfig.METERS_PER_DEGREE_EQUATOR
-        return self.base_elevation + lat * M * (self.slope_ns_pct / 100) - lon * M * (self.slope_ew_pct / 100)
+        return (
+            self.base_elevation
+            + lat * MapConfig.METERS_PER_DEGREE_EQUATOR * (self.slope_ns_pct / 100)
+            - lon * MapConfig.METERS_PER_DEGREE_EQUATOR * (self.slope_ew_pct / 100)
+        )
 
     def get_elevation_or_raise(self, lon: float, lat: float) -> float:
         """Return elevation, raising if None (never happens for mock)."""
         elev = self.get_elevation(lon=lon, lat=lat)
         assert elev is not None, "MockDEMService always returns elevation"
         return elev
+
+    def get_elevations(self, lons, lats):  # noqa: ANN001, ANN201
+        """Batch lookup mapping the formula `get_elevation` — mirrors DEMService's batch API for mocks."""
+        return np.array([self.get_elevation(lon=lo, lat=la) for lo, la in zip(lons, lats, strict=True)], dtype=float)
 
 
 class ConeDEMService(MockDEMService):
@@ -285,8 +295,15 @@ class ConeDEMService(MockDEMService):
         self._bounds = (-2.0, -2.0, 2.0, 2.0)
 
     def get_elevation(self, lon: float, lat: float) -> float | None:
-        M = MapConfig.METERS_PER_DEGREE_EQUATOR
-        return self.summit - float(((lon * M) ** 2 + (lat * M) ** 2) ** 0.5) * self.grade_pct / 100.0
+        return (
+            self.summit
+            - float(
+                ((lon * MapConfig.METERS_PER_DEGREE_EQUATOR) ** 2 + (lat * MapConfig.METERS_PER_DEGREE_EQUATOR) ** 2)
+                ** 0.5
+            )
+            * self.grade_pct
+            / 100.0
+        )
 
 
 class RoughDEMService(MockDEMService):
@@ -362,12 +379,60 @@ def empty_graph() -> ResortGraph:
     return ResortGraph()
 
 
+# =============================================================================
+# EXACT-TOPOLOGY BUILDERS — shared by test_connectivity + test_route_planner
+# =============================================================================
+# These build precise ski graphs directly (real Node/PathSegment/Slope + add_lift) so the graph
+# topology under test is exact. Slopes must carry a real segment chain — interior junction nodes are
+# what stitch the resort together and what the ski graph walks per-segment.
+
+BUILDER_BASE_ELEV = 1000.0
+BUILDER_PEAK_ELEV = 2000.0
+
+
+def add_node(graph: ResortGraph, nid: str, lon: float, lat: float, elev: float) -> None:
+    """Materialise one node at (lon, lat, elev)."""
+    graph.nodes[nid] = Node(id=nid, location=PathPoint(lon=lon, lat=lat, elevation=elev))
+
+
+def add_slope_segment(graph: ResortGraph, sid: str, start: str, end: str) -> str:
+    """A one-hop slope segment start->end (2-point geometry from the node locations)."""
+    a, b = graph.nodes[start], graph.nodes[end]
+    graph.segments[sid] = PathSegment(
+        id=sid, name=sid, start_node_id=start, end_node_id=end, kind=SegmentKind.SLOPE, points=[a.location, b.location]
+    )
+    return sid
+
+
+def add_slope(graph: ResortGraph, slid: str, top: str, bottom: str, *, via: list[str] | None = None) -> None:
+    """A slope descending top -> bottom, optionally through interior junction nodes `via`, as a real
+    chain of one-hop segments (interior nodes are what stitch the resort together).
+    """
+    chain = [top, *(via or []), bottom]
+    seg_ids = [add_slope_segment(graph, f"{slid}_S{i}", chain[i], chain[i + 1]) for i in range(len(chain) - 1)]
+    graph.slopes[slid] = Slope(id=slid, name=slid, segment_ids=seg_ids, start_node_id=top, end_node_id=bottom)
+
+
+def build_ladder_core(graph: ResortGraph, dem: "MockDEMService", *, n_lifts: int, base: str = "B") -> None:
+    """A base hub + n peaks, each reached by an uphill chairlift and returned by a downhill slope.
+
+    Makes {base, peaks...} one strongly-connected component holding n_lifts lifts: from the base you
+    can lift to any peak and ski back, and hop peak->peak via the base.
+    """
+    add_node(graph, base, lon=0.0, lat=0.0, elev=BUILDER_BASE_ELEV)
+    for i in range(1, n_lifts + 1):
+        peak = f"P{i}"
+        # Farther peaks = longer lifts, so the longest in-core lift is deterministic (the last one).
+        add_node(graph, peak, lon=0.0, lat=0.001 * i, elev=BUILDER_PEAK_ELEV)
+        graph.add_lift(start_node_id=base, end_node_id=peak, lift_type=LiftType.CHAIRLIFT, dem=dem, name=f"Lift {i}")
+        add_slope(graph, f"SL{i}", top=peak, bottom=base)
+
+
 @pytest.fixture
 def graph_with_nodes(mock_dem_blue_slope: MockDEMService) -> ResortGraph:
     """Graph with 3 nodes arranged vertically: summit → mid → valley."""
     graph = ResortGraph()
     dem = mock_dem_blue_slope
-    M = MapConfig.METERS_PER_DEGREE_EQUATOR
 
     graph.nodes["N1"] = Node(
         id="N1",
@@ -381,16 +446,16 @@ def graph_with_nodes(mock_dem_blue_slope: MockDEMService) -> ResortGraph:
         id="N2",
         location=PathPoint(
             lon=0.0,
-            lat=-1000 / M,
-            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M),
+            lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         ),
     )
     graph.nodes["N3"] = Node(
         id="N3",
         location=PathPoint(
             lon=0.0,
-            lat=-2000 / M,
-            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-2000 / M),
+            lat=-2000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-2000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         ),
     )
     return graph
@@ -416,13 +481,32 @@ def sm_and_ctx(empty_graph: ResortGraph) -> SMAndCtx:
 def path_points_blue(mock_dem_blue_slope: MockDEMService) -> list[PathPoint]:
     """Path going 800m south with 5 points on blue slope terrain."""
     dem = mock_dem_blue_slope
-    M = MapConfig.METERS_PER_DEGREE_EQUATOR
     return [
-        PathPoint(lon=0.0, lat=-0 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-0 / M)),
-        PathPoint(lon=0.0, lat=-200 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-200 / M)),
-        PathPoint(lon=0.0, lat=-400 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-400 / M)),
-        PathPoint(lon=0.0, lat=-600 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-600 / M)),
-        PathPoint(lon=0.0, lat=-800 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-800 / M)),
+        PathPoint(
+            lon=0.0,
+            lat=-0 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-0 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        ),
+        PathPoint(
+            lon=0.0,
+            lat=-200 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-200 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        ),
+        PathPoint(
+            lon=0.0,
+            lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        ),
+        PathPoint(
+            lon=0.0,
+            lat=-600 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-600 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        ),
+        PathPoint(
+            lon=0.0,
+            lat=-800 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-800 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        ),
     ]
 
 

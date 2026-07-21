@@ -40,21 +40,29 @@ class TestBuildStateInfoBlock:
             expected = not key.startswith("idle_")
             assert bs.blocks_build_buttons() is expected, key
 
+    def test_lock_bullet_shown_iff_buttons_blocked(self) -> None:
+        # The "Buttons locked — finish or cancel…" line must appear exactly when the state actually
+        # disables the build buttons — never on a viewing state.
+        ctx = PlannerContext()
+        for key, bs in BUILD_STATES.items():
+            has_lock = any(b.startswith("⏳ Buttons locked") for b in bs.info_block(ctx).bullets)
+            assert has_lock is bs.blocks_build_buttons(), key
+
 
 class TestBuildStateBijection:
     def test_keys_match_sm_state_ids_exactly(self) -> None:
         sm_ids = {s.id for s in PlannerStateMachine.states}
         assert set(BUILD_STATES) == sm_ids
 
-    def test_merge_placing_is_registered(self) -> None:
-        assert "merge_placing" in BUILD_STATES
+    def test_node_editing_is_registered(self) -> None:
+        assert "node_edit_selecting" in BUILD_STATES
 
 
 class TestExitHookBijection:
     """EXIT_HOOKS (owned by state_lifecycle, used by the state machine's force/undo dispatch) lists
     only states whose exit does real cleanup; no-op states are simply absent (dispatch uses .get).
     The states with real cleanup MUST be present or a force_* would skip their teardown — e.g.
-    undoing an OSM import from import_placing would leak the placed box (the class of bug this guards).
+    undoing an OSM import from import_selecting would leak the placed box (the class of bug this guards).
     """
 
     def test_exit_hook_keys_are_all_real_states(self) -> None:
@@ -67,7 +75,7 @@ class TestExitHookBijection:
         # These three have non-trivial exit teardown and MUST be dispatched on force/undo.
         from skiresort_planner.ui.state_lifecycle import EXIT_HOOKS
 
-        for state_id in ("lift_placing", "import_placing", "merge_placing"):
+        for state_id in ("lift_placing", "import_selecting", "node_edit_selecting"):
             assert state_id in EXIT_HOOKS, f"{state_id} exit cleanup must run on force_*"
 
 
@@ -81,13 +89,14 @@ class TestOperationBijection:
             BuildMode.SURFACE_LIFT,
             BuildMode.AERIAL_TRAM,
             BuildMode.IMPORT,
-            BuildMode.MERGE,
+            BuildMode.NODE_EDIT,
+            BuildMode.ROUTE,
         }
         assert set(OPERATIONS) == modes
 
-    def test_import_and_merge_are_utility_group(self) -> None:
+    def test_import_and_node_edit_are_utility_group(self) -> None:
         assert OPERATIONS[BuildMode.IMPORT].group == OperationGroup.UTILITY
-        assert OPERATIONS[BuildMode.MERGE].group == OperationGroup.UTILITY
+        assert OPERATIONS[BuildMode.NODE_EDIT].group == OperationGroup.UTILITY
 
     def test_builders_are_builder_group(self) -> None:
         for mode in (BuildMode.SLOPE, BuildMode.ROAD, BuildMode.CHAIRLIFT, BuildMode.AERIAL_TRAM):
@@ -148,7 +157,7 @@ class TestEntityKindSpecBijection:
 
 class TestGreyoutRule:
     """While viewing an entity, EVERY build button greys out except the viewed kind's own builder:
-    the other-kind builders AND the Import / Node Merge utilities all disable (only their own view
+    the other-kind builders AND the OSM Importer / Node Editor utilities all disable (only their own view
     panel can be re-opened). Every button's enabled() goes through the same rule, so this is
     asserted uniformly across kinds.
     """
@@ -160,7 +169,7 @@ class TestGreyoutRule:
     def test_utilities_enabled_from_idle_ready(self, empty_graph) -> None:
         sm = self._sm(empty_graph)
         assert OPERATIONS[BuildMode.IMPORT].enabled(sm)
-        assert OPERATIONS[BuildMode.MERGE].enabled(sm)
+        assert OPERATIONS[BuildMode.NODE_EDIT].enabled(sm)
 
     def test_all_buttons_disabled_while_placing_import(self, empty_graph) -> None:
         sm = self._sm(empty_graph)
@@ -170,7 +179,7 @@ class TestGreyoutRule:
 
     def test_all_buttons_disabled_while_merging(self, empty_graph) -> None:
         sm = self._sm(empty_graph)
-        sm.start_merge()
+        sm.start_node_edit()
         for op in OPERATIONS.values():
             assert not op.enabled(sm), f"{op.mode} must be disabled while selecting nodes to merge"
 
@@ -185,7 +194,7 @@ class TestGreyoutRule:
 
         # Import + Merge now grey out while viewing (close the panel first) …
         assert not OPERATIONS[BuildMode.IMPORT].enabled(sm), "Import must grey out while viewing a slope"
-        assert not OPERATIONS[BuildMode.MERGE].enabled(sm), "Merge must grey out while viewing a slope"
+        assert not OPERATIONS[BuildMode.NODE_EDIT].enabled(sm), "Merge must grey out while viewing a slope"
         # … alongside the road + lift builders.
         assert not OPERATIONS[BuildMode.ROAD].enabled(sm)
         assert not OPERATIONS[BuildMode.CHAIRLIFT].enabled(sm)
@@ -201,7 +210,7 @@ class TestGreyoutRule:
         assert sm.is_idle_viewing_lift
 
         assert not OPERATIONS[BuildMode.IMPORT].enabled(sm), "Import must grey out while viewing a lift"
-        assert not OPERATIONS[BuildMode.MERGE].enabled(sm), "Merge must grey out while viewing a lift"
+        assert not OPERATIONS[BuildMode.NODE_EDIT].enabled(sm), "Merge must grey out while viewing a lift"
         # Lift stays enabled (re-type the viewed lift); slope + road grey out.
         assert OPERATIONS[BuildMode.CHAIRLIFT].enabled(sm), "Lift builders stay enabled while viewing a lift"
         assert not OPERATIONS[BuildMode.SLOPE].enabled(sm)
@@ -213,7 +222,7 @@ class TestGreyoutRule:
         assert sm.is_idle_viewing_road
 
         assert not OPERATIONS[BuildMode.IMPORT].enabled(sm), "Import must grey out while viewing a road"
-        assert not OPERATIONS[BuildMode.MERGE].enabled(sm), "Merge must grey out while viewing a road"
+        assert not OPERATIONS[BuildMode.NODE_EDIT].enabled(sm), "Merge must grey out while viewing a road"
         # Road stays enabled; slope + lift grey out.
         assert OPERATIONS[BuildMode.ROAD].enabled(sm), "Road builder stays enabled while viewing a road"
         assert not OPERATIONS[BuildMode.SLOPE].enabled(sm)
@@ -261,7 +270,7 @@ class TestRendersCustomPath:
     def test_non_build_states_never_render_custom_path(self) -> None:
         ctx = PlannerContext()
         ctx.custom_connect.target_location = (0.0, 0.0, 2000.0)  # even with force_mode set, non-build states ignore it
-        for key in ("idle_ready", "idle_viewing_slope", "idle_viewing_road", "lift_placing", "merge_placing"):
+        for key in ("idle_ready", "idle_viewing_slope", "idle_viewing_road", "lift_placing", "node_edit_selecting"):
             assert BUILD_STATES[key].renders_custom_path(ctx) is False, key
 
 

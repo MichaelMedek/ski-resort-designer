@@ -25,6 +25,9 @@ from skiresort_planner.model.resort_graph import ResortGraph
 
 logger = logging.getLogger(__name__)
 
+# Soft-deleted backups carry "_DELETED" in their name: excluded from largest_resort_id(), kept for recovery.
+_DELETED_MARKER = "_DELETED"
+
 
 def new_resort_id() -> str:
     """Return a short filename-safe id for a fresh resort."""
@@ -61,17 +64,26 @@ def load(resort_id: str) -> ResortGraph | None:
 
 
 def delete(resort_id: str) -> None:
-    """Remove backups/<resort_id>.json (silent if missing)."""
-    _path_for(resort_id).unlink(missing_ok=True)
-    logger.info(f"Deleted backup {resort_id}")
+    """Soft-delete backups/<resort_id>.json → backups/<resort_id>_DELETED_<uuid>.json.
+
+    Renamed, never removed: excluded from largest_resort_id() so a reset really starts fresh, but kept on
+    disk for recovery. A no-op if the backup is missing. The uuid suffix is unique per delete, so
+    resetting the same resort twice keeps BOTH recovery copies (never clobbers an earlier one).
+    """
+    src = _path_for(resort_id)
+    if not src.exists():
+        logger.debug(f"delete: no live backup {resort_id} to soft-delete")
+        return
+    dst = src.with_name(f"{resort_id}{_DELETED_MARKER}_{uuid.uuid4().hex[:8]}.json")
+    os.replace(src, dst)
+    logger.info(f"Soft-deleted backup {resort_id} → {dst.name}")
 
 
 def largest_resort_id() -> str | None:
-    """Return the id of the backup with the most nodes, or None if none exist.
+    """Return the id of the LIVE backup with the most nodes, or None if none exist.
 
-    The "in doubt, restore my work" fallback when a user opens the bare link
-    with no ?resort= param: the biggest resort is almost always theirs, since
-    users typically work on one resort at a time.
+    The "in doubt, restore my work" fallback when a user opens the bare link with no ?resort= param: the
+    biggest resort is almost always theirs. Soft-deleted (*_DELETED.json) backups are excluded.
     """
     if not BACKUP_DIR.exists():
         return None
@@ -79,6 +91,9 @@ def largest_resort_id() -> str | None:
     best_id: str | None = None
     best_nodes = -1
     for path in BACKUP_DIR.glob("*.json"):
+        if _DELETED_MARKER in path.stem:
+            logger.debug(f"Skipping soft deleted backup {path.name}")
+            continue  # soft-deleted — kept for recovery, never auto-restored
         try:
             data = json.loads(path.read_text())
         except (json.JSONDecodeError, OSError) as e:

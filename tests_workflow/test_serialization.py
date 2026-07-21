@@ -6,6 +6,8 @@ Tests that resort graphs can be saved and loaded without data loss.
 import json
 import xml.etree.ElementTree as ET
 
+from skiresort_planner.constants import MapConfig
+
 
 def _child_text(element: ET.Element, tag: str) -> str:
     """Return the text of a required child element, asserting it exists and is non-empty."""
@@ -102,14 +104,21 @@ class TestResortGraphSerialization:
         from skiresort_planner.model.path_point import PathPoint, endpoints_match
         from skiresort_planner.model.resort_graph import ResortGraph
 
-        m = 111320.0
         dem = mock_dem_blue_slope
         slope_points = [
             PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
-            PathPoint(lon=0.0, lat=-500 / m, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / m)),
+            PathPoint(
+                lon=0.0,
+                lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            ),
         ]
         lift = (
-            PathPoint(lon=0.02, lat=-500 / m, elevation=dem.get_elevation_or_raise(lon=0.02, lat=-500 / m)),
+            PathPoint(
+                lon=0.02,
+                lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                elevation=dem.get_elevation_or_raise(lon=0.02, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            ),
             PathPoint(lon=0.02, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.02, lat=0.0)),
             "chairlift",
             None,
@@ -148,12 +157,10 @@ class TestFileSaveLoad:
         """Save → reload → keep building: a real multi-session resume. The new slope must
         reuse the shared node (not duplicate it) and get a fresh, non-colliding segment id.
         """
-        from skiresort_planner.constants import MapConfig
         from skiresort_planner.model.path_point import PathPoint
         from skiresort_planner.model.proposed_path import ProposedPathSegment
         from skiresort_planner.model.resort_graph import ResortGraph
 
-        M = MapConfig.METERS_PER_DEGREE_EQUATOR
         graph = empty_graph
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         graph.finish_slope(segment_ids=list(graph.segments.keys()))
@@ -165,7 +172,11 @@ class TestFileSaveLoad:
         bottom = path_points_blue[-1]
         cont = [
             PathPoint(lon=bottom.lon, lat=bottom.lat, elevation=bottom.elevation),
-            PathPoint(lon=bottom.lon, lat=bottom.lat - 500 / M, elevation=bottom.elevation - 100.0),
+            PathPoint(
+                lon=bottom.lon,
+                lat=bottom.lat - 500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                elevation=bottom.elevation - 100.0,
+            ),
         ]
         loaded.commit_paths(paths=[ProposedPathSegment(points=cont, target_difficulty="blue")])
 
@@ -179,13 +190,11 @@ class TestLiftSerialization:
 
     def test_lift_roundtrip_preserves_pylons(self, mock_dem_blue_slope) -> None:
         """Lift pylons are preserved through serialization."""
-        from skiresort_planner.constants import MapConfig
         from skiresort_planner.model.node import Node
         from skiresort_planner.model.path_point import PathPoint
         from skiresort_planner.model.resort_graph import ResortGraph
 
         dem = mock_dem_blue_slope
-        M = MapConfig.METERS_PER_DEGREE_EQUATOR
         graph = ResortGraph()
 
         # Create nodes
@@ -193,8 +202,8 @@ class TestLiftSerialization:
             id="N1",
             location=PathPoint(
                 lon=0.0,
-                lat=-1000 / M,
-                elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M),
+                lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
             ),
         )
         graph.nodes["N2"] = Node(
@@ -249,23 +258,27 @@ class TestGPXExport:
     """Tests for the 'Export GPX' user action (ResortGraph.to_gpx)."""
 
     def _graph_with_slope_and_lift(self, dem):
-        from skiresort_planner.constants import MapConfig
         from skiresort_planner.model.path_point import PathPoint
         from skiresort_planner.model.proposed_path import ProposedPathSegment
         from skiresort_planner.model.resort_graph import ResortGraph
 
-        M = MapConfig.METERS_PER_DEGREE_EQUATOR
         graph = ResortGraph()
         # A finished slope.
         pts = [
             PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
-            PathPoint(lon=0.0, lat=-400 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-400 / M)),
+            PathPoint(
+                lon=0.0,
+                lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                elevation=dem.get_elevation_or_raise(lon=0.0, lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            ),
         ]
         graph.commit_paths(paths=[ProposedPathSegment(points=pts, target_difficulty="blue")])
         graph.finish_slope(segment_ids=list(graph.segments.keys()))
         # A lift.
         bottom, _ = graph.get_or_create_node(
-            lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M)
+            lon=0.0,
+            lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         )
         top, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
         graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
@@ -381,10 +394,9 @@ class TestRoadSerialization:
             record_undo=False,
         )
         road = empty_graph.finish_road(segment_ids=[list(empty_graph.segments.keys())[-1]])
-        M = 111320.0
         orphan_pts = [
-            PathPoint(lon=500 / M, lat=0.0, elevation=2000.0),
-            PathPoint(lon=800 / M, lat=0.0, elevation=1990.0),
+            PathPoint(lon=500 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=2000.0),
+            PathPoint(lon=800 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=1990.0),
         ]
         empty_graph.commit_paths(
             paths=[ProposedPathSegment(points=orphan_pts, is_connector=True, kind=SegmentKind.ROAD)],

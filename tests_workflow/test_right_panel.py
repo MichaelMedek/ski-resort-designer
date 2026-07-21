@@ -9,22 +9,23 @@ state change (3D toggle, close panel) is asserted.
 from contextlib import nullcontext
 from typing import Literal
 
+from skiresort_planner.constants import MapConfig, RoutePlannerConfig, StyleConfig
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
+from skiresort_planner.model.routing import RouteStep
 from skiresort_planner.ui.context import BuildMode, EntityKind, PlannerContext
 from skiresort_planner.ui.mode_registry import ENTITY_KIND_SPECS, render_control_panel
 from skiresort_planner.ui.right_panel import (
     EntityInfoControlPanel,
-    ImportPlacingControlPanel,
+    ImportSelectingControlPanel,
     LiftStatsPanel,
-    MergePlacingControlPanel,
+    NodeEditingControlPanel,
     PathStatsPanel,
+    route_legs,
 )
 from skiresort_planner.ui.state_machine import PlannerStateMachine
-
-M = 111320.0
 
 
 def _info_panel(kind: EntityKind, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph) -> None:
@@ -57,7 +58,9 @@ def _build_road(graph: ResortGraph, path_points: list[PathPoint]) -> str:
 
 def _build_lift(graph: ResortGraph, dem) -> str:
     bottom, _ = graph.get_or_create_node(
-        lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M)
+        lon=0.0,
+        lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+        elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
     )
     top, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
     lift = graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
@@ -237,6 +240,98 @@ class TestInfoPanelButtonClicks:
         fake_st.clicked_keys = {"slope_2d_view"}
         _info_panel(EntityKind.SLOPE, sm, ctx, empty_graph)
         assert not ctx.viewing.view_3d, "clicking 'Return to 2D' on a slope must disable 3D"
+
+    def test_play_flythrough_from_slope_3d(self, fake_st, empty_graph, path_points_blue) -> None:
+        slope_id = _build_slope(empty_graph, path_points_blue)
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        sm.view_slope(slope_id=slope_id)
+        ctx.viewing.enable_3d()  # Play only shows in 3D
+        self._bump_ready(fake_st, sm, ctx, empty_graph)
+
+        fake_st.clicked_keys = {"flythrough_play"}
+        _info_panel(EntityKind.SLOPE, sm, ctx, empty_graph)
+        assert ctx.viewing.flythrough_active, "Play must start the flythrough"
+        assert ctx.viewing.flythrough_frame == 0
+
+    def test_stop_flythrough_clears_state(self, fake_st, empty_graph, path_points_blue) -> None:
+        slope_id = _build_slope(empty_graph, path_points_blue)
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        sm.view_slope(slope_id=slope_id)
+        ctx.viewing.enable_3d()
+        ctx.viewing.start_flythrough()
+        self._bump_ready(fake_st, sm, ctx, empty_graph)
+
+        fake_st.clicked_keys = {"flythrough_stop"}
+        _info_panel(EntityKind.SLOPE, sm, ctx, empty_graph)
+        assert not ctx.viewing.flythrough_active, "Stop must end the flythrough"
+        assert ctx.viewing.flythrough_frame == 0
+
+    def test_leaving_3d_stops_flythrough(self, fake_st, empty_graph, path_points_blue) -> None:
+        """Every way OUT of the 3D view must stop playback (single source: stop_flythrough is called by
+        disable_3d, hide_panel, and ViewingContext.clear — covering 2D-toggle, close-panel, and →idle).
+        """
+        slope_id = _build_slope(empty_graph, path_points_blue)
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        sm.view_slope(slope_id=slope_id)
+
+        def _assert_stopped() -> None:
+            assert not ctx.viewing.flythrough_active and ctx.viewing.flythrough_frame == 0
+
+        # 1) Return-to-2D toggle (disable_3d).
+        ctx.viewing.enable_3d()
+        ctx.viewing.start_flythrough()
+        ctx.viewing.disable_3d()
+        _assert_stopped()
+
+        # 2) Close the right panel (hide_panel — the close/delete→non-viewing path).
+        ctx.viewing.enable_3d()
+        ctx.viewing.start_flythrough()
+        ctx.viewing.hide_panel()
+        _assert_stopped()
+
+        # 3) Return all the way to idle_ready (ViewingContext.clear — e.g. after delete).
+        ctx.viewing.enable_3d()
+        ctx.viewing.start_flythrough()
+        ctx.viewing.clear()
+        _assert_stopped()
+
+    def test_browsing_to_another_route_stops_flythrough(self, fake_st, empty_graph) -> None:
+        """Changing WHICH route is shown (◀▶ browser) mid-flythrough must stop it — otherwise the camera
+        keeps riding the old route's keyframes over the new selection.
+        """
+        from skiresort_planner.model.routing import Route, RouteCriterion, RouteStep
+        from skiresort_planner.ui.right_panel import RouteViewingControlPanel
+
+        def _route(cap: str, crit: RouteCriterion) -> Route:
+            step = RouteStep(is_lift=False, entity_id="SL1", name="SL1", detail="blue")
+            poly = ((0.0, 0.0, 2000.0), (0.0, -0.001, 1900.0))
+            return Route(
+                node_path=("A", "B"),
+                element_polylines=(poly,),
+                steps=(step,),
+                total_slope_length_m=1.0,
+                total_slope_drop_m=1.0,
+                lift_count=0,
+                max_difficulty="blue",
+                difficulty_cap=cap,
+                criteria=(crit,),
+            )
+
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        cap = ctx.route_plan.selected_cap
+        ctx.route_plan.routes = [_route(cap, RouteCriterion.FEWEST_LIFTS), _route(cap, RouteCriterion.SHORTEST_SLOPE)]
+        fake_st.session_state["graph"] = empty_graph
+        fake_st.session_state["state_machine"] = sm
+        fake_st.session_state["context"] = ctx
+        ctx.viewing.enable_3d()
+        ctx.viewing.start_flythrough()
+
+        fake_st.clicked_keys = {"route_next"}
+        panel = RouteViewingControlPanel(sm=sm, ctx=ctx, graph=empty_graph, on_commit=_noop, on_cancel_connection=_noop)
+        panel._render_route_browser(ctx.route_plan.routes)
+
+        assert ctx.route_plan.selected_index == 1, "▶ advances the shown route"
+        assert not ctx.viewing.flythrough_active, "browsing to another route stops the flythrough"
 
     def test_disable_3d_from_road_panel(self, fake_st, empty_graph, path_points_blue) -> None:
         road_id = _build_road(empty_graph, path_points_blue)
@@ -604,11 +699,11 @@ class TestMergeAndImportPanels:
     button-body logic and disabled-state, asserting the real action fires and the guard raises.
     """
 
-    def _merge_panel(self, sm, ctx, graph) -> MergePlacingControlPanel:
-        return MergePlacingControlPanel(sm=sm, ctx=ctx, graph=graph, on_commit=_noop, on_cancel_connection=_noop)
+    def _merge_panel(self, sm, ctx, graph) -> NodeEditingControlPanel:
+        return NodeEditingControlPanel(sm=sm, ctx=ctx, graph=graph, on_commit=_noop, on_cancel_connection=_noop)
 
-    def _import_panel(self, sm, ctx, graph) -> ImportPlacingControlPanel:
-        return ImportPlacingControlPanel(sm=sm, ctx=ctx, graph=graph, on_commit=_noop, on_cancel_connection=_noop)
+    def _import_panel(self, sm, ctx, graph) -> ImportSelectingControlPanel:
+        return ImportSelectingControlPanel(sm=sm, ctx=ctx, graph=graph, on_commit=_noop, on_cancel_connection=_noop)
 
     def test_confirm_merge_disabled_below_two_nodes(self, fake_st, empty_graph, monkeypatch) -> None:
         # Confirm Merge is disabled with 0 or 1 selected nodes, enabled at 2; Delete needs only 1.
@@ -623,7 +718,7 @@ class TestMergeAndImportPanels:
                 return False
 
             monkeypatch.setattr("skiresort_planner.ui.right_panel.st.button", _btn)
-            ctx.merge.node_ids = node_ids
+            ctx.node_edit.node_ids = node_ids
             panel.buttons()
             return captured
 
@@ -649,7 +744,7 @@ class TestMergeAndImportPanels:
             "skiresort_planner.ui.right_panel.st.button",
             lambda label, **k: label == "🔗 Confirm Merge" and not bool(k.get("disabled", False)),
         )
-        ctx.merge.node_ids = ["A", "B"]
+        ctx.node_edit.node_ids = ["A", "B"]
         self._merge_panel(sm, ctx, empty_graph).buttons()
         assert fired == [True], "clicking Confirm Merge must invoke confirm_merge_action"
 
@@ -664,7 +759,7 @@ class TestMergeAndImportPanels:
             "skiresort_planner.ui.right_panel.st.button",
             lambda label, **k: label == "🗑️ Delete Node(s)" and not bool(k.get("disabled", False)),
         )
-        ctx.merge.node_ids = ["A"]
+        ctx.node_edit.node_ids = ["A"]
         self._merge_panel(sm, ctx, empty_graph).buttons()
         assert fired == [True], "clicking Delete Node(s) must invoke delete_nodes_action"
 
@@ -691,3 +786,58 @@ class TestMergeAndImportPanels:
         assert ctx.pending.osm_import_center_lon is None
         with pytest.raises(RuntimeError, match="requires a placed box center"):
             panel.context_message()
+
+
+class TestRouteLegs:
+    """route_legs renders viewing groups as readable legs (a lift its own leg, slopes grouped)."""
+
+    @staticmethod
+    def _slope(name: str, difficulty: str) -> RouteStep:
+        return RouteStep(is_lift=False, entity_id=name, name=name, detail=difficulty)
+
+    @staticmethod
+    def _lift(name: str) -> RouteStep:
+        return RouteStep(is_lift=True, entity_id=name, name=name, detail="chairlift")
+
+    @staticmethod
+    def _legs(steps: "tuple[RouteStep, ...]") -> list[str]:
+        # Fold steps into viewing groups (each with a 2-point dummy polyline) the way a Route does, then
+        # render — so these tests exercise the real grouping + labelling path end to end.
+        from skiresort_planner.model.routing import build_viewing_groups
+
+        polys = tuple(((0.0, float(i), 0.0), (0.0, float(i) + 1, 0.0)) for i in range(len(steps)))
+        return route_legs(build_viewing_groups(steps, polys))
+
+    def test_lift_is_its_own_leg_with_type_icon(self) -> None:
+        legs = self._legs((self._lift("Gondi"),))
+        assert legs == [f"{StyleConfig.LIFT_ICONS['chairlift']} **Gondi**"]
+
+    def test_consecutive_slopes_fold_into_one_leg(self) -> None:
+        legs = self._legs((self._slope("A", "blue"), self._slope("B", "red")))
+        assert len(legs) == 1, "two consecutive slopes collapse to a single leg"
+        assert "A" in legs[0] and "B" in legs[0]
+
+    def test_difficulty_shown_as_colour_emoji_not_text(self) -> None:
+        legs = self._legs((self._slope("Steep", "black"),))
+        assert StyleConfig.DIFFICULTY_EMOJIS["black"] in legs[0]
+        assert "black" not in legs[0], "difficulty is the colour emoji, never the '(black)' word"
+
+    def test_more_than_preview_slopes_truncate_with_ellipsis(self) -> None:
+        n = RoutePlannerConfig.ROUTE_STEP_SLOPE_PREVIEW
+        legs = self._legs(tuple(self._slope(f"S{i}", "blue") for i in range(n + 2)))
+        assert legs[0].endswith("…"), "a leg with more than the preview count ends with an ellipsis"
+        assert "S0" in legs[0] and f"S{n - 1}" in legs[0]
+        assert f"S{n}" not in legs[0], "slopes beyond the preview count are not named"
+
+    def test_exactly_preview_slopes_have_no_ellipsis(self) -> None:
+        n = RoutePlannerConfig.ROUTE_STEP_SLOPE_PREVIEW
+        legs = self._legs(tuple(self._slope(f"S{i}", "blue") for i in range(n)))
+        assert not legs[0].endswith("…"), "exactly the preview count fits without an ellipsis"
+
+    def test_lift_slope_lift_alternation_splits_legs(self) -> None:
+        legs = self._legs((self._lift("Up1"), self._slope("Run", "red"), self._lift("Up2")))
+        assert len(legs) == 3, "a lift boundary flushes the slope run into its own leg"
+        assert "Up1" in legs[0] and "Run" in legs[1] and "Up2" in legs[2]
+
+    def test_empty_groups_yield_no_legs(self) -> None:
+        assert route_legs(()) == []

@@ -132,11 +132,11 @@ class TestLiftNaming:
     """generate_name / number_from_id. RNG seeded by the autouse _deterministic_rng fixture."""
 
     def test_summit_name_for_large_rise(self) -> None:
-        # Vertical rise above SUMMIT_RISE_M (500m) → "Summit" lift name.
+        # Vertical rise above SUMMIT_RISE_M (500m) → "Gipfel" lift name.
         name = Lift.generate_name(
             lift_type="chairlift", lift_id="L1", length_m=800.0, vertical_rise_m=600.0, avg_bearing=0.0
         )
-        assert "Summit" in name
+        assert "Gipfel" in name
 
     def test_name_embeds_lift_number(self) -> None:
         name = Lift.generate_name(

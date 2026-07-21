@@ -143,7 +143,7 @@ class ClickDetector:
             # Merge properties into obj for easier access
             obj = {**obj, **props}
 
-        logger.debug(f"Object click: type={obj_type}, data={obj}")
+        logger.debug(f"Object click: type={obj_type}, id={obj.get('id')}")
 
         # TERRAIN click (invisible ScatterplotLayer grid for terrain click detection)
         if obj_type == ClickConfig.TYPE_TERRAIN:

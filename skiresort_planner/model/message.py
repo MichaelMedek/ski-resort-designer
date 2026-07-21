@@ -8,8 +8,8 @@ Architecture:
 Design Principles:
 - Maximum ONE message per panel location at any time
 - Two levels only: INFO (blue) = context/status/loading, WARNING (yellow) = invalid input / next step.
-- Subclass InfoMessage/WarningMessage (inline) or InfoToast/WarningToast (transient) — the level/icon is
-  fixed by the base, so a subclass supplies only its text.
+- Subclass InfoMessage/WarningMessage for inline messages (level/icon fixed by the base). Transient
+  toasts are always WarningToast (yellow); a subclass supplies only its text.
 
 All data (elevations, node names, stats) must be preserved in the consolidated messages.
 """
@@ -115,20 +115,9 @@ class ToastMessage(ABC):
 
 
 @dataclass(frozen=True)
-class InfoToast(ToastMessage):
-    """Transient blue (INFO) toast — an informational cue (e.g. "computing…"). Default icon ℹ️;
-    a subclass may override `icon` for a topical glyph. Semantic level INFO (st.toast has no color API).
-    """
-
-    @property
-    def icon(self) -> str:
-        return "ℹ️"
-
-
-@dataclass(frozen=True)
 class WarningToast(ToastMessage):
-    """Transient yellow (WARNING) toast — invalid input / rejected action. Default icon ⚠️;
-    a subclass may override `icon` for a topical glyph. Semantic level WARNING.
+    """Transient yellow (WARNING) toast — invalid input / rejected action. The only toast level:
+    toasts are always transient warnings (a subclass may override `icon` for a topical glyph).
     """
 
     @property
@@ -183,10 +172,10 @@ class TargetTooFarMessage(WarningToast):
 
     @property
     def message(self) -> str:
-        # Round the distance UP to 0.1 m so it never renders equal to the max: this fires
-        # only when distance strictly exceeds the max, and ".0f" could show "1000m (max: 1000m)".
-        distance_shown = math.ceil(self.distance_m * 10) / 10
-        return f"Target Too Far — {distance_shown:.1f}m (max: {self.max_distance_m:.0f}m)"
+        # Round the distance UP to the next whole metre so it never renders equal to the max: this
+        # fires only when distance strictly exceeds the max, and ".0f" could show "1000m (max: 1000m)".
+        distance_shown = math.ceil(self.distance_m)
+        return f"Target Too Far — {distance_shown:.0f}m (max: {self.max_distance_m:.0f}m)"
 
 
 @dataclass(frozen=True)
@@ -201,10 +190,10 @@ class TargetNotDownhillMessage(WarningToast):
     def message(self) -> str:
         drop = self.start_elevation_m - self.target_elevation_m
         drop_explainer = f" (Target is {abs(drop):.0f}m above your current point)" if drop < 0 else ""
-        # Round the drop DOWN to 0.1 m so it never renders equal to the minimum: this fires
-        # only when drop is strictly under min_drop_m, and ".0f" could show "drop: 5m, need at least 5m".
-        drop_shown = math.floor(drop * 10) / 10
-        return f"Not Downhill Enough — drop: {drop_shown:.1f}m, need at least {self.min_drop_m:.0f}m" + drop_explainer
+        # Round the drop DOWN to the next whole metre so it never renders equal to the minimum: this
+        # fires only when drop is strictly under min_drop_m, and ".0f" could show "drop: 5m, need at least 5m".
+        drop_shown = math.floor(drop)
+        return f"Not Downhill Enough — drop: {drop_shown:.0f}m, need at least {self.min_drop_m:.0f}m" + drop_explainer
 
 
 @dataclass(frozen=True)
@@ -258,10 +247,10 @@ class MergeTooFarMessage(WarningToast):
 
     @property
     def message(self) -> str:
-        # Round the span UP to 0.1 m so it never renders equal to the max (this fires only when
-        # the span strictly exceeds the max, and ".0f" could show "500m (max: 500m)").
-        span_shown = math.ceil(self.span_m * 10) / 10
-        return f"Nodes Too Far Apart — {span_shown:.1f}m (max: {self.max_span_m:.0f}m)"
+        # Round the span UP to the next whole metre so it never renders equal to the max (this fires
+        # only when the span strictly exceeds the max, and ".0f" could show "500m (max: 500m)").
+        span_shown = math.ceil(self.span_m)
+        return f"Nodes Too Far Apart — {span_shown:.0f}m (max: {self.max_span_m:.0f}m)"
 
 
 @dataclass(frozen=True)
@@ -282,15 +271,6 @@ class ClickingDisabledIn3DToast(WarningToast):
     @property
     def message(self) -> str:
         return "Clicking disabled in 3D view. Return to 2D to interact with the map."
-
-
-@dataclass(frozen=True)
-class CustomPathComputingToast(InfoToast):
-    """Informational cue while custom-connect path options are being computed (default ℹ️ icon)."""
-
-    @property
-    def message(self) -> str:
-        return "🎯 Computing custom path options…"
 
 
 # =============================================================================
@@ -425,7 +405,7 @@ class LiftPlacingContextMessage(InfoMessage):
 
 
 @dataclass(frozen=True)
-class ImportPlacingContextMessage(InfoMessage):
+class ImportSelectingContextMessage(InfoMessage):
     """RIGHT panel: OSM import placement progress — shows the placed box center + area size."""
 
     center_lat: float = 0.0
@@ -443,21 +423,20 @@ class ImportPlacingContextMessage(InfoMessage):
 
 
 @dataclass(frozen=True)
-class MergePlacingContextMessage(InfoMessage):
-    """RIGHT panel: node-merge selection progress — shows how many nodes are selected + their span."""
+class NodeEditContextMessage(InfoMessage):
+    """RIGHT panel: node-editor selection progress — shows how many nodes are selected + their span."""
 
     selected_count: int = 0
     span_m: float = 0.0
 
     @property
     def message(self) -> str:
+        # One header, body varies by selection count (mirrors LiftPlacingContextMessage's single return).
         if self.selected_count == 0:
-            return "🔗 **Merge Nodes** — Selecting\n\n- 👆 Click node markers, or a path to add a node"
-        return (
-            "🔗 **Merge Nodes** — Selecting\n\n"
-            f"- ⚪ Selected: {self.selected_count} node(s)\n"
-            f"- 📏 Span: {self.span_m:.0f}m"
-        )
+            body = "- 👆 Click node markers, or a path to add a node"
+        else:
+            body = f"- ⚪ Selected: {self.selected_count} node(s)\n- 📏 Span: {self.span_m:.0f}m"
+        return f"🔗 **Edit Nodes** — Selecting\n\n{body}"
 
 
 # =============================================================================
@@ -607,8 +586,8 @@ class ImportActionMessage(WarningMessage):
 
 
 @dataclass(frozen=True)
-class MergeActionMessage(WarningMessage):
-    """RIGHT panel: action instruction while selecting nodes to merge."""
+class NodeEditActionMessage(WarningMessage):
+    """RIGHT panel: action instruction while editing nodes (select → add/delete/merge)."""
 
     selected_count: int = 0
 
@@ -669,4 +648,75 @@ class NoReturnEntityMessage(WarningMessage):
         return (
             f"⚠️ This {self.entity_noun} is a one-way trip — once you take it, no sequence of slopes "
             "and lifts brings you back to ride it again."
+        )
+
+
+# =============================================================================
+# ROUTE PLANNER — pick start/end, then browse the best routes by criterion
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class RoutePlacingContextMessage(InfoMessage):
+    """RIGHT panel (blue): where the route START was placed (node + elevation).
+
+    Mirrors LiftPlacingContextMessage's first-station block. In route_placing the start is always
+    set (the first node click sets it before the transition), so this always renders — no branch.
+    """
+
+    start_node_id: str
+    start_elevation_m: float
+
+    @property
+    def message(self) -> str:
+        return (
+            f"🧭 **Route Planner** — Placing\n\n"
+            f"- 🚩 Start: node **{self.start_node_id}**\n"
+            f"- 📍 Elevation: {self.start_elevation_m:.0f}m"
+        )
+
+
+@dataclass(frozen=True)
+class RoutePlacingActionMessage(WarningMessage):
+    """RIGHT panel (yellow): instruction to click the end node — a DIFFERENT node for shortest routes,
+    or the SAME start node again for a scenic tour of every reachable lift.
+    """
+
+    @property
+    def message(self) -> str:
+        return (
+            "🏁 **Select End Node**\n\n"
+            "- 👆 Click another **node** for the fastest routes there.\n"
+            "- 🔁 Click the **same start node** again for a scenic tour of every lift, back to start."
+        )
+
+
+@dataclass(frozen=True)
+class RouteResultsContextMessage(InfoMessage):
+    """RIGHT panel (blue): how many routes were found under the shown difficulty cap, and which one."""
+
+    total: int = 0
+    selected_index: int = 0  # 0-based
+    difficulty_cap: str = "black"  # the premise: hardest band allowed for the shown routes
+
+    @property
+    def message(self) -> str:
+        return f"🛣️ **Routes** — showing {self.selected_index + 1} of {self.total} (max **{self.difficulty_cap}**)"
+
+
+@dataclass(frozen=True)
+class RouteNoResultsMessage(WarningMessage):
+    """RIGHT panel (yellow): no routes under the shown cap — distinguish "cap too strict" from "none exist"."""
+
+    cap_restrictive: bool = False  # True when an easier cap is hiding an otherwise-reachable route
+
+    @property
+    def message(self) -> str:
+        if self.cap_restrictive:
+            return (
+                "⚠️ **No route within this difficulty**\n\n- 🎚️ Raise the max-difficulty selector to allow harder slopes."
+            )
+        return (
+            "⚠️ **No route exists**\n\n"
+            "- 🎯 No way to ski/lift from the start to the end.\n- Build connecting slopes or lifts."
         )

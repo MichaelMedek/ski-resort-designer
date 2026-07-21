@@ -32,7 +32,7 @@ from skiresort_planner.ui.actions import (
     commit_selected_path,
     resolve_build_origin,
 )
-from skiresort_planner.ui.infra import bump_camera_epoch, bump_dedup_epoch, trigger_rerun
+from skiresort_planner.ui.infra import bump_dedup_epoch, trigger_rerun
 from skiresort_planner.ui.kind_spec import KIND_SPECS
 from skiresort_planner.ui.validators import (
     validate_custom_target_distance,
@@ -50,6 +50,9 @@ logger = logging.getLogger(__name__)
 
 # Shown when a stray marker is clicked mid-lift-placement — one string, four call sites.
 _LIFT_PLACING_BUSY_REASON = "Finish placing the lift first (click the second station)."
+
+# Node-editor guidance shown when a click can't act (bare terrain, or a non-node/-path marker).
+_NODE_EDIT_HINT = "Click a node to select it, or a path to add a node."
 
 
 # =============================================================================
@@ -70,6 +73,9 @@ def _select_or_commit_proposal(ctx: PlannerContext, idx: int) -> None:
         commit_selected_path(path_idx=idx)  # re-click the selected one → commit
     else:
         ctx.proposals.selected_idx = idx
+        # Bump the dedup epoch so the NEXT click on this SAME proposal body registers as fresh.
+        # otherwise the commit re-click collides with this select click and is swallowed.
+        bump_dedup_epoch()
         trigger_rerun()  # first click just highlights the proposal — redraw in place, no recenter
 
 
@@ -91,7 +97,7 @@ def _start_mode_from_terrain(
     """Start the selected build mode from a fresh TERRAIN point (idle first click).
 
     Does NOT recenter the map — the user keeps their current pan/zoom (only finish / view-panel /
-    Reset View / 3D / place-search reframe the camera). Merge is the exception in intent only: it
+    Reset View / 3D / place-search reframe the camera). Node editing is the exception in intent only: it
     starts from a node, so a terrain click is guided, not acted on.
     """
     build_mode = ctx.build_mode.mode
@@ -110,9 +116,12 @@ def _start_mode_from_terrain(
     elif ctx.build_mode.is_import():
         logger.debug(f"[IDLE] Terrain click: placing import box center at ({lat:.6f}, {lon:.6f})")
         sm.start_import(lon=lon, lat=lat)
-    elif ctx.build_mode.is_merge():
+    elif ctx.build_mode.is_node_edit():
         # Merge/delete act on nodes; add-node acts on a path. A bare terrain click hits neither.
-        InvalidClickMessage(action="edit nodes", reason="Click a node to select it, or a path to add a node.").display()
+        InvalidClickMessage(action="edit nodes", reason=_NODE_EDIT_HINT).display()
+    elif ctx.build_mode.is_route():
+        # Routes run node-to-node; a bare terrain click has no node to anchor to.
+        InvalidClickMessage(action="plan a route", reason="Click a node to set the route start.").display()
     else:
         raise RuntimeError(f"[IDLE] Unknown build_mode '{build_mode}'.")
 
@@ -139,12 +148,18 @@ def _start_mode_from_node(ctx: PlannerContext, sm: PlannerStateMachine, node: No
     elif ctx.build_mode.is_import():
         logger.debug(f"[IDLE] Node click: placing import box center at {node.id}")
         sm.start_import(lon=node.lon, lat=node.lat)
-    elif ctx.build_mode.is_merge():
-        # First node click starts merge. Select the node, then transition (start_merge reruns via
-        # listener, so select BEFORE it). No recenter — keep the user's view.
-        logger.debug(f"[IDLE] Node click: starting merge from {node.id}")
-        ctx.merge.toggle(node.id)
-        sm.start_merge()
+    elif ctx.build_mode.is_node_edit():
+        # First node click starts node editing. Select the node, then transition (start_node_edit reruns
+        # via listener, so select BEFORE it). No recenter — keep the user's view.
+        logger.debug(f"[IDLE] Node click: starting node edit from {node.id}")
+        ctx.node_edit.toggle(node.id)
+        sm.start_node_edit()
+    elif ctx.build_mode.is_route():
+        # First node click sets the route START, then enters route_placing (mirrors node edit). Routes
+        # are node-to-node, so terrain clicks are ignored in _start_mode_from_terrain.
+        logger.debug(f"[IDLE] Node click: route start = {node.id}")
+        ctx.route_plan.start_node_id = node.id
+        sm.start_route()
     else:
         raise RuntimeError(f"[IDLE] Unknown build_mode '{build_mode}'.")
 
@@ -204,17 +219,17 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
             sm.view_slope(slope_id=slope.id)  # Triggers st.rerun() via listener
             return
 
-        # SEGMENT → in merge mode a belt click enters merge and adds a node; otherwise it opens the
-        # parent's panel. A SEGMENT reaches the panel branch only in the one-frame race before the map
+        # SEGMENT → in node-edit mode a belt click enters the editor and adds a node; otherwise it opens
+        # the parent's panel. A SEGMENT reaches the panel branch only in the one-frame race before the map
         # re-tags it as its finished entity; an orphan (parent deleted) resolves to None and is ignored.
         if marker_type == MarkerType.SEGMENT:
             assert click_info.segment_id is not None  # Validated in ClickInfo
-            if ctx.build_mode.is_merge():
+            if ctx.build_mode.is_node_edit():
                 # A SEGMENT is a positioned marker, so ClickDetector always sets lat/lon (see ClickInfo).
                 assert click_info.lon is not None and click_info.lat is not None
-                logger.debug(f"[IDLE] Merge mode: adding a node on segment {click_info.segment_id}")
+                logger.debug(f"[IDLE] Node edit: adding a node on segment {click_info.segment_id}")
                 if add_node_on_path_action(segment_id=click_info.segment_id, lon=click_info.lon, lat=click_info.lat):
-                    sm.start_merge()  # enter merge so the user can keep editing (mirrors node-click entry)
+                    sm.start_node_edit()  # enter node edit so the user can keep editing (mirrors node-click entry)
                 return
             parent = graph.get_entity_by_segment_id(segment_id=click_info.segment_id)
             if not parent:
@@ -231,26 +246,13 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
                 raise RuntimeError(f"[IDLE] Segment click: unhandled parent kind {parent.kind}.")
             return
 
-        # LIFT → Show lift panel and sync build mode
-        if marker_type == MarkerType.LIFT:
+        # LIFT or its PYLON → show the parent lift's panel and sync build mode (both point at the lift).
+        if marker_type in {MarkerType.LIFT, MarkerType.PYLON}:
             assert click_info.lift_id is not None  # Validated in ClickInfo
             lift = graph.lifts.get(click_info.lift_id)
             if not lift:
                 raise RuntimeError(f"Lift {click_info.lift_id} not found in graph")
-            logger.debug(f"[IDLE] Lift click: showing panel for {lift.name}")
-            # Sync build mode to the viewed lift's type (single source of truth for selection)
-            ctx.build_mode.mode = lift.lift_type
-            center_on_lift(ctx=ctx, graph=graph, lift=lift, zoom=MapConfig.VIEWING_ZOOM)
-            sm.view_lift(lift_id=lift.id)  # Triggers st.rerun() via listener
-            return
-
-        # PYLON → Show parent lift panel and sync build mode
-        if marker_type == MarkerType.PYLON:
-            assert click_info.lift_id is not None  # Validated in ClickInfo
-            lift = graph.lifts.get(click_info.lift_id)
-            if not lift:
-                raise RuntimeError(f"Lift {click_info.lift_id} not found in graph")
-            logger.debug(f"[IDLE] Pylon click: showing panel for {lift.name}")
+            logger.debug(f"[IDLE] {marker_type.value} click: showing panel for {lift.name}")
             # Sync build mode to the viewed lift's type (single source of truth for selection)
             ctx.build_mode.mode = lift.lift_type
             center_on_lift(ctx=ctx, graph=graph, lift=lift, zoom=MapConfig.VIEWING_ZOOM)
@@ -591,14 +593,14 @@ def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) ->
     )
 
     logger.info(f"Lift {lift.name} created successfully")
-    # Frame the new lift + remount, but do NOT rerun here — sm.complete_lift's listener reruns.
+    # Frame the new lift IN PLACE (no remount); do NOT rerun here — sm.complete_lift's listener reruns.
+    # The new view flows via ctx.map → initialViewState (no camera_epoch bump = no gray-out iframe remount).
     center_on_lift(ctx=ctx, graph=graph, lift=lift, zoom=MapConfig.VIEWING_ZOOM)
-    bump_camera_epoch()
     sm.complete_lift(lift_id=lift.id)
 
 
-def handle_import_placing_click(click_info: ClickInfo, elevation: float | None) -> None:
-    """Handle a click while placing an OSM import box (IMPORT_PLACING).
+def handle_import_selecting_click(click_info: ClickInfo, elevation: float | None) -> None:
+    """Handle a click while placing an OSM import box (IMPORT_SELECTING).
 
     Clicking terrain re-places the box center. Confirming the import is done ONLY by the right-panel
     buttons ("Import lifts + slopes" / "Import lifts only"). The center-dot marker is inert here.
@@ -623,11 +625,11 @@ def handle_import_placing_click(click_info: ClickInfo, elevation: float | None) 
     logger.debug(f"[IMPORT] Ignoring {click_info.display_name} — click terrain to re-place, or a button to import")
 
 
-def handle_merge_placing_click(click_info: ClickInfo, elevation: float | None) -> None:
-    """Handle a click while selecting nodes to merge (MERGE_PLACING).
+def handle_node_edit_selecting_click(click_info: ClickInfo, elevation: float | None) -> None:
+    """Handle a click while in the node editor (NODE_EDITING).
 
     A NODE marker click toggles that node in the selection (re-click removes it) via the
-    toggle_merge_node self-loop, then redraws so the selection colour updates. A SEGMENT marker (a
+    toggle_node_edit_node self-loop, then redraws so the selection colour updates. A SEGMENT marker (a
     slope/road belt or center-line) inserts a new node on that path at the click point. Every other
     click (terrain, slope/road icons, lift/proposal markers) is an InvalidClickMessage — this branch
     handles every marker type so the dispatch never crashes.
@@ -637,8 +639,8 @@ def handle_merge_placing_click(click_info: ClickInfo, elevation: float | None) -
     # NODE marker → toggle it in the selection.
     if click_info.click_type == MapClickType.MARKER and click_info.marker_type == MarkerType.NODE:
         assert click_info.node_id is not None  # Validated in ClickInfo
-        logger.debug(f"[MERGE] Node click: toggling {click_info.node_id} in the merge selection")
-        sm.toggle_merge_node(node_id=click_info.node_id)
+        logger.debug(f"[NODE_EDIT] Node click: toggling {click_info.node_id} in the selection")
+        sm.toggle_node_edit_node(node_id=click_info.node_id)
         # Refresh dedup so the SAME node can be toggled again (on/off/on);
         # redraw the red selection in place — no recenter.
         bump_dedup_epoch()
@@ -651,13 +653,40 @@ def handle_merge_placing_click(click_info: ClickInfo, elevation: float | None) -
         assert click_info.segment_id is not None  # Validated in ClickInfo
         # A SEGMENT is a positioned marker, so ClickDetector always sets lat/lon (see ClickInfo).
         assert click_info.lon is not None and click_info.lat is not None
-        logger.debug(f"[MERGE] Path click: adding a node on segment {click_info.segment_id}")
+        logger.debug(f"[NODE_EDIT] Path click: adding a node on segment {click_info.segment_id}")
         if add_node_on_path_action(segment_id=click_info.segment_id, lon=click_info.lon, lat=click_info.lat):
-            trigger_rerun()  # stay in merge_placing; redraw with the new node in place (no recenter)
+            trigger_rerun()  # stay in node_edit_selecting; redraw with the new node in place (no recenter)
         return
 
-    # Anything else (terrain or a non-node marker) is not selectable for merge.
+    # Anything else (terrain or a non-node marker) is not selectable for node editing.
+    InvalidClickMessage(action="edit nodes", reason=_NODE_EDIT_HINT).display()
+
+
+def handle_route_placing_click(click_info: ClickInfo, elevation: float | None) -> None:
+    """Handle a click while picking the route's end node (route_placing).
+
+    Routes run node-to-node, so only NODE markers act. Clicking a DIFFERENT node sets the end →
+    point-to-point shortest routes. Clicking the SAME node as the start closes the loop (end == start)
+    → scenic tours of every reachable lift. Either way we arm the deferred compute and complete to
+    idle_viewing_route. Every other click is an InvalidClickMessage.
+    """
+    sm: PlannerStateMachine = st.session_state.state_machine
+    ctx: PlannerContext = st.session_state.context
+
+    if click_info.click_type == MapClickType.MARKER and click_info.marker_type == MarkerType.NODE:
+        assert click_info.node_id is not None  # Validated in ClickInfo
+        clicked = click_info.node_id
+        same = clicked == ctx.route_plan.start_node_id
+        logger.debug(
+            f"[ROUTE] End node = {clicked}; {'closed scenic loop' if same else 'point-to-point'} "
+            f"from {ctx.route_plan.start_node_id}"
+        )
+        ctx.route_plan.end_node_id = clicked  # == start for a closed scenic loop
+        ctx.pending.route_plan_generation = True  # compute after the rerun (deferred-work pattern)
+        sm.complete_route()
+        return
+
     InvalidClickMessage(
-        action="select for merge",
-        reason="Click a node to select it, or a path to add a node.",
+        action="plan a route",
+        reason="Click a node to set the route end (or the SAME node again for a scenic tour of every lift).",
     ).display()

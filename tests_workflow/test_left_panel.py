@@ -9,6 +9,7 @@ from contextlib import nullcontext
 
 import pytest
 
+from skiresort_planner.constants import MapConfig
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
@@ -16,8 +17,6 @@ from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.context import BuildMode
 from skiresort_planner.ui.left_panel import SidebarRenderer
 from skiresort_planner.ui.state_machine import PlannerStateMachine
-
-M = 111320.0
 
 
 def _build_slope(graph: ResortGraph, path_points: list[PathPoint]) -> str:
@@ -36,7 +35,9 @@ def _build_road(graph: ResortGraph, path_points: list[PathPoint]) -> str:
 
 def _build_lift(graph: ResortGraph, dem) -> str:
     bottom, _ = graph.get_or_create_node(
-        lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M)
+        lon=0.0,
+        lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+        elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
     )
     top, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
     lift = graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
@@ -64,6 +65,37 @@ class TestSidebarRuns:
 
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
+
+    def test_defect_lists_show_largest_three_by_length(self, fake_st, empty_graph, monkeypatch) -> None:
+        """The summary names the largest 3 offenders per category, ordered by length. Isolate the
+        panel logic by feeding a crafted stats.defects (the classifier is tested in test_connectivity).
+        """
+        from skiresort_planner.model.resort_graph import EntityDefect
+
+        defects = [
+            EntityDefect(
+                entity_id=f"SL{i}", name=f"slope-{i}", length_m=float(i * 100), disconnected=True, no_return=False
+            )
+            for i in range(1, 5)  # 4 disconnected slopes of increasing length (100..400m)
+        ] + [EntityDefect(entity_id="L1", name="lift-a", length_m=250.0, disconnected=False, no_return=True)]
+        stats = empty_graph.get_stats()
+        stats["disconnected_count"] = 4
+        stats["no_return_count"] = 1
+        stats["defects"] = defects
+        monkeypatch.setattr(empty_graph, "get_stats", lambda: stats)
+
+        lines: list[str] = []
+        monkeypatch.setattr(fake_st, "markdown", lambda text, *a, **k: lines.append(text))
+
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph)._render_resort_stats()
+
+        body = "\n".join(lines)
+        assert "**4 Disconnected from core area** (largest 3):" in body
+        # Largest 3 by length are 400,300,200 → slope-4/3/2; slope-1 (100m) is dropped.
+        assert "slope-4" in body and "slope-3" in body and "slope-2" in body
+        assert "slope-1" not in body
+        assert "**1 One-way (can't loop back)** (largest 1):" in body and "lift-a" in body
 
     def test_sidebar_during_slope_building(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         # Building state renders the building controls + undo/reset buttons.
@@ -123,17 +155,42 @@ class TestSidebarRuns:
 
     def test_sidebar_building_state_renders_consolidated_block(self, fake_st, empty_graph) -> None:
         # Building/placing states render the SAME collapsed info block as idle/viewing (header label
-        # + the "complete or cancel" bullet), not the old plain markdown/caption pair.
+        # + the "buttons locked" bullet), not the old plain markdown/caption pair.
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         sm.start_import(lon=0.0, lat=0.0)
-        assert sm.is_import_placing
+        assert sm.is_import_selecting
 
         captured: list[str] = []
         fake_st.markdown = lambda text, *a, **k: captured.append(text)
         SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
         joined = "\n".join(captured)
 
-        assert "Complete or cancel current build to change type" in joined
+        assert "Buttons locked — finish or cancel this import to switch build type" in joined
+
+
+class TestSidebarButtonHelpCompleteness:
+    """Every registered state must render the mode-selector without a button's help text raising.
+
+    `_get_button_help` / `_disabled_button_reason` must resolve a help string in EVERY state.
+    """
+
+    def test_every_state_renders_all_button_help_without_raising(self, fake_st, empty_graph) -> None:
+        from skiresort_planner.ui.mode_registry import BUILD_STATES, OPERATIONS
+
+        for state_id in BUILD_STATES:
+            sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+            sm.current_state = getattr(sm, state_id)  # force the state (bypasses guards — test only)
+            renderer = SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph)
+            for mode, op in OPERATIONS.items():
+                label = BuildMode.display_name(mode)
+                # Whatever the state, the help text must resolve (disabled-reason or enabled-action) —
+                # never hit the fall-through raise.
+                renderer._get_button_help(
+                    mode=mode,
+                    label=label,
+                    is_disabled=not op.enabled(sm),
+                    is_building_or_placing=BUILD_STATES[state_id].blocks_build_buttons(),
+                )
 
 
 class TestModeSelectorButton:
@@ -246,10 +303,13 @@ class TestDescribeUndoAction:
         from skiresort_planner.generators.osm_importer import ImportResult
 
         dem = mock_dem_blue_slope
-        m = 111320.0
         slope_points = [
             PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
-            PathPoint(lon=0.0, lat=-500 / m, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / m)),
+            PathPoint(
+                lon=0.0,
+                lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            ),
         ]
         empty_graph.import_osm(ImportResult(slope_chains=[([slope_points], "Run")]), dem=dem)
         assert "OSM import" in self._describe_top(empty_graph)
@@ -261,7 +321,9 @@ class TestDescribeUndoAction:
         dem = mock_dem_blue_slope
         a, _ = empty_graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
         b, _ = empty_graph.get_or_create_node(
-            lon=0.0, lat=-200 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-200 / M)
+            lon=0.0,
+            lat=-200 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-200 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         )
         empty_graph.merge_nodes(node_ids=[a.id, b.id], dem=dem)
         assert self._describe_top(empty_graph) == "Un-merge 2 nodes"

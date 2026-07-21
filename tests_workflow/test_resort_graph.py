@@ -35,14 +35,16 @@ from skiresort_planner.model.resort_graph import (
 from skiresort_planner.model.slope import Slope
 from tests_workflow.conftest import MockDEMService
 
-M = MapConfig.METERS_PER_DEGREE_EQUATOR
-
 
 def _add_lift(graph: ResortGraph, dem, lift_type: str = "chairlift"):
     """Create two nodes + a lift on the graph and return the lift."""
     graph.nodes["N1"] = Node(
         id="N1",
-        location=PathPoint(lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M)),
+        location=PathPoint(
+            lon=0.0,
+            lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        ),
     )
     graph.nodes["N2"] = Node(
         id="N2", location=PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
@@ -220,7 +222,11 @@ class TestNodeReuse:
 
         path1_points = [
             PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
-            PathPoint(lon=0.0, lat=-500 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / M)),
+            PathPoint(
+                lon=0.0,
+                lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            ),
         ]
         graph.commit_paths(
             paths=[
@@ -233,8 +239,16 @@ class TestNodeReuse:
 
         # Second path starting very close to first path's end should reuse node.
         path2_points = [
-            PathPoint(lon=0.00001, lat=-500 / M, elevation=dem.get_elevation_or_raise(lon=0.00001, lat=-500 / M)),
-            PathPoint(lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M)),
+            PathPoint(
+                lon=0.00001,
+                lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                elevation=dem.get_elevation_or_raise(lon=0.00001, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            ),
+            PathPoint(
+                lon=0.0,
+                lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            ),
         ]
         graph.commit_paths(
             paths=[
@@ -256,7 +270,11 @@ class TestConnectorGeometrySnapping:
 
         path1_points = [
             PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
-            PathPoint(lon=0.0, lat=-500 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / M)),
+            PathPoint(
+                lon=0.0,
+                lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            ),
         ]
         graph.commit_paths(paths=[ProposedPathSegment(points=path1_points, sector_name="P1")])
 
@@ -294,7 +312,11 @@ class TestConnectorGeometrySnapping:
 
         path1 = [
             PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
-            PathPoint(lon=0.0, lat=-500 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / M)),
+            PathPoint(
+                lon=0.0,
+                lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            ),
         ]
         graph.commit_paths(paths=[ProposedPathSegment(points=path1, sector_name="P1")])
         first_segment = list(graph.segments.values())[0]
@@ -305,8 +327,14 @@ class TestConnectorGeometrySnapping:
         # Next segment's traced start is 200m off the real node — far beyond STEP_SIZE_M
         # snapping — but start_node_id forces exact reuse.
         drifted = [
-            PathPoint(lon=200 / M, lat=start_node.lat, elevation=start_node.elevation),
-            PathPoint(lon=200 / M, lat=start_node.lat - 500 / M, elevation=start_node.elevation - 40),
+            PathPoint(
+                lon=200 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=start_node.lat, elevation=start_node.elevation
+            ),
+            PathPoint(
+                lon=200 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                lat=start_node.lat - 500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                elevation=start_node.elevation - 40,
+            ),
         ]
         graph.commit_paths(paths=[ProposedPathSegment(points=drifted, start_node_id=start_node_id)])
 
@@ -345,12 +373,24 @@ class TestSlopeUndo:
 
         points1 = [
             PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
-            PathPoint(lon=0.0, lat=-500 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / M)),
+            PathPoint(
+                lon=0.0,
+                lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            ),
         ]
         graph.commit_paths(paths=[ProposedPathSegment(points=points1, target_difficulty="blue", sector_name="P1")])
         points2 = [
-            PathPoint(lon=0.0, lat=-500 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / M)),
-            PathPoint(lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M)),
+            PathPoint(
+                lon=0.0,
+                lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            ),
+            PathPoint(
+                lon=0.0,
+                lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            ),
         ]
         graph.commit_paths(paths=[ProposedPathSegment(points=points2, target_difficulty="blue", sector_name="P2")])
 
@@ -435,7 +475,10 @@ class TestUndoStackSemantics:
         dem = mock_dem_blue_slope
 
         for i in range(3):
-            start_lat, end_lat = -i * 500 / M, -(i + 1) * 500 / M
+            start_lat, end_lat = (
+                -i * 500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                -(i + 1) * 500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            )
             points = [
                 PathPoint(lon=0.0, lat=start_lat, elevation=dem.get_elevation_or_raise(lon=0.0, lat=start_lat)),
                 PathPoint(lon=0.0, lat=end_lat, elevation=dem.get_elevation_or_raise(lon=0.0, lat=end_lat)),
@@ -466,7 +509,10 @@ class TestUndoStackSemantics:
         dem = mock_dem_blue_slope
 
         for i in range(UndoConfig.MAX_UNDO_STACK_SIZE + 5):
-            start_lat, end_lat = -i * 50 / M, -(i + 1) * 50 / M
+            start_lat, end_lat = (
+                -i * 50 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                -(i + 1) * 50 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            )
             points = [
                 PathPoint(lon=0.0, lat=start_lat, elevation=dem.get_elevation_or_raise(lon=0.0, lat=start_lat)),
                 PathPoint(lon=0.0, lat=end_lat, elevation=dem.get_elevation_or_raise(lon=0.0, lat=end_lat)),
@@ -544,7 +590,9 @@ class TestParkingNodes:
         # Road starting at the slope's top node, heading east (new distinct end).
         road_points = [
             PathPoint(lon=shared_start.lon, lat=shared_start.lat, elevation=shared_start.elevation),
-            PathPoint(lon=300 / M, lat=shared_start.lat, elevation=shared_start.elevation),
+            PathPoint(
+                lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=shared_start.lat, elevation=shared_start.elevation
+            ),
         ]
         _commit_road(empty_graph, road_points)
 
@@ -556,7 +604,7 @@ class TestParkingNodes:
     def test_road_touching_nothing_yields_no_parking(self, empty_graph) -> None:
         road_points = [
             PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
-            PathPoint(lon=300 / M, lat=0.0, elevation=2000.0),
+            PathPoint(lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=2000.0),
         ]
         _commit_road(empty_graph, road_points)
         assert empty_graph.get_parking_nodes() == []
@@ -591,7 +639,7 @@ class TestNodeSharingDeletes:
         shared = path_points_blue[0]
         road_points = [
             PathPoint(lon=shared.lon, lat=shared.lat, elevation=shared.elevation),
-            PathPoint(lon=300 / M, lat=shared.lat, elevation=shared.elevation),
+            PathPoint(lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=shared.lat, elevation=shared.elevation),
         ]
         road = _commit_road(graph, road_points)
         shared_node_id = graph.segments[slope.segment_ids[0]].start_node_id
@@ -631,8 +679,8 @@ class TestMultipleSlopesFromOneNode:
         hub = PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
         slope_ids = []
         # Ends 200 m apart in lon so no end-node snapping — each slope keeps a distinct end.
-        for dlon in (0.0, 200 / M, 400 / M):
-            end_lat = -500 / M
+        for dlon in (0.0, 200 / MapConfig.METERS_PER_DEGREE_EQUATOR, 400 / MapConfig.METERS_PER_DEGREE_EQUATOR):
+            end_lat = -500 / MapConfig.METERS_PER_DEGREE_EQUATOR
             start = PathPoint(lon=hub.lon, lat=hub.lat, elevation=hub.elevation)
             end = PathPoint(lon=dlon, lat=end_lat, elevation=dem.get_elevation_or_raise(lon=dlon, lat=end_lat))
             graph.commit_paths(paths=[ProposedPathSegment(points=[start, end], target_difficulty="blue")])
@@ -679,8 +727,8 @@ def _leg(lon0, lat0, d_lon, d_lat, n, dem):
     """A straight leg of n points stepping (d_lon, d_lat) metres/point, elevation from DEM."""
     pts = []
     for i in range(n):
-        lon = lon0 + d_lon * i / M
-        lat = lat0 + d_lat * i / M
+        lon = lon0 + d_lon * i / MapConfig.METERS_PER_DEGREE_EQUATOR
+        lat = lat0 + d_lat * i / MapConfig.METERS_PER_DEGREE_EQUATOR
         pts.append(PathPoint(lon=lon, lat=lat, elevation=dem.get_elevation_or_raise(lon=lon, lat=lat)))
     return pts
 
@@ -812,9 +860,10 @@ class TestFinishSmoothing:
 
         assert slope is not None
         after = graph.segments[seg_id].points
-        # Smoothing resamples the 5 raw points at RESAMPLE_STEP_M (~7m over 800m → many more),
-        # with the entity endpoints pinned exactly.
-        assert len(after) > len(before), "single-segment path is smoothed (resampled denser)"
+        # Finish smooths (resamples at RESAMPLE_STEP_M) THEN simplifies (Douglas–Peucker) — a dead-straight
+        # run collapses to just its two endpoints. Endpoints are always pinned exactly.
+        assert len(after) >= 2
+        assert len(after) < len(before), "a straight run simplifies to fewer points (here, its 2 ends)"
         assert after[0] == before[0], "start endpoint pinned exactly"
         assert after[-1] == before[-1], "end endpoint pinned exactly"
 
@@ -830,13 +879,21 @@ class TestImportOSMBatch:
             lon = 0.01 * i
             pts = [
                 PathPoint(lon=lon, lat=0.0, elevation=dem.get_elevation_or_raise(lon=lon, lat=0.0)),
-                PathPoint(lon=lon, lat=-500 / M, elevation=dem.get_elevation_or_raise(lon=lon, lat=-500 / M)),
+                PathPoint(
+                    lon=lon,
+                    lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                    elevation=dem.get_elevation_or_raise(lon=lon, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+                ),
             ]
             pistes.append((pts, f"Run {i}" if i else None))
         return pistes
 
     def _lift(self, dem):
-        bottom = PathPoint(lon=0.05, lat=-500 / M, elevation=dem.get_elevation_or_raise(lon=0.05, lat=-500 / M))
+        bottom = PathPoint(
+            lon=0.05,
+            lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.05, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        )
         top = PathPoint(lon=0.05, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.05, lat=0.0))
         return (bottom, top, "chairlift", "Gipfelbahn")
 
@@ -861,7 +918,11 @@ class TestImportOSMBatch:
             lon = 0.01 * i
             pts = [
                 PathPoint(lon=lon, lat=0.0, elevation=dem.get_elevation_or_raise(lon=lon, lat=0.0)),
-                PathPoint(lon=lon, lat=-500 / M, elevation=dem.get_elevation_or_raise(lon=lon, lat=-500 / M)),
+                PathPoint(
+                    lon=lon,
+                    lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                    elevation=dem.get_elevation_or_raise(lon=lon, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+                ),
             ]
             chains.append(([pts], "1"))
         slopes, _lifts, duplicates = graph.import_osm(ImportResult(slope_chains=chains), dem=dem)
@@ -876,11 +937,19 @@ class TestImportOSMBatch:
 
         graph, dem = empty_graph, mock_dem_blue_slope
         base = PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
-        top = PathPoint(lon=0.0, lat=-800 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-800 / M))
+        top = PathPoint(
+            lon=0.0,
+            lat=-800 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-800 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        )
         # A slope whose top endpoint coincides with the lift base (they legitimately share a hub).
         slope_pts = [
             base,
-            PathPoint(lon=0.0, lat=-500 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / M)),
+            PathPoint(
+                lon=0.0,
+                lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            ),
         ]
         result = ImportResult(lifts=[(base, top, "chairlift", "Sassgalunbahn")], slope_chains=[([slope_pts], "1")])
         slopes, lifts, duplicates = graph.import_osm(result, dem=dem)
@@ -1017,14 +1086,16 @@ class TestImportOSMBatch:
         from skiresort_planner.generators.osm_importer import ImportResult
 
         graph, dem = empty_graph, mock_dem_blue_slope
-        m = 111320.0
 
         def pt(lon, lat):
             return PathPoint(lon=lon, lat=lat, elevation=dem.get_elevation_or_raise(lon=lon, lat=lat))
 
         # Two runs whose TOP endpoints are ~5 m apart (< STEP_SIZE_M=30 m) → they snap to one node.
-        shared_a = [pt(0.0, 0.0), pt(0.0, -600 / m)]
-        shared_b = [pt(5 / m, 0.0), pt(0.02, -600 / m)]  # top ~5 m east of run A's top
+        shared_a = [pt(0.0, 0.0), pt(0.0, -600 / MapConfig.METERS_PER_DEGREE_EQUATOR)]
+        shared_b = [
+            pt(5 / MapConfig.METERS_PER_DEGREE_EQUATOR, 0.0),
+            pt(0.02, -600 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        ]  # top ~5 m east of run A's top
         result = ImportResult(slope_chains=[([shared_a], "A"), ([shared_b], "B")])
 
         r1 = graph.import_osm(result, dem=dem)
@@ -1050,7 +1121,10 @@ class TestRename:
 
     def test_rename_road_also_renames_its_segments(self, empty_graph) -> None:
         graph = empty_graph
-        pts = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=300 / M, lat=0.0, elevation=1990.0)]
+        pts = [
+            PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
+            PathPoint(lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=1990.0),
+        ]
         graph.commit_paths(paths=[ProposedPathSegment(points=pts, is_connector=True, kind=SegmentKind.ROAD)])
         road = graph.finish_road(segment_ids=list(graph.segments.keys()))
 
@@ -1062,7 +1136,9 @@ class TestRename:
     def test_rename_lift(self, empty_graph, mock_dem_blue_slope) -> None:
         graph, dem = empty_graph, mock_dem_blue_slope
         bottom, _ = graph.get_or_create_node(
-            lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M)
+            lon=0.0,
+            lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         )
         top, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
         lift = graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
@@ -1082,7 +1158,9 @@ class TestLiftTypeChangeKeepsName:
     def test_update_type_preserves_name_and_updates_geometry(self, empty_graph, mock_dem_blue_slope) -> None:
         graph, dem = empty_graph, mock_dem_blue_slope
         bottom, _ = graph.get_or_create_node(
-            lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M)
+            lon=0.0,
+            lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         )
         top, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
         lift = graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
@@ -1162,8 +1240,6 @@ class TestMergeNodes:
     onto the survivor, as ONE undoable action. Undo restores the graph exactly.
     """
 
-    M = MapConfig.METERS_PER_DEGREE_EQUATOR
-
     def _node(self, graph: ResortGraph, dem: MockDEMService, node_id: str, lon: float, lat: float) -> None:
         graph.nodes[node_id] = Node(
             id=node_id, location=PathPoint(lon=lon, lat=lat, elevation=dem.get_elevation_or_raise(lon=lon, lat=lat))
@@ -1174,9 +1250,11 @@ class TestMergeNodes:
         # Three nodes a few metres apart (well within MAX_SPAN_M). A lift keeps the survivor from being
         # cleaned up as isolated after the merge.
         self._node(empty_graph, dem, "A", 0.0, 0.0)
-        self._node(empty_graph, dem, "B", 10 / self.M, 0.0)
-        self._node(empty_graph, dem, "C", 20 / self.M, 30 / self.M)
-        self._node(empty_graph, dem, "T", 0.0, -1000 / self.M)
+        self._node(empty_graph, dem, "B", 10 / MapConfig.METERS_PER_DEGREE_EQUATOR, 0.0)
+        self._node(
+            empty_graph, dem, "C", 20 / MapConfig.METERS_PER_DEGREE_EQUATOR, 30 / MapConfig.METERS_PER_DEGREE_EQUATOR
+        )
+        self._node(empty_graph, dem, "T", 0.0, -1000 / MapConfig.METERS_PER_DEGREE_EQUATOR)
         empty_graph.add_lift(start_node_id="A", end_node_id="T", lift_type="chairlift", dem=dem)
 
         empty_graph.merge_nodes(node_ids=["A", "B", "C"], dem=dem)
@@ -1185,17 +1263,19 @@ class TestMergeNodes:
         assert "A" in empty_graph.nodes, "survivor (first id) remains"
         survivor = empty_graph.nodes["A"]
         # Median of lons {0,10,20}/M and lats {0,0,30}/M is the middle value each.
-        assert survivor.lon == pytest.approx(10 / self.M)
+        assert survivor.lon == pytest.approx(10 / MapConfig.METERS_PER_DEGREE_EQUATOR)
         assert survivor.lat == pytest.approx(0.0)
         # Elevation was re-sampled from the DEM at the median point.
-        assert survivor.elevation == pytest.approx(dem.get_elevation_or_raise(lon=10 / self.M, lat=0.0))
+        assert survivor.elevation == pytest.approx(
+            dem.get_elevation_or_raise(lon=10 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0)
+        )
 
     def test_merge_repoints_lift_endpoints_onto_survivor(self, empty_graph, mock_dem_blue_slope) -> None:
         dem = mock_dem_blue_slope
         # Bottom station split into two near-coincident nodes (A survivor, B merged); top is T.
         self._node(empty_graph, dem, "A", 0.0, 0.0)
-        self._node(empty_graph, dem, "B", 5 / self.M, 0.0)
-        self._node(empty_graph, dem, "T", 0.0, -1000 / self.M)
+        self._node(empty_graph, dem, "B", 5 / MapConfig.METERS_PER_DEGREE_EQUATOR, 0.0)
+        self._node(empty_graph, dem, "T", 0.0, -1000 / MapConfig.METERS_PER_DEGREE_EQUATOR)
         lift = empty_graph.add_lift(start_node_id="B", end_node_id="T", lift_type="chairlift", dem=dem)
 
         empty_graph.merge_nodes(node_ids=["A", "B"], dem=dem)
@@ -1207,7 +1287,7 @@ class TestMergeNodes:
     def test_merge_records_single_undo_entry(self, empty_graph, mock_dem_blue_slope) -> None:
         dem = mock_dem_blue_slope
         self._node(empty_graph, dem, "A", 0.0, 0.0)
-        self._node(empty_graph, dem, "B", 8 / self.M, 0.0)
+        self._node(empty_graph, dem, "B", 8 / MapConfig.METERS_PER_DEGREE_EQUATOR, 0.0)
         before = len(empty_graph.undo_stack)
         empty_graph.merge_nodes(node_ids=["A", "B"], dem=dem)
         assert len(empty_graph.undo_stack) == before + 1
@@ -1215,8 +1295,8 @@ class TestMergeNodes:
     def test_undo_restores_nodes_and_repointed_endpoints(self, empty_graph, mock_dem_blue_slope) -> None:
         dem = mock_dem_blue_slope
         self._node(empty_graph, dem, "A", 0.0, 0.0)
-        self._node(empty_graph, dem, "B", 6 / self.M, 0.0)
-        self._node(empty_graph, dem, "T", 0.0, -1000 / self.M)
+        self._node(empty_graph, dem, "B", 6 / MapConfig.METERS_PER_DEGREE_EQUATOR, 0.0)
+        self._node(empty_graph, dem, "T", 0.0, -1000 / MapConfig.METERS_PER_DEGREE_EQUATOR)
         lift = empty_graph.add_lift(start_node_id="B", end_node_id="T", lift_type="chairlift", dem=dem)
         a_before = (empty_graph.nodes["A"].lon, empty_graph.nodes["A"].lat, empty_graph.nodes["A"].elevation)
         b_before = (empty_graph.nodes["B"].lon, empty_graph.nodes["B"].lat)
@@ -1233,7 +1313,7 @@ class TestMergeNodes:
         from skiresort_planner.constants import MergeConfig
 
         dem = mock_dem_blue_slope
-        far = (MergeConfig.MAX_SPAN_M + 100) / self.M
+        far = (MergeConfig.MAX_SPAN_M + 100) / MapConfig.METERS_PER_DEGREE_EQUATOR
         self._node(empty_graph, dem, "A", 0.0, 0.0)
         self._node(empty_graph, dem, "B", 0.0, -far)
         with pytest.raises(ValueError, match="span"):
@@ -1250,7 +1330,7 @@ class TestMergeNodes:
     def test_max_node_span_m(self, empty_graph, mock_dem_blue_slope) -> None:
         dem = mock_dem_blue_slope
         self._node(empty_graph, dem, "A", 0.0, 0.0)
-        self._node(empty_graph, dem, "B", 0.0, -100 / self.M)
+        self._node(empty_graph, dem, "B", 0.0, -100 / MapConfig.METERS_PER_DEGREE_EQUATOR)
         span = empty_graph.max_node_span_m(["A", "B"])
         assert span == pytest.approx(100.0, abs=1.0)
 
@@ -1271,7 +1351,7 @@ class TestMergeNodes:
         top_node_id = slope.start_node_id  # the run's top boundary node
 
         # A second node a few metres from the slope top, to merge the top into.
-        self._node(graph, dem, "X", 6 / self.M, 6 / self.M)
+        self._node(graph, dem, "X", 6 / MapConfig.METERS_PER_DEGREE_EQUATOR, 6 / MapConfig.METERS_PER_DEGREE_EQUATOR)
         graph.merge_nodes(node_ids=[top_node_id, "X"], dem=dem)
 
         # The boundary ids must resolve to live nodes — endpoints() would raise otherwise.
@@ -1292,7 +1372,7 @@ class TestMergeNodes:
         assert top_seg.start_node_id == slope.start_node_id
         top_node_id = slope.start_node_id
 
-        self._node(graph, dem, "X", 8 / self.M, 8 / self.M)
+        self._node(graph, dem, "X", 8 / MapConfig.METERS_PER_DEGREE_EQUATOR, 8 / MapConfig.METERS_PER_DEGREE_EQUATOR)
         graph.merge_nodes(node_ids=[top_node_id, "X"], dem=dem)
 
         survivor = graph.nodes[top_node_id]
@@ -1308,8 +1388,8 @@ class TestMergeNodes:
         dem = mock_dem_blue_slope
         graph = empty_graph
         self._node(graph, dem, "A", 0.0, 0.0)
-        self._node(graph, dem, "B", 40 / self.M, 0.0)  # split bottom station, 40m from A
-        self._node(graph, dem, "T", 0.0, -1000 / self.M)
+        self._node(graph, dem, "B", 40 / MapConfig.METERS_PER_DEGREE_EQUATOR, 0.0)  # split bottom station, 40m from A
+        self._node(graph, dem, "T", 0.0, -1000 / MapConfig.METERS_PER_DEGREE_EQUATOR)
         lift = graph.add_lift(start_node_id="B", end_node_id="T", lift_type="chairlift", dem=dem)
         cable_before = [(p.lon, p.lat) for p in graph.lifts[lift.id].cable_points]
 
@@ -1335,14 +1415,14 @@ class TestMergeNodes:
         top_seg = graph.segments[slope.segment_ids[0]]
         top_node_id = slope.start_node_id
 
-        self._node(graph, dem, "T", 0.0, -1200 / self.M)
+        self._node(graph, dem, "T", 0.0, -1200 / MapConfig.METERS_PER_DEGREE_EQUATOR)
         lift = graph.add_lift(start_node_id=top_node_id, end_node_id="T", lift_type="chairlift", dem=dem)
 
         seg_points_before = [(p.lon, p.lat, p.elevation) for p in top_seg.points]
         cable_before = [(p.lon, p.lat, p.elevation) for p in graph.lifts[lift.id].cable_points]
         slope_boundary_before = (slope.start_node_id, slope.end_node_id)
 
-        self._node(graph, dem, "X", 8 / self.M, 8 / self.M)
+        self._node(graph, dem, "X", 8 / MapConfig.METERS_PER_DEGREE_EQUATOR, 8 / MapConfig.METERS_PER_DEGREE_EQUATOR)
         graph.merge_nodes(node_ids=[top_node_id, "X"], dem=dem)
         graph.undo_last()
 
@@ -1365,7 +1445,7 @@ class TestMergeNodes:
         slope = graph.slopes[next(iter(graph.slopes))]
         top_node_id = slope.start_node_id
 
-        self._node(graph, dem, "X", 5 / self.M, 5 / self.M)
+        self._node(graph, dem, "X", 5 / MapConfig.METERS_PER_DEGREE_EQUATOR, 5 / MapConfig.METERS_PER_DEGREE_EQUATOR)
         graph.merge_nodes(node_ids=[top_node_id, "X"], dem=dem)
 
         # Would raise ValueError("Start or end node not found ...") before the fix — importing a run
@@ -1386,7 +1466,7 @@ class TestMergeNodes:
         dem = mock_dem_blue_slope
         graph = empty_graph
         self._node(graph, dem, "A", 0.0, 0.0)
-        self._node(graph, dem, "B", 30 / self.M, 0.0)
+        self._node(graph, dem, "B", 30 / MapConfig.METERS_PER_DEGREE_EQUATOR, 0.0)
         lift = graph.add_lift(start_node_id="A", end_node_id="B", lift_type="chairlift", dem=dem)
         before = len(graph.undo_stack)
 
@@ -1431,7 +1511,7 @@ class TestMergeNodes:
         dem = mock_dem_blue_slope
         graph = empty_graph
         self._node(graph, dem, "A", 0.0, 0.0)
-        self._node(graph, dem, "B", 30 / self.M, 0.0)
+        self._node(graph, dem, "B", 30 / MapConfig.METERS_PER_DEGREE_EQUATOR, 0.0)
         lift = graph.add_lift(start_node_id="A", end_node_id="B", lift_type="chairlift", dem=dem)
 
         graph.merge_nodes(node_ids=["A", "B"], dem=dem)
@@ -1551,7 +1631,9 @@ class TestNodeDeletability:
         dem = mock_dem_blue_slope
         graph = empty_graph
         graph.nodes["A"] = Node(id="A", location=PathPoint(lon=0.0, lat=0.0, elevation=2000.0))
-        graph.nodes["T"] = Node(id="T", location=PathPoint(lon=0.0, lat=-1000 / M, elevation=2400.0))
+        graph.nodes["T"] = Node(
+            id="T", location=PathPoint(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR, elevation=2400.0)
+        )
         graph.add_lift(start_node_id="A", end_node_id="T", lift_type="chairlift", dem=dem)
         assert graph.node_deletability("A") == NodeDeletability.IS_LIFT_STATION
 
@@ -1701,7 +1783,7 @@ class TestDeleteNodes:
         before = set(graph.segments)
         lat = 0.0
         for _ in range(2):
-            leg = _leg(80 / M, lat, 0.0, -20.0, 25, dem)
+            leg = _leg(80 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat, 0.0, -20.0, 25, dem)
             graph.commit_paths(paths=[ProposedPathSegment(points=leg, target_difficulty="blue")])
             lat = leg[-1].lat
         s2 = graph.finish_slope(segment_ids=list(set(graph.segments) - before))
@@ -1733,9 +1815,12 @@ class TestInsertNodeOnPath:
         slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=1)
         seg_id = slope.segment_ids[0]
         seg = empty_graph.segments[seg_id]
-        mid = seg.points[len(seg.points) // 2]
+        # Geometric midpoint (interior): a finished straight run is just its two endpoints after
+        # simplification, so the click projects onto the single leg rather than an existing vertex.
+        mid_lon = (seg.points[0].lon + seg.points[-1].lon) / 2
+        mid_lat = (seg.points[0].lat + seg.points[-1].lat) / 2
 
-        node_id = empty_graph.insert_node_on_path(segment_id=seg_id, lon=mid.lon, lat=mid.lat)
+        node_id = empty_graph.insert_node_on_path(segment_id=seg_id, lon=mid_lon, lat=mid_lat, dem=mock_dem_blue_slope)
 
         assert node_id in empty_graph.nodes, "a new node was created"
         assert seg_id not in empty_graph.segments, "the original segment is replaced"
@@ -1743,15 +1828,17 @@ class TestInsertNodeOnPath:
         a, b = empty_graph.slopes[slope.id].segment_ids
         assert empty_graph.segments[a].end_node_id == node_id
         assert empty_graph.segments[b].start_node_id == node_id
-        # The node snapped to an existing vertex, so it sits exactly on the drawn path.
-        assert empty_graph.nodes[node_id].location == mid
+        # The node is projected onto the centerline at the clicked point (density-independent).
+        assert empty_graph.nodes[node_id].location.distance_to(other=PathPoint(mid_lon, mid_lat, 0.0)) < 1.0
 
     def test_insert_too_close_to_endpoint_raises(self, empty_graph, mock_dem_blue_slope) -> None:
         slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=1)
         seg = empty_graph.segments[slope.segment_ids[0]]
         near_start = seg.points[0]
         with pytest.raises(ValueError, match="too close to an existing node"):
-            empty_graph.insert_node_on_path(segment_id=seg.id, lon=near_start.lon, lat=near_start.lat)
+            empty_graph.insert_node_on_path(
+                segment_id=seg.id, lon=near_start.lon, lat=near_start.lat, dem=mock_dem_blue_slope
+            )
 
     def test_insert_on_unknown_segment_id_is_rejected(self, empty_graph, mock_dem_blue_slope) -> None:
         """A stale/unknown segment id (external click after a rerun/delete) → 'finished path' reason,
@@ -1759,7 +1846,7 @@ class TestInsertNodeOnPath:
         """
         assert empty_graph.insert_node_rejection("S999", lon=0.0, lat=0.0) == "click a finished path to add a node"
         with pytest.raises(ValueError, match="click a finished path"):
-            empty_graph.insert_node_on_path(segment_id="S999", lon=0.0, lat=0.0)
+            empty_graph.insert_node_on_path(segment_id="S999", lon=0.0, lat=0.0, dem=mock_dem_blue_slope)
 
     def test_insert_on_unfinished_segment_is_rejected(self, empty_graph, mock_dem_blue_slope) -> None:
         """A committed-but-not-finished segment belongs to no path (the one-frame race) → rejected."""
@@ -1779,10 +1866,12 @@ class TestInsertNodeOnPath:
     def test_insert_records_single_undo_and_restores_verbatim(self, empty_graph, mock_dem_blue_slope) -> None:
         slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=1)
         seg_id = slope.segment_ids[0]
-        mid = empty_graph.segments[seg_id].points[len(empty_graph.segments[seg_id].points) // 2]
+        seg = empty_graph.segments[seg_id]
+        mid_lon = (seg.points[0].lon + seg.points[-1].lon) / 2
+        mid_lat = (seg.points[0].lat + seg.points[-1].lat) / 2
         chain_before = list(slope.segment_ids)
 
-        node_id = empty_graph.insert_node_on_path(segment_id=seg_id, lon=mid.lon, lat=mid.lat)
+        node_id = empty_graph.insert_node_on_path(segment_id=seg_id, lon=mid_lon, lat=mid_lat, dem=mock_dem_blue_slope)
         assert empty_graph.undo_stack[-1].action_type.name == "INSERT_NODE", "insert pushes one INSERT_NODE entry"
 
         empty_graph.undo_last()
@@ -1833,14 +1922,24 @@ class TestNodeEditHelpers:
     def test_owning_path_none_for_unattached_node(self, empty_graph) -> None:
         assert empty_graph._owning_path("GHOST") is None
 
-    # -- _nearest_vertex_index: geometry pick -----------------------------------------------------
+    # -- _project_onto_path: Shapely projection onto the centerline (density-independent) ----------
 
-    def test_nearest_vertex_index_picks_closest(self) -> None:
+    def test_project_onto_path_picks_fraction(self) -> None:
         graph = ResortGraph()
         seg = self._seg("S1", "N1", "N2", [(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)])
-        assert graph._nearest_vertex_index(seg, lon=0.9, lat=0.0) == 1  # nearest to the middle vertex
-        assert graph._nearest_vertex_index(seg, lon=-5.0, lat=0.0) == 0  # off the start end
-        assert graph._nearest_vertex_index(seg, lon=99.0, lat=0.0) == 2  # off the far end
+        # A click at lon 0.5 projects a quarter along the 2-unit line → (0.5, 0.0).
+        frac, plon, plat = graph._project_onto_path(seg, lon=0.5, lat=0.0)
+        assert abs(frac - 0.25) < 1e-6 and abs(plon - 0.5) < 1e-6 and abs(plat) < 1e-6
+        # Off the far end clamps to the line end (fraction 1).
+        frac, plon, _ = graph._project_onto_path(seg, lon=99.0, lat=0.0)
+        assert frac == 1.0 and abs(plon - 2.0) < 1e-6
+
+    def test_project_onto_straight_two_point_segment(self) -> None:
+        # A simplified straight run is just 2 points; a mid click must still project onto the single leg.
+        graph = ResortGraph()
+        seg = self._seg("S1", "N1", "N2", [(0.0, 0.0), (2.0, 0.0)])
+        frac, plon, _ = graph._project_onto_path(seg, lon=1.0, lat=0.5)
+        assert abs(frac - 0.5) < 1e-6 and abs(plon - 1.0) < 1e-6
 
     # -- _drop_collapsed_segments_in_chain: zero-length curl removal ------------------------------
 
@@ -1966,6 +2065,7 @@ class TestResortStats:
             "total_road_length_m": 0,
             "disconnected_count": 0,
             "no_return_count": 0,
+            "defects": [],
         }
         assert descent == (0.0, 0.0, 0.0, 0.0)
 
@@ -1989,9 +2089,12 @@ class TestResortStats:
     def test_greatest_descent_chains_across_slopes(self, empty_graph) -> None:
         """Greatest descent chains SEPARATE slopes sharing a node — deeper than any single slope."""
         graph = empty_graph
-        M = MapConfig.METERS_PER_DEGREE_EQUATOR
         # A(2000) -> B(1700) -> C(1500): two separate slopes meeting at B, both descending south.
-        for nid, lat, elev in (("A", 0.0, 2000.0), ("B", -600 / M, 1700.0), ("C", -1200 / M, 1500.0)):
+        for nid, lat, elev in (
+            ("A", 0.0, 2000.0),
+            ("B", -600 / MapConfig.METERS_PER_DEGREE_EQUATOR, 1700.0),
+            ("C", -1200 / MapConfig.METERS_PER_DEGREE_EQUATOR, 1500.0),
+        ):
             graph.nodes[nid] = Node(id=nid, location=PathPoint(lon=0.0, lat=lat, elevation=elev))
         for sid, top, bot in (("S1", "A", "B"), ("S2", "B", "C")):
             a, b = graph.nodes[top], graph.nodes[bot]
@@ -2017,12 +2120,11 @@ class TestResortStats:
     def test_greatest_descent_maximizes_drop_not_length(self, empty_graph) -> None:
         """From one summit, a short steep plunge beats a long gentle traverse — drop is maximised."""
         graph = empty_graph
-        M = MapConfig.METERS_PER_DEGREE_EQUATOR
         # T(2000) forks: a long shallow run to L(1900, far) vs a short steep run to P(1200, near).
         for nid, lon, lat, elev in (
             ("T", 0.0, 0.0, 2000.0),
-            ("L", 0.0, -3000 / M, 1900.0),  # far but only 100 m drop
-            ("P", 0.0, -400 / M, 1200.0),  # near but 800 m drop
+            ("L", 0.0, -3000 / MapConfig.METERS_PER_DEGREE_EQUATOR, 1900.0),  # far but only 100 m drop
+            ("P", 0.0, -400 / MapConfig.METERS_PER_DEGREE_EQUATOR, 1200.0),  # near but 800 m drop
         ):
             graph.nodes[nid] = Node(id=nid, location=PathPoint(lon=lon, lat=lat, elevation=elev))
         for sid, top, bot in (("Sgentle", "T", "L"), ("Ssteep", "T", "P")):
@@ -2041,3 +2143,32 @@ class TestResortStats:
         descent = graph.greatest_descent()
         assert descent.drop_m == pytest.approx(800.0), "picks the deeper plunge, not the longer traverse"
         assert descent.bottom_elev_m == pytest.approx(1200.0)
+
+    def test_greatest_descent_parallel_segments_report_longer_piste(self, empty_graph) -> None:
+        """Two slope segments sharing the SAME (start, end) node pair have the SAME drop (drop is
+        endpoint-determined); the descent reports the LONGER one's length (the real piste travelled).
+        """
+        graph = empty_graph
+        for nid, elev in (("A", 2000.0), ("B", 1500.0)):
+            graph.nodes[nid] = Node(id=nid, location=PathPoint(lon=0.0, lat=0.0, elevation=elev))
+        top = PathPoint(lon=0.0, lat=0.0, elevation=2000.0)
+        # Both run A→B (identical 500m drop) but different geometry: a straight short one and a winding
+        # longer one. Insert the SHORTER last to prove the longer length is kept, not last-inserted.
+        for sid, bot in (
+            ("Slong", PathPoint(lon=0.02, lat=-0.02, elevation=1500.0)),
+            ("Sshort", PathPoint(lon=0.0, lat=-0.005, elevation=1500.0)),
+        ):
+            graph.segments[sid] = PathSegment(
+                id=sid,
+                name=sid,
+                start_node_id="A",
+                end_node_id="B",
+                kind=SegmentKind.SLOPE,
+                points=[top, bot],
+            )
+        graph.slopes["SLl"] = Slope(id="SLl", name="l", segment_ids=["Slong"], start_node_id="A", end_node_id="B")
+        graph.slopes["SLs"] = Slope(id="SLs", name="s", segment_ids=["Sshort"], start_node_id="A", end_node_id="B")
+
+        descent = graph.greatest_descent()
+        assert descent.drop_m == pytest.approx(500.0), "drop is endpoint-determined, identical for both"
+        assert descent.length_m == pytest.approx(graph.segments["Slong"].length_m), "reports the longer piste"

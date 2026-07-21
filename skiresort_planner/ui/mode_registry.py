@@ -40,8 +40,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# The camera framing: (lat, lon, bearing, zoom, pitch).
-ViewState = tuple[float, float, float, int, float]
+# The camera framing: (lat, lon, bearing, zoom, pitch). deck.gl zoom is continuous.
+ViewState = tuple[float, float, float, float, float]
 
 # A map-click handler: (click_info, elevation) -> None.
 ClickHandler = Callable[[ClickInfo, float | None], None]
@@ -66,6 +66,15 @@ class InfoBlock:
     icon: str
     label: str
     bullets: list[str]
+
+
+# Shared InfoBlock bullet fragments — single-sourced so per-state boxes can't drift.
+_CLOSE_BULLET = "✖️ **Close** the right panel to return"
+
+
+def _locked_bullet(noun: str) -> str:
+    """Reason the build-type buttons are greyed while an operation is in progress (all build states)."""
+    return f"⏳ Buttons locked — finish or cancel this {noun} to switch build type"
 
 
 # =============================================================================
@@ -120,8 +129,8 @@ class BuildState(ABC):
         """The elevation profile shown in the right column, or None when the state shows none."""
 
     @abstractmethod
-    def merge_highlight_node_ids(self, ctx: PlannerContext) -> list[str] | None:
-        """Node ids to draw as merge candidates, or None when not merging."""
+    def selected_node_ids(self, ctx: PlannerContext) -> list[str] | None:
+        """Node ids to draw as selected (merge/delete candidates or the route start), or None."""
 
     @abstractmethod
     def renders_custom_path(self, ctx: PlannerContext) -> bool:
@@ -187,7 +196,7 @@ class _IdleReadyState(BuildState):
     def bottom_profile(self, ctx: PlannerContext, graph: ResortGraph) -> ProfileSpec | None:
         return None
 
-    def merge_highlight_node_ids(self, ctx: PlannerContext) -> list[str] | None:
+    def selected_node_ids(self, ctx: PlannerContext) -> list[str] | None:
         return None
 
     def renders_custom_path(self, ctx: PlannerContext) -> bool:
@@ -202,7 +211,7 @@ class _IdleReadyState(BuildState):
                 "🔘 Select **Slope**, **Road** or **Lift** type below",
                 f"{StyleConfig.BUILDING_ICON} Click terrain/node → start building",
                 f"{StyleConfig.VIEWING_ICON} Click existing slope/road/lift → view stats",
-                "🛠️ Or use **Import** / **Node Merge** utilities below",
+                "🛠️ Or use **OSM Importer** / **Node Editor** / **Route Planner** utilities below",
             ],
         )
 
@@ -256,7 +265,7 @@ class _EntityViewingState(BuildState):
         *,
         use_3d: bool,
     ) -> list[pdk.Layer]:
-        return []
+        return []  # a viewed entity draws no overlay; the flythrough highlight is applied in app.py
 
     def view_state(self, ctx: PlannerContext, graph: ResortGraph, *, use_3d: bool) -> ViewState:
         entity_id = ENTITY_KIND_SPECS[self.kind].viewed_entity_id(ctx)
@@ -271,7 +280,7 @@ class _EntityViewingState(BuildState):
         fig = bottom_chart.render_viewing_profile(kind=self.kind, entity_id=entity_id, graph=graph)
         return ProfileSpec(fig=fig, key="viewing_profile")
 
-    def merge_highlight_node_ids(self, ctx: PlannerContext) -> list[str] | None:
+    def selected_node_ids(self, ctx: PlannerContext) -> list[str] | None:
         return None
 
     def renders_custom_path(self, ctx: PlannerContext) -> bool:
@@ -281,8 +290,8 @@ class _EntityViewingState(BuildState):
         # Same bullets for every viewed kind; only lifts add the change-type line.
         # EntityKind is a StrEnum, so `==` is reload-safe (survives Streamlit's class redefinition).
         bullets = ["🔄 Use lift buttons to change type"] if self.kind == EntityKind.LIFT else []
-        bullets.append("✖️ **Close** the right panel to return")
         bullets.append(f"{StyleConfig.BUILDING_ICON} Click terrain/node → new {self.kind.value}")
+        bullets.append(_CLOSE_BULLET)
         return InfoBlock(
             icon=StyleConfig.VIEWING_ICON, label=f"Viewing {self.kind.value.capitalize()}", bullets=bullets
         )
@@ -401,7 +410,7 @@ class _PathBuildingState(BuildState):
         # Key is scoped per kind so slope and road profile charts never collide.
         return ProfileSpec(fig=fig, key=f"combined_{self.kind.value}_profile")
 
-    def merge_highlight_node_ids(self, ctx: PlannerContext) -> list[str] | None:
+    def selected_node_ids(self, ctx: PlannerContext) -> list[str] | None:
         return None
 
     def renders_custom_path(self, ctx: PlannerContext) -> bool:
@@ -411,7 +420,7 @@ class _PathBuildingState(BuildState):
         return InfoBlock(
             icon=StyleConfig.BUILDING_ICON,
             label=f"Building {KIND_SPECS[self.kind].display_noun}…",
-            bullets=["⏳ Complete or cancel current build to change type"],
+            bullets=[_locked_bullet(KIND_SPECS[self.kind].display_noun.lower())],
         )
 
     def sidebar_panel(
@@ -470,7 +479,7 @@ class _LiftPlacingState(BuildState):
     def bottom_profile(self, ctx: PlannerContext, graph: ResortGraph) -> ProfileSpec | None:
         return None
 
-    def merge_highlight_node_ids(self, ctx: PlannerContext) -> list[str] | None:
+    def selected_node_ids(self, ctx: PlannerContext) -> list[str] | None:
         return None
 
     def renders_custom_path(self, ctx: PlannerContext) -> bool:
@@ -480,7 +489,7 @@ class _LiftPlacingState(BuildState):
         return InfoBlock(
             icon=StyleConfig.BUILDING_ICON,
             label="Placing Lift…",
-            bullets=["⏳ Complete or cancel current build to change type"],
+            bullets=[_locked_bullet("lift")],
         )
 
     def sidebar_panel(
@@ -492,8 +501,8 @@ class _LiftPlacingState(BuildState):
         return True
 
 
-class _ImportPlacingState(BuildState):
-    state_key = "import_placing"
+class _ImportSelectingState(BuildState):
+    state_key = "import_selecting"
 
     def control_panel(
         self,
@@ -503,12 +512,12 @@ class _ImportPlacingState(BuildState):
         on_commit: Callable[[int], None],
         on_cancel_connection: Callable[[], None],
     ) -> right_panel.ControlPanel:
-        return right_panel.ImportPlacingControlPanel(
+        return right_panel.ImportSelectingControlPanel(
             sm=sm, ctx=ctx, graph=graph, on_commit=on_commit, on_cancel_connection=on_cancel_connection
         )
 
     def click_handler(self) -> ClickHandler:
-        return click_handlers.handle_import_placing_click
+        return click_handlers.handle_import_selecting_click
 
     def overlay_layers(
         self,
@@ -539,7 +548,7 @@ class _ImportPlacingState(BuildState):
     def bottom_profile(self, ctx: PlannerContext, graph: ResortGraph) -> ProfileSpec | None:
         return None
 
-    def merge_highlight_node_ids(self, ctx: PlannerContext) -> list[str] | None:
+    def selected_node_ids(self, ctx: PlannerContext) -> list[str] | None:
         return None
 
     def renders_custom_path(self, ctx: PlannerContext) -> bool:
@@ -548,8 +557,8 @@ class _ImportPlacingState(BuildState):
     def info_block(self, ctx: PlannerContext) -> InfoBlock:
         return InfoBlock(
             icon=StyleConfig.BUILDING_ICON,
-            label="Importing Area…",
-            bullets=["⏳ Complete or cancel current build to change type"],
+            label="OSM Import…",
+            bullets=[_locked_bullet("import")],
         )
 
     def sidebar_panel(
@@ -561,8 +570,8 @@ class _ImportPlacingState(BuildState):
         return True
 
 
-class _MergePlacingState(BuildState):
-    state_key = "merge_placing"
+class _NodeEditingState(BuildState):
+    state_key = "node_edit_selecting"
 
     def control_panel(
         self,
@@ -572,12 +581,12 @@ class _MergePlacingState(BuildState):
         on_commit: Callable[[int], None],
         on_cancel_connection: Callable[[], None],
     ) -> right_panel.ControlPanel:
-        return right_panel.MergePlacingControlPanel(
+        return right_panel.NodeEditingControlPanel(
             sm=sm, ctx=ctx, graph=graph, on_commit=on_commit, on_cancel_connection=on_cancel_connection
         )
 
     def click_handler(self) -> ClickHandler:
-        return click_handlers.handle_merge_placing_click
+        return click_handlers.handle_node_edit_selecting_click
 
     def overlay_layers(
         self,
@@ -597,8 +606,8 @@ class _MergePlacingState(BuildState):
     def bottom_profile(self, ctx: PlannerContext, graph: ResortGraph) -> ProfileSpec | None:
         return None
 
-    def merge_highlight_node_ids(self, ctx: PlannerContext) -> list[str] | None:
-        return ctx.merge.node_ids
+    def selected_node_ids(self, ctx: PlannerContext) -> list[str] | None:
+        return ctx.node_edit.node_ids
 
     def renders_custom_path(self, ctx: PlannerContext) -> bool:
         return False
@@ -606,17 +615,150 @@ class _MergePlacingState(BuildState):
     def info_block(self, ctx: PlannerContext) -> InfoBlock:
         return InfoBlock(
             icon=StyleConfig.BUILDING_ICON,
-            label="Merging Nodes…",
-            bullets=["⏳ Complete or cancel current build to change type"],
+            label="Editing Nodes…",
+            bullets=[_locked_bullet("node edit")],
         )
 
     def sidebar_panel(
         self, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph
     ) -> sidebar_panels.SidebarPanel:
-        return sidebar_panels.MergeSidebarPanel(sm=sm, ctx=ctx, graph=graph)
+        return sidebar_panels.NodeEditSidebarPanel(sm=sm, ctx=ctx, graph=graph)
 
     def blocks_build_buttons(self) -> bool:
         return True
+
+
+class _RoutePlacingState(BuildState):
+    """Picking the route's start/end nodes. Highlights the picked start node; no overlay yet."""
+
+    state_key = "route_placing"
+
+    def control_panel(
+        self,
+        sm: PlannerStateMachine,
+        ctx: PlannerContext,
+        graph: ResortGraph,
+        on_commit: Callable[[int], None],
+        on_cancel_connection: Callable[[], None],
+    ) -> right_panel.ControlPanel:
+        return right_panel.RoutePlacingControlPanel(
+            sm=sm, ctx=ctx, graph=graph, on_commit=on_commit, on_cancel_connection=on_cancel_connection
+        )
+
+    def click_handler(self) -> ClickHandler:
+        return click_handlers.handle_route_placing_click
+
+    def overlay_layers(
+        self,
+        ctx: PlannerContext,
+        graph: ResortGraph,
+        renderer: MapRenderer,
+        terrain_analyzer: TerrainAnalyzer,
+        dem: DEMService,
+        *,
+        use_3d: bool,
+    ) -> list[pdk.Layer]:
+        return []
+
+    def view_state(self, ctx: PlannerContext, graph: ResortGraph, *, use_3d: bool) -> ViewState:
+        return _stored_2d_view(ctx)
+
+    def bottom_profile(self, ctx: PlannerContext, graph: ResortGraph) -> ProfileSpec | None:
+        return None
+
+    def selected_node_ids(self, ctx: PlannerContext) -> list[str] | None:
+        # Reuse the node-highlight channel to show the picked start node while awaiting the end.
+        start = ctx.route_plan.start_node_id
+        return [start] if start is not None else None
+
+    def renders_custom_path(self, ctx: PlannerContext) -> bool:
+        return False
+
+    def info_block(self, ctx: PlannerContext) -> InfoBlock:
+        return InfoBlock(
+            icon=StyleConfig.BUILDING_ICON,
+            label="Planning Route…",
+            bullets=[_locked_bullet("route")],
+        )
+
+    def sidebar_panel(
+        self, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph
+    ) -> sidebar_panels.SidebarPanel:
+        return sidebar_panels.RoutePlacingSidebarPanel(sm=sm, ctx=ctx, graph=graph)
+
+    def blocks_build_buttons(self) -> bool:
+        return True
+
+
+class _IdleViewingRouteState(BuildState):
+    """Browsing the computed routes: overlays the filtered routes on the map, filters in the sidebar."""
+
+    state_key = "idle_viewing_route"
+
+    def control_panel(
+        self,
+        sm: PlannerStateMachine,
+        ctx: PlannerContext,
+        graph: ResortGraph,
+        on_commit: Callable[[int], None],
+        on_cancel_connection: Callable[[], None],
+    ) -> right_panel.ControlPanel:
+        return right_panel.RouteViewingControlPanel(
+            sm=sm, ctx=ctx, graph=graph, on_commit=on_commit, on_cancel_connection=on_cancel_connection
+        )
+
+    def click_handler(self) -> ClickHandler:
+        return click_handlers.handle_idle_click
+
+    def overlay_layers(
+        self,
+        ctx: PlannerContext,
+        graph: ResortGraph,
+        renderer: MapRenderer,
+        terrain_analyzer: TerrainAnalyzer,
+        dem: DEMService,
+        *,
+        use_3d: bool,
+    ) -> list[pdk.Layer]:
+        # The current-element flythrough highlight is applied once at the render choke-point (app.py),
+        # not per state, so a new viewing state can't forget it. Here: just the selected route's ribbon.
+        route = actions.selected_route()
+        if route is None:  # no plan computed yet / the cap yields no routes — nothing to draw
+            return []
+        return renderer.create_route_layers(route=route, use_3d=use_3d)
+
+    def view_state(self, ctx: PlannerContext, graph: ResortGraph, *, use_3d: bool) -> ViewState:
+        rp = ctx.route_plan
+        if use_3d and rp.start_node_id is not None and rp.end_node_id is not None:
+            return MapRenderer.calculate_3d_view_for_route(
+                graph=graph, start_node_id=rp.start_node_id, end_node_id=rp.end_node_id
+            )
+        return _stored_2d_view(ctx)
+
+    def bottom_profile(self, ctx: PlannerContext, graph: ResortGraph) -> ProfileSpec | None:
+        return None
+
+    def selected_node_ids(self, ctx: PlannerContext) -> list[str] | None:
+        return None
+
+    def renders_custom_path(self, ctx: PlannerContext) -> bool:
+        return False
+
+    def info_block(self, ctx: PlannerContext) -> InfoBlock:
+        # A viewing state: build buttons stay live (blocks_build_buttons is False), so NO lock line.
+        return InfoBlock(
+            icon=StyleConfig.VIEWING_ICON,
+            label="Viewing Routes…",
+            bullets=[f"{StyleConfig.BUILDING_ICON} Click a node → start a new route", _CLOSE_BULLET],
+        )
+
+    def sidebar_panel(
+        self, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph
+    ) -> sidebar_panels.SidebarPanel:
+        return sidebar_panels.ViewingSidebarPanel(sm=sm, ctx=ctx, graph=graph)
+
+    def blocks_build_buttons(self) -> bool:
+        return False  # a viewing state: keep build buttons live so a click switches mode
 
 
 _BUILD_STATE_LIST: list[BuildState] = [
@@ -624,12 +766,14 @@ _BUILD_STATE_LIST: list[BuildState] = [
     _IdleViewingSlopeState(),
     _IdleViewingRoadState(),
     _IdleViewingLiftState(),
+    _IdleViewingRouteState(),
     _PathBuildingState("slope_starting", SegmentKind.SLOPE),
     _PathBuildingState("slope_building", SegmentKind.SLOPE),
     _PathBuildingState("slope_custom_path", SegmentKind.SLOPE),
     _LiftPlacingState(),
-    _ImportPlacingState(),
-    _MergePlacingState(),
+    _ImportSelectingState(),
+    _NodeEditingState(),
+    _RoutePlacingState(),
     _PathBuildingState("road_starting", SegmentKind.ROAD),
     _PathBuildingState("road_building", SegmentKind.ROAD),
     _PathBuildingState("road_custom_path", SegmentKind.ROAD),
@@ -692,8 +836,18 @@ class BuilderOperation(ABC):
 
 
 def _idle_not_building(sm: PlannerStateMachine) -> bool:
-    """True while idle and not mid-build/placement (all buttons disable during a build/placement)."""
-    return not (sm.is_any_path_state or sm.is_lift_placing or sm.is_import_placing or sm.is_merge_placing)
+    """True while idle and not mid-build/placement (all buttons disable during a build/placement).
+
+    idle_viewing_route (a viewing state) is intentionally NOT excluded — build buttons stay live there so
+    a click leaves the route view and starts building, exactly like the slope/lift/road viewers.
+    """
+    return not (
+        sm.is_any_path_state
+        or sm.is_lift_placing
+        or sm.is_import_selecting
+        or sm.is_node_edit_selecting
+        or sm.is_route_placing
+    )
 
 
 class _SlopeOperation(BuilderOperation):
@@ -745,10 +899,19 @@ class _ImportOperation(BuilderOperation):
         return False  # a utility has no own kind — idle_ready only
 
 
-class _MergeOperation(BuilderOperation):
-    mode = BuildMode.MERGE
+class _NodeEditOperation(BuilderOperation):
+    mode = BuildMode.NODE_EDIT
     group = OperationGroup.UTILITY
-    first_instruction = "🔗 Click a node to start merging."
+    first_instruction = "🔗 Click a node to edit (select, then add, delete or merge)."
+
+    def _enabled_while_viewing_own_kind(self, sm: PlannerStateMachine) -> bool:
+        return False  # a utility has no own kind — idle_ready only
+
+
+class _RouteOperation(BuilderOperation):
+    mode = BuildMode.ROUTE
+    group = OperationGroup.UTILITY
+    first_instruction = "🧭 Click a node to set the route start."
 
     def _enabled_while_viewing_own_kind(self, sm: PlannerStateMachine) -> bool:
         return False  # a utility has no own kind — idle_ready only
@@ -762,7 +925,8 @@ _OPERATION_LIST: list[BuilderOperation] = [
     _LiftOperation(BuildMode.GONDOLA),
     _LiftOperation(BuildMode.AERIAL_TRAM),
     _ImportOperation(),
-    _MergeOperation(),
+    _NodeEditOperation(),
+    _RouteOperation(),
 ]
 
 OPERATIONS: dict[str, BuilderOperation] = {op.mode: op for op in _OPERATION_LIST}

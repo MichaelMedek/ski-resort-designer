@@ -17,6 +17,7 @@ UI workflow documented in DETAILS_UI.md.
 """
 
 from skiresort_planner.ui.actions import (
+    active_flythrough_groups,
     cancel_current_road,
     cancel_current_slope,
     cancel_custom_path,
@@ -30,6 +31,7 @@ from skiresort_planner.ui.actions import (
     process_custom_connect_pending,
     process_osm_import_pending,
     process_path_generation_pending,
+    process_route_plan_pending,
     recompute_paths,
     undo_last_action,
 )
@@ -78,6 +80,7 @@ __all__ = [
     "render_control_panel",
     "bump_camera_epoch",
     "bump_dedup_epoch",
+    "active_flythrough_groups",
     "cancel_custom_path",
     "cancel_current_road",
     "cancel_current_slope",
@@ -91,6 +94,7 @@ __all__ = [
     "process_custom_connect_pending",
     "process_osm_import_pending",
     "process_path_generation_pending",
+    "process_route_plan_pending",
     "recompute_paths",
     "reload_map",
     "trigger_rerun",

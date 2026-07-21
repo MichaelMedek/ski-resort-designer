@@ -19,21 +19,25 @@ from typing import TYPE_CHECKING, Literal
 
 import streamlit as st
 
-from skiresort_planner.constants import LiftType, MapConfig, OSMImportMode, SlopeConfig, StyleConfig
+from skiresort_planner.constants import LiftType, MapConfig, OSMImportMode, RoutePlannerConfig, SlopeConfig, StyleConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.model.connectivity import CoreMembership
 from skiresort_planner.model.message import (
     DisconnectedEntityMessage,
     ImportActionMessage,
-    ImportPlacingContextMessage,
+    ImportSelectingContextMessage,
     LiftActionMessage,
     LiftPlacingContextMessage,
-    MergeActionMessage,
-    MergePlacingContextMessage,
+    NodeEditActionMessage,
+    NodeEditContextMessage,
     NoReturnEntityMessage,
     PathActionMessage,
     PathBuildingContextMessage,
+    RouteNoResultsMessage,
+    RoutePlacingActionMessage,
+    RoutePlacingContextMessage,
+    RouteResultsContextMessage,
     SegmentWarningMessage,
 )
 from skiresort_planner.model.path_segment import SegmentKind
@@ -42,7 +46,9 @@ from skiresort_planner.ui.actions import (
     confirm_import_action,
     confirm_merge_action,
     delete_nodes_action,
+    flythrough_keyframe_count,
     rename_entity_action,
+    route_plan_shown_routes,
 )
 from skiresort_planner.ui.context import EntityKind, PlannerContext
 from skiresort_planner.ui.dialogs import ConfirmDialog, InputDialog
@@ -55,11 +61,30 @@ if TYPE_CHECKING:
     from skiresort_planner.model.message import Message
     from skiresort_planner.model.proposed_path import ProposedPathSegment
     from skiresort_planner.model.road import Road
+    from skiresort_planner.model.routing import Route, ViewingGroup
     from skiresort_planner.model.segment_path import SegmentPath
     from skiresort_planner.model.slope import Slope
     from skiresort_planner.ui.mode_registry import EntityKindSpec
 
 logger = logging.getLogger(__name__)
+
+
+def route_legs(groups: "tuple[ViewingGroup, ...]") -> list[str]:
+    """Render each viewing group as a readable leg: a lift shows its name; a folded slope run names up to
+    ROUTE_STEP_SLOPE_PREVIEW of its slopes (colour-emoji per difficulty), then "…" if more. Consumes the
+    model's `viewing_groups` so the panel legs and the flythrough units are provably the same.
+    """
+    legs: list[str] = []
+    for group in groups:
+        if group.is_lift:
+            step = group.steps[0]
+            legs.append(f"{StyleConfig.LIFT_ICONS[step.detail]} **{step.name}**")
+        else:
+            preview = group.steps[: RoutePlannerConfig.ROUTE_STEP_SLOPE_PREVIEW]
+            named = " · ".join(f"{StyleConfig.DIFFICULTY_EMOJIS[s.detail]} {s.name}" for s in preview)
+            tail = " …" if len(group.steps) > len(preview) else ""
+            legs.append(f"{StyleConfig.SLOPE_ICON} {named}{tail}")
+    return legs
 
 
 def _render_connectivity_warnings(graph: ResortGraph, start_node_id: str, end_node_id: str, noun: str) -> None:
@@ -149,38 +174,74 @@ class _RenameDialog(InputDialog):
 
 
 def _action_button(
-    label: str, *, key: str, help: str, type: Literal["primary", "secondary", "tertiary"] = "secondary"
+    label: str,
+    *,
+    key: str,
+    help: str,
+    type: Literal["primary", "secondary", "tertiary"] = "secondary",
+    disabled: bool = False,
 ) -> bool:
     """Render one right-panel action button. Returns True when clicked.
 
     width="stretch" so the button fills its container — full-width when stacked, or the column
     width when placed inside an st.columns cell (the entity-actions 2x2 grid).
     """
-    return st.button(label, key=key, width="stretch", help=help, type=type)
+    return st.button(label, key=key, width="stretch", help=help, type=type, disabled=disabled)
 
 
-def _render_3d_toggle_button(ctx: PlannerContext, graph: ResortGraph, kind: EntityKind, entity_id: str) -> None:
-    """Render 3D/2D view toggle button. Calls reload_map() if button is clicked."""
-    noun = kind.value
+def _render_3d_toggle(
+    ctx: PlannerContext, *, key_noun: str, noun: str, compute_2d_center: Callable[[], tuple[float, float]]
+) -> None:
+    """The single 3D/2D view toggle, shared by every viewing panel (slope/road/lift AND routes).
+
+    The enable-3D branch and the button rendering are identical everywhere; the ONLY thing that
+    differs is where the 2D map reframes when leaving 3D — supplied as `compute_2d_center`. The 3D
+    camera fit itself lives in each state's view_state. Never returns when clicked (reload/rerun).
+    """
     if ctx.viewing.view_3d:
-        if _action_button("🗺️ Return to 2D View", key=f"{noun}_2d_view", help="Return to the top-down 2D map"):
-            logger.debug(f"Switching to 2D view from {noun} {entity_id}")
+        if _action_button("🗺️ Return to 2D View", key=f"{key_noun}_2d_view", help="Return to the top-down 2D map"):
+            logger.debug(f"Switching to 2D view from {noun}")
             ctx.viewing.disable_3d()
-            # Reframe top-down on the viewed entity (not a stale position). EntityKind is a StrEnum,
-            # so `==` is reload-safe.
-            if kind in (EntityKind.SLOPE, EntityKind.ROAD):
-                owner = graph.slopes[entity_id] if kind == EntityKind.SLOPE else graph.roads[entity_id]
-                center = owner.center(segments=graph.segments)
-            elif kind == EntityKind.LIFT:
-                center = graph.lifts[entity_id].center(nodes=graph.nodes)
-            else:
-                raise ValueError(f"Unknown {kind=}")
-            reload_map(center=center, zoom=MapConfig.DEFAULT_ZOOM)  # Never returns - raises StopExecution
-    elif _action_button("🏔️ View in 3D", key=f"{noun}_3d_view", help=f"View {noun} from the side with terrain"):
-        logger.debug(f"Switching to 3D view for {noun} {entity_id}")
+            reload_map(center=compute_2d_center(), zoom=MapConfig.VIEWING_ZOOM)  # Never returns
+    elif _action_button("🏔️ View in 3D", key=f"{key_noun}_3d_view", help=f"View {noun} from the side with terrain"):
+        logger.debug(f"Switching to 3D view for {noun}")
         ctx.viewing.enable_3d()
         bump_camera_epoch()  # 3D fit is computed in view_state; bare remount re-reads it
         trigger_rerun()  # Never returns - raises StopExecution
+
+
+def _render_flythrough_controls(ctx: PlannerContext, noun: str) -> None:
+    """Play/Stop flythrough row (call only in 3D) — shown ABOVE the action grid for every 3D element
+    (slope/road/lift/route). Play left, Stop right; each disabled when not applicable so the row is stable.
+    """
+    playing = ctx.viewing.flythrough_active
+    can_play = not playing and flythrough_keyframe_count() >= 2
+    left, right = st.columns(2)
+    with left:
+        if _action_button(
+            "▶️ Play", key="flythrough_play", help=f"Fly the camera along this {noun}", disabled=not can_play
+        ):
+            ctx.viewing.start_flythrough()
+            trigger_rerun()
+    with right:
+        if _action_button("⏹️ Stop", key="flythrough_stop", help="Stop the flythrough", disabled=not playing):
+            ctx.viewing.stop_flythrough()
+            trigger_rerun()
+
+
+def _render_entity_3d_toggle(ctx: PlannerContext, graph: ResortGraph, kind: EntityKind, entity_id: str) -> None:
+    """Entity (slope/road/lift) 3D toggle: the shared toggle with the entity's own centre as the 2D reframe."""
+
+    def entity_center() -> tuple[float, float]:
+        # EntityKind is a StrEnum, so `==` is reload-safe.
+        if kind in (EntityKind.SLOPE, EntityKind.ROAD):
+            owner = graph.slopes[entity_id] if kind == EntityKind.SLOPE else graph.roads[entity_id]
+            return owner.center(segments=graph.segments)
+        if kind == EntityKind.LIFT:
+            return graph.lifts[entity_id].center(nodes=graph.nodes)
+        raise ValueError(f"Unknown {kind=}")
+
+    _render_3d_toggle(ctx, key_noun=kind.value, noun=kind.value, compute_2d_center=entity_center)
 
 
 def _render_entity_actions(
@@ -197,12 +258,16 @@ def _render_entity_actions(
     """
     noun = kind.value
 
+    # Flythrough Play/Stop row sits ABOVE the 2x2 action grid (3D only).
+    if ctx.viewing.view_3d:
+        _render_flythrough_controls(ctx, noun)
+
     top_left, top_right = st.columns(2)
     bottom_left, bottom_right = st.columns(2)
 
     # Top-left: 3D / 2D toggle (own reload_map side effects live in the helper).
     with top_left:
-        _render_3d_toggle_button(ctx=ctx, graph=graph, kind=kind, entity_id=entity_id)
+        _render_entity_3d_toggle(ctx=ctx, graph=graph, kind=kind, entity_id=entity_id)
 
     # Top-right: Rename.
     with top_right:
@@ -461,15 +526,15 @@ class LiftPlacingControlPanel(ControlPanel):
         return None
 
 
-class ImportPlacingControlPanel(ControlPanel):
-    """IMPORT_PLACING: box context + confirm-area action + Confirm Import button."""
+class ImportSelectingControlPanel(ControlPanel):
+    """IMPORT_SELECTING: box context + confirm-area action + Confirm Import button."""
 
     def context_message(self) -> "Message | None":
         center_lon = self.ctx.pending.osm_import_center_lon
         center_lat = self.ctx.pending.osm_import_center_lat
         if center_lon is None or center_lat is None:
-            raise RuntimeError("ImportPlacing state requires a placed box center")
-        return ImportPlacingContextMessage(
+            raise RuntimeError("ImportSelecting state requires a placed box center")
+        return ImportSelectingContextMessage(
             center_lat=center_lat,
             center_lon=center_lon,
             half_width_km=self.ctx.pending.osm_import_half_width_km,
@@ -496,28 +561,28 @@ class ImportPlacingControlPanel(ControlPanel):
             confirm_import_action(OSMImportMode.LIFTS_ONLY)
 
 
-class MergePlacingControlPanel(ControlPanel):
-    """MERGE_PLACING: selection context + merge action + Confirm Merge button.
+class NodeEditingControlPanel(ControlPanel):
+    """NODE_EDITING: selection context + node actions (Confirm Merge / Delete / add on a path).
 
-    The Confirm button is disabled until at least two nodes are selected. It stays enabled even when
-    the span exceeds the limit — confirm_merge_action shows a too-far toast and changes nothing, so
+    The Confirm Merge button is disabled until at least two nodes are selected. It stays enabled even
+    when the span exceeds the limit — confirm_merge_action shows a too-far toast and changes nothing, so
     the user learns why rather than staring at a silently dead button.
     """
 
     def _span_m(self) -> float:
-        return self.graph.max_node_span_m(self.ctx.merge.node_ids)
+        return self.graph.max_node_span_m(self.ctx.node_edit.node_ids)
 
     def context_message(self) -> "Message | None":
-        return MergePlacingContextMessage(
-            selected_count=len(self.ctx.merge.node_ids),
+        return NodeEditContextMessage(
+            selected_count=len(self.ctx.node_edit.node_ids),
             span_m=self._span_m(),
         )
 
     def action_message(self) -> "Message | None":
-        return MergeActionMessage(selected_count=len(self.ctx.merge.node_ids))
+        return NodeEditActionMessage(selected_count=len(self.ctx.node_edit.node_ids))
 
     def buttons(self) -> None:
-        count = len(self.ctx.merge.node_ids)
+        count = len(self.ctx.node_edit.node_ids)
         enough = count >= 2
         if st.button(
             "🔗 Confirm Merge",
@@ -541,6 +606,154 @@ class MergePlacingControlPanel(ControlPanel):
             delete_nodes_action()
         # Discoverability hint, mirroring the path builder's "click any point" caption.
         st.caption("🎯 Or click any path on the map to add a node there.")
+
+
+class RoutePlacingControlPanel(ControlPanel):
+    """route_placing: pick the end node. Blue = where the start was placed (node + elevation);
+    yellow = 'click the end node'. No buttons — the second node click completes the route and Cancel
+    lives in the sidebar (mirrors LiftPlacingControlPanel exactly).
+    """
+
+    def context_message(self) -> "Message | None":
+        # The start is always set on entry (the first node click sets it before start_route), so index
+        # strictly — fail loud otherwise.
+        start_id = self.ctx.route_plan.start_node_id
+        assert start_id is not None, "route_placing entered without a start node"
+        return RoutePlacingContextMessage(
+            start_node_id=start_id, start_elevation_m=self.graph.nodes[start_id].elevation
+        )
+
+    def action_message(self) -> "Message | None":
+        return RoutePlacingActionMessage()  # yellow: click the end node
+
+    def buttons(self) -> None:
+        return None  # the second node click completes the route; Cancel is in the sidebar
+
+
+class RouteViewingControlPanel(ControlPanel):
+    """idle_viewing_route: browse the precomputed routes for the selected difficulty cap. Blue =
+    results summary (with the cap premise); yellow = no-route guidance. Buttons = the max-difficulty
+    selector, the ◀▶ browser, the selected route's stats + colour legend, a 3D toggle, and Close.
+    """
+
+    def _shown(self) -> "list[Route]":
+        return route_plan_shown_routes()
+
+    def _hardest_cap(self) -> str:
+        return SlopeConfig.DIFFICULTIES[-1]
+
+    def context_message(self) -> "Message | None":
+        routes = self._shown()
+        if not routes:
+            return None  # the yellow no-route message carries the whole story
+        idx = self.ctx.route_plan.clamped_index(len(routes))
+        return RouteResultsContextMessage(
+            total=len(routes), selected_index=idx, difficulty_cap=self.ctx.route_plan.selected_cap
+        )
+
+    def action_message(self) -> "Message | None":
+        if self._shown():
+            return None
+        # "Cap too strict" (a broader cap DOES have routes) vs "no route exists at all".
+        from skiresort_planner.model.routing import routes_for_cap
+
+        broader_has_routes = bool(routes_for_cap(self.ctx.route_plan.routes, max_difficulty=self._hardest_cap()))
+        return RouteNoResultsMessage(cap_restrictive=broader_has_routes)
+
+    def buttons(self) -> None:
+        # The difficulty selector picks which PRECOMPUTED cap to show (honest — routes were computed
+        # per cap, not filtered). Shown whenever any route was computed so the user can widen the cap.
+        if self.ctx.route_plan.routes:
+            self._render_cap_selector()
+        routes = self._shown()
+        if routes:
+            self._render_route_browser(routes)
+            self._render_route_stats(routes)
+            # Play/Stop sits ABOVE the 3D toggle (3D only) so the row order matches every entity panel.
+            if self.ctx.viewing.view_3d:
+                _render_flythrough_controls(self.ctx, "route")
+            self._render_3d_toggle()  # side view of the selected route floating above the pistes
+        # Idiom: close the panel to leave. To plan again, re-enter Route Planner and pick two nodes.
+        if st.button("✖️ Close", width="stretch", help="Close this panel to start building again"):
+            self.sm.close_panel()  # type: ignore[attr-defined]  # dynamic python-statemachine event
+
+    def _render_3d_toggle(self) -> None:
+        """Route 3D toggle: the shared viewing toggle with the route's start/end midpoint as the 2D
+        reframe (the 3D camera fit itself lives in _IdleViewingRouteState.view_state).
+        """
+
+        def route_midpoint() -> tuple[float, float]:
+            rp = self.ctx.route_plan
+            assert rp.start_node_id is not None and rp.end_node_id is not None, "route view without endpoints"
+            a, b = self.graph.nodes[rp.start_node_id], self.graph.nodes[rp.end_node_id]
+            return ((a.lon + b.lon) / 2, (a.lat + b.lat) / 2)
+
+        _render_3d_toggle(self.ctx, key_noun="route", noun="route", compute_2d_center=route_midpoint)
+
+    def _render_cap_selector(self) -> None:
+        """Max-difficulty selector — picks which precomputed cap's routes to show (green→black). Each
+        cap was computed over ONLY slopes up to that band, so this is an honest premise, not a filter.
+        """
+        rp = self.ctx.route_plan
+        choice = st.select_slider(
+            "Max difficulty",
+            options=SlopeConfig.DIFFICULTIES,
+            value=rp.selected_cap,
+            format_func=str.capitalize,
+            key="route_difficulty_cap",
+            help="Show the best routes computed using only slopes up to this band.",
+        )
+        if choice != rp.selected_cap:
+            rp.selected_cap = choice
+            rp.selected_index = 0
+            self.ctx.viewing.stop_flythrough()  # changing which route is shown must stop an active flythrough
+            trigger_rerun()
+
+    def _render_route_browser(self, routes: "list[Route]") -> None:
+        """◀ ▶ browser over the shown routes (mirrors _render_proposal_browser)."""
+        if len(routes) <= 1:
+            return
+        idx = self.ctx.route_plan.clamped_index(len(routes))
+        col_prev, col_label, col_next = st.columns([1, 2, 1])
+        with col_prev:
+            if st.button("◀", key="route_prev", width="stretch"):
+                self.ctx.route_plan.selected_index = (idx - 1) % len(routes)
+                self.ctx.viewing.stop_flythrough()  # browsing to another route must stop an active flythrough
+                trigger_rerun()
+        with col_label:
+            st.markdown(f"**Route {idx + 1} / {len(routes)}**")
+        with col_next:
+            if st.button("▶", key="route_next", width="stretch"):
+                self.ctx.route_plan.selected_index = (idx + 1) % len(routes)
+                self.ctx.viewing.stop_flythrough()  # browsing to another route must stop an active flythrough
+                trigger_rerun()
+
+    def _render_route_stats(self, routes: "list[Route]") -> None:
+        """Stats for the selected route: a colour-swatch legend naming what it's best for + the premise
+        it was computed under, then totals and the ordered slope/lift steps.
+        """
+        idx = self.ctx.route_plan.clamped_index(len(routes))
+        route = routes[idx]
+        # Colour swatch matching the map line (keyed by the route's criterion, as drawn).
+        rgba = route.color
+        swatch = f"<span style='color:rgb({rgba[0]},{rgba[1]},{rgba[2]})'>⬤</span>"
+        won = ", ".join(c.value.replace("_", " ") for c in route.criteria)
+        # e.g. "⬤ Best for: shortest slope · max red" — the colour ties to the map, the cap is the premise.
+        st.markdown(f"{swatch} 🏅 **Best for:** {won} · max **{route.difficulty_cap}**", unsafe_allow_html=True)
+        if route.is_scenic:
+            # A scenic tour visits every reachable lift under the cap (coverage is exact).
+            st.caption(f"🎿 Visits all {route.scenic_lifts_visited} reachable lift(s), back to the start.")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Slope Length", f"{route.total_slope_length_m / 1000:.1f}km")
+            st.metric("Slope Drop", f"{route.total_slope_drop_m:.0f}m")
+        with col2:
+            st.metric("Lifts", f"{route.lift_count}")
+            emoji = StyleConfig.DIFFICULTY_EMOJIS[route.max_difficulty]
+            st.metric("Max Difficulty", f"{emoji} {route.max_difficulty.capitalize()}")
+        with st.expander("📋 Route Steps", expanded=False):
+            for i, leg in enumerate(route_legs(route.viewing_groups), 1):
+                st.markdown(f"{i}. {leg}")
 
 
 def _render_proposal_browser(ctx: PlannerContext, *, key_prefix: str, noun: str) -> None:

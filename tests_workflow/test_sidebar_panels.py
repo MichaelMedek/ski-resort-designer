@@ -19,13 +19,11 @@ from skiresort_planner.ui.sidebar_panels import (
     IdleSidebarPanel,
     ImportSidebarPanel,
     LiftSidebarPanel,
-    MergeSidebarPanel,
+    NodeEditSidebarPanel,
     PathBuildSidebarPanel,
     ViewingSidebarPanel,
 )
 from skiresort_planner.ui.state_machine import PlannerStateMachine
-
-M = 111320.0  # metres per degree near the equator
 
 
 def _session(fake_st, graph, factory, dem):
@@ -225,14 +223,14 @@ class TestImportSidebarPanel:
         sm.start_import(lon=0.0, lat=0.0)
 
         ImportSidebarPanel(sm=sm, ctx=ctx, graph=ResortGraph()).controls()  # no button fired
-        assert sm.is_import_placing and ctx.pending.osm_import_mode is None, "rendering does not confirm the import"
+        assert sm.is_import_selecting and ctx.pending.osm_import_mode is None, "rendering does not confirm the import"
 
 
-class TestMergeSidebarPanel:
+class TestNodeEditSidebarPanel:
     def test_renders_while_placing_without_leaving(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         sm, ctx = _session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
-        sm.start_merge()
-        assert sm.is_merge_placing
+        sm.start_node_edit()
+        assert sm.is_node_edit_selecting
 
-        MergeSidebarPanel(sm=sm, ctx=ctx, graph=ResortGraph()).controls()  # no button fired
-        assert sm.is_merge_placing, "rendering the merge cancel button does not itself cancel"
+        NodeEditSidebarPanel(sm=sm, ctx=ctx, graph=ResortGraph()).controls()  # no button fired
+        assert sm.is_node_edit_selecting, "rendering the node-edit cancel button does not itself cancel"

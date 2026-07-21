@@ -23,15 +23,14 @@ class TestLiftPlacementWorkflow:
         - Lift connects start and end nodes
         """
         dem = mock_dem_blue_slope
-        M = MapConfig.METERS_PER_DEGREE_EQUATOR
         graph = ResortGraph()
         sm, ctx = PlannerStateMachine.create(graph=graph)
 
         # Create start node at valley (lower elevation)
         start_loc = PathPoint(
             lon=0.0,
-            lat=-1000 / M,
-            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M),
+            lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         )
         start_node = Node(id="N1", location=start_loc)
         graph.nodes["N1"] = start_node
@@ -74,15 +73,14 @@ class TestLiftPlacementWorkflow:
     def test_cancel_lift_returns_to_idle(self, mock_dem_blue_slope) -> None:
         """cancel_lift from LiftPlacing returns to IdleReady."""
         dem = mock_dem_blue_slope
-        M = MapConfig.METERS_PER_DEGREE_EQUATOR
         graph = ResortGraph()
         sm, ctx = PlannerStateMachine.create(graph=graph)
 
         # Setup node
         start_loc = PathPoint(
             lon=0.0,
-            lat=-1000 / M,
-            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M),
+            lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         )
         graph.nodes["N1"] = Node(id="N1", location=start_loc)
 
@@ -96,11 +94,14 @@ class TestLiftPlacementWorkflow:
     def test_start_lift_from_terrain_location(self, mock_dem_blue_slope) -> None:
         """start_lift with a location (no node) stores start_location for a new node."""
         dem = mock_dem_blue_slope
-        M = MapConfig.METERS_PER_DEGREE_EQUATOR
         graph = ResortGraph()
         sm, ctx = PlannerStateMachine.create(graph=graph)
 
-        loc = PathPoint(lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M))
+        loc = PathPoint(
+            lon=0.0,
+            lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        )
         sm.start_lift(node_id=None, location=loc)
 
         assert sm.current_state_value == "lift_placing"
@@ -114,14 +115,13 @@ class TestSwitchLiftSelfLoop:
     def test_switch_lift_updates_viewed_lift(self, mock_dem_blue_slope) -> None:
         """Self-loop switch_lift updates the viewed lift."""
         dem = mock_dem_blue_slope
-        M = MapConfig.METERS_PER_DEGREE_EQUATOR
         graph = ResortGraph()
         sm, ctx = PlannerStateMachine.create(graph=graph)
 
         # Create nodes for two lifts
         for i, lat_offset in enumerate([0, 100]):
-            start_lat = (-1000 - lat_offset) / M
-            end_lat = -lat_offset / M
+            start_lat = (-1000 - lat_offset) / MapConfig.METERS_PER_DEGREE_EQUATOR
+            end_lat = -lat_offset / MapConfig.METERS_PER_DEGREE_EQUATOR
             graph.nodes[f"N{2 * i + 1}"] = Node(
                 id=f"N{2 * i + 1}",
                 location=PathPoint(

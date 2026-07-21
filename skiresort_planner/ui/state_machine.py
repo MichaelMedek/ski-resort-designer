@@ -284,13 +284,15 @@ from skiresort_planner.ui.state_lifecycle import (
     enter_idle_ready,
     enter_idle_viewing_lift,
     enter_idle_viewing_road,
+    enter_idle_viewing_route,
     enter_idle_viewing_slope,
-    enter_import_placing,
+    enter_import_selecting,
     enter_lift_placing,
-    enter_merge_placing,
+    enter_node_edit_selecting,
     enter_road_building,
     enter_road_custom_path,
     enter_road_starting,
+    enter_route_placing,
     enter_slope_building,
     enter_slope_custom_path,
     enter_slope_starting,
@@ -398,6 +400,7 @@ class PlannerStateMachine(StateMachine):
     idle_viewing_slope = State("IdleViewingSlope")
     idle_viewing_lift = State("IdleViewingLift")
     idle_viewing_road = State("IdleViewingRoad")
+    idle_viewing_route = State("IdleViewingRoute")
 
     # SLOPE states (building in progress)
     slope_starting = State("SlopeStarting")
@@ -408,10 +411,13 @@ class PlannerStateMachine(StateMachine):
     lift_placing = State("LiftPlacing")
 
     # IMPORT state (click-to-place an OSM import bounding box, then confirm)
-    import_placing = State("ImportPlacing")
+    import_selecting = State("ImportSelecting")
 
-    # MERGE state (click-to-select node markers to collapse, then confirm)
-    merge_placing = State("MergePlacing")
+    # NODE EDITOR state (click node markers to select, then add/delete/merge)
+    node_edit_selecting = State("NodeEditing")
+
+    # ROUTE state (click a start node then an end node)
+    route_placing = State("RoutePlacing")
 
     # ROAD states (segment-by-segment, like a slope: build then finish)
     road_starting = State("RoadStarting")
@@ -430,8 +436,9 @@ class PlannerStateMachine(StateMachine):
     start_slope = idle_ready.to(slope_starting, event="start_slope")  # 1.4 [event: start_slope]
     start_lift = idle_ready.to(lift_placing, event="start_lift")  # 1.8 [event: start_lift]
     start_road = idle_ready.to(road_starting, event="start_road")  # 1.9 [event: start_road]
-    start_import = idle_ready.to(import_placing, event="start_import")  # 1.10 [event: start_import]
-    start_merge = idle_ready.to(merge_placing, event="start_merge")  # 1.11 [event: start_merge]
+    start_import = idle_ready.to(import_selecting, event="start_import")  # 1.10 [event: start_import]
+    start_node_edit = idle_ready.to(node_edit_selecting, event="start_node_edit")  # 1.11 [event: start_node_edit]
+    start_route = idle_ready.to(route_placing, event="start_route")  # 1.12 [event: start_route]
     view_slope = idle_ready.to(idle_viewing_slope, event="view_slope")  # 1.2 [event: view_slope]
     view_lift = idle_ready.to(idle_viewing_lift, event="view_lift")  # 1.3 [event: view_lift]
     view_road = idle_ready.to(idle_viewing_road, event="view_road")  # 1.5 [event: view_road]
@@ -445,6 +452,9 @@ class PlannerStateMachine(StateMachine):
     # 2.3. switch_to_lift_view [event: view_lift]: Click lift in panel or on map
     # 2.4. start_slope_from_slope_view [event: start_slope]: Click terrain/node to start new slope
     # 2.8. start_lift_from_slope_view [event: start_lift]: Click terrain/node in lift mode
+    # NOTE: the UTILITIES (import/node-edit/route) are NOT reachable from a view — they start only from
+    # idle_ready (enforced in click_handlers._utility_start_allowed), so no start_{import,node_edit,route}
+    # _from_slope_view transitions exist. Only the builders (slope/lift/road) start from a view.
 
     close_slope_panel = idle_viewing_slope.to(idle_ready, event="close_panel")  # 2.1 [event: close_panel]
     switch_slope = idle_viewing_slope.to(idle_viewing_slope, event="view_slope")  # 2.2 [event: view_slope] self-loop
@@ -453,10 +463,6 @@ class PlannerStateMachine(StateMachine):
     start_slope_from_slope_view = idle_viewing_slope.to(slope_starting, event="start_slope")  # 2.4 [event: start_slope]
     start_lift_from_slope_view = idle_viewing_slope.to(lift_placing, event="start_lift")  # 2.8 [event: start_lift]
     start_road_from_slope_view = idle_viewing_slope.to(road_starting, event="start_road")  # 2.9 [event: start_road]
-    start_import_from_slope_view = idle_viewing_slope.to(
-        import_placing, event="start_import"
-    )  # 2.10 [event: start_import]
-    start_merge_from_slope_view = idle_viewing_slope.to(merge_placing, event="start_merge")  # 2.11 [event: start_merge]
 
     # ==========================================================================
     # 3. Transitions: From IDLE_VIEWING_LIFT
@@ -467,6 +473,7 @@ class PlannerStateMachine(StateMachine):
     # 3.3. switch_lift [event: view_lift, self-loop]: Click different lift
     # 3.4. start_slope_from_lift_view [event: start_slope]: Click terrain/node in slope mode
     # 3.8. start_lift_from_lift_view [event: start_lift]: Click terrain/node in lift mode
+    # (Utilities are idle-only — see the note under IDLE_VIEWING_SLOPE.)
 
     close_lift_panel = idle_viewing_lift.to(idle_ready, event="close_panel")  # 3.1 [event: close_panel]
     switch_to_slope_view = idle_viewing_lift.to(idle_viewing_slope, event="view_slope")  # 3.2 [event: view_slope]
@@ -475,10 +482,6 @@ class PlannerStateMachine(StateMachine):
     start_slope_from_lift_view = idle_viewing_lift.to(slope_starting, event="start_slope")  # 3.4 [event: start_slope]
     start_lift_from_lift_view = idle_viewing_lift.to(lift_placing, event="start_lift")  # 3.8 [event: start_lift]
     start_road_from_lift_view = idle_viewing_lift.to(road_starting, event="start_road")  # 3.9 [event: start_road]
-    start_import_from_lift_view = idle_viewing_lift.to(
-        import_placing, event="start_import"
-    )  # 3.10 [event: start_import]
-    start_merge_from_lift_view = idle_viewing_lift.to(merge_placing, event="start_merge")  # 3.11 [event: start_merge]
 
     # ==========================================================================
     # 3b. Transitions: From IDLE_VIEWING_ROAD
@@ -488,7 +491,7 @@ class PlannerStateMachine(StateMachine):
     # 3b.5. switch_road [event: view_road, self-loop]: Click a different road
     # 3b.2. switch_road_to_slope_view [event: view_slope]: Click a slope
     # 3b.3. switch_road_to_lift_view [event: view_lift]: Click a lift
-    # 3b.4/8/9. start_* : Click terrain/node to start building in the active mode
+    # 3b.4/8/9. start_{slope,lift,road} : Click terrain/node to start a BUILDER (utilities are idle-only)
 
     close_road_panel = idle_viewing_road.to(idle_ready, event="close_panel")  # 3b.1 [event: close_panel]
     switch_road = idle_viewing_road.to(idle_viewing_road, event="view_road")  # 3b.5 [event: view_road] self-loop
@@ -497,10 +500,6 @@ class PlannerStateMachine(StateMachine):
     start_slope_from_road_view = idle_viewing_road.to(slope_starting, event="start_slope")  # 3b.4 [event: start_slope]
     start_lift_from_road_view = idle_viewing_road.to(lift_placing, event="start_lift")  # 3b.8 [event: start_lift]
     start_road_from_road_view = idle_viewing_road.to(road_starting, event="start_road")  # 3b.9 [event: start_road]
-    start_import_from_road_view = idle_viewing_road.to(
-        import_placing, event="start_import"
-    )  # 3b.10 [event: start_import]
-    start_merge_from_road_view = idle_viewing_road.to(merge_placing, event="start_merge")  # 3b.11 [event: start_merge]
 
     # ==========================================================================
     # 4. Transitions: From SLOPE_STARTING (0 segments)
@@ -573,28 +572,45 @@ class PlannerStateMachine(StateMachine):
     cancel_lift = lift_placing.to(idle_ready)  # 8.1 [direct]
 
     # ==========================================================================
-    # 8b. Transitions: From IMPORT_PLACING
+    # 8b. Transitions: From IMPORT_SELECTING
     # ==========================================================================
-    # All transitions from IMPORT_PLACING are direct (no shared events), mirroring LIFT_PLACING.
+    # All transitions from IMPORT_SELECTING are direct (no shared events), mirroring LIFT_PLACING.
     # 8b.1. cancel_import [direct]: Cancel button
     # 8b.2. complete_import [direct]: Confirm button or center-dot click → run the deferred fetch
     # 8b.3. retarget_import [direct, self-loop]: click a new point to re-place the box center
 
-    complete_import = import_placing.to(idle_ready)  # 8b.2 [direct]
-    cancel_import = import_placing.to(idle_ready)  # 8b.1 [direct]
-    retarget_import = import_placing.to(import_placing)  # 8b.3 [direct] self-loop
+    complete_import = import_selecting.to(idle_ready)  # 8b.2 [direct]
+    cancel_import = import_selecting.to(idle_ready)  # 8b.1 [direct]
+    retarget_import = import_selecting.to(import_selecting)  # 8b.3 [direct] self-loop
 
     # ==========================================================================
-    # 8c. Transitions: From MERGE_PLACING (click-to-select nodes, then confirm)
+    # 8c. Transitions: From NODE_EDITING (click-to-select nodes, then add/delete/merge)
     # ==========================================================================
-    # All transitions from MERGE_PLACING are direct (no shared events), mirroring IMPORT_PLACING.
-    # 8c.1. cancel_merge [direct]: Cancel button
-    # 8c.2. complete_merge [direct]: Confirm button → collapse the selected nodes to their median
-    # 8c.3. toggle_merge_node [direct, self-loop]: click a node marker to add/remove it
+    # All transitions from NODE_EDITING are direct (no shared events), mirroring IMPORT_SELECTING.
+    # 8c.1. cancel_node_edit [direct]: Cancel button
+    # 8c.2. finish_node_edit [direct]: Confirm merge/delete → returns to idle (graph mutation in action)
+    # 8c.3. toggle_node_edit_node [direct, self-loop]: click a node marker to add/remove it
 
-    complete_merge = merge_placing.to(idle_ready)  # 8c.2 [direct]
-    cancel_merge = merge_placing.to(idle_ready)  # 8c.1 [direct]
-    toggle_merge_node = merge_placing.to(merge_placing)  # 8c.3 [direct] self-loop
+    finish_node_edit = node_edit_selecting.to(idle_ready)  # 8c.2 [direct]
+    cancel_node_edit = node_edit_selecting.to(idle_ready)  # 8c.1 [direct]
+    toggle_node_edit_node = node_edit_selecting.to(node_edit_selecting)  # 8c.3 [direct] self-loop
+
+    # route_placing (pick start→end) and idle_viewing_route (browse the best routes).
+    complete_route = route_placing.to(idle_viewing_route)  # 8d.2 [direct]
+    cancel_route_placing = route_placing.to(idle_ready)  # 8d.1 [direct]
+
+    # idle_viewing_route is a viewing state, but UNLIKE idle_viewing_{slope,lift,road} its build_mode is
+    # LOCKED to ROUTE: Route is a utility button with no "own kind", so NO builder is enabled while
+    # viewing routes and the mode can't change. handle_idle_click therefore only reaches the is_route()
+    # branch (start_route on a node) plus the always-available entity views. So the reachable set is
+    # close + the 3 view-switches + start_route — NOT the 6 start-builds the other viewers carry (those
+    # need a switchable build_mode, which route-view lacks). No view_route self-loop (routes aren't
+    # clickable entities).
+    close_route_panel = idle_viewing_route.to(idle_ready, event="close_panel")  # 8d.3 [event: close_panel]
+    switch_route_to_slope_view = idle_viewing_route.to(idle_viewing_slope, event="view_slope")  # 8d.4
+    switch_route_to_lift_view = idle_viewing_route.to(idle_viewing_lift, event="view_lift")  # 8d.5
+    switch_route_to_road_view = idle_viewing_route.to(idle_viewing_road, event="view_road")  # 8d.6
+    start_route_from_route_view = idle_viewing_route.to(route_placing, event="start_route")  # 8d.7
 
     # ==========================================================================
     # 9. Transitions: From ROAD_STARTING (0 segments) / ROAD_BUILDING (1+ segments)
@@ -722,30 +738,30 @@ class PlannerStateMachine(StateMachine):
             "start_road_from_slope_view",
             "start_road_from_lift_view",
             "start_road_from_road_view",
-            # start_import event (NOT start_import - that IS the event entry point)
-            "start_import_from_slope_view",
-            "start_import_from_lift_view",
-            "start_import_from_road_view",
-            # start_merge event (NOT start_merge - that IS the event entry point)
-            "start_merge_from_slope_view",
-            "start_merge_from_lift_view",
-            "start_merge_from_road_view",
+            # start_route event (NOT start_route - that IS the event entry point). Utilities
+            # (import/node-edit/route) start ONLY from idle_ready, so there are no _from_{slope,lift,road}
+            # _view variants for them — only route's own re-plan-from-route-view.
+            "start_route_from_route_view",
             # view_slope event (NOT view_slope - that IS the event entry point)
             "switch_to_slope_view",
             "switch_slope",
             "switch_road_to_slope_view",
+            "switch_route_to_slope_view",
             # view_lift event (NOT view_lift - that IS the event entry point)
             "switch_to_lift_view",
             "switch_lift",
             "switch_road_to_lift_view",
+            "switch_route_to_lift_view",
             # view_road event (NOT view_road - that IS the event entry point)
             "switch_slope_to_road_view",
             "switch_lift_to_road_view",
             "switch_road",
+            "switch_route_to_road_view",
             # close_panel event (both are variants, event is "close_panel")
             "close_slope_panel",
             "close_lift_panel",
             "close_road_panel",
+            "close_route_panel",
         }
     )
 
@@ -757,7 +773,11 @@ class PlannerStateMachine(StateMachine):
     def is_idle(self) -> bool:
         """Check if in any idle state (not building)."""
         return (
-            self.is_idle_ready or self.is_idle_viewing_slope or self.is_idle_viewing_lift or self.is_idle_viewing_road
+            self.is_idle_ready
+            or self.is_idle_viewing_slope
+            or self.is_idle_viewing_lift
+            or self.is_idle_viewing_road
+            or self.is_idle_viewing_route
         )
 
     @property
@@ -801,14 +821,24 @@ class PlannerStateMachine(StateMachine):
         return bool(self.lift_placing.is_active)
 
     @property
-    def is_import_placing(self) -> bool:
+    def is_import_selecting(self) -> bool:
         """Check if placing an OSM import bounding box."""
-        return bool(self.import_placing.is_active)
+        return bool(self.import_selecting.is_active)
 
     @property
-    def is_merge_placing(self) -> bool:
-        """Check if selecting nodes to merge."""
-        return bool(self.merge_placing.is_active)
+    def is_node_edit_selecting(self) -> bool:
+        """Check if in the node editor (selecting nodes to add/delete/merge)."""
+        return bool(self.node_edit_selecting.is_active)
+
+    @property
+    def is_route_placing(self) -> bool:
+        """Check if picking the route start/end nodes."""
+        return bool(self.route_placing.is_active)
+
+    @property
+    def is_idle_viewing_route(self) -> bool:
+        """Check if browsing the computed routes."""
+        return bool(self.idle_viewing_route.is_active)
 
     @property
     def is_road_starting(self) -> bool:
@@ -876,11 +906,6 @@ class PlannerStateMachine(StateMachine):
         self.send(event, segment_id=segment_id, endpoint_node_id=endpoint_node_id)
 
     @property
-    def is_info_panel_visible(self) -> bool:
-        """Check if info panel is visible (viewing slope, lift, or road)."""
-        return self.is_idle_viewing_slope or self.is_idle_viewing_lift or self.is_idle_viewing_road
-
-    @property
     def viewing_entity(self) -> tuple[EntityKind, str] | None:
         """The (kind, id) of the slope/road/lift being viewed, or None if not viewing."""
         v = self.context.viewing
@@ -940,13 +965,21 @@ class PlannerStateMachine(StateMachine):
         """Hook: Entering lift placing state."""
         enter_lift_placing(self.context)
 
-    def on_enter_import_placing(self) -> None:
+    def on_enter_import_selecting(self) -> None:
         """Hook: Entering import placing state (also fires on retarget self-loop)."""
-        enter_import_placing(self.context)
+        enter_import_selecting(self.context)
 
-    def on_enter_merge_placing(self) -> None:
-        """Hook: Entering merge placing state (also fires on toggle self-loop)."""
-        enter_merge_placing(self.context)
+    def on_enter_node_edit_selecting(self) -> None:
+        """Hook: Entering the node editor (also fires on toggle self-loop)."""
+        enter_node_edit_selecting(self.context)
+
+    def on_enter_route_placing(self) -> None:
+        """Hook: Entering route_placing — the start node was set by the completing click handler."""
+        enter_route_placing(self.context)
+
+    def on_enter_idle_viewing_route(self) -> None:
+        """Hook: Entering idle_viewing_route (routes computed by the completing click handler)."""
+        enter_idle_viewing_route(self.context)
 
     def on_enter_road_starting(self) -> None:
         """Hook: Entering road starting state."""
@@ -962,8 +995,8 @@ class PlannerStateMachine(StateMachine):
 
     # ==========================================================================
     # Exit Hooks - only states with real teardown need one; the rest exit as no-ops.
-    # (force/undo runs the same teardown via EXIT_HOOKS. import/merge clear their scratch
-    # in their before_cancel_*/before_complete_* hooks, so they need no on_exit here.)
+    # (force/undo runs the same teardown via EXIT_HOOKS. import/node-edit clear their scratch
+    # in their before_cancel_*/before_finish_* hooks, so they need no on_exit here.)
     # ==========================================================================
 
     def on_exit_lift_placing(self) -> None:
@@ -1127,11 +1160,6 @@ class PlannerStateMachine(StateMachine):
         self.context.pending.osm_import_center_lon = lon
         self.context.pending.osm_import_center_lat = lat
 
-    # Reuse start_import logic for the other idle entry points
-    before_start_import_from_slope_view = before_start_import
-    before_start_import_from_lift_view = before_start_import
-    before_start_import_from_road_view = before_start_import
-
     def before_complete_lift(self, lift_id: str) -> None:
         """Set lift_id before completing. Panel visibility set by enter_idle_viewing_lift."""
         self.context.viewing.set_lift_id(lift_id=lift_id)
@@ -1143,17 +1171,17 @@ class PlannerStateMachine(StateMachine):
         self.context.pending.osm_import_center_lon = None
         self.context.pending.osm_import_center_lat = None
 
-    def before_toggle_merge_node(self, node_id: str) -> None:
-        """Self-loop in merge_placing: add/remove the clicked node from the selection."""
-        self.context.merge.toggle(node_id)
+    def before_toggle_node_edit_node(self, node_id: str) -> None:
+        """Self-loop in node_edit_selecting: add/remove the clicked node from the selection."""
+        self.context.node_edit.toggle(node_id)
 
-    def before_cancel_merge(self) -> None:
-        """Discard an unconfirmed merge: clear the selected-node set."""
-        self.context.merge.clear()
+    def before_cancel_node_edit(self) -> None:
+        """Discard an unconfirmed node edit: clear the selected-node set."""
+        self.context.node_edit.clear()
 
-    def before_complete_merge(self) -> None:
-        """Merge confirmed: clear the selection (the graph mutation runs in the action)."""
-        self.context.merge.clear()
+    def before_finish_node_edit(self) -> None:
+        """Node edit confirmed (merge/delete): clear the selection (the graph mutation runs in the action)."""
+        self.context.node_edit.clear()
 
     def before_finish_road(self, entity_id: str) -> None:
         """Set the viewed road before finishing (mirrors before_finish_slope).

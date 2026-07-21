@@ -154,7 +154,7 @@ If you click **directly on a node marker** (white circle):
 - A connection path is generated to that node
 - Committing this path **auto-finishes the slope** (creates a junction)
 
-**Constraint:** The target must be **downhill** and within **1000m** of the start point; a click outside that range is refused.
+**Constraint:** The target must be **downhill** and within **1500m** of the start point; a click outside that range is refused.
 
 ---
 
@@ -330,10 +330,11 @@ As with slopes and lifts, you can view the road's elevation profile, switch to *
 - **🛣️ Road** — Build a gentle car road segment by segment
 - **🎿💺🚡🚠 Lift buttons** — Click terrain to place a lift (Surface, Chair, Gondola, Aerial Tram)
 
-Below a divider sit two **utility** buttons:
+Below a divider sit the **utility** buttons:
 
 - **🗺️ Import** — load real lifts & pistes from OpenStreetMap for an area.
 - **🔗 Node Merge** — merge junction nodes, delete a node, or add a node on a path.
+- **🧭 Route Planner** — pick a start + end node to see the best ways to ski between them.
 
 The currently active mode is highlighted.
 
@@ -341,7 +342,7 @@ The currently active mode is highlighted.
 
 | Control | Action |
 |---------|--------|
-| **Segment Length Slider** | Adjust path length (100–1000m) |
+| **Segment Length Slider** | Adjust path length (100–1500m) |
 | **🏁 Finish Committed Slope** | Complete and name the current slope |
 | **✖️ Cancel Full Slope** | Discard all uncommitted segments |
 
@@ -472,6 +473,34 @@ Deletion is **refused with a message** when a selected node is:
 ### Add a node on a path
 
 While in Node Merge mode, **click anywhere on an existing path** to drop a new node on the centerline at that point, splitting the segment in two. Use this to create a junction to branch a new slope or road off later.
+
+---
+
+## Route Planner
+
+Click **🧭 Route Planner** in the sidebar, then pick two nodes to see the best ways to ski between them.
+
+### Planning a route
+
+1. Click the **🧭 Route Planner** button (a utility tool, like Node Merge).
+2. **Click a start node**, then **click an end node** (routes run node-to-node — a bare terrain click is guided, not acted on).
+3. The app computes the best routes for **each difficulty band** and draws the selected one in its own colour on the map.
+
+### The two criteria
+
+For each difficulty band the planner finds the best route under two criteria:
+
+| Criterion | Picks the route with… |
+|-----------|-----------------------|
+| **Fewest lifts** | the least number of lift rides |
+| **Shortest slope** | the least skied distance (a gentler descent breaks near-ties) |
+
+### Difficulty
+
+- The **max-difficulty selector** (🟢🔵🔴⚫) chooses which precomputed set to show. Each band's routes are computed using **only slopes up to that band**.
+- So "shortest slope, max **red**" really is the shortest route over green/blue/red slopes — never a harder route hidden by a filter.
+- Use the **◀ ▶** browser to step through the routes for the selected band. If no route exists **within that band** you're told to raise the selector; if none exists **at all**, to build connecting slopes or lifts.
+- **🏔️ View in 3D** shows the route from the side (like the slope/lift/road 3D view).
 
 ---
 

@@ -28,7 +28,7 @@ def _dirty_ctx() -> PlannerContext:
     ctx.custom_connect.target_location = (0.0, 0.0, 2100.0)  # force_mode derives from this
     ctx.custom_connect.start_node = "N1"
     ctx.selection.set(lon=5.0, lat=6.0, elevation=2100.0)
-    ctx.merge.node_ids = ["N3", "N4"]
+    ctx.node_edit.node_ids = ["N3", "N4"]
     ctx.viewing.panel_visible = True
     ctx.pending.osm_import_center_lon = 10.0
     ctx.pending.osm_import_center_lat = 47.0
@@ -141,21 +141,21 @@ class TestEnterSlopeCustomPath:
 
 
 class TestEnterPlacingStatesPreserveTheirScratch:
-    def test_enter_import_placing_keeps_the_placed_center(self) -> None:
+    def test_enter_import_selecting_keeps_the_placed_center(self) -> None:
         # The self-loop re-enters on every retarget; enter must NOT wipe the placed center (set by
         # before_start_import) or the box would vanish on the next click.
         ctx = _dirty_ctx()
-        sl.enter_import_placing(ctx)
+        sl.enter_import_selecting(ctx)
         assert ctx.viewing.panel_visible is False
         assert ctx.pending.osm_import_center_lon == 10.0, "enter must not clear the placed box center (self-loop)"
         assert ctx.pending.osm_import_center_lat == 47.0
 
-    def test_enter_merge_placing_keeps_the_selection(self) -> None:
+    def test_enter_node_editing_keeps_the_selection(self) -> None:
         # Self-loop on every node toggle; enter must NOT wipe the accumulating selection.
         ctx = _dirty_ctx()
-        sl.enter_merge_placing(ctx)
+        sl.enter_node_edit_selecting(ctx)
         assert ctx.viewing.panel_visible is False
-        assert ctx.merge.node_ids == ["N3", "N4"], "enter must not clear the merge selection (self-loop)"
+        assert ctx.node_edit.node_ids == ["N3", "N4"], "enter must not clear the merge selection (self-loop)"
 
 
 class TestExitHandlersCleanUpScratch:
@@ -164,28 +164,28 @@ class TestExitHandlersCleanUpScratch:
         sl.exit_lift_placing(ctx)
         assert ctx.lift.first_node_id is None and ctx.lift.first_location is None, "lift scratch cleared on exit"
 
-    def test_exit_import_placing_clears_placed_center(self) -> None:
+    def test_exit_import_selecting_clears_placed_center(self) -> None:
         ctx = _dirty_ctx()
-        sl.exit_import_placing(ctx)
+        sl.exit_import_selecting(ctx)
         assert ctx.pending.osm_import_center_lon is None, "placed center cleared on exit"
         assert ctx.pending.osm_import_center_lat is None
 
-    def test_exit_import_placing_leaves_fetch_flag_alone(self) -> None:
+    def test_exit_import_selecting_leaves_fetch_flag_alone(self) -> None:
         # A confirmed import sets osm_import_mode just before exit; exit must NOT clear it (the deferred
         # handler consumes it). Only the center coordinates are cleared here.
         from skiresort_planner.constants import OSMImportMode
 
         ctx = _dirty_ctx()
         ctx.pending.osm_import_mode = OSMImportMode.LIFTS_AND_SLOPES
-        sl.exit_import_placing(ctx)
+        sl.exit_import_selecting(ctx)
         assert ctx.pending.osm_import_mode is OSMImportMode.LIFTS_AND_SLOPES, (
-            "exit_import_placing must not consume the pending fetch mode"
+            "exit_import_selecting must not consume the pending fetch mode"
         )
 
-    def test_exit_merge_placing_clears_selection(self) -> None:
+    def test_exit_node_editing_clears_selection(self) -> None:
         ctx = _dirty_ctx()
-        sl.exit_merge_placing(ctx)
-        assert ctx.merge.node_ids == [], "merge selection cleared on exit"
+        sl.exit_node_edit_selecting(ctx)
+        assert ctx.node_edit.node_ids == [], "merge selection cleared on exit"
 
 
 class TestNoOpExitsHaveNoHook:

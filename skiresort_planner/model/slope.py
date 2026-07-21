@@ -56,7 +56,7 @@ class Slope(SegmentPath):
             avg_bearing: Average bearing in degrees
 
         Returns:
-            Creative slope name like "1 (Thunder Ridge)"
+            Creative slope name like "1 (Teufels Nord Steilhang)"
         """
         slope_number = Slope.number_from_id(slope_id)
         prefixes = NameConfig.SLOPE_PREFIXES[difficulty]
@@ -70,9 +70,9 @@ class Slope(SegmentPath):
 
         drop = start_elevation - end_elevation
         if drop > NameConfig.SUMMIT_RISE_M:
-            name = f"{prefix} {direction}Summit {suffix}"
+            name = f"{prefix} {direction}Gipfel {suffix}"
         elif drop > NameConfig.BIG_DROP_M:
-            name = f"{prefix} {direction}Big {suffix}"
+            name = f"{prefix} {direction}Groß {suffix}"
 
         return f"{slope_number} ({name})"
 

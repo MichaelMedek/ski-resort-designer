@@ -19,8 +19,9 @@ Reference: DETAILS_UI.md for interaction patterns
 """
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pydeck as pdk
 
@@ -28,11 +29,14 @@ from skiresort_planner.constants import (
     ClickConfig,
     MapConfig,
     MarkerConfig,
+    RoutePlannerConfig,
     StyleConfig,
 )
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.generators.osm_importer import bbox_around
+from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
+from skiresort_planner.model.path_smoothing import point_at_fraction
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 
@@ -40,6 +44,7 @@ if TYPE_CHECKING:
     from skiresort_planner.core.terrain_analyzer import TerrainOrientation
     from skiresort_planner.model.lift import Lift
     from skiresort_planner.model.road import Road
+    from skiresort_planner.model.routing import Route, ViewingGroup
     from skiresort_planner.model.slope import Slope
 
 logger = logging.getLogger(__name__)
@@ -100,7 +105,7 @@ class MapRenderer:
         graph: ResortGraph | None = None,
         center_lat: float = MapConfig.START_CENTER_LAT,
         center_lon: float = MapConfig.START_CENTER_LON,
-        zoom: int = MapConfig.DEFAULT_ZOOM,
+        zoom: float = MapConfig.VIEWING_ZOOM,
         pitch: float = MapConfig.DEFAULT_PITCH,
         bearing: float = MapConfig.DEFAULT_BEARING,
     ) -> None:
@@ -120,22 +125,38 @@ class MapRenderer:
         self.zoom = zoom
         self.pitch = pitch
         self.bearing = bearing
+        # Set by the render loop while a flythrough plays (None = normal viewing) so deck.gl eases the
+        # camera between frames instead of jumping.
+        self.transition_duration: int | None = None
 
     def get_view_state(self) -> pdk.ViewState:
-        """Create Pydeck ViewState from current settings."""
+        """Create Pydeck ViewState from current settings.
+
+        While a flythrough plays, emit transition_duration + a LinearInterpolator (via the @@type JSON the
+        8.8.9 converter resolves) so deck.gl GLIDES the camera between sparse keyframes at 60fps client-side —
+        pydeck passes unknown kwargs straight into the deck.gl JSON. Absent otherwise (normal viewing).
+        """
+        extra: dict[str, object] = {}
+        if self.transition_duration is not None:
+            extra["transition_duration"] = self.transition_duration
+            extra["transition_interpolator"] = {
+                "@@type": "LinearInterpolator",
+                "transitionProps": ["longitude", "latitude", "zoom", "pitch", "bearing"],
+            }
         return pdk.ViewState(
             latitude=self.center_lat,
             longitude=self.center_lon,
             zoom=self.zoom,
             pitch=self.pitch,
             bearing=self.bearing,
+            **extra,
         )
 
     def update_view(
         self,
         lat: float | None = None,
         lon: float | None = None,
-        zoom: int | None = None,
+        zoom: float | None = None,
         pitch: float | None = None,
         bearing: float | None = None,
     ) -> None:
@@ -151,6 +172,10 @@ class MapRenderer:
         if bearing is not None:
             self.bearing = bearing
 
+    def set_flythrough_easing(self, *, flying: bool) -> None:
+        """While flying, emit a deck.gl transition so the camera GLIDES between keyframes; else none."""
+        self.transition_duration = MapConfig.FLYTHROUGH_TRANSITION_MS if flying else None
+
     def render(
         self,
         proposals: list[ProposedPathSegment] | None = None,
@@ -164,7 +189,7 @@ class MapRenderer:
         extra_layers: list[pdk.Layer] | None = None,
         terrain_layer: pdk.Layer | None = None,
         use_3d: bool = False,
-        merge_node_ids: list[str] | None = None,
+        selected_node_ids: list[str] | None = None,
     ) -> pdk.Deck:
         """Render complete map with all layers.
 
@@ -179,7 +204,7 @@ class MapRenderer:
             extra_layers: Additional layers to include (markers always on top)
             terrain_layer: Pre-generated terrain elevation layer (BitmapLayer)
             use_3d: If True, render with 3D terrain elevations. If False, flat 2D at z=0.
-            merge_node_ids: Node ids currently selected for merging — drawn RED.
+            selected_node_ids: Node ids currently selected (merge/delete/route start) — drawn RED.
 
         Returns:
             pdk.Deck object ready for display.
@@ -193,18 +218,23 @@ class MapRenderer:
             layer_collection.terrain.append(terrain_layer)
 
         if self.graph:
+            defect_ids = self._defect_entity_ids()  # slopes/lifts to gray out (empty when no core yet)
             if show_lifts:
-                lift_layers = self._create_lift_layers(use_3d=use_3d)
+                lift_layers = self._create_lift_layers(use_3d=use_3d, defect_ids=defect_ids)
                 layer_collection.pylons.extend(lift_layers["pylons"])
                 layer_collection.lifts.extend(lift_layers["cables_icons"])
 
             if show_nodes:
-                layer_collection.nodes.append(self._create_node_layer(use_3d=use_3d, merge_node_ids=merge_node_ids))
+                layer_collection.nodes.append(
+                    self._create_node_layer(use_3d=use_3d, selected_node_ids=selected_node_ids)
+                )
 
             if show_segments:
                 # One shared loop builds slope + road layers, returned in
                 # separate buckets so each keeps its z-order and styling.
-                segment_layers = self._create_segment_layers(highlight_ids=highlight_segment_ids, use_3d=use_3d)
+                segment_layers = self._create_segment_layers(
+                    highlight_ids=highlight_segment_ids, use_3d=use_3d, defect_ids=defect_ids
+                )
                 layer_collection.slopes.extend(segment_layers["slopes"])
                 layer_collection.roads.extend(segment_layers["roads"])
 
@@ -273,7 +303,7 @@ class MapRenderer:
         end_lon: float,
         end_elev: float,
         camera_bearing_offset: float,
-    ) -> tuple[float, float, float, int, float]:
+    ) -> tuple[float, float, float, float, float]:
         """Calculate optimal camera position to view a feature between two endpoints.
 
         Unified helper for both slope and lift 3D view calculations.
@@ -303,20 +333,13 @@ class MapRenderer:
         center_lat = (start_lat + end_lat) / 2
         center_lon = (start_lon + end_lon) / 2
 
-        # Calculate average elevation and adjust zoom accordingly
-        # Higher elevation = slightly more zoomed out to keep camera above terrain
-        avg_elevation = (start_elev + end_elev) / 2
-        # Gentle adjustment: every 1000m elevation, zoom out by 0.5 level
-        elevation_zoom_adjustment = avg_elevation / 2000.0
-        adjusted_zoom = max(MapConfig.VIEW_3D_MIN_ZOOM, MapConfig.VIEW_3D_ZOOM - elevation_zoom_adjustment)
-
-        return (center_lat, center_lon, camera_bearing, int(adjusted_zoom), MapConfig.VIEW_3D_PITCH)
+        return (center_lat, center_lon, camera_bearing, MapConfig.VIEW_3D_ZOOM, MapConfig.VIEW_3D_PITCH)
 
     @staticmethod
     def _calculate_3d_view_for_entity(
         graph: ResortGraph,
         entity: "Slope | Road | Lift",
-    ) -> tuple[float, float, float, int, float]:
+    ) -> tuple[float, float, float, float, float]:
         """Side-view camera for any start/end-node entity (slope, road, or lift).
 
         All three expose start_node_id/end_node_id; the -90 camera offset puts
@@ -346,7 +369,7 @@ class MapRenderer:
     def calculate_3d_view_for_slope(
         graph: ResortGraph,
         slope_id: str,
-    ) -> tuple[float, float, float, int, float]:
+    ) -> tuple[float, float, float, float, float]:
         """Calculate optimal side-view camera to view a slope in 3D."""
         slope = graph.slopes.get(slope_id)
         if not slope:
@@ -357,7 +380,7 @@ class MapRenderer:
     def calculate_3d_view_for_road(
         graph: ResortGraph,
         road_id: str,
-    ) -> tuple[float, float, float, int, float]:
+    ) -> tuple[float, float, float, float, float]:
         """Calculate optimal side-view camera to view a road in 3D."""
         road = graph.roads.get(road_id)
         if not road:
@@ -368,19 +391,94 @@ class MapRenderer:
     def calculate_3d_view_for_lift(
         graph: ResortGraph,
         lift_id: str,
-    ) -> tuple[float, float, float, int, float]:
+    ) -> tuple[float, float, float, float, float]:
         """Calculate optimal side-view camera to view a lift in 3D."""
         lift = graph.lifts.get(lift_id)
         if not lift:
             raise ValueError(f"Lift {lift_id} not found")
         return MapRenderer._calculate_3d_view_for_entity(graph=graph, entity=lift)
 
+    @staticmethod
+    def calculate_3d_view_for_route(
+        graph: ResortGraph,
+        start_node_id: str,
+        end_node_id: str,
+    ) -> tuple[float, float, float, float, float]:
+        """Side-view camera framing a route between its start and end nodes (same helper as entities)."""
+        start, end = graph.nodes[start_node_id], graph.nodes[end_node_id]
+        return MapRenderer._calculate_3d_view_for_endpoints(
+            start_lat=start.lat,
+            start_lon=start.lon,
+            start_elev=start.elevation,
+            end_lat=end.lat,
+            end_lon=end.lon,
+            end_elev=end.elevation,
+            camera_bearing_offset=-90,
+        )
+
+    @staticmethod
+    def flythrough_keyframes(groups: "Sequence[ViewingGroup]") -> list[tuple[float, float, float]]:
+        """Camera keyframes (lat, lon, bearing) for a flythrough, glided between by deck.gl client-side.
+
+        A single group → 2 keyframes (start, end): deck.gl glides the camera its whole length in one smooth
+        move. A multi-group route → one keyframe per group at FLYTHROUGH_ANCHOR_FRACTION + a final end
+        keyframe. Bearing is the group's gross straight-line heading (start→end), so a folded slope run is
+        one steady lift→lift sightline, not a curve-tracking wobble.
+        """
+        if not groups:  # nothing viewed / not flying — a real empty state, not a bad group
+            return []
+
+        def keyframe_at(group: "ViewingGroup", fraction: float) -> tuple[float, float, float]:
+            # A viewing group is always real committed geometry (slope/cable/route element) — never <2 pts.
+            assert len(group.actual_polyline) >= 2, f"viewing group has <2 points: {group.actual_polyline}"
+            points = [PathPoint(lon=lon, lat=lat, elevation=elev) for lon, lat, elev in group.actual_polyline]
+            here = point_at_fraction(points=points, fraction=fraction)
+            (s_lon, s_lat, _), (e_lon, e_lat, _) = group.straight_line
+            bearing = GeoCalculator.initial_bearing_deg(lon1=s_lon, lat1=s_lat, lon2=e_lon, lat2=e_lat)
+            # Nav-style: center the map AHEAD of the real position along the bearing, so "here" sits below
+            # screen centre and the run ahead is in view.
+            ahead_lon, ahead_lat = GeoCalculator.destination(
+                lon=here.lon, lat=here.lat, bearing_deg=bearing, distance_m=MapConfig.FLYTHROUGH_LOOK_AHEAD_M
+            )
+            return (ahead_lat, ahead_lon, bearing)
+
+        if len(groups) == 1:
+            return [keyframe_at(groups[0], 0.0), keyframe_at(groups[0], 1.0)]
+        keyframes = [keyframe_at(g, MapConfig.FLYTHROUGH_ANCHOR_FRACTION) for g in groups]
+        keyframes.append(keyframe_at(groups[-1], 1.0))
+        return keyframes
+
+    @staticmethod
+    def flythrough_view_state(
+        keyframes: "Sequence[tuple[float, float, float]]", index: int
+    ) -> tuple[float, float, float, float, float]:
+        """The camera pose at keyframe `index`: (lat, lon, bearing, zoom, pitch). Caller supplies a valid
+        index (via ViewingContext.flythrough_index). Zoom+pitch are the unified 3D-view constants so the
+        flythrough frames exactly like the standard 3D view.
+        """
+        if len(keyframes) < 2:
+            raise ValueError("flythrough needs at least 2 keyframes")
+        lat, lon, bearing = keyframes[index]
+        return (lat, lon, bearing, MapConfig.VIEW_3D_ZOOM, MapConfig.VIEW_3D_PITCH)
+
     # =========================================================================
     # SEGMENT LAYERS
     # =========================================================================
 
+    def _defect_entity_ids(self) -> set[str]:
+        """Slope/lift ids with a connectivity defect (disconnected or one-way) — grayed out on the map.
+
+        Derived from the same connectivity_defects classifier the panel counts/lists use, so what the
+        map dims and what the summary reports can't disagree. Empty when no core exists yet.
+        """
+        if not self.graph:
+            return set()
+        labels = self.graph.strongly_connected_labels()
+        core = self.graph.get_core_resort(labels=labels)
+        return {d.entity_id for d in self.graph.connectivity_defects(labels=labels, core=core)}
+
     def _create_segment_layers(
-        self, highlight_ids: list[str] | None = None, *, use_3d: bool = False
+        self, highlight_ids: list[str] | None = None, *, use_3d: bool = False, defect_ids: set[str] | None = None
     ) -> dict[str, list[pdk.Layer]]:
         """Create belt/center-line/icon layers for slopes AND roads in one pass.
 
@@ -398,10 +496,13 @@ class MapRenderer:
         if not self.graph:
             return {"slopes": [], "roads": []}
 
-        highlight_ids = highlight_ids or []
+        if highlight_ids is None:
+            highlight_ids = []
+        if defect_ids is None:
+            defect_ids = set()  # entity ids to gray out; here matched against slope ids
         # Segment → owner maps, built once — used only for click/panel routing.
-        road_of = {sid: road for road in self.graph.roads.values() for sid in road.segment_ids}
-        slope_of = {sid: slope for slope in self.graph.slopes.values() for sid in slope.segment_ids}
+        road_of = self.graph.segment_owner_map(SegmentKind.ROAD)
+        slope_of = self.graph.segment_owner_map(SegmentKind.SLOPE)
 
         # One record per segment, sorted into its owner's bucket by segment.kind.
         # Roads are flat brown; slopes are difficulty-colored. In-build segments
@@ -446,6 +547,7 @@ class MapRenderer:
                         "id": road.id if road is not None else seg_id,
                         "polygon": list(polygon_coords),
                         "center_line": center_line,
+                        "width": segment.width_m,  # real belt width → 3D renders a terrain-draped ribbon
                         "color": list(StyleConfig.ROAD_COLOR_RGBA),
                         "name": f"{StyleConfig.ROAD_ICON} {road.name}"
                         if road is not None
@@ -466,13 +568,17 @@ class MapRenderer:
                 raise ValueError(f"segment {seg_id} has unhandled kind for rendering: {segment.kind!r}")
             slope = slope_of.get(seg_id)
             if slope is not None:
-                difficulty = slope.get_difficulty(segments=self.graph.segments)
+                difficulty = cast("Slope", slope).get_difficulty(segments=self.graph.segments)
                 slope_id: str | None = slope.id
             else:
                 difficulty = segment.difficulty
                 slope_id = None
 
             color = list(StyleConfig.SLOPE_COLORS_RGBA[difficulty])
+            # Connectivity-defect slope → mute only the belt/centerline toward gray ("half-dead").
+            # The center-circle icon keeps its full hue so it stays a clear clickable marker.
+            if slope_id in defect_ids:
+                color = StyleConfig.gray_out(color)
 
             # Adjust opacity for highlight
             if seg_id in highlight_ids:
@@ -487,6 +593,7 @@ class MapRenderer:
                     "id": seg_id,
                     "polygon": list(polygon_coords),
                     "center_line": center_line,
+                    "width": segment.width_m,  # real belt width → 3D renders a terrain-draped ribbon
                     "color": color,
                     "name": f"{StyleConfig.SLOPE_ICON} {slope.name}" if slope is not None else f"Segment {seg_id}",
                     "icon_type": ClickConfig.TYPE_SLOPE if slope is not None else ClickConfig.TYPE_SEGMENT,
@@ -537,15 +644,20 @@ class MapRenderer:
                 )
             )
 
-        # Center lines - render in both 2D and 3D
+        # Center line: 2D is a thin line over the belt polygon; 3D has no belt polygon (PolygonLayer
+        # is flat), so the line IS the belt — rendered at each segment's real width_m so it drapes over
+        # terrain as a ribbon. Widths are in metres (deck.gl PathLayer default; same as route/proposal
+        # layers) — do NOT pass width_units, pydeck mangles string props into "@@=" accessors.
         layers.append(
             pdk.Layer(
                 "PathLayer",
                 records,
                 get_path="center_line",
                 get_color="color",
-                get_width=6 if use_3d else 4,  # Thicker in 3D since no belt polygon
+                get_width="width" if use_3d else 4,
                 width_min_pixels=2,
+                cap_rounded=True,
+                joint_rounded=True,
                 pickable=True,
                 id=f"{id_prefix}_centerline",
             )
@@ -581,11 +693,14 @@ class MapRenderer:
     # LIFT LAYERS
     # =========================================================================
 
-    def _create_lift_layers(self, *, use_3d: bool = False) -> dict[str, list[pdk.Layer]]:
+    def _create_lift_layers(
+        self, *, use_3d: bool = False, defect_ids: set[str] | None = None
+    ) -> dict[str, list[pdk.Layer]]:
         """Create layers for lift cables, pylons, and icons.
 
         Args:
             use_3d: If True, use real elevations. If False, use flat z offsets.
+            defect_ids: Lift ids with a connectivity defect — grayed out ("half-dead").
 
         Returns:
             Dict with 'pylons' and 'cables_icons' keys for separate z-ordering.
@@ -593,6 +708,7 @@ class MapRenderer:
         if not self.graph:
             return {"pylons": [], "cables_icons": []}
 
+        defect_ids = defect_ids or set()
         cable_data = []
         pylon_data = []
         icon_data = []
@@ -602,6 +718,9 @@ class MapRenderer:
             end_node = self.graph.nodes[lift.end_node_id]
 
             color = list(StyleConfig.LIFT_COLORS_RGBA[lift.lift_type])
+            # Connectivity-defect lift → mute only the cable (the "line") toward gray ("half-dead").
+            # The center icon keeps its full hue so it stays a clear clickable marker.
+            cable_color = StyleConfig.gray_out(color) if lift_id in defect_ids else color
 
             # Use pre-computed cable points with sag (from Lift.calculate_cable_points)
             cable_path = [
@@ -623,7 +742,7 @@ class MapRenderer:
                     "type": ClickConfig.TYPE_LIFT,
                     "id": lift_id,
                     "path": cable_path,
-                    "color": color,
+                    "color": cable_color,
                     "name": f"{StyleConfig.LIFT_ICONS[lift.lift_type]} {lift.name}",
                     "lift_type": lift.lift_type,
                 }
@@ -644,7 +763,7 @@ class MapRenderer:
                         "pylon_index": i,  # 0-indexed
                         "position": [pylon.lon, pylon.lat, pylon_z],
                         "color": MarkerConfig.PYLON_MARKER_COLOR,
-                        "name": f"Pylon {i + 1} on {lift_id}",
+                        "name": f"Pylon {i + 1} on {StyleConfig.LIFT_ICONS[lift.lift_type]} {lift.name}",
                     }
                 )
 
@@ -688,7 +807,8 @@ class MapRenderer:
                 )
             )
 
-        # Cable lines
+        # Cable lines — CABLE_WIDTH is in metres (deck.gl PathLayer default), so the lift is a 10m-wide
+        # ribbon that drapes over terrain in 3D. Do NOT pass width_units (pydeck mangles string props).
         if cable_data:
             cable_icon_layers.append(
                 pdk.Layer(
@@ -724,7 +844,7 @@ class MapRenderer:
     # NODE LAYER
     # =========================================================================
 
-    def _create_node_layer(self, *, use_3d: bool = False, merge_node_ids: list[str] | None = None) -> pdk.Layer:
+    def _create_node_layer(self, *, use_3d: bool = False, selected_node_ids: list[str] | None = None) -> pdk.Layer:
         """Create layer for junction nodes.
 
         A node that is also a **parking node** (a road junction shared with a
@@ -732,13 +852,13 @@ class MapRenderer:
         with a "Parking place" tooltip — the parking marker IS the node marker,
         so it's always visible and hoverable (no separate under-layer).
 
-        A node in `merge_node_ids` (selected in the node-merge tool) renders RED and bigger, so the
-        user sees exactly which nodes will collapse. Merge-selection takes priority over the parking
-        style (a selected parking node still shows red while selected).
+        A node in `selected_node_ids` (highlighted by merge/delete OR the route planner as start) renders
+        RED and bigger, so the user sees exactly which nodes are selected. Selection takes priority over
+        the parking style (a selected parking node still shows red while selected).
 
         Args:
             use_3d: If True, use terrain elevation. If False, use z-offset.
-            merge_node_ids: Node ids selected for merging (drawn red).
+            selected_node_ids: Node ids currently selected (merge/delete/route start) — drawn red.
 
         Returns:
             ScatterplotLayer with nodes; per-point color/radius/name.
@@ -747,16 +867,16 @@ class MapRenderer:
             return pdk.Layer("ScatterplotLayer", [], id="nodes")
 
         parking_ids = {n.id for n in self.graph.get_parking_nodes()}
-        merge_ids = set(merge_node_ids or [])
+        selected_ids = set(selected_node_ids) if selected_node_ids is not None else set()
 
         node_data = []
         for node_id, node in self.graph.nodes.items():
             is_parking = node_id in parking_ids
-            is_merge_selected = node_id in merge_ids
-            is_big = is_merge_selected or is_parking
-            if is_merge_selected:
-                color = list(StyleConfig.MERGE_SELECTED_RGBA)
-                name = f"{StyleConfig.MERGE_ICON} Selected to merge — {node_id}"
+            is_selected = node_id in selected_ids
+            is_big = is_selected or is_parking
+            if is_selected:
+                color = list(StyleConfig.SELECTED_NODE_RGBA)
+                name = f"✅ Selected — {node_id}"
             elif is_parking:
                 color = list(StyleConfig.PARKING_COLOR_RGBA)
                 name = f"{StyleConfig.PARKING_ICON} Parking place — {node_id}"
@@ -1221,6 +1341,68 @@ class MapRenderer:
         )
 
         return layers
+
+    def _path_layer(
+        self,
+        polyline: "Sequence[tuple[float, float, float]]",
+        *,
+        color: list[int],
+        width_m: float,
+        float_above_m: float,
+        use_3d: bool,
+        layer_id: str,
+        name: str = "",
+    ) -> list[pdk.Layer]:
+        """One floated PathLayer over a (lon,lat,elev) polyline — the shared body for the route overlay and
+        the flythrough highlight. In 3D it hovers `float_above_m` above terrain; flat in 2D.
+        """
+        assert len(polyline) >= 2, f"a path layer needs ≥2 points, got {len(polyline)}"
+        z_offset = MarkerConfig.PATH_Z_OFFSET_M + (float_above_m if use_3d else 0)
+        path = [
+            [lon, lat, self._get_z(elevation=elev, z_offset=z_offset, use_3d=use_3d)] for lon, lat, elev in polyline
+        ]
+        return [
+            pdk.Layer(
+                "PathLayer",
+                [{"path": path, "color": color, "name": name}],
+                get_path="path",
+                get_color="color",
+                get_width=width_m,
+                width_min_pixels=6,
+                cap_rounded=True,
+                id=layer_id,
+            )
+        ]
+
+    def create_route_layers(self, route: "Route", *, use_3d: bool) -> list[pdk.Layer]:
+        """One thick, semi-transparent polyline for the selected route, tracing the actual slope geometry.
+        Wider than any slope belt (ROUTE_WIDTH_M) so it reads as an overlay; in 3D it floats
+        ROUTE_FLOAT_ABOVE_M above the pistes/lifts it traces. Colour is keyed to its criterion.
+        """
+        return self._path_layer(
+            route.path_points,
+            color=route.color,
+            width_m=RoutePlannerConfig.ROUTE_WIDTH_M,
+            float_above_m=RoutePlannerConfig.ROUTE_FLOAT_ABOVE_M,
+            use_3d=use_3d,
+            layer_id="route_selected",
+            name=", ".join(c.value for c in route.criteria),
+        )
+
+    def create_highlight_ribbon(
+        self, polyline: "Sequence[tuple[float, float, float]]", *, use_3d: bool
+    ) -> list[pdk.Layer]:
+        """The hot-orange signal ribbon over the element currently being flown, floated
+        FLYTHROUGH_HIGHLIGHT_FLOAT_ABOVE_M (just above the route overlay). Follows the element's real path.
+        """
+        return self._path_layer(
+            polyline,
+            color=MapConfig.FLYTHROUGH_HIGHLIGHT_COLOR,
+            width_m=RoutePlannerConfig.ROUTE_WIDTH_M,
+            float_above_m=MapConfig.FLYTHROUGH_HIGHLIGHT_FLOAT_ABOVE_M,
+            use_3d=use_3d,
+            layer_id="flythrough_highlight",
+        )
 
     def create_import_bbox_layers(
         self,

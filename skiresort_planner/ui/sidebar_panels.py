@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 def _cancel_button(label: str, on_cancel: Callable[[], None], help: str) -> None:
     """Render a full-width cancel button that clears stale click state then transitions.
 
-    Shared by the single-step "placing" panels (lift / import / merge) whose cancel just discards
+    Shared by the single-step "placing" panels (lift / import / node-edit) whose cancel just discards
     the in-progress placement and returns to idle. The state transition triggers st.rerun() via the
     SM listener.
     """
@@ -74,10 +74,10 @@ class IdleSidebarPanel(SidebarPanel):
 
 
 class ViewingSidebarPanel(SidebarPanel):
-    """idle_viewing_{slope,road,lift}: a kind-agnostic Close Right Panel button.
+    """idle_viewing_{slope,road,lift,route}: one kind-agnostic Close Right Panel button.
 
-    Unlike the right panel (which needs a per-kind EntityKindSpec for stats/delete), the left close
-    button is identical for every viewed kind, so one panel covers all three viewing states.
+    The left close button is identical for every viewed kind (and for the route viewer), so one panel
+    covers them all. Fires the shared close_panel event; the SM resolves it to the right transition.
     """
 
     def controls(self) -> None:
@@ -88,8 +88,6 @@ class ViewingSidebarPanel(SidebarPanel):
             key="close_panel_btn",
         ):
             bump_dedup_epoch()  # closing the panel keeps the user's pan (no recenter)
-            # close_panel event - SM resolves to the appropriate transition by current state.
-            # State transition triggers st.rerun() via listener.
             self.sm.close_panel()  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
 
@@ -178,7 +176,7 @@ class LiftSidebarPanel(SidebarPanel):
 
 
 class ImportSidebarPanel(SidebarPanel):
-    """import_placing: the area half-width slider + a Cancel button.
+    """import_selecting: the area half-width slider + a Cancel button.
 
     The slider mirrors slope's Segment Length slider (only visible while placing). Changing it writes
     the new half-width into the deferred state and redraws the box. Confirming happens from the right
@@ -205,12 +203,23 @@ class ImportSidebarPanel(SidebarPanel):
         )
 
 
-class MergeSidebarPanel(SidebarPanel):
-    """merge_placing: a Cancel button (selection count + instructions live on the right panel)."""
+class NodeEditSidebarPanel(SidebarPanel):
+    """node_edit_selecting: a Cancel button (selection count + instructions live on the right panel)."""
 
     def controls(self) -> None:
         _cancel_button(
-            label="✖️ Cancel Merge",
-            on_cancel=self.sm.cancel_merge,
+            label="✖️ Cancel Node Edit",
+            on_cancel=self.sm.cancel_node_edit,
             help="Clear the selection and return to idle",
+        )
+
+
+class RoutePlacingSidebarPanel(SidebarPanel):
+    """route_placing: a Cancel button (the map clicks pick the start/end nodes)."""
+
+    def controls(self) -> None:
+        _cancel_button(
+            label="✖️ Cancel Route",
+            on_cancel=self.sm.cancel_route_placing,
+            help="Discard the route and return to idle",
         )

@@ -198,7 +198,7 @@ class Lift(NodeConnected):
             avg_bearing: Average bearing in degrees
 
         Returns:
-            Creative lift name like "1 (Alpine Ridge Express)"
+            Creative lift name like "1 (Gams Nord Sesselbahn)"
         """
         lift_number = Lift.number_from_id(lift_id=lift_id)
         prefixes = NameConfig.LIFT_PREFIXES[lift_type]
@@ -218,7 +218,7 @@ class Lift(NodeConnected):
         name = f"{length_desc}{prefix} {direction}{suffix}"
 
         if vertical_rise_m > NameConfig.SUMMIT_RISE_M:
-            name = f"{prefix} {direction}Summit {suffix}"
+            name = f"{prefix} {direction}Gipfel {suffix}"
 
         return f"{lift_number} ({name.strip()})"
 
@@ -498,121 +498,47 @@ class Lift(NodeConnected):
         # Minimum spacing in indices
         min_spacing_idx = max(2, int(min_spacing_m / dist_per_step)) if dist_per_step > 0 else 2
 
-        def cable_elev_at_idx(start_idx: int, end_idx: int, z0: float, z1: float, idx: int) -> float:
-            """Cable elevation at index using Lift.cable_elevation."""
-            if end_idx <= start_idx:
-                return z0
-            span_idx = end_idx - start_idx
-            t = (idx - start_idx) / span_idx
-            span_m = span_idx * dist_per_step
-            return Lift.cable_elevation(t=t, start_elev=z0, end_elev=z1, span_m=span_m, sag_factor=sag_factor)
-
-        def find_clearance_violations(
-            start_idx: int, end_idx: int, start_elev: float, end_elev: float, pylon_set: set[int]
-        ) -> list[int]:
-            """Recursively find where cable clearance is below minimum."""
-            if end_idx - start_idx < min_spacing_idx * 2:
-                return []
-
-            worst_violation: float = 0.0
-            worst_idx = -1
-
-            for i in range(start_idx + min_spacing_idx, end_idx - min_spacing_idx + 1):
-                if i in pylon_set:
-                    continue
-                cable_elev = cable_elev_at_idx(start_idx=start_idx, end_idx=end_idx, z0=start_elev, z1=end_elev, idx=i)
-                clearance = cable_elev - terrain_elevs[i]
-                violation = min_clearance - clearance
-
-                if violation > worst_violation:
-                    worst_violation = violation
-                    worst_idx = i
-
-            if worst_violation <= 0 or worst_idx < 0:
-                return []
-
-            pylon_top_elev = terrain_elevs[worst_idx] + pylon_height
-            new_pylon_set = pylon_set | {worst_idx}
-
-            left_pylons = find_clearance_violations(
-                start_idx=start_idx,
-                end_idx=worst_idx,
-                start_elev=start_elev,
-                end_elev=pylon_top_elev,
-                pylon_set=new_pylon_set,
-            )
-            right_pylons = find_clearance_violations(
-                start_idx=worst_idx,
-                end_idx=end_idx,
-                start_elev=pylon_top_elev,
-                end_elev=end_elev,
-                pylon_set=new_pylon_set,
-            )
-
-            return left_pylons + [worst_idx] + right_pylons
-
         # Station cable elevations
         start_cable_elev = terrain_elevs[0] + station_height
         end_cable_elev = terrain_elevs[-1] + station_height
 
         # Phase 1: Fix all clearance violations
-        pylon_indices = find_clearance_violations(
+        pylon_indices = Lift._find_clearance_violations(
             start_idx=0,
             end_idx=n - 1,
             start_elev=start_cable_elev,
             end_elev=end_cable_elev,
             pylon_set=set(),
+            terrain_elevs=terrain_elevs,
+            min_spacing_idx=min_spacing_idx,
+            min_clearance=min_clearance,
+            pylon_height=pylon_height,
+            dist_per_step=dist_per_step,
+            sag_factor=sag_factor,
         )
         pylon_indices = sorted(set(pylon_indices))
 
         # Phase 2: Enforce maximum spacing
-        if dist_per_step > 0:
-            max_spacing_idx = int(max_spacing_m / dist_per_step)
-
-            for _ in range(20):  # Safety limit
-                anchors = [0] + sorted(pylon_indices) + [n - 1]
-                new_spacing_pylons = []
-
-                for seg_idx in range(len(anchors) - 1):
-                    seg_start = anchors[seg_idx]
-                    seg_end = anchors[seg_idx + 1]
-                    span_idx = seg_end - seg_start
-
-                    if span_idx > max_spacing_idx:
-                        mid_idx = (seg_start + seg_end) // 2
-                        if mid_idx not in pylon_indices and 0 < mid_idx < n - 1:
-                            new_spacing_pylons.append(mid_idx)
-
-                if not new_spacing_pylons:
-                    break
-                pylon_indices = sorted(set(pylon_indices + new_spacing_pylons))
+        pylon_indices = Lift._enforce_max_spacing(
+            pylon_indices=pylon_indices,
+            n=n,
+            dist_per_step=dist_per_step,
+            max_spacing_m=max_spacing_m,
+        )
 
         # Phase 3: Re-check clearance after spacing pylons
-        pylon_set = set(pylon_indices)
-        anchors = [0] + sorted(pylon_indices) + [n - 1]
-        anchor_elevs = [start_cable_elev]
-        for idx in sorted(pylon_indices):
-            anchor_elevs.append(terrain_elevs[idx] + pylon_height)
-        anchor_elevs.append(end_cable_elev)
-
-        new_clearance_pylons = []
-        for seg_idx in range(len(anchors) - 1):
-            seg_start = anchors[seg_idx]
-            seg_end = anchors[seg_idx + 1]
-            seg_start_elev = anchor_elevs[seg_idx]
-            seg_end_elev = anchor_elevs[seg_idx + 1]
-
-            additional = find_clearance_violations(
-                start_idx=seg_start,
-                end_idx=seg_end,
-                start_elev=seg_start_elev,
-                end_elev=seg_end_elev,
-                pylon_set=pylon_set,
-            )
-            new_clearance_pylons.extend(additional)
-
-        if new_clearance_pylons:
-            pylon_indices = sorted(set(pylon_indices + new_clearance_pylons))
+        pylon_indices = Lift._recheck_clearance(
+            pylon_indices=pylon_indices,
+            n=n,
+            start_cable_elev=start_cable_elev,
+            end_cable_elev=end_cable_elev,
+            terrain_elevs=terrain_elevs,
+            min_spacing_idx=min_spacing_idx,
+            min_clearance=min_clearance,
+            pylon_height=pylon_height,
+            dist_per_step=dist_per_step,
+            sag_factor=sag_factor,
+        )
 
         # Convert indices to Pylon objects
         pylons = []
@@ -631,6 +557,179 @@ class Lift(NodeConnected):
             )
 
         return pylons
+
+    @staticmethod
+    def _cable_elev_at_idx(
+        start_idx: int,
+        end_idx: int,
+        z0: float,
+        z1: float,
+        idx: int,
+        dist_per_step: float,
+        sag_factor: float,
+    ) -> float:
+        """Cable elevation at index using Lift.cable_elevation."""
+        if end_idx <= start_idx:
+            return z0
+        span_idx = end_idx - start_idx
+        t = (idx - start_idx) / span_idx
+        span_m = span_idx * dist_per_step
+        return Lift.cable_elevation(t=t, start_elev=z0, end_elev=z1, span_m=span_m, sag_factor=sag_factor)
+
+    @staticmethod
+    def _find_clearance_violations(
+        start_idx: int,
+        end_idx: int,
+        start_elev: float,
+        end_elev: float,
+        pylon_set: set[int],
+        terrain_elevs: list[float],
+        min_spacing_idx: int,
+        min_clearance: int,
+        pylon_height: int,
+        dist_per_step: float,
+        sag_factor: float,
+    ) -> list[int]:
+        """Recursively find where cable clearance is below minimum."""
+        if end_idx - start_idx < min_spacing_idx * 2:
+            return []
+
+        worst_violation: float = 0.0
+        worst_idx = -1
+
+        for i in range(start_idx + min_spacing_idx, end_idx - min_spacing_idx + 1):
+            if i in pylon_set:
+                continue
+            cable_elev = Lift._cable_elev_at_idx(
+                start_idx=start_idx,
+                end_idx=end_idx,
+                z0=start_elev,
+                z1=end_elev,
+                idx=i,
+                dist_per_step=dist_per_step,
+                sag_factor=sag_factor,
+            )
+            clearance = cable_elev - terrain_elevs[i]
+            violation = min_clearance - clearance
+
+            if violation > worst_violation:
+                worst_violation = violation
+                worst_idx = i
+
+        if worst_violation <= 0 or worst_idx < 0:
+            return []
+
+        pylon_top_elev = terrain_elevs[worst_idx] + pylon_height
+        new_pylon_set = pylon_set | {worst_idx}
+
+        left_pylons = Lift._find_clearance_violations(
+            start_idx=start_idx,
+            end_idx=worst_idx,
+            start_elev=start_elev,
+            end_elev=pylon_top_elev,
+            pylon_set=new_pylon_set,
+            terrain_elevs=terrain_elevs,
+            min_spacing_idx=min_spacing_idx,
+            min_clearance=min_clearance,
+            pylon_height=pylon_height,
+            dist_per_step=dist_per_step,
+            sag_factor=sag_factor,
+        )
+        right_pylons = Lift._find_clearance_violations(
+            start_idx=worst_idx,
+            end_idx=end_idx,
+            start_elev=pylon_top_elev,
+            end_elev=end_elev,
+            pylon_set=new_pylon_set,
+            terrain_elevs=terrain_elevs,
+            min_spacing_idx=min_spacing_idx,
+            min_clearance=min_clearance,
+            pylon_height=pylon_height,
+            dist_per_step=dist_per_step,
+            sag_factor=sag_factor,
+        )
+
+        return left_pylons + [worst_idx] + right_pylons
+
+    @staticmethod
+    def _enforce_max_spacing(
+        pylon_indices: list[int],
+        n: int,
+        dist_per_step: float,
+        max_spacing_m: int,
+    ) -> list[int]:
+        """Phase 2: insert midpoint pylons so no span exceeds max_spacing."""
+        if dist_per_step <= 0:
+            return pylon_indices
+        max_spacing_idx = int(max_spacing_m / dist_per_step)
+
+        for _ in range(20):  # Safety limit
+            anchors = [0] + sorted(pylon_indices) + [n - 1]
+            new_spacing_pylons = []
+
+            for seg_idx in range(len(anchors) - 1):
+                seg_start = anchors[seg_idx]
+                seg_end = anchors[seg_idx + 1]
+                span_idx = seg_end - seg_start
+
+                if span_idx > max_spacing_idx:
+                    mid_idx = (seg_start + seg_end) // 2
+                    if mid_idx not in pylon_indices and 0 < mid_idx < n - 1:
+                        new_spacing_pylons.append(mid_idx)
+
+            if not new_spacing_pylons:
+                break
+            pylon_indices = sorted(set(pylon_indices + new_spacing_pylons))
+
+        return pylon_indices
+
+    @staticmethod
+    def _recheck_clearance(
+        pylon_indices: list[int],
+        n: int,
+        start_cable_elev: float,
+        end_cable_elev: float,
+        terrain_elevs: list[float],
+        min_spacing_idx: int,
+        min_clearance: int,
+        pylon_height: int,
+        dist_per_step: float,
+        sag_factor: float,
+    ) -> list[int]:
+        """Phase 3: re-check clearance per span after spacing pylons added."""
+        pylon_set = set(pylon_indices)
+        anchors = [0] + sorted(pylon_indices) + [n - 1]
+        anchor_elevs = [start_cable_elev]
+        for idx in sorted(pylon_indices):
+            anchor_elevs.append(terrain_elevs[idx] + pylon_height)
+        anchor_elevs.append(end_cable_elev)
+
+        new_clearance_pylons = []
+        for seg_idx in range(len(anchors) - 1):
+            seg_start = anchors[seg_idx]
+            seg_end = anchors[seg_idx + 1]
+            seg_start_elev = anchor_elevs[seg_idx]
+            seg_end_elev = anchor_elevs[seg_idx + 1]
+
+            additional = Lift._find_clearance_violations(
+                start_idx=seg_start,
+                end_idx=seg_end,
+                start_elev=seg_start_elev,
+                end_elev=seg_end_elev,
+                pylon_set=pylon_set,
+                terrain_elevs=terrain_elevs,
+                min_spacing_idx=min_spacing_idx,
+                min_clearance=min_clearance,
+                pylon_height=pylon_height,
+                dist_per_step=dist_per_step,
+                sag_factor=sag_factor,
+            )
+            new_clearance_pylons.extend(additional)
+
+        if new_clearance_pylons:
+            pylon_indices = sorted(set(pylon_indices + new_clearance_pylons))
+
+        return pylon_indices
 
     @staticmethod
     def calculate_cable_points(

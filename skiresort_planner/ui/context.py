@@ -32,12 +32,21 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, ClassVar
 
-from skiresort_planner.constants import ClickConfig, LiftConfig, MapConfig, OSMConfig, OSMImportMode, PathConfig
+from skiresort_planner.constants import (
+    ClickConfig,
+    LiftConfig,
+    MapConfig,
+    OSMConfig,
+    OSMImportMode,
+    PathConfig,
+    SlopeConfig,
+)
 from skiresort_planner.model.path_segment import SegmentKind
 
 if TYPE_CHECKING:
     from skiresort_planner.model.path_point import PathPoint
     from skiresort_planner.model.proposed_path import ProposedPathSegment
+    from skiresort_planner.model.routing import Route
 
 
 class EntityKind(StrEnum):
@@ -187,8 +196,9 @@ class BuildMode:
     SURFACE_LIFT = "surface_lift"
     AERIAL_TRAM = "aerial_tram"
     ROAD = "road"
-    IMPORT = "import"
-    MERGE = "merge"
+    IMPORT = "import"  # import OSM lifts and slopes
+    NODE_EDIT = "node_edit"  # node editor: select, add, delete or merge nodes of paths
+    ROUTE = "route"  # route planner: pick start + end node
 
     # Lift types + their order are OWNED by LiftConfig.TYPES (single source of truth); we don't
     # re-list them. The named constants above exist for readable references (BuildMode.CHAIRLIFT).
@@ -200,7 +210,7 @@ class BuildMode:
     )
 
     # Every build mode, in sidebar order — built from parts so the lift block tracks LIFT_TYPES.
-    ALL = [SLOPE, ROAD, *LIFT_TYPES, IMPORT, MERGE]
+    ALL = [SLOPE, ROAD, *LIFT_TYPES, IMPORT, NODE_EDIT, ROUTE]
 
     @staticmethod
     def is_slope(mode: str) -> bool:
@@ -223,9 +233,14 @@ class BuildMode:
         return mode == BuildMode.IMPORT
 
     @staticmethod
-    def is_merge(mode: str) -> bool:
-        """Check if mode is node merge (click-to-select nodes to collapse)."""
-        return mode == BuildMode.MERGE
+    def is_node_edit(mode: str) -> bool:
+        """Check if mode is the node editor (click-to-select nodes to add/delete/merge)."""
+        return mode == BuildMode.NODE_EDIT
+
+    @staticmethod
+    def is_route(mode: str) -> bool:
+        """Check if mode is the route planner (click-to-pick start + end nodes)."""
+        return mode == BuildMode.ROUTE
 
     @staticmethod
     def display_name(mode: str) -> str:
@@ -238,9 +253,11 @@ class BuildMode:
             case BuildMode.ROAD:
                 return "Road"
             case BuildMode.IMPORT:
-                return "Import"
-            case BuildMode.MERGE:
-                return "Node Merge"
+                return "OSM Importer"
+            case BuildMode.NODE_EDIT:
+                return "Node Editor"
+            case BuildMode.ROUTE:
+                return "Route Planner"
             case BuildMode.CHAIRLIFT | BuildMode.GONDOLA | BuildMode.SURFACE_LIFT | BuildMode.AERIAL_TRAM:
                 return StyleConfig.LIFT_DISPLAY_NAMES[mode]
             case _:
@@ -258,8 +275,10 @@ class BuildMode:
                 return StyleConfig.ROAD_ICON
             case BuildMode.IMPORT:
                 return StyleConfig.IMPORT_ICON
-            case BuildMode.MERGE:
+            case BuildMode.NODE_EDIT:
                 return StyleConfig.MERGE_ICON
+            case BuildMode.ROUTE:
+                return StyleConfig.ROUTE_ICON
             case BuildMode.CHAIRLIFT | BuildMode.GONDOLA | BuildMode.SURFACE_LIFT | BuildMode.AERIAL_TRAM:
                 return StyleConfig.LIFT_ICONS[mode]
             case _:
@@ -296,9 +315,13 @@ class BuildModeContext(BaseContext):
         """Check if mode is OSM import."""
         return BuildMode.is_import(self.mode)
 
-    def is_merge(self) -> bool:
-        """Check if mode is node merge."""
-        return BuildMode.is_merge(self.mode)
+    def is_node_edit(self) -> bool:
+        """Check if mode is the node editor."""
+        return BuildMode.is_node_edit(self.mode)
+
+    def is_route(self) -> bool:
+        """Check if mode is the route planner."""
+        return BuildMode.is_route(self.mode)
 
 
 @dataclass
@@ -327,6 +350,12 @@ class ViewingContext(BaseContext):
     road_id: str | None = None
     panel_visible: bool = False
     view_3d: bool = False
+
+    # Flythrough ("Play") playback — active only while 3D is open. Not a state-machine state: a plain
+    # loop reframing the camera IN PLACE along the viewed element. Keyframes are resolved LIVE each frame
+    # (single source), so only the current frame index is stored here — no stale snapshot to drift.
+    flythrough_active: bool = False
+    flythrough_frame: int = 0
 
     # =========================================================================
     # SETTER METHODS (called by state machine before_* hooks)
@@ -401,6 +430,7 @@ class ViewingContext(BaseContext):
         """
         self.panel_visible = False
         self.view_3d = False
+        self.stop_flythrough()
 
     # =========================================================================
     # 3D VIEW CONTROL
@@ -413,6 +443,33 @@ class ViewingContext(BaseContext):
     def disable_3d(self) -> None:
         """Disable 3D view, return to flat 2D map."""
         self.view_3d = False
+        self.stop_flythrough()
+
+    # =========================================================================
+    # FLYTHROUGH ("Play") PLAYBACK
+    # =========================================================================
+
+    def start_flythrough(self) -> None:
+        """Begin playback from the first keyframe. Keyframes are resolved live, so no count is stored."""
+        self.flythrough_frame = 0
+        self.flythrough_active = True
+
+    def advance_flythrough(self) -> None:
+        """Move the camera to the next keyframe (the driver calls this once per rerun while playing)."""
+        assert self.flythrough_active, "advance_flythrough called while not playing"
+        self.flythrough_frame += 1
+
+    def stop_flythrough(self) -> None:
+        """End playback. The normal 3D view_state restores the entry framing on the next render."""
+        self.flythrough_active = False
+        self.flythrough_frame = 0
+
+    def flythrough_index(self, count: int) -> int:
+        """Current frame clamped to a valid index into a `count`-keyframe run. Single clamp for both the
+        camera keyframe pick and the current-element highlight, so they can never disagree.
+        """
+        assert count >= 1, f"flythrough_index needs ≥1 keyframe, got {count}"
+        return max(0, min(self.flythrough_frame, count - 1))
 
     # =========================================================================
     # QUERY METHODS (for UI to check state)
@@ -437,6 +494,7 @@ class ViewingContext(BaseContext):
         self.road_id = None
         self.panel_visible = False
         self.view_3d = False
+        self.stop_flythrough()
 
 
 # Import-time guard: set_viewed must map every buildable SegmentKind to a real setter, and each named
@@ -485,7 +543,7 @@ class MapContext(BaseContext):
 
     lon: float = MapConfig.START_CENTER_LON
     lat: float = MapConfig.START_CENTER_LAT
-    zoom: int = MapConfig.DEFAULT_ZOOM
+    zoom: int = MapConfig.VIEWING_ZOOM
     pitch: float = MapConfig.DEFAULT_PITCH
     bearing: float = MapConfig.DEFAULT_BEARING
 
@@ -532,7 +590,7 @@ class MapContext(BaseContext):
 
     def reset_view(self) -> None:
         """Reset zoom, pitch, and bearing to defaults for 2D viewing."""
-        self.zoom = MapConfig.DEFAULT_ZOOM
+        self.zoom = MapConfig.VIEWING_ZOOM
         self.pitch = MapConfig.DEFAULT_PITCH
         self.bearing = MapConfig.DEFAULT_BEARING
 
@@ -540,7 +598,7 @@ class MapContext(BaseContext):
         """Reset to default map position and view settings."""
         self.lon = MapConfig.START_CENTER_LON
         self.lat = MapConfig.START_CENTER_LAT
-        self.zoom = MapConfig.DEFAULT_ZOOM
+        self.zoom = MapConfig.VIEWING_ZOOM
         self.pitch = MapConfig.DEFAULT_PITCH
         self.bearing = MapConfig.DEFAULT_BEARING
 
@@ -639,6 +697,8 @@ class PendingContext(BaseContext):
     # Center of the placed import box (click-to-place). Set by start_import, consumed on confirm.
     osm_import_center_lon: float | None = None
     osm_import_center_lat: float | None = None
+    # Recompute the route plan on the next render (both endpoints picked, or a filter changed).
+    route_plan_generation: bool = False
 
     def clear_custom_connect(self) -> None:
         self.custom_connect = False
@@ -652,14 +712,16 @@ class PendingContext(BaseContext):
         self.osm_import_half_width_km = OSMConfig.HALF_WIDTH_DEFAULT_KM
         self.osm_import_center_lon = None
         self.osm_import_center_lat = None
+        self.route_plan_generation = False
 
 
 @dataclass
-class MergeContext(BaseContext):
-    """Selection state for the manual node-merge tool.
+class NodeEditContext(BaseContext):
+    """Selection state for the manual node editor (select / add / delete / merge nodes).
 
-    Holds the node ids the user has clicked while in merge_placing. Clicking a node toggles it
-    (re-click removes); on confirm the nodes collapse to their median position (see merge_nodes).
+    Holds the node ids the user has clicked while in node_edit_selecting. Clicking a node toggles it
+    (re-click removes); Confirm Merge collapses ≥2 to their median, Delete removes the selection,
+    or clicking a path adds a node.
     """
 
     node_ids: list[str] = field(default_factory=list)
@@ -673,6 +735,37 @@ class MergeContext(BaseContext):
 
     def clear(self) -> None:
         self.node_ids = []
+
+
+@dataclass
+class RoutePlanContext(BaseContext):
+    """Route-planner state: the two picked endpoints, the precomputed routes, and which cap is shown.
+
+    Flow: click start → start_node_id set; click end → end_node_id set + routes precomputed for EVERY
+    difficulty cap; then selected_cap picks which cap's routes to display. Difficulty is a computation
+    premise, not a post-filter (see model.routing). Roads never appear (skiable graph only).
+    """
+
+    start_node_id: str | None = None
+    end_node_id: str | None = None
+    routes: list[Route] = field(default_factory=list)  # all precomputed routes across every cap
+    selected_index: int = 0  # index into the shown (selected-cap) routes
+    # Which difficulty cap's precomputed routes to show. Defaults to the hardest band (black) = the
+    # broadest result (every slope allowed). A single source: SlopeConfig.DIFFICULTIES.
+    selected_cap: str = SlopeConfig.DIFFICULTIES[-1]
+
+    def clear(self) -> None:
+        self.start_node_id = None
+        self.end_node_id = None
+        self.routes = []
+        self.selected_index = 0
+        self.selected_cap = SlopeConfig.DIFFICULTIES[-1]
+
+    def clamped_index(self, count: int) -> int:
+        """selected_index clamped to a valid index into a `count`-length shown-routes list. Single source
+        for "which shown route is selected" — the map overlay, the ◀▶ browser, and the stats all use it.
+        """
+        return min(self.selected_index, count - 1)
 
 
 @dataclass
@@ -731,7 +824,8 @@ class PlannerContext:
     map: MapContext = field(default_factory=MapContext)
     click_dedup: ClickDeduplicationContext = field(default_factory=ClickDeduplicationContext)
     pending: PendingContext = field(default_factory=PendingContext)
-    merge: MergeContext = field(default_factory=MergeContext)
+    node_edit: NodeEditContext = field(default_factory=NodeEditContext)
+    route_plan: RoutePlanContext = field(default_factory=RoutePlanContext)
     messages: UIMessagesContext = field(default_factory=UIMessagesContext)
     build_mode: BuildModeContext = field(default_factory=BuildModeContext)
 
@@ -767,9 +861,13 @@ class PlannerContext:
         self.custom_connect.clear()
         self.pending.clear_custom_connect()
 
-    def clear_merge(self) -> None:
-        """Clear the node-merge selection."""
-        self.merge.clear()
+    def clear_node_edit(self) -> None:
+        """Clear the node-editor selection."""
+        self.node_edit.clear()
+
+    def clear_route_plan(self) -> None:
+        """Clear the route-planner endpoints, computed routes, and filters."""
+        self.route_plan.clear()
 
     def set_selection(
         self,

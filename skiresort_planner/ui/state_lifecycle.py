@@ -1,7 +1,7 @@
 """State Lifecycle Functions - Entry and exit handlers for state machine states.
 
 One idempotent enter_* per state (called by on_enter_* hooks) plus three exit_* for the states with
-real teardown (lift/import/merge). Handlers only touch UI/context side-effects — NO workflow
+real teardown (lift/import/node-edit). Handlers only touch UI/context side-effects — NO workflow
 mutations (those live in before_* transition hooks). See DETAILS_UI.md for the state list.
 """
 
@@ -58,8 +58,8 @@ def _enter_viewing_panel(ctx: PlannerContext) -> None:
 
 
 def _enter_placement_mode(ctx: PlannerContext) -> None:
-    """Enter a *_placing state (lift/import/merge): hide the panel and free the last-clicked marker.
-    The placed scratch (lift start / import center / merge selection) is preserved by its before-hook.
+    """Enter a *_placing state (lift/import/node-edit): hide the panel and free the last-clicked marker.
+    The placed scratch (lift start / import center / node selection) is preserved by its before-hook.
     """
     ctx.viewing.hide_panel()
     ctx.click_dedup.clear_marker()
@@ -83,6 +83,7 @@ def enter_idle_ready(ctx: PlannerContext) -> None:
     ctx.selection.clear()
     ctx.click_dedup.clear_marker()
     ctx.viewing.clear()
+    ctx.clear_route_plan()
     logger.debug(
         f"[LIFECYCLE] idle_ready complete: map_center=({ctx.map.lat:.4f}, {ctx.map.lon:.4f}), zoom={ctx.map.zoom}"
     )
@@ -181,37 +182,55 @@ def exit_lift_placing(ctx: PlannerContext) -> None:
     ctx.lift.clear()
 
 
-def exit_import_placing(ctx: PlannerContext) -> None:
-    """Exit IMPORT_PLACING: clear the placed import-box center so no stale box survives.
+def exit_import_selecting(ctx: PlannerContext) -> None:
+    """Exit IMPORT_SELECTING: clear the placed import-box center so no stale box survives.
 
     Leaves the osm_import_mode fetch flag alone — a confirmed import sets it just before this runs.
     """
-    logger.debug("[LIFECYCLE] EXIT: import_placing - clearing placed import-box center")
+    logger.debug("[LIFECYCLE] EXIT: import_selecting - clearing placed import-box center")
     ctx.pending.osm_import_center_lon = None
     ctx.pending.osm_import_center_lat = None
 
 
-def exit_merge_placing(ctx: PlannerContext) -> None:
-    """Exit MERGE_PLACING: clear the node-merge selection so none survives the exit."""
-    logger.debug("[LIFECYCLE] EXIT: merge_placing - clearing merge selection")
-    ctx.merge.clear()
+def exit_node_edit_selecting(ctx: PlannerContext) -> None:
+    """Exit NODE_EDITING: clear the node-editor selection so none survives the exit."""
+    logger.debug("[LIFECYCLE] EXIT: node_edit_selecting - clearing node selection")
+    ctx.node_edit.clear()
 
 
-def enter_import_placing(ctx: PlannerContext) -> None:
-    """Enter IMPORT_PLACING: hide panel; the placed box center (set by before_start_import) survives.
-
-    Re-entered on each retarget self-loop, so the center must NOT be cleared here.
+def enter_route_placing(ctx: PlannerContext) -> None:
+    """Enter route_placing: hide the panel, ready for the end-node click. The start node was set by
+    the completing click handler just before this fires; enter_idle_ready clears the route-plan
+    scratch on cancel/close (the one exit path), so it must NOT be cleared here.
     """
-    logger.debug("[LIFECYCLE] ENTER: import_placing - hiding panel")
+    logger.debug("[LIFECYCLE] ENTER: route_placing - hiding panel")
     _enter_placement_mode(ctx)
 
 
-def enter_merge_placing(ctx: PlannerContext) -> None:
-    """Enter MERGE_PLACING: hide panel; the merge selection (ctx.merge.node_ids) survives.
+def enter_idle_viewing_route(ctx: PlannerContext) -> None:
+    """Enter idle_viewing_route: show the panel + clear stale build/placement state, exactly like the
+    slope/lift/road viewers. The computed routes were set by the completing click and survive (they
+    live in ctx.route_plan, which _enter_viewing_panel does not touch).
+    """
+    logger.debug("[LIFECYCLE] ENTER: idle_viewing_route - showing route results panel")
+    _enter_viewing_panel(ctx)
+
+
+def enter_import_selecting(ctx: PlannerContext) -> None:
+    """Enter IMPORT_SELECTING: hide panel; the placed box center (set by before_start_import) survives.
+
+    Re-entered on each retarget self-loop, so the center must NOT be cleared here.
+    """
+    logger.debug("[LIFECYCLE] ENTER: import_selecting - hiding panel")
+    _enter_placement_mode(ctx)
+
+
+def enter_node_edit_selecting(ctx: PlannerContext) -> None:
+    """Enter NODE_EDITING: hide panel; the node selection (ctx.node_edit.node_ids) survives.
 
     Re-entered on each node-toggle self-loop, so the selection must NOT be cleared here.
     """
-    logger.debug("[LIFECYCLE] ENTER: merge_placing - hiding panel")
+    logger.debug("[LIFECYCLE] ENTER: node_edit_selecting - hiding panel")
     _enter_placement_mode(ctx)
 
 
@@ -265,6 +284,6 @@ def enter_road_custom_path(ctx: PlannerContext) -> None:
 # The ONLY states with real exit teardown → their exit function.
 EXIT_HOOKS: dict[str, Callable[[PlannerContext], None]] = {
     "lift_placing": exit_lift_placing,
-    "import_placing": exit_import_placing,
-    "merge_placing": exit_merge_placing,
+    "import_selecting": exit_import_selecting,
+    "node_edit_selecting": exit_node_edit_selecting,
 }

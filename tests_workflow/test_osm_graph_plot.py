@@ -54,7 +54,7 @@ class TestMarkFabricated:
     """
 
     def test_off_piste_points_flagged_on_source_none_all_false(self) -> None:
-        from shapely.geometry import LineString, MultiLineString
+        from shapely.geometry import LineString
 
         from skiresort_planner.constants import OSMConfig
         from skiresort_planner.core.dem_service import DEMService
@@ -74,7 +74,7 @@ class TestMarkFabricated:
         builder = OSMGraphBuilder(dem=_DEM(), bbox=bbox)
 
         # A source piste running along y=0 (metres); a run whose middle point sits far off it.
-        source = MultiLineString([LineString([(0.0, 0.0), (500.0, 0.0)])])
+        builder._source_lines = [LineString([(0.0, 0.0), (500.0, 0.0)])]
         on1, on2 = builder._to_deg(50.0, 0.0), builder._to_deg(450.0, 0.0)
         off = builder._to_deg(250.0, OSMConfig.PISTE_TOL_M + 40.0)  # well beyond the off-piste band
         run = SlopeRun(
@@ -87,9 +87,10 @@ class TestMarkFabricated:
             node_b=2,
         )
         graph = ImportGraph(slope_runs=[run])
-        builder._mark_fabricated(graph, source)
+        builder._mark_fabricated(graph)
         assert run.fabricated == [False, True, False], "only the off-piste middle point is fabricated"
 
         # No source → nothing is fabricated (all clean).
-        builder._mark_fabricated(graph, None)
+        builder._source_lines = []
+        builder._mark_fabricated(graph)
         assert run.fabricated == [False, False, False]

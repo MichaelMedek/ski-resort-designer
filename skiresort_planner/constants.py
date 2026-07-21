@@ -70,10 +70,8 @@ class MapConfig:
     # Zoom levels for different modes
     # Higher number = more zoomed in, lower = more zoomed out
     # Reduced zoom levels to prevent camera going underground with 3D terrain
-    VIEWING_ZOOM = 13  # Overview after finishing slope/lift (zoomed out)
-    VIEW_3D_ZOOM = 14  # 3D side view - balanced zoom
-    VIEW_3D_MIN_ZOOM = 12  # Minimum zoom for high elevation (prevents camera under terrain)
-    DEFAULT_ZOOM = VIEWING_ZOOM  # Start zoomed out to prevent camera clipping terrain
+    VIEWING_ZOOM = 13  # Overview after finishing slope/lift + program start
+    VIEW_3D_ZOOM = 13.0  # 3D side view + flythrough — one tuned value, can also be float
     IMPORT_OVERVIEW_ZOOM = 12  # Post-import overview: one step further out than building zoom
 
     # Pitch angles for different modes
@@ -83,11 +81,25 @@ class MapConfig:
     DEFAULT_PITCH = 0  # Always start top-down
     DEFAULT_BEARING = 0  # Map rotation in degrees (0 = north up)
 
+    # Flythrough ("Play") camera: few element-anchored keyframes, glided between by deck.gl client-side.
+    FLYTHROUGH_ANCHOR_FRACTION = 0.5  # route: camera sits this far along each element
+    FLYTHROUGH_LOOK_AHEAD_M = 900.0  # center this far ahead (nav-style: "here" below centre)
+    FLYTHROUGH_STEP_S = 1.0  # sleep between keyframes ≈ glide duration
+    FLYTHROUGH_TRANSITION_MS = 1600  # deck.gl glide per keyframe (> STEP_S so it never stalls)
+    # Current-element highlight ribbon while flying (hot orange, distinct from route/arrow palettes).
+    FLYTHROUGH_HIGHLIGHT_FLOAT_ABOVE_M = 110.0  # 10m above the 100m route overlay (no z-fight)
+    FLYTHROUGH_HIGHLIGHT_COLOR = [255, 120, 0, 235]
+
     # Node snapping threshold for lift placement (used when creating end nodes)
     LIFT_END_NODE_THRESHOLD_M = 80  # Extra generous for lift top station placement
 
-    # At equator, 1 degree of latitude or longitude ≈ 111,320 meters
-    # Used by MockDEMService in tests for coordinate calculations
+    # Earth's radius in metres (WGS84 spherical approximation) — single source for all geodesy
+    # (haversine/destination in GeoCalculator) and the metres-per-degree constant below.
+    EARTH_RADIUS_M = 6_371_000
+
+    # Metres per degree of latitude (≈ metres per degree of longitude at the equator). The single
+    # source for all lat/lon↔metre conversions across the codebase (tests included).
+    # A round nominal value; exact geodesics use GeoCalculator.haversine_distance_m.
     METERS_PER_DEGREE_EQUATOR = 111320.0
 
     # 2D mode z-offsets (relative layer ordering, no terrain)
@@ -193,7 +205,7 @@ class PathConfig:
 
     # Segment length controls (slider range in UI)
     SEGMENT_LENGTH_MIN_M = 100
-    SEGMENT_LENGTH_MAX_M = 1000
+    SEGMENT_LENGTH_MAX_M = 1500
     SEGMENT_LENGTH_DEFAULT_M = 500
 
     # Minimum path points for valid path (less = terrain edge or error)
@@ -211,12 +223,16 @@ class GeometricTuningConfig:
     # --- Grid-Dijkstra planner (connection_planners.py) ---
     GRID_RESOLUTION_M = 15.0  # Grid cell size in meters
     GRID_BUFFER_FACTOR = 1.0  # Lateral room around the direct start→target line, as a fraction of that distance
-    MAX_GRID_SIZE = 100  # Maximum grid cells per dimension (performance cap)
+    MAX_GRID_SIZE = 320  # Max grid cells per dimension — covers a 1500m path at 15m resolution
     COST_SIGMA = 8.0  # Slope-deviation sensitivity in the edge cost (lower = stricter grade matching)
     PATH_SIMILARITY_TOLERANCE = 0.0001  # Overlap-dedup tolerance (~0.0001° ≈ 10m at mid-latitudes)
 
     # --- Fan tracer (path_tracer.py) + fan breadth (path_factory.py) ---
     STEP_SIZE_M = 30  # Path trace / terrain-sample / node-snap step (smaller = smoother, slower)
+    # Weighted "Magic 8" gradient (terrain_analyzer.compute_gradient): two concentric rings sampled at
+    # 8 compass bearings. (radius_factor × STEP_SIZE_M, weight) — inner ring weighted double.
+    GRADIENT_RINGS = [(0.5, 2.0), (1.0, 1.0)]
+    GRADIENT_SAMPLE_ANGLES_DEG = [0, 45, 90, 135, 180, 225, 270, 315]
     MIN_TRAVERSE_ANGLE_DEG = 2  # Keeps left/right paths diverging and the traverse off straight up/down
     MAX_TURN_PER_STEP_DEG = 40.0  # Max angular change per step to prevent self-intersection
     BEARING_SMOOTHING_WINDOW = 4  # Number of recent bearings to average when smoothing
@@ -235,6 +251,10 @@ class GeometricTuningConfig:
     # Node weight vs corridor weight in the weighted spline fit.
     NODE_WEIGHT = 10.0  # Smooth spline should mathc very well at nodes
     CORRIDOR_WEIGHT = 1.0  # In between path points are less stricly used for attraction
+    # Shapely Douglas–Peucker tolerance applied after finish-smoothing: drop interior points within this
+    # horizontal distance of the line between kept neighbours. Straight runs collapse (~5x fewer points),
+    # cutting per-rerun render/serialize cost and saved size; 1m is far below the 60m DEM resolution.
+    FINISH_SIMPLIFY_TOLERANCE_M = 1.0
 
 
 class EarthworkConfig:
@@ -317,11 +337,10 @@ class MarkerConfig:
 
     # Z-offset for marker elevation to prevent z-fighting with terrain
     # Markers/paths rendered this height above DEM elevation (meters)
-    # Smaller offsets (10m) work with top-down view; nodes slightly higher for clickability
-    MARKER_Z_OFFSET_M = 20
+    MARKER_Z_OFFSET_M = 30
 
-    # Z-offset for paths/lines above terrain to prevent z-fighting
-    PATH_Z_OFFSET_M = 10
+    # Z-offset for paths/lines above terrain to prevent z-fighting (below markers)
+    PATH_Z_OFFSET_M = 20
 
 
 class ClickConfig:
@@ -529,12 +548,14 @@ class StyleConfig:
     IMPORT_ICON = "🗺️"
     # Node-merge mode icon (build-mode selector).
     MERGE_ICON = "🔗"
+    # Route-planner mode icon (build-mode selector).
+    ROUTE_ICON = "🧭"
     # Generic sidebar-header icons: one "in-progress" glyph for every building/placing state, one for
     # viewing a finished entity. Shared so all state headers stay consistent from one source.
     BUILDING_ICON = "🏗️"
     VIEWING_ICON = "👁️"
-    # Nodes selected for merging render solid red so the collapse set is unmistakable.
-    MERGE_SELECTED_RGBA = [239, 68, 68, 235]
+    # A selected node (merge/delete candidate or route start) renders solid red so the selection is clear.
+    SELECTED_NODE_RGBA = [239, 68, 68, 235]
     # OSM import overlay (RGBA for Pydeck): one blue for the box, one for the center dot.
     IMPORT_BOX_RGBA = [33, 150, 243, 60]  # translucent square (fill + outline)
     IMPORT_CENTER_RGBA = [33, 150, 243, 230]  # solid center dot (click to confirm)
@@ -553,85 +574,98 @@ class StyleConfig:
     }
     assert set(LIFT_DISPLAY_NAMES.keys()) == set(LiftConfig.TYPES) | {"slope"}
 
+    # How far a connectivity-defect color is pulled toward mid-gray (0 = unchanged, 1 = full gray).
+    DEFECT_GRAY_BLEND = 0.75
+
+    @staticmethod
+    def gray_out(rgba: list[int]) -> list[int]:
+        """Mute an entity color strongly toward gray — the "half-dead" tone for a connectivity-defect
+        slope/lift: the difficulty/type hue is just barely readable but clearly demoted. Alpha kept.
+        """
+        r, g, b, a = rgba
+        t = StyleConfig.DEFECT_GRAY_BLEND
+        return [round(c * (1 - t) + 128 * t) for c in (r, g, b)] + [a]
+
 
 class NameConfig:
     """Creative naming components for slopes and lifts."""
 
-    # Slope name prefixes by difficulty
+    # Slope name prefixes by difficulty — GENERIC Austrian terrain/theme words (no real peaks).
     SLOPE_PREFIXES = {
-        "green": ["Gentle", "Easy", "Nursery", "Bunny", "Beginner's", "Soft"],
-        "blue": ["Cruiser", "Scenic", "Alpine", "Mountain", "Valley", "Classic"],
-        "red": ["Bold", "Thunder", "Steep", "Expert's", "Challenge", "Pro"],
-        "black": ["Extreme", "Death", "Kamikaze", "Insane", "Devil's", "Daredevil"],
+        "green": ["Sonnen", "Wiesen", "Kids", "Übungs", "Almen", "Wald"],
+        "blue": ["Panorama", "Berg", "Genuss", "Familien", "Tal", "See"],
+        "red": ["Gams", "Adler", "Steil", "Gipfel", "Fels", "Wilde"],
+        "black": ["Teufels", "Höllen", "Todes", "Wahnsinns", "Donner", "Schwindel"],
     }
     assert set(SLOPE_PREFIXES.keys()) == set(SlopeConfig.DIFFICULTIES)
 
     SLOPE_SUFFIXES = [
-        "Run",
-        "Trail",
-        "Slope",
-        "Descent",
-        "Pass",
-        "Chute",
-        "Face",
-        "Bowl",
-        "Gully",
-        "Ridge",
-        "Drop",
-        "Way",
-        "Line",
+        "Abfahrt",
+        "Piste",
+        "Hang",
+        "Schuss",
+        "Rinne",
+        "Kante",
+        "Mulde",
+        "Steilhang",
+        "Kar",
+        "Wand",
+        "Buckel",
+        "Schneise",
+        "Trasse",
         "Route",
-        "Pitch",
-        "Section",
+        "Strecke",
+        "Latschen",
     ]
 
-    # Road name components (roads have no difficulty — creative geography words)
+    # Road name components — GENERIC Alpine geography common nouns (no real place names)
     ROAD_PREFIXES = [
-        "Alpine",
-        "Valley",
-        "Ridgeline",
-        "Serpentine",
-        "Highland",
-        "Forest",
-        "Mountain",
-        "Meadow",
-        "Glacier",
-        "Summit",
+        "Alpen",
+        "Tal",
+        "Serpentinen",
+        "Höhen",
+        "Wald",
+        "Berg",
+        "Almen",
+        "Gletscher",
+        "Gipfel",
+        "Wiesen",
     ]
 
     ROAD_SUFFIXES = [
-        "Road",
+        "Straße",
         "Route",
-        "Way",
-        "Drive",
+        "Weg",
+        "Zufahrt",
         "Pass",
-        "Trail",
-        "Access",
-        "Lane",
+        "Steig",
+        "Allee",
+        "Gasse",
     ]
 
-    # Lift name prefixes by type
+    # Lift name prefixes by type — GENERIC terrain/landform common nouns that recur across real
+    # Austrian lift names (Alm-, Sonnen-, Wald-, Gipfel-, Kreuz-, Sattel-…). NO real mountains.
     LIFT_PREFIXES = {
-        "surface_lift": ["Bunny", "Beginner's", "Practice", "Easy", "Learner's", "First"],
-        "chairlift": ["Alpine", "Mountain", "Scenic", "Valley", "Ridge", "Summit"],
-        "gondola": ["Panorama", "Vista", "Sky", "Peak", "Grand", "Majestic"],
-        "aerial_tram": ["Eagle", "Falcon", "Summit", "Peak", "Apex", "Pinnacle"],
+        "surface_lift": ["Hasen", "Übungs", "Zwergen", "Wiesen", "Moos"],
+        "chairlift": ["Alm", "Gams", "Sonnen", "Wald", "Kreuz", "Sattel"],
+        "gondola": ["Panorama", "Gipfel", "Berg", "Kristall", "Wolken", "Adler"],
+        "aerial_tram": ["Gletscher", "Fels", "Sonnen", "Grat", "Joch", "Kar"],
     }
     assert set(LIFT_PREFIXES.keys()) == set(LiftConfig.TYPES)
 
     LIFT_SUFFIXES = {
-        "surface_lift": ["Tow", "Lift", "Pull", "Rope", "Drag", "Line"],
-        "chairlift": ["Chair", "Lift", "Express", "Quad", "Six", "Flyer"],
-        "gondola": ["Gondola", "Cabin", "Tram", "Link", "Connect", "Cruiser"],
-        "aerial_tram": ["Tram", "Cable Car", "Aerial", "Skyway", "Tramway", "Rise"],
+        "surface_lift": ["Schlepplift", "Tellerlift", "Bügellift", "Übungslift"],
+        "chairlift": ["Sesselbahn", "Sessellift", "Express", "Jet", "Flyer"],
+        "gondola": ["Gondelbahn", "Kabinenbahn", "Umlaufbahn", "Gondel", "Express"],
+        "aerial_tram": ["Seilbahn", "Pendelbahn", "Luftseilbahn", "Schwebebahn", "Bahn"],
     }
     assert set(LIFT_SUFFIXES.keys()) == set(LiftConfig.TYPES)
 
     # Length descriptors for lift naming
     LENGTH_DESCRIPTORS = {
-        "short": ["Little", "Mini", "Short"],  # < LENGTH_SHORT_MAX_M
-        "medium": ["Classic", "Standard", "Regular"],  # between short and long
-        "long": ["Grand", "Big", "Giant"],  # > LENGTH_LONG_MIN_M
+        "short": ["Kleine", "Mini", "Kurze"],  # < LENGTH_SHORT_MAX_M
+        "medium": ["Klassische", "Standard", "Normale"],  # between short and long
+        "long": ["Große", "Lange", "Riesen"],  # > LENGTH_LONG_MIN_M
     }
     # Length/rise bands for entity naming (single source for lift + slope generate_name).
     LENGTH_SHORT_MAX_M = 500  # below → "short" descriptor
@@ -639,16 +673,16 @@ class NameConfig:
     SUMMIT_RISE_M = 500  # lift rise / slope drop above this → "Summit" name
     BIG_DROP_M = 300  # slope drop above this → "big" descriptor
 
-    # 8-point compass directions for naming
+    # 8-point compass directions for naming (German labels)
     COMPASS_DIRECTIONS = {
-        "N": (337.5, 22.5),
-        "NE": (22.5, 67.5),
-        "E": (67.5, 112.5),
-        "SE": (112.5, 157.5),
-        "S": (157.5, 202.5),
-        "SW": (202.5, 247.5),
-        "W": (247.5, 292.5),
-        "NW": (292.5, 337.5),
+        "Nord": (337.5, 22.5),
+        "Nordost": (22.5, 67.5),
+        "Ost": (67.5, 112.5),
+        "Südost": (112.5, 157.5),
+        "Süd": (157.5, 202.5),
+        "Südwest": (202.5, 247.5),
+        "West": (247.5, 292.5),
+        "Nordwest": (292.5, 337.5),
     }
     assert len(COMPASS_DIRECTIONS) == 8
 
@@ -660,11 +694,11 @@ class NameConfig:
             bearing_deg: Bearing in degrees (0-360)
 
         Returns:
-            Compass direction string (N, NE, E, SE, S, SW, W, NW)
+            Compass direction string (Nord, Nordost, Ost, Südost, Süd, Südwest, West, Nordwest)
         """
         brg = bearing_deg % 360
         for direction, (low, high) in NameConfig.COMPASS_DIRECTIONS.items():
-            if direction == "N":
+            if direction == "Nord":
                 if brg >= low or brg < high:
                     return direction
             elif low <= brg < high:
@@ -715,6 +749,37 @@ class ConnectivityConfig:
     # A strongly-connected component must hold at least this many lifts before it counts as the
     # core resort — below it we assume the resort is still being started and flag nothing.
     MIN_CORE_LIFTS = 5
+
+
+class RoutePlannerConfig:
+    """Route planner (model/routing.py + ui route views): overlay colours + line geometry."""
+
+    # RGBA per route criterion, keyed by RouteCriterion's string value.
+    # Hue = the metric (cyan = fewest lifts, gold = shortest slope); the SCENIC tour of each metric
+    # is a DARKER tone of the same hue, so path length alone reads shortest-vs-scenic. Semi-transparent so
+    # the slope colour shows through. model/routing.py asserts this covers every RouteCriterion.
+    ROUTE_COLORS = {
+        "fewest_lifts": [0, 200, 210, 150],  # bright cyan
+        "shortest_slope": [240, 200, 20, 150],  # bright gold
+        "scenic_fewest_lifts": [0, 110, 120, 170],  # deep teal — cyan, darker tone
+        "scenic_shortest_slope": [150, 120, 10, 170],  # dark amber — gold, darker tone
+    }
+
+    # "Shortest slope" is primarily least slope distance; drop is folded in with a light weight so a
+    # gentler descent breaks near-ties (distance and drop are usually the same route anyway).
+    SHORTEST_SLOPE_DROP_WEIGHT = 0.1
+
+    # The route line is drawn WIDER than any slope belt (EarthworkConfig max ≈ 35m) so it reads as an
+    # overlay on top of the pistes, not another run. PathLayer get_width is in metres (deck.gl default).
+    ROUTE_WIDTH_M = 60
+
+    # In 3D, the route floats this far above the terrain/piste points so it hovers clearly above the
+    # slopes and lifts it traces, rather than z-fighting with them.
+    ROUTE_FLOAT_ABOVE_M = 100
+
+    # Route Steps groups the slopes between two lifts into one leg; a leg names at most this many slopes,
+    # then a trailing "…" if it has more. Keeps the step list short, especially on scenic tours.
+    ROUTE_STEP_SLOPE_PREVIEW = 3
 
 
 class OSMConfig:
@@ -779,24 +844,28 @@ class OSMConfig:
     OSM_DEDUP_TOL_M = 100.0
 
     # --- Connected-graph build (generators/osm_graph_builder.py). Distances in metres. ---
-    DEDUP_TOL_M = 18.0  # near-coincidence band for the duplicate-piste test
+    DEDUP_TOL_M = 20.0  # near-coincidence band for the duplicate-piste test
     PARALLEL_TOL_M = 60.0  # near-but-offset band for the redundant-parallel
     PARALLEL_TWIN_FRAC = 0.70  # a same-name run parallel to a longer sibling ≥this of ITS length is a twin
-    DEDUP_COVER_FRAC = 0.78  # covered fraction to call a piste a duplicate
+    DEDUP_COVER_FRAC = 0.90  # covered fraction to call a piste a duplicate (below this = genuinely distinct)
     MIN_NODE_DIST_M = 100.0  # min hub spacing (closer nodes merge)
     RELAXED_MERGE_DIST_M = 200.0  # slope-node→lift pull radius
     MAX_BACKCLIMB_M = 30.0  # max uphill RISE over any BACKCLIMB_WINDOW_M span (60m-DEM sampling-noise tolerance)
     BACKCLIMB_WINDOW_M = 80.0  # window for the strict per-span uphill check
     SLOPE_ON_SOURCE_TOL_M = 30.0  # strict on-piste band (slope body hugs OSM)
     PISTE_TOL_M = 40.0  # off-piste threshold (~a wide piste's half-width)
+    PISTE_VERTEX_TOL_M = 45.0  # R12 fidelity: max point→nearest-source-VERTEX gap (~1 piste width)
     MAX_PULL_M = 300.0  # max straight hub connector (longer → drop the segment)
     MAX_STRAIGHT_M = 100.0  # max single straight leg between consecutive points
     TRIM_END_M = 50.0  # trim off each slope end before the hub connector
-    SNAP_GRID_M = 12.0  # snap-round grid before noding (collapse near-coincident ends)
+    SNAP_GRID_M = 10.0  # snap-round grid before noding (collapse near-coincident ends)
+    COORD_GRID_M = 1.0  # integer-metre projection grid (_to_m + post-noding set_precision) → bit-exact vertices
     NODE_TERRAIN_TOL_M = 10.0  # max node vs DEM deviation; also the carve depth + descent-carry cap
     SLOPE_TERRAIN_TOL_M = 50.0  # max slope-point vs DEM deviation
 
     # Consistency
     assert SLOPE_ON_SOURCE_TOL_M < PISTE_TOL_M <= SLOPE_TERRAIN_TOL_M
+    assert PISTE_TOL_M < PISTE_VERTEX_TOL_M  # vertex gap is looser than the line off-piste band
     assert NODE_TERRAIN_TOL_M < SLOPE_TERRAIN_TOL_M
     assert DEDUP_TOL_M < PARALLEL_TOL_M < MIN_NODE_DIST_M < RELAXED_MERGE_DIST_M
+    assert COORD_GRID_M < DEDUP_TOL_M  # the integer grid must sit below every planar tolerance

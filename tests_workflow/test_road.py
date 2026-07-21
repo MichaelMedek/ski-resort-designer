@@ -6,13 +6,12 @@ and the max-gradient magnitude used by the ±15% (ROAD_MAX_GRADIENT_PCT) car-roa
 
 import pytest
 
+from skiresort_planner.constants import MapConfig
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.model.road import Road
-
-M = 111320.0
 
 
 def _commit_road(graph: ResortGraph, path_points: list[PathPoint]) -> Road:
@@ -26,13 +25,13 @@ def _commit_road(graph: ResortGraph, path_points: list[PathPoint]) -> Road:
 
 class TestRoadName:
     def test_road_name_is_creative_and_compass_based(self) -> None:
-        # bearing 90 → East. Format: "{n} ({direction} {Prefix} {Suffix})".
+        # bearing 90 → Ost. Format: "{n} ({direction} {Prefix} {Suffix})".
         from skiresort_planner.constants import NameConfig
 
         name = Road.generate_name(road_id="R1", avg_bearing=90.0)
-        assert name.startswith("1 (E "), f"expected number + compass direction, got {name!r}"
+        assert name.startswith("1 (Ost "), f"expected number + compass direction, got {name!r}"
         assert name.endswith(")")
-        inner = name[len("1 (E ") : -1]  # "{Prefix} {Suffix}"
+        inner = name[len("1 (Ost ") : -1]  # "{Prefix} {Suffix}"
         prefix, suffix = inner.split(" ")
         assert prefix in NameConfig.ROAD_PREFIXES
         assert suffix in NameConfig.ROAD_SUFFIXES
@@ -54,7 +53,7 @@ class TestRoadMaxGradient:
         # ~20% climb over 100m (well under the 300m rolling window).
         steep_climb = [
             PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
-            PathPoint(lon=0.0, lat=100 / M, elevation=2020.0),
+            PathPoint(lon=0.0, lat=100 / MapConfig.METERS_PER_DEGREE_EQUATOR, elevation=2020.0),
         ]
         road = _commit_road(empty_graph, steep_climb)
         assert road.get_max_gradient(segments=empty_graph.segments) == pytest.approx(20.0, abs=1.0)
@@ -69,7 +68,9 @@ class TestRoadMaxGradient:
         climb = ProposedPathSegment(
             points=[
                 PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
-                PathPoint(lon=0.0, lat=100 / M, elevation=2020.0),  # +20m over 100m → 20% climb
+                PathPoint(
+                    lon=0.0, lat=100 / MapConfig.METERS_PER_DEGREE_EQUATOR, elevation=2020.0
+                ),  # +20m over 100m → 20% climb
             ]
         )
         assert climb.avg_slope_pct < 0.0, "climb has a negative signed average"
@@ -87,11 +88,11 @@ class TestRoadMaxGradient:
         # Each segment ≥ ROLLING_WINDOW_M (300m) so it has a real window and is counted.
         a = [
             PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
-            PathPoint(lon=0.0, lat=350 / M, elevation=2045.5),  # +45.5m/350m = 13%
+            PathPoint(lon=0.0, lat=350 / MapConfig.METERS_PER_DEGREE_EQUATOR, elevation=2045.5),  # +45.5m/350m = 13%
         ]
         b = [
-            PathPoint(lon=0.0, lat=350 / M, elevation=2045.5),
-            PathPoint(lon=0.0, lat=700 / M, elevation=2091.0),  # +45.5m/350m = 13%
+            PathPoint(lon=0.0, lat=350 / MapConfig.METERS_PER_DEGREE_EQUATOR, elevation=2045.5),
+            PathPoint(lon=0.0, lat=700 / MapConfig.METERS_PER_DEGREE_EQUATOR, elevation=2091.0),  # +45.5m/350m = 13%
         ]
         empty_graph.commit_paths(
             paths=[ProposedPathSegment(points=a, is_connector=True, kind=SegmentKind.ROAD)], record_undo=False
@@ -111,11 +112,13 @@ class TestRoadMaxGradient:
         # Long gentle segment (counts) + short steep segment (ignored while a long one exists).
         long_gentle = [
             PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
-            PathPoint(lon=0.0, lat=400 / M, elevation=2020.0),  # 400m @ 5%
+            PathPoint(lon=0.0, lat=400 / MapConfig.METERS_PER_DEGREE_EQUATOR, elevation=2020.0),  # 400m @ 5%
         ]
         short_steep = [
-            PathPoint(lon=0.0, lat=400 / M, elevation=2020.0),
-            PathPoint(lon=0.0, lat=450 / M, elevation=2027.0),  # 50m @ 14% (sub-window)
+            PathPoint(lon=0.0, lat=400 / MapConfig.METERS_PER_DEGREE_EQUATOR, elevation=2020.0),
+            PathPoint(
+                lon=0.0, lat=450 / MapConfig.METERS_PER_DEGREE_EQUATOR, elevation=2027.0
+            ),  # 50m @ 14% (sub-window)
         ]
         empty_graph.commit_paths(
             paths=[ProposedPathSegment(points=long_gentle, is_connector=True, kind=SegmentKind.ROAD)], record_undo=False

@@ -10,6 +10,7 @@ test_serialization, test_connection_planners, test_center_map).
 import pytest
 from statemachine.exceptions import TransitionNotAllowed
 
+from skiresort_planner.constants import MapConfig
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
@@ -112,15 +113,13 @@ class TestRoadConnectorAutoFinish:
     states, exactly like slopes.
     """
 
-    M = 111320.0
-
     def _sm(self, graph: ResortGraph):
         return PlannerStateMachine.create(graph=graph, add_ui_listener=False)
 
     def _to_road_custom_path(self, sm, path_points):
         """Drive idle → road_starting → road_custom_path via a custom target."""
         sm.start_road(node_id=None, location=path_points[0])
-        target_lat = -500 / self.M
+        target_lat = -500 / MapConfig.METERS_PER_DEGREE_EQUATOR
         sm.select_custom_target(target_location=(0.0, target_lat, 2400.0))
         assert sm.current_state_value == "road_custom_path"
 

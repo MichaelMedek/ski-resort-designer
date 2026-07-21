@@ -9,11 +9,10 @@ the fetch/retry classification, and bbox_around. Slope geometry lives in the con
 builder (test_osm_import_rules.py), not here.
 """
 
+from skiresort_planner.constants import MapConfig
 from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.generators.osm_importer import ImportResult, OverpassElement
 from skiresort_planner.generators.osm_lift_importer import LiftOnlyImporter
-
-M = 111320.0  # metres per degree near the equator
 
 
 class _FakeDEM(DEMService):
@@ -28,7 +27,7 @@ class _FakeDEM(DEMService):
     def get_elevation(self, lon: float, lat: float) -> float | None:
         if lon > self.hole_lon:
             return None
-        return 2500.0 - lat * M * 0.20
+        return 2500.0 - lat * MapConfig.METERS_PER_DEGREE_EQUATOR * 0.20
 
 
 # Import box (min_lon, min_lat, max_lon, max_lat): a wide box around the test geometry so every
@@ -393,12 +392,11 @@ class TestEndpointsMatch:
     def test_match_within_tolerance(self) -> None:
         from skiresort_planner.model.path_point import PathPoint, endpoints_match
 
-        m = 111320.0
         a = PathPoint(lon=10.5678, lat=47.1234, elevation=2400.0)
         b = PathPoint(lon=10.5700, lat=47.1300, elevation=2600.0)
         # Each endpoint nudged ~10 m (< 30 m tol) → still the same run (absorbs import snap).
-        a2 = PathPoint(lon=10.5678 + 10 / m, lat=47.1234, elevation=2401.0)
-        b2 = PathPoint(lon=10.5700 - 10 / m, lat=47.1300, elevation=2599.0)
+        a2 = PathPoint(lon=10.5678 + 10 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=47.1234, elevation=2401.0)
+        b2 = PathPoint(lon=10.5700 - 10 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=47.1300, elevation=2599.0)
         assert endpoints_match(pair_a=(a, b), pair_b=(a2, b2), tol_m=30.0)
 
     def test_no_match_when_endpoint_moves_far(self) -> None:
@@ -421,7 +419,6 @@ class TestBBoxAround:
 
         import pytest
 
-        from skiresort_planner.core.geo_calculator import GeoCalculator
         from skiresort_planner.generators.osm_importer import bbox_around
 
         min_lon, min_lat, max_lon, max_lat = bbox_around(center_lon=10.0, center_lat=47.0, half_width_m=1000.0)
@@ -429,8 +426,8 @@ class TestBBoxAround:
         assert min_lon < max_lon and min_lat < max_lat, "min corner precedes max corner"
         assert (min_lon + max_lon) / 2 == pytest.approx(10.0), "centered in lon"
         assert (min_lat + max_lat) / 2 == pytest.approx(47.0), "centered in lat"
-        # Exact half-spans from the same formula the source uses (haversine 1-deg metres).
-        m_per_deg = GeoCalculator.haversine_distance_m(lat1=0.0, lon1=0.0, lat2=1.0, lon2=0.0)
+        # Exact half-spans from the same formula the source uses (the one central metres-per-degree constant).
+        m_per_deg = MapConfig.METERS_PER_DEGREE_EQUATOR
         dlat = 1000.0 / m_per_deg
         dlon = dlat / math.cos(math.radians(47.0))
         assert (max_lat - min_lat) / 2 == pytest.approx(dlat)

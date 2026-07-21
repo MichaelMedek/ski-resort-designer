@@ -17,8 +17,6 @@ from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 from tests_workflow.conftest import MockDEMService
 
-M = 111320.0  # metres per degree near the equator
-
 
 def _node_at(dem: MockDEMService, node_id: str, lon: float, lat: float) -> Node:
     """A Node at (lon, lat) with DEM elevation — for seeding lift stations in delete tests."""
@@ -35,10 +33,18 @@ def _fake_import_result(dem: MockDEMService):
 
     slope_points = [
         PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
-        PathPoint(lon=0.0, lat=-500 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / M)),
+        PathPoint(
+            lon=0.0,
+            lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        ),
     ]
     lift = (
-        PathPoint(lon=0.02, lat=-500 / M, elevation=dem.get_elevation_or_raise(lon=0.02, lat=-500 / M)),
+        PathPoint(
+            lon=0.02,
+            lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.02, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        ),
         PathPoint(lon=0.02, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.02, lat=0.0)),
         "chairlift",
         "Gipfelbahn",
@@ -71,8 +77,10 @@ def _make_slope(graph, path_points):
 
 
 def _make_road(graph):
-    M = 111320.0
-    pts = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=300 / M, lat=0.0, elevation=1990.0)]
+    pts = [
+        PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
+        PathPoint(lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=1990.0),
+    ]
     graph.commit_paths(
         paths=[ProposedPathSegment(points=pts, is_connector=True, kind=SegmentKind.ROAD)], record_undo=False
     )
@@ -165,9 +173,10 @@ class TestDeleteLiftAction:
         from skiresort_planner.ui.actions import delete_lift_action
 
         dem = mock_dem_blue_slope
-        M = 111320.0
         bottom, _ = empty_graph.get_or_create_node(
-            lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M)
+            lon=0.0,
+            lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         )
         top, _ = empty_graph.get_or_create_node(
             lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)
@@ -182,11 +191,11 @@ class TestDeleteLiftAction:
 def _two_segment_slope(graph: ResortGraph, dem: MockDEMService) -> ResortGraph:
     """Commit two contiguous 300m slope segments so the graph has 3 nodes with a junction.
 
-    Nodes sit at lat 0, -300/M, -600/M (all lon 0). Adjacent nodes are 300m apart (< 500m,
+    Nodes sit at lat 0, -300m, -600m (all lon 0). Adjacent nodes are 300m apart (< 500m,
     mergeable); the endpoints are 600m apart (> MergeConfig.MAX_SPAN_M, not mergeable).
     """
-    mid = -300 / M
-    bot = -600 / M
+    mid = -300 / MapConfig.METERS_PER_DEGREE_EQUATOR
+    bot = -600 / MapConfig.METERS_PER_DEGREE_EQUATOR
     seg_a = [
         PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
         PathPoint(lon=0.0, lat=mid, elevation=dem.get_elevation_or_raise(lon=0.0, lat=mid)),
@@ -212,16 +221,16 @@ class TestConfirmMergeAction:
         top, mid = by_lat[0], by_lat[1]  # 300m apart, within MergeConfig.MAX_SPAN_M
         sm, ctx = _session(fake_st, empty_graph, dem=dem)
         count_before = len(empty_graph.nodes)
-        sm.start_merge()
-        sm.toggle_merge_node(node_id=top.id)
-        sm.toggle_merge_node(node_id=mid.id)
+        sm.start_node_edit()
+        sm.toggle_node_edit_node(node_id=top.id)
+        sm.toggle_node_edit_node(node_id=mid.id)
 
         confirm_merge_action()
 
         assert len(empty_graph.nodes) == count_before - 1, "two close nodes collapsed into one"
         assert empty_graph.undo_stack[-1].action_type.name == "MERGE_NODES", "one undoable merge action"
         assert sm.is_idle_ready, "confirm returns to idle"
-        assert ctx.merge.node_ids == [], "selection cleared by the before-hook"
+        assert ctx.node_edit.node_ids == [], "selection cleared by the before-hook"
 
     def test_far_nodes_refused_no_change(self, fake_st, empty_graph, mock_dem_blue_slope, monkeypatch) -> None:
         from skiresort_planner.ui.actions import confirm_merge_action
@@ -233,9 +242,9 @@ class TestConfirmMergeAction:
         sm, ctx = _session(fake_st, empty_graph, dem=dem)
         count_before = len(empty_graph.nodes)
         stack_before = len(empty_graph.undo_stack)
-        sm.start_merge()
-        sm.toggle_merge_node(node_id=top.id)
-        sm.toggle_merge_node(node_id=bottom.id)
+        sm.start_node_edit()
+        sm.toggle_node_edit_node(node_id=top.id)
+        sm.toggle_node_edit_node(node_id=bottom.id)
 
         # MergeTooFarMessage.display() does a function-local `import streamlit as st; st.toast(...)`,
         # so it hits the REAL streamlit module (not the fake `st`); capture it to prove the user is told.
@@ -248,8 +257,8 @@ class TestConfirmMergeAction:
 
         assert len(empty_graph.nodes) == count_before, "nothing merged when the span is too large"
         assert len(empty_graph.undo_stack) == stack_before, "no undo action recorded on refusal"
-        assert sm.is_merge_placing, "stays in merge so the user can adjust the selection"
-        assert ctx.merge.node_ids == [top.id, bottom.id], "selection preserved for retry"
+        assert sm.is_node_edit_selecting, "stays in node edit so the user can adjust the selection"
+        assert ctx.node_edit.node_ids == [top.id, bottom.id], "selection preserved for retry"
         assert any("too far" in t.lower() for t in toasts), "the user is told why the merge was refused"
 
     def test_fewer_than_two_nodes_raises(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
@@ -277,27 +286,27 @@ class TestDeleteNodesAction:
         slope = empty_graph.finish_slope(segment_ids=list(empty_graph.segments.keys()))
         interior = empty_graph.segments[slope.segment_ids[0]].end_node_id
         sm, ctx = _session(fake_st, empty_graph, dem=dem)
-        sm.start_merge()
-        sm.toggle_merge_node(node_id=interior)
+        sm.start_node_edit()
+        sm.toggle_node_edit_node(node_id=interior)
 
         delete_nodes_action()
 
         assert interior not in empty_graph.nodes, "the interior node was deleted"
         assert empty_graph.undo_stack[-1].action_type.name == "DELETE_NODES", "one DELETE_NODES undo action"
         assert sm.is_idle_ready, "delete returns to idle"
-        assert ctx.merge.node_ids == [], "selection cleared by the before-hook"
+        assert ctx.node_edit.node_ids == [], "selection cleared by the before-hook"
 
     def test_lift_station_refused_no_change(self, fake_st, empty_graph, mock_dem_blue_slope, monkeypatch) -> None:
         from skiresort_planner.ui.actions import delete_nodes_action
 
         dem = mock_dem_blue_slope
         empty_graph.nodes["A"] = _node_at(dem, "A", 0.0, 0.0)
-        empty_graph.nodes["T"] = _node_at(dem, "T", 0.0, -1000 / M)
+        empty_graph.nodes["T"] = _node_at(dem, "T", 0.0, -1000 / MapConfig.METERS_PER_DEGREE_EQUATOR)
         empty_graph.add_lift(start_node_id="A", end_node_id="T", lift_type="chairlift", dem=dem)
         sm, ctx = _session(fake_st, empty_graph, dem=dem)
         stack_before = len(empty_graph.undo_stack)
-        sm.start_merge()
-        sm.toggle_merge_node(node_id="A")
+        sm.start_node_edit()
+        sm.toggle_node_edit_node(node_id="A")
 
         import streamlit
 
@@ -308,7 +317,7 @@ class TestDeleteNodesAction:
 
         assert "A" in empty_graph.nodes, "a lift station is never deleted"
         assert len(empty_graph.undo_stack) == stack_before, "no undo action recorded on refusal"
-        assert sm.is_merge_placing, "stays in merge so the user can adjust the selection"
+        assert sm.is_node_edit_selecting, "stays in node edit so the user can adjust the selection"
         assert any("lift" in t.lower() for t in toasts), "the user is told why the delete was refused"
 
     def test_no_nodes_raises(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
@@ -331,9 +340,9 @@ class TestDeleteNodesAction:
         interior = empty_graph.segments[slope.segment_ids[0]].end_node_id
         sm, ctx = _session(fake_st, empty_graph, dem=dem)
         stack_before = len(empty_graph.undo_stack)
-        sm.start_merge()
-        sm.toggle_merge_node(node_id=end)
-        sm.toggle_merge_node(node_id=interior)
+        sm.start_node_edit()
+        sm.toggle_node_edit_node(node_id=end)
+        sm.toggle_node_edit_node(node_id=interior)
 
         import streamlit
 
@@ -344,7 +353,7 @@ class TestDeleteNodesAction:
 
         assert slope.id in empty_graph.slopes, "the path is not emptied"
         assert len(empty_graph.undo_stack) == stack_before, "no undo action recorded on refusal"
-        assert sm.is_merge_placing, "stays in merge so the user can adjust the selection"
+        assert sm.is_node_edit_selecting, "stays in node edit so the user can adjust the selection"
         assert any("whole path" in t.lower() for t in toasts), "the user is told the delete was refused"
 
     def test_branch_junction_refused_no_change(self, fake_st, empty_graph, mock_dem_blue_slope, monkeypatch) -> None:
@@ -357,7 +366,11 @@ class TestDeleteNodesAction:
         # Slope 1 south to a junction; slope 2 branches south-east from that same node.
         leg1 = [
             PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
-            PathPoint(lon=0.0, lat=-400 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-400 / M)),
+            PathPoint(
+                lon=0.0,
+                lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                elevation=dem.get_elevation_or_raise(lon=0.0, lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            ),
         ]
         empty_graph.commit_paths(paths=[ProposedPathSegment(points=leg1, target_difficulty="blue")])
         slope1 = empty_graph.finish_slope(segment_ids=list(empty_graph.segments.keys()))
@@ -366,7 +379,11 @@ class TestDeleteNodesAction:
         leg2 = [
             PathPoint(lon=j.lon, lat=j.lat, elevation=j.elevation),
             PathPoint(
-                lon=400 / M, lat=j.lat - 400 / M, elevation=dem.get_elevation_or_raise(lon=400 / M, lat=j.lat - 400 / M)
+                lon=400 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                lat=j.lat - 400 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                elevation=dem.get_elevation_or_raise(
+                    lon=400 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=j.lat - 400 / MapConfig.METERS_PER_DEGREE_EQUATOR
+                ),
             ),
         ]
         before = set(empty_graph.segments)
@@ -374,8 +391,8 @@ class TestDeleteNodesAction:
         empty_graph.finish_slope(segment_ids=list(set(empty_graph.segments) - before))
         sm, ctx = _session(fake_st, empty_graph, dem=dem)
         stack_before = len(empty_graph.undo_stack)
-        sm.start_merge()
-        sm.toggle_merge_node(node_id=junction)
+        sm.start_node_edit()
+        sm.toggle_node_edit_node(node_id=junction)
 
         import streamlit
 
@@ -386,7 +403,7 @@ class TestDeleteNodesAction:
 
         assert junction in empty_graph.nodes, "a branch junction is not deleted"
         assert len(empty_graph.undo_stack) == stack_before, "no undo action recorded on refusal"
-        assert sm.is_merge_placing, "stays in merge so the user can adjust the selection"
+        assert sm.is_node_edit_selecting, "stays in node edit so the user can adjust the selection"
         assert any("delete that path" in t.lower() for t in toasts), "the user is told to delete a path first"
 
 
@@ -402,12 +419,16 @@ class TestAddNodeOnPathAction:
 
         slope = _make_slope(empty_graph, path_points_blue)
         seg_id = slope.segment_ids[0]
-        mid = empty_graph.segments[seg_id].points[len(empty_graph.segments[seg_id].points) // 2]
+        # Click the geometric midpoint of the segment (interior). After finish-simplification a straight
+        # run is just its two endpoints, so this projects onto the single leg — not onto an existing vertex.
+        pts = empty_graph.segments[seg_id].points
+        mid_lon = (pts[0].lon + pts[-1].lon) / 2
+        mid_lat = (pts[0].lat + pts[-1].lat) / 2
         _session(fake_st, empty_graph, dem=mock_dem_blue_slope)
         nodes_before = len(empty_graph.nodes)
         epoch_before = fake_st.session_state["dedup_epoch"]
 
-        result = add_node_on_path_action(segment_id=seg_id, lon=mid.lon, lat=mid.lat)
+        result = add_node_on_path_action(segment_id=seg_id, lon=mid_lon, lat=mid_lat)
 
         assert result is True, "a successful insert returns True (callers gate the transition on it)"
         assert len(empty_graph.nodes) == nodes_before + 1, "one node inserted"
@@ -541,9 +562,10 @@ class TestCenterHelpers:
         from skiresort_planner.ui.actions import center_on_lift
 
         dem = mock_dem_blue_slope
-        M = 111320.0
         bottom, _ = empty_graph.get_or_create_node(
-            lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M)
+            lon=0.0,
+            lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         )
         top, _ = empty_graph.get_or_create_node(
             lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)
@@ -574,7 +596,9 @@ class TestSelectLiftTypeAction:
 
         dem = mock_dem_blue_slope
         bottom, _ = empty_graph.get_or_create_node(
-            lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M)
+            lon=0.0,
+            lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         )
         top, _ = empty_graph.get_or_create_node(
             lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)
@@ -803,7 +827,14 @@ class TestDeferredProcessing:
 
         # A run of N points stepping south by `step` metres each — length scales with (N-1)*step.
         def _seg(n: int, step: float) -> ProposedPathSegment:
-            pts = [PathPoint(lon=0.0, lat=-(i * step) / M, elevation=start_elev - i * step * 0.1) for i in range(n)]
+            pts = [
+                PathPoint(
+                    lon=0.0,
+                    lat=-(i * step) / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                    elevation=start_elev - i * step * 0.1,
+                )
+                for i in range(n)
+            ]
             return ProposedPathSegment(points=pts, is_connector=False)
 
         long_route, short_route = _seg(6, 100.0), _seg(3, 100.0)  # ~500m vs ~200m, out of order
@@ -811,7 +842,11 @@ class TestDeferredProcessing:
         monkeypatch.setattr(path_factory, "generate_manual_paths", lambda **_: [long_route, short_route])
         monkeypatch.setattr(path_factory, "straight_line", lambda **_: straight)
 
-        ctx.custom_connect.target_location = (0.0, -500 / M, dem.get_elevation_or_raise(lon=0.0, lat=-500 / M))
+        ctx.custom_connect.target_location = (
+            0.0,
+            -500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            dem.get_elevation_or_raise(lon=0.0, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        )
         ctx.pending.gradient_target = 99.0  # a stale fan target must be IGNORED by custom-connect
         ctx.pending.custom_connect = True
         assert actions.process_custom_connect_pending() is True
@@ -887,7 +922,7 @@ class TestOSMImport:
 
         sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
         sm.start_import(lon=0.1, lat=0.3)  # first map click places the box center
-        assert sm.is_import_placing
+        assert sm.is_import_selecting
         assert ctx.pending.osm_import_center_lon == 0.1 and ctx.pending.osm_import_center_lat == 0.3
 
         confirm_import_action(OSMImportMode.LIFTS_AND_SLOPES)  # center-dot click / import button
@@ -1139,7 +1174,6 @@ class TestUndoToZeroAfterFinish:
         )
 
         dem = mock_dem_red_slope_diagonal
-        m = 111320.0
         sm, ctx = _session(fake_st, empty_graph, path_factory, dem)
         ctx.build_mode.mode = SegmentKind.ROAD.value
 
@@ -1147,8 +1181,10 @@ class TestUndoToZeroAfterFinish:
         sm.start_road(node_id=None, location=PathPoint(lon=0.0, lat=0.0, elevation=2000.0))
         for i in range(1, 3):
             pts = [
-                PathPoint(lon=(i - 1) * 300 / m, lat=0.0, elevation=2000.0 - (i - 1) * 10),
-                PathPoint(lon=i * 300 / m, lat=0.0, elevation=2000.0 - i * 10),
+                PathPoint(
+                    lon=(i - 1) * 300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=2000.0 - (i - 1) * 10
+                ),
+                PathPoint(lon=i * 300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=2000.0 - i * 10),
             ]
             endpoint_ids = empty_graph.commit_paths(paths=[ProposedPathSegment(points=pts, kind=SegmentKind.ROAD)])
             seg = list(empty_graph.segments.keys())[-1]
@@ -1185,7 +1221,10 @@ class TestMapEpochs:
 
         dem = mock_dem_red_slope_diagonal
         sm, ctx = self._road_building(fake_st, empty_graph, path_factory, dem)
-        pts = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=300 / M, lat=0.0, elevation=1990.0)]
+        pts = [
+            PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
+            PathPoint(lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=1990.0),
+        ]
         ctx.proposals.paths = [ProposedPathSegment(points=pts, kind=SegmentKind.ROAD)]
         ctx.proposals.selected_idx = 0
         camera_before = fake_st.session_state["camera_epoch"]
@@ -1199,22 +1238,32 @@ class TestMapEpochs:
 
         dem = mock_dem_red_slope_diagonal
         sm, ctx = self._road_building(fake_st, empty_graph, path_factory, dem)
-        pts = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=300 / M, lat=0.0, elevation=1990.0)]
+        pts = [
+            PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
+            PathPoint(lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=1990.0),
+        ]
         endpoint_ids = empty_graph.commit_paths(paths=[ProposedPathSegment(points=pts, kind=SegmentKind.ROAD)])
         sm.commit_road(segment_id=list(empty_graph.segments.keys())[-1], endpoint_node_id=endpoint_ids[0])
         camera_before = fake_st.session_state["camera_epoch"]
+        map_before = (ctx.map.lon, ctx.map.lat)
 
         finish_current_build(kind=SegmentKind.ROAD)
 
         assert sm.is_idle_viewing_road
-        assert fake_st.session_state["camera_epoch"] > camera_before, "finish recenters on the entity"
+        # Reframes on the finished entity IN PLACE: ctx.map moves, but camera_epoch is NOT bumped
+        # (bumping remounts the deck.gl iframe → the ~0.5s gray-out). See tests_workflow/test_map_reframe.py.
+        assert (ctx.map.lon, ctx.map.lat) != map_before, "finish recenters on the entity (view moved)"
+        assert fake_st.session_state["camera_epoch"] == camera_before, "in-place reframe: no remount bump"
 
     def test_cancel_does_not_recenter(self, fake_st, empty_graph, path_factory, mock_dem_red_slope_diagonal) -> None:
         from skiresort_planner.ui.actions import cancel_current_build
 
         dem = mock_dem_red_slope_diagonal
         sm, ctx = self._road_building(fake_st, empty_graph, path_factory, dem)
-        pts = [PathPoint(lon=0.0, lat=0.0, elevation=2000.0), PathPoint(lon=300 / M, lat=0.0, elevation=1990.0)]
+        pts = [
+            PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
+            PathPoint(lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=1990.0),
+        ]
         endpoint_ids = empty_graph.commit_paths(paths=[ProposedPathSegment(points=pts, kind=SegmentKind.ROAD)])
         sm.commit_road(segment_id=list(empty_graph.segments.keys())[-1], endpoint_node_id=endpoint_ids[0])
         camera_before = fake_st.session_state["camera_epoch"]

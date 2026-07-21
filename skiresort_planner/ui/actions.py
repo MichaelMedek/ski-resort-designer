@@ -34,10 +34,13 @@ from skiresort_planner.model.message import (
     MergeTooFarMessage,
     UnableToDeleteMessage,
 )
+from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.resort_graph import ResortGraph
+from skiresort_planner.model.routing import Route, RoutePlanner, ViewingGroup, routes_for_cap
+from skiresort_planner.ui.center_map import MapRenderer
 from skiresort_planner.ui.context import PlannerContext
-from skiresort_planner.ui.infra import bump_camera_epoch, bump_dedup_epoch, trigger_rerun
+from skiresort_planner.ui.infra import bump_dedup_epoch, trigger_rerun
 from skiresort_planner.ui.kind_spec import KIND_SPECS
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
@@ -127,6 +130,86 @@ def process_custom_connect_pending() -> bool:
     return True
 
 
+def process_route_plan_pending() -> None:
+    """Compute the best routes between the two picked nodes (deferred, mirrors the fan/custom flow).
+
+    Reads ctx.route_plan.start/end_node_id, runs the RoutePlanner (scipy shortest paths — fast, no
+    network) to precompute routes for every difficulty cap, and resets the shown selection.
+    """
+    ctx: PlannerContext = st.session_state.context
+    graph: ResortGraph = st.session_state.graph
+
+    if not ctx.pending.route_plan_generation:
+        return
+    ctx.pending.route_plan_generation = False
+
+    start, end = ctx.route_plan.start_node_id, ctx.route_plan.end_node_id
+    assert start is not None and end is not None, "route computation armed without both endpoints"
+    ctx.route_plan.routes = RoutePlanner(graph).best_routes(start_node_id=start, end_node_id=end)
+    ctx.route_plan.selected_index = 0
+    ctx.viewing.stop_flythrough()  # a fresh plan must not keep riding the previous route's playback
+
+
+def route_plan_shown_routes() -> list[Route]:
+    """The precomputed routes for the currently-selected difficulty cap (shared by the right panel
+    and the map overlay so both agree on what's shown). An honest per-cap select, not a post-filter.
+    """
+    ctx: PlannerContext = st.session_state.context
+    rp = ctx.route_plan
+    return routes_for_cap(rp.routes, max_difficulty=rp.selected_cap)
+
+
+def selected_route() -> Route | None:
+    """The one route currently shown/selected (clamped index into the per-cap routes), or None. Single
+    source for "which route is active" — used by the map overlay and the flythrough resolver alike.
+    """
+    ctx: PlannerContext = st.session_state.context
+    routes = route_plan_shown_routes()
+    if not routes:
+        return None
+    return routes[ctx.route_plan.clamped_index(len(routes))]
+
+
+def flythrough_viewing_groups() -> list[ViewingGroup]:
+    """Viewing groups (between-lift units) of whatever 3D element is currently being viewed, for the Play
+    flythrough. A single slope/road/lift → one standalone group; a route → its `viewing_groups` (each lift
+    its own, consecutive slopes folded). Empty when nothing flyable is in view.
+    """
+    ctx: PlannerContext = st.session_state.context
+    graph: ResortGraph = st.session_state.graph
+    viewing = ctx.viewing
+
+    def standalone(points: list[PathPoint], *, is_lift: bool) -> list[ViewingGroup]:
+        return [ViewingGroup(is_lift=is_lift, actual_polyline=tuple(p.lon_lat_elev for p in points))]
+
+    if viewing.slope_id is not None:
+        return standalone(graph.slopes[viewing.slope_id].get_all_points(segments=graph.segments), is_lift=False)
+    if viewing.road_id is not None:
+        return standalone(graph.roads[viewing.road_id].get_all_points(segments=graph.segments), is_lift=False)
+    if viewing.lift_id is not None:
+        return standalone(list(graph.lifts[viewing.lift_id].cable_points), is_lift=True)
+
+    route = selected_route()
+    return list(route.viewing_groups) if route is not None else []
+
+
+def active_flythrough_groups() -> list[ViewingGroup]:
+    """The viewed element's viewing groups WHILE a flythrough is playing in 3D, else empty. Single source
+    for 'is the camera flying now' — the render fragment, the frame driver, and the highlight all read it.
+    """
+    ctx: PlannerContext = st.session_state.context
+    if not (ctx.viewing.view_3d and ctx.viewing.flythrough_active):
+        return []
+    return flythrough_viewing_groups()
+
+
+def flythrough_keyframe_count() -> int:
+    """Number of camera keyframes for the currently-viewed element (0 if nothing drivable). The Play
+    button seeds ViewingContext with this; the driver advances one keyframe per rerun up to it.
+    """
+    return len(MapRenderer.flythrough_keyframes(flythrough_viewing_groups()))
+
+
 def confirm_import_action(mode: OSMImportMode) -> None:
     """Confirm the placed OSM import box: flag the deferred fetch (with its mode) and return to idle.
 
@@ -146,7 +229,7 @@ def confirm_merge_action() -> None:
     """Confirm the node-merge selection: collapse the selected nodes to their median, return to idle.
 
     Validates the span first for a friendly toast — if any pair exceeds MergeConfig.MAX_SPAN_M the
-    merge is refused and nothing changes (the state stays in merge_placing so the user can adjust the
+    merge is refused and nothing changes (the state stays in node_edit_selecting so the user can adjust the
     selection). On success the merge is one undoable action and we return to idle.
     """
     ctx: PlannerContext = st.session_state.context
@@ -154,7 +237,7 @@ def confirm_merge_action() -> None:
     graph: ResortGraph = st.session_state.graph
     dem = st.session_state.dem_service
 
-    node_ids = list(ctx.merge.node_ids)
+    node_ids = list(ctx.node_edit.node_ids)
     if len(node_ids) < 2:
         # The Confirm button is disabled below 2, so this is a defensive guard, not a user path.
         raise RuntimeError("confirm_merge_action called with fewer than 2 selected nodes")
@@ -168,11 +251,11 @@ def confirm_merge_action() -> None:
     graph.merge_nodes(node_ids=node_ids, dem=dem)
     logger.info(f"Merged {len(node_ids)} nodes into {node_ids[0]}")
     bump_dedup_epoch()
-    sm.complete_merge()  # → idle_ready; the before-hook clears the selection
+    sm.finish_node_edit()  # → idle_ready; the before-hook clears the selection
 
 
 def delete_nodes_action() -> None:
-    """Delete the selected merge-mode nodes (interior fusion / clean-endpoint trim), return to idle.
+    """Delete the selected node-editor nodes (interior fusion / clean-endpoint trim), return to idle.
 
     Pre-checks delete_nodes_rejection and shows an UnableToDeleteMessage if the selection can't be
     deleted (lift station, shared/branch junction, sole segment, or would empty a path) — nothing
@@ -183,7 +266,7 @@ def delete_nodes_action() -> None:
     graph: ResortGraph = st.session_state.graph
     dem = st.session_state.dem_service
 
-    node_ids = list(ctx.merge.node_ids)
+    node_ids = list(ctx.node_edit.node_ids)
     if not node_ids:
         # The Delete button is disabled at 0 selected, so this is a defensive guard, not a user path.
         raise RuntimeError("delete_nodes_action called with no selected nodes")
@@ -196,7 +279,7 @@ def delete_nodes_action() -> None:
 
     graph.delete_nodes(node_ids=node_ids, dem=dem)
     bump_dedup_epoch()
-    sm.complete_merge()  # → idle_ready; the before-hook clears the selection
+    sm.finish_node_edit()  # → idle_ready; the before-hook clears the selection
 
 
 def add_node_on_path_action(segment_id: str, lon: float, lat: float) -> bool:
@@ -211,7 +294,7 @@ def add_node_on_path_action(segment_id: str, lon: float, lat: float) -> bool:
     if rejection is not None:
         InvalidClickMessage(action="add a node", reason=rejection).display()
         return False
-    graph.insert_node_on_path(segment_id=segment_id, lon=lon, lat=lat)
+    graph.insert_node_on_path(segment_id=segment_id, lon=lon, lat=lat, dem=st.session_state.dem_service)
     bump_dedup_epoch()
     return True
 
@@ -522,10 +605,10 @@ def _finalize_entity(kind: SegmentKind) -> "SegmentPath":
 
     entity = KIND_SPECS[kind].finish(graph, build.segments)
     logger.info(f"{kind.value.capitalize()} {entity.name} (id={entity.id}) finalized")
-    # Frame the finished entity + remount, but do NOT rerun here — the caller fires the finish event
-    # whose state-machine listener reruns. (reload_map reruns, which would preempt that send.)
+    # Frame the finished entity IN PLACE (no remount); do NOT rerun here — the caller fires the finish event
+    # whose state-machine listener reruns. The new view flows via ctx.map → initialViewState, which deck.gl
+    # applies to the mounted component (no camera_epoch bump = no gray-out iframe remount).
     center_on_segment_path(ctx=ctx, graph=graph, path=entity, zoom=MapConfig.VIEWING_ZOOM)
-    bump_camera_epoch()
     return entity
 
 

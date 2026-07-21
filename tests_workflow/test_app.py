@@ -6,11 +6,12 @@ _render_map_fragment_inner) is driven end-to-end with a seeded session and a
 stubbed st_deckgl so the deck.gl component call returns no event.
 """
 
+import pydeck as pdk
 import pytest
 
 import skiresort_planner.ui.pydeck_click_handler as pch
 from skiresort_planner import app
-from skiresort_planner.constants import ChartConfig, DEMConfig
+from skiresort_planner.constants import ChartConfig, DEMConfig, MapConfig
 from skiresort_planner.model.click_info import ClickInfo
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
@@ -18,8 +19,6 @@ from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui import infra
 from skiresort_planner.ui.context import BuildMode
 from skiresort_planner.ui.state_machine import PlannerStateMachine
-
-M = 111320.0
 
 
 def _seed_full_session(fake_st, dem):
@@ -46,7 +45,11 @@ def _seed_full_session(fake_st, dem):
 def _stub_deckgl(monkeypatch, event=None):
     """Stub st_deckgl + terrain layer + window-height JS so the map render loop needs no browser."""
     monkeypatch.setattr(pch, "st_deckgl", lambda *a, **k: event)
-    monkeypatch.setattr(app, "create_aws_terrain_layer", lambda *a, **k: object())
+    # A real (empty) pdk.Layer, not a bare object — so every layer in the built deck has a `.id` and
+    # tests can strict-access layer.id without a defensive getattr.
+    monkeypatch.setattr(
+        app, "create_aws_terrain_layer", lambda *a, **k: pdk.Layer("ScatterplotLayer", [], id="terrain")
+    )
     monkeypatch.setattr(infra, "streamlit_js_eval", lambda *a, **k: 1080)  # browser height resolved
 
 
@@ -131,7 +134,7 @@ class TestSessionHelpers:
 
         assert isinstance(fake_st.session_state["dem_service"], _FakeDEM)
         assert fake_st.session_state["path_factory"] is not None
-        assert reframes == [((MapConfig.START_CENTER_LON, MapConfig.START_CENTER_LAT), MapConfig.DEFAULT_ZOOM)], (
+        assert reframes == [((MapConfig.START_CENTER_LON, MapConfig.START_CENTER_LAT), MapConfig.VIEWING_ZOOM)], (
             "DEM load reframes to the start view via the shared slow-load helper"
         )
 
@@ -150,7 +153,7 @@ class TestReloadMapSignature:
         assert params["center"].default is inspect.Parameter.empty, "center must be required"
         assert params["zoom"].default is inspect.Parameter.empty, "zoom must be required"
 
-    def test_reload_map_frames_and_bumps(self, fake_st, monkeypatch) -> None:
+    def test_reload_map_frames_in_place(self, fake_st, monkeypatch) -> None:
         # Seed a context so reload_map can write ctx.map, and stub the rerun (raises in prod).
         from skiresort_planner.ui.state_machine import PlannerStateMachine
 
@@ -163,7 +166,9 @@ class TestReloadMapSignature:
 
         assert (ctx.map.lon, ctx.map.lat) == (10.5, 46.5)
         assert ctx.map.zoom == 13
-        assert fake_st.session_state["camera_epoch"] == 1  # remount so deck re-reads the frame
+        # In-place reframe: the new view flows via ctx.map → initialViewState (deck.gl applies it to the
+        # mounted component). camera_epoch is NOT bumped — bumping it would remount and gray-out the map.
+        assert fake_st.session_state["camera_epoch"] == 0
 
 
 class TestPendingOSMImportGate:
@@ -199,7 +204,9 @@ class TestPendingOSMImportGate:
         assert rendered == [], "returns before the normal UI renders (no frozen map)"
         assert (ctx.map.lon, ctx.map.lat) == (10.5, 46.5), "reframed on the placed import box center"
         assert ctx.map.zoom == MapConfig.IMPORT_OVERVIEW_ZOOM, "one step further out than building zoom"
-        assert fake_st.session_state["camera_epoch"] == 1, "remount so deck re-reads the frame"
+        # In-place reframe (reload_map): view moves via ctx.map → initialViewState; no camera_epoch bump
+        # (a bump would remount the deck.gl iframe → gray-out). See tests_workflow/test_map_reframe.py.
+        assert fake_st.session_state["camera_epoch"] == 0, "in-place reframe: no remount bump"
 
 
 class TestRunPendingLoadFailure:
@@ -296,7 +303,17 @@ class TestRunPendingLoadFailure:
     def test_failure_message_must_be_a_warning_toast(self, fake_st, monkeypatch) -> None:
         import pytest
 
-        from skiresort_planner.model.message import CustomPathComputingToast, DEMLoadingMessage
+        from skiresort_planner.model.message import DEMLoadingMessage, ToastMessage
+
+        # A non-WarningToast toast must be rejected as a failure_message.
+        class _PlainToast(ToastMessage):
+            @property
+            def message(self) -> str:
+                return "info"
+
+            @property
+            def icon(self) -> str:
+                return "ℹ️"
 
         self._seed_ctx(fake_st)
         monkeypatch.setattr(app, "reload_map", lambda **k: None)
@@ -308,7 +325,7 @@ class TestRunPendingLoadFailure:
                 reset_center=(1.0, 2.0),
                 reset_zoom=12,
                 catch=RuntimeError,
-                failure_message=CustomPathComputingToast(),  # type: ignore[arg-type]  # an InfoToast — must be rejected
+                failure_message=_PlainToast(),  # type: ignore[arg-type]  # not a WarningToast — must be rejected
             )
 
 
@@ -414,7 +431,11 @@ class TestRenderLoop:
         _graph, sm, ctx = _seed_full_session(fake_st, mock_dem_blue_slope)
         ctx.build_mode.mode = BuildMode.CHAIRLIFT  # lift type selected before entering LIFT_PLACING
         loc = PathPoint(
-            lon=0.0, lat=-1000 / M, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=-1000 / M)
+            lon=0.0,
+            lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=mock_dem_blue_slope.get_elevation_or_raise(
+                lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR
+            ),
         )
         sm.start_lift(node_id=None, location=loc)  # exercises pending-lift marker layers
 
@@ -458,3 +479,123 @@ class TestRenderLoop:
         fake_st.session_state["dem_service"] = mock_dem_blue_slope
 
         app.main()
+
+
+def _render_key(fake_st):
+    """Run one map render pass and return the map_key computed this rerun."""
+    app._render_map_fragment_inner()
+    return fake_st.session_state.get("_last_map_key")
+
+
+class TestReframeInPlace:
+    """Regression for the reframe gray-out: a same-pitch 2D reframe (finish/close/search/reset) must NOT
+    change the component key (which would remount the deck.gl iframe → WebGL teardown + tile re-fetch =
+    the ~0.5s gray-out). Only a pitch change (2D↔3D) legitimately remounts.
+    """
+
+    def test_same_pitch_reframe_does_not_remount(self, fake_st, monkeypatch, mock_dem_blue_slope) -> None:
+        _stub_deckgl(monkeypatch)
+        _graph, _sm, ctx = _seed_full_session(fake_st, mock_dem_blue_slope)
+
+        key_before = _render_key(fake_st)
+        assert key_before is not None and "_2d_" in key_before
+
+        # Reframe exactly as finish/close/search/reset do — must stay in place (new initialViewState, same key).
+        infra.reload_map(center=(10.30, 46.90), zoom=MapConfig.VIEWING_ZOOM, pitch=MapConfig.VIEWING_PITCH)
+        key_after = _render_key(fake_st)
+
+        assert key_after == key_before, f"same-pitch reframe must not remount; {key_before!r} -> {key_after!r}"
+
+    def test_2d_to_3d_toggle_still_remounts(self, fake_st, monkeypatch, mock_dem_blue_slope) -> None:
+        _stub_deckgl(monkeypatch)
+        _graph, _sm, ctx = _seed_full_session(fake_st, mock_dem_blue_slope)
+
+        key_2d = _render_key(fake_st)
+        ctx.viewing.enable_3d()  # pitch change → intentional remount preserved
+        key_3d = _render_key(fake_st)
+
+        assert key_2d is not None and "_2d_" in key_2d
+        assert key_3d != key_2d and "_3d_" in key_3d, "2D↔3D toggle must remount (key changes)"
+
+    def test_flythrough_frames_keep_key_constant(
+        self, fake_st, monkeypatch, mock_dem_blue_slope, path_points_blue
+    ) -> None:
+        """The flythrough camera advances frames on a CONSTANT key (in-place camera move, no per-frame
+        remount) — the same mechanism as the reframe fix.
+        """
+        _stub_deckgl(monkeypatch)
+        monkeypatch.setattr(infra, "trigger_rerun", lambda *a, **k: None)
+        graph, sm, ctx = _seed_full_session(fake_st, mock_dem_blue_slope)
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        sm.view_slope(slope_id=slope.id)
+
+        ctx.viewing.enable_3d()
+        ctx.viewing.start_flythrough()  # a single slope → 2 keyframes (start, end)
+
+        key0 = _render_key(fake_st)
+        ctx.viewing.advance_flythrough()
+        key1 = _render_key(fake_st)
+
+        assert key0 == key1, f"flythrough frames must render on a constant key; {key0!r}/{key1!r}"
+
+    def test_flythrough_highlight_ribbon_only_while_flying(
+        self, fake_st, monkeypatch, mock_dem_blue_slope, path_points_blue
+    ) -> None:
+        """The hot-orange current-element ribbon (id 'flythrough_highlight') is in the built deck ONLY
+        while flying — applied once at the render choke-point, never per viewing-state.
+        """
+        _stub_deckgl(monkeypatch)
+        monkeypatch.setattr(infra, "trigger_rerun", lambda *a, **k: None)
+        graph, sm, ctx = _seed_full_session(fake_st, mock_dem_blue_slope)
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        sm.view_slope(slope_id=slope.id)
+        ctx.viewing.enable_3d()
+
+        decks: list[pdk.Deck] = []
+
+        def _capture(*, deck: pdk.Deck, height: int, key: str) -> pch.PydeckClickResult:
+            decks.append(deck)
+            return pch.PydeckClickResult.empty()
+
+        monkeypatch.setattr(app, "render_pydeck_map", _capture)
+
+        def highlight_layer_ids() -> list[str]:
+            return [layer.id for layer in decks[-1].layers if layer.id == "flythrough_highlight"]
+
+        app._render_map_fragment_inner()  # not flying
+        assert highlight_layer_ids() == [], "no highlight ribbon when idle in 3D"
+
+        ctx.viewing.start_flythrough()
+        app._render_map_fragment_inner()  # flying
+        assert highlight_layer_ids() == ["flythrough_highlight"], "highlight ribbon shown while flying"
+
+    def test_flythrough_parks_at_end_until_stopped(
+        self, fake_st, monkeypatch, mock_dem_blue_slope, path_points_blue
+    ) -> None:
+        """At the final keyframe the driver PARKS: it stops advancing (no more reruns) but stays flying,
+        so the camera holds the finish view until the user presses Stop or closes the panel.
+        """
+        import time
+
+        _stub_deckgl(monkeypatch)
+        reruns = {"n": 0}
+        monkeypatch.setattr(infra, "trigger_rerun", lambda *a, **k: None)
+        monkeypatch.setattr(app, "trigger_rerun", lambda *a, **k: reruns.__setitem__("n", reruns["n"] + 1))
+        monkeypatch.setattr(time, "sleep", lambda s: None)
+        graph, sm, ctx = _seed_full_session(fake_st, mock_dem_blue_slope)
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        sm.view_slope(slope_id=slope.id)
+        ctx.viewing.enable_3d()
+
+        ctx.viewing.start_flythrough()
+        for _ in range(50):
+            app._advance_flythrough_if_playing()
+
+        # A single slope → 2 keyframes; the driver advances to the last frame, then parks: still flying,
+        # no stop, and no further reruns queued once parked.
+        assert ctx.viewing.flythrough_active, "parked at the finish, still flying (not stopped)"
+        assert ctx.viewing.flythrough_frame == 1, "held on the final keyframe"
+        assert reruns["n"] == 1, "one rerun to reach the final frame, then no more (parked)"

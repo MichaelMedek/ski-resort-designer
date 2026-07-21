@@ -81,14 +81,42 @@ class TestBackupStore:
         backup_store.save(graph=empty_graph, resort_id=resort_id)
         assert backup_store.load(resort_id=resort_id) is None
 
-    def test_delete_removes_file(self, empty_graph: ResortGraph, path_points_blue) -> None:
+    def test_delete_soft_deletes_and_hides_from_load(
+        self, _isolate_backup_dir: Path, empty_graph: ResortGraph, path_points_blue
+    ) -> None:
         _populate(empty_graph, path_points_blue)
         resort_id = backup_store.new_resort_id()
         backup_store.save(graph=empty_graph, resort_id=resort_id)
         assert backup_store.load(resort_id=resort_id) is not None
 
         backup_store.delete(resort_id=resort_id)
+        # Gone from load() and from largest (it's a reset), but RENAMED (not removed) for recovery.
         assert backup_store.load(resort_id=resort_id) is None
+        assert not (_isolate_backup_dir / f"{resort_id}.json").exists()
+        recovery = list(_isolate_backup_dir.glob(f"{resort_id}_DELETED_*.json"))
+        assert len(recovery) == 1, "the live backup is renamed to a _DELETED recovery copy, not removed"
+
+    def test_delete_twice_keeps_both_recovery_copies(
+        self, _isolate_backup_dir: Path, empty_graph: ResortGraph, path_points_blue
+    ) -> None:
+        # Resetting the SAME resort id twice must never clobber the first recovery copy (unique uuid suffix).
+        _populate(empty_graph, path_points_blue)
+        resort_id = backup_store.new_resort_id()
+        backup_store.save(graph=empty_graph, resort_id=resort_id)
+        backup_store.delete(resort_id=resort_id)
+        backup_store.save(graph=empty_graph, resort_id=resort_id)
+        backup_store.delete(resort_id=resort_id)
+        assert len(list(_isolate_backup_dir.glob(f"{resort_id}_DELETED_*.json"))) == 2
+
+    def test_largest_resort_id_excludes_soft_deleted(
+        self, _isolate_backup_dir: Path, empty_graph: ResortGraph, path_points_blue
+    ) -> None:
+        _populate(empty_graph, path_points_blue)
+        resort_id = backup_store.new_resort_id()
+        backup_store.save(graph=empty_graph, resort_id=resort_id)
+        backup_store.delete(resort_id=resort_id)
+        # The only backup is soft-deleted → bare-link load finds nothing to restore.
+        assert backup_store.largest_resort_id() is None
 
     def test_delete_missing_is_silent(self) -> None:
         backup_store.delete(resort_id="nonexistent")  # must not raise

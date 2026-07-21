@@ -8,6 +8,7 @@ the orientation MIN_SKIABLE_PCT branch — using the deterministic MockDEMServic
 
 import pytest
 
+from skiresort_planner.constants import MapConfig
 from skiresort_planner.core.terrain_analyzer import SideDirection, TerrainAnalyzer
 
 
@@ -119,6 +120,56 @@ class TestComputeGradient:
         # The plane is linear, so the reduced magnitude scales exactly with raw steepness.
         assert g30.slope_pct == pytest.approx(g20.slope_pct * 1.5, rel=1e-6)
 
+    def test_batched_sampling_equals_scalar_reference_on_curved_dem(self) -> None:
+        """Regression: the batched gradient (one get_elevations + one destination_vec per ring) must
+        equal an INDEPENDENT per-sample scalar reference on curved terrain where all 16 samples differ.
+        The oracle rolls its own spherical geodesy (NOT GeoCalculator, which now delegates to
+        destination_vec) so it genuinely cross-checks the vectorized path, not itself.
+        """
+        from math import asin, atan2, cos, degrees, radians, sin, sqrt
+
+        from skiresort_planner.constants import GeometricTuningConfig, MapConfig
+        from tests_workflow.conftest import RoughDEMService
+
+        dem = RoughDEMService()
+        analyzer = TerrainAnalyzer(dem=dem)
+
+        def independent_destination(lon: float, lat: float, bearing_deg: float, dist_m: float) -> tuple[float, float]:
+            # Hand-rolled spherical destination — deliberately NOT via GeoCalculator, so this is a
+            # true independent oracle for the production destination_vec path under test.
+            brng, lat1, lon1, d_r = radians(bearing_deg), radians(lat), radians(lon), dist_m / MapConfig.EARTH_RADIUS_M
+            lat2 = asin(sin(lat1) * cos(d_r) + cos(lat1) * sin(d_r) * cos(brng))
+            lon2 = lon1 + atan2(sin(brng) * sin(d_r) * cos(lat1), cos(d_r) - sin(lat1) * sin(lat2))
+            return degrees(lon2), degrees(lat2)
+
+        def scalar_gradient(lon: float, lat: float) -> tuple[float, float]:
+            ce = dem.get_elevation(lon=lon, lat=lat)
+            assert ce is not None
+            sx: list[float] = []
+            sy: list[float] = []
+            tw = 0.0
+            for radius_factor, weight in GeometricTuningConfig.GRADIENT_RINGS:
+                radius = radius_factor * GeometricTuningConfig.STEP_SIZE_M
+                for a in GeometricTuningConfig.GRADIENT_SAMPLE_ANGLES_DEG:
+                    slon, slat = independent_destination(lon, lat, a, radius)
+                    se = dem.get_elevation(lon=slon, lat=slat)
+                    assert se is not None
+                    slope = ((ce - se) / radius) * 100
+                    ar = radians(a)
+                    sx.append(slope * sin(ar) * weight)
+                    sy.append(slope * cos(ar) * weight)
+                    tw += weight
+            gx = sum(sx) / tw
+            gy = sum(sy) / tw
+            return sqrt(gx**2 + gy**2), (degrees(atan2(gx, gy)) + 360) % 360
+
+        for lon, lat in [(0.0, 0.0), (0.3, -0.4), (-0.5, 0.2), (0.1, 0.9)]:
+            grad = analyzer.compute_gradient(lon=lon, lat=lat)
+            ref_slope, ref_bearing = scalar_gradient(lon, lat)
+            # Independent scalar-vs-vector geodesy can differ by ULPs → tight but non-zero tolerance.
+            assert grad.slope_pct == pytest.approx(ref_slope, abs=1e-9), f"slope at ({lon},{lat})"
+            assert grad.bearing_deg == pytest.approx(ref_bearing, abs=1e-9), f"bearing at ({lon},{lat})"
+
     def test_diagonal_slope_bearing_in_se_quadrant_biased_south(self, mock_dem_red_slope_diagonal) -> None:
         """DEM dropping 30% south + 10% east → fall line in the SE quadrant, biased south."""
         analyzer = TerrainAnalyzer(dem=mock_dem_red_slope_diagonal)
@@ -149,9 +200,12 @@ class TestComputeSideSlope:
     def test_skiing_down_fall_line_has_no_side_slope(self, mock_dem_blue_slope) -> None:
         """Skiing due south down a south-facing slope → side slope ≈ 0 (flat)."""
         analyzer = TerrainAnalyzer(dem=mock_dem_blue_slope)
-        M = 111320.0
         side = TerrainAnalyzer.compute_side_slope(
-            start_lon=0.0, start_lat=0.0, end_lon=0.0, end_lat=-100 / M, analyzer=analyzer
+            start_lon=0.0,
+            start_lat=0.0,
+            end_lon=0.0,
+            end_lat=-100 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            analyzer=analyzer,
         )
         assert side.direction == SideDirection.FLAT
         assert abs(side.slope_pct) < 2.0
@@ -159,9 +213,12 @@ class TestComputeSideSlope:
     def test_traversing_across_fall_line_has_strong_side_slope(self, mock_dem_blue_slope) -> None:
         """Skiing due east across a south-falling slope → large side slope to one side."""
         analyzer = TerrainAnalyzer(dem=mock_dem_blue_slope)
-        M = 111320.0
         side = TerrainAnalyzer.compute_side_slope(
-            start_lon=0.0, start_lat=0.0, end_lon=100 / M, end_lat=0.0, analyzer=analyzer
+            start_lon=0.0,
+            start_lat=0.0,
+            end_lon=100 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            end_lat=0.0,
+            analyzer=analyzer,
         )
         assert side.direction == SideDirection.RIGHT, "east across a south fall line leans right when looking downhill"
         assert side.slope_pct > 10.0, "crossing the fall line exposes most of the gradient sideways (positive = right)"
@@ -173,9 +230,12 @@ class TestComputeSideSlope:
         signed side-slope percentage negative — guarding the sign/direction symmetry.
         """
         analyzer = TerrainAnalyzer(dem=mock_dem_blue_slope)
-        M = 111320.0
         side = TerrainAnalyzer.compute_side_slope(
-            start_lon=0.0, start_lat=0.0, end_lon=-100 / M, end_lat=0.0, analyzer=analyzer
+            start_lon=0.0,
+            start_lat=0.0,
+            end_lon=-100 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            end_lat=0.0,
+            analyzer=analyzer,
         )
         assert side.direction == SideDirection.LEFT, "west across a south fall line leans left when looking downhill"
         assert side.slope_pct < -10.0, "the opposite traverse flips the side slope negative (left)"

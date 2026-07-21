@@ -69,7 +69,7 @@ convention = "google"
 
 [tool.ruff.lint.mccabe]
 # Cyclomatic complexity ceiling.
-max-complexity = 25
+max-complexity = 20
 
 [tool.ruff.lint.pylint]
 max-args = 6          # signatures beyond this want a dataclass / config object
@@ -133,6 +133,7 @@ module = [
     "statemachine.*",
     "gpxpy.*",
     "scipy.*",
+    "networkx.*",
 ]
 ignore_missing_imports = true
 

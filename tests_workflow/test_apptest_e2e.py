@@ -41,13 +41,6 @@ from skiresort_planner.model.resort_graph import ResortGraph
 from tests_workflow.conftest import MockDEMService
 
 # =============================================================================
-# TEST CONSTANTS
-# =============================================================================
-
-M = MapConfig.METERS_PER_DEGREE_EQUATOR
-
-
-# =============================================================================
 # FIXTURES
 # =============================================================================
 
@@ -498,7 +491,7 @@ class TestGrandResortTour:
         assert sm.is_lift_placing, f"Should be placing lift, got {sm.get_state_name()}"
 
         # Click terrain for lift end (higher elevation = north)
-        lift_end_lat = 500 / M  # 500m north (higher)
+        lift_end_lat = 500 / MapConfig.METERS_PER_DEGREE_EQUATOR  # 500m north (higher)
         lift_end_lon = start_lon
         at.session_state["command_queue"] = [("click_terrain", lift_end_lon, lift_end_lat)]
         at.run()
@@ -521,7 +514,7 @@ class TestGrandResortTour:
         at.run()
 
         # Start new slope at different location
-        slope2_start_lat = -500 / M
+        slope2_start_lat = -500 / MapConfig.METERS_PER_DEGREE_EQUATOR
         slope2_start_lon = 0.01
         at.session_state["command_queue"] = [("click_terrain", slope2_start_lon, slope2_start_lat)]
         at.run()
@@ -672,7 +665,7 @@ class TestGrandResortTour:
         at.run()
 
         # Start new slope for custom connect test
-        custom_start_lat = 1000 / M  # Start high (north)
+        custom_start_lat = 1000 / MapConfig.METERS_PER_DEGREE_EQUATOR  # Start high (north)
         custom_start_lon = 0.02
         at.session_state["command_queue"] = [("click_terrain", custom_start_lon, custom_start_lat)]
         at.run()
@@ -689,7 +682,7 @@ class TestGrandResortTour:
 
         # Select custom target (downhill = south). A click routes a custom-connect
         # path straight to it — no enter button, no picking state.
-        custom_target_lat = 800 / M  # 200m south of start (lower)
+        custom_target_lat = 800 / MapConfig.METERS_PER_DEGREE_EQUATOR  # 200m south of start (lower)
         custom_target_lon = custom_start_lon + 0.001  # Slightly east
         at.session_state["command_queue"] = [("select_custom_target", custom_target_lon, custom_target_lat)]
         at.run()
@@ -912,8 +905,7 @@ class TestCancelOperations:
         at.run()
 
         # Click a downhill target (south) → routes a custom-connect path (no button).
-        M = 111_320.0
-        at.session_state["command_queue"] = [("select_custom_target", 0.0, -400 / M)]
+        at.session_state["command_queue"] = [("select_custom_target", 0.0, -400 / MapConfig.METERS_PER_DEGREE_EQUATOR)]
         at.run()
 
         ctx = at.session_state["context"]

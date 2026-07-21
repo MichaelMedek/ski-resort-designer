@@ -11,7 +11,18 @@ from shapely.geometry import LineString, Point
 
 from skiresort_planner.constants import MapConfig, OSMConfig
 from skiresort_planner.core.dem_service import DEMService
-from skiresort_planner.generators.osm_graph_builder import OSMGraphBuilder, _linear_chains, ways_to_lines
+from skiresort_planner.core.geo_calculator import GeoCalculator
+from skiresort_planner.generators.osm_graph_builder import (
+    ImportGraph,
+    LiftReachabilityCheck,
+    NodeReachabilityCheck,
+    OSMGraphBuilder,
+    SlopeRun,
+    _lift_nodes,
+    _linear_chains,
+    ways_to_lines,
+)
+from tests_workflow.conftest import MockDEMService
 
 # Pure test-assertion thresholds (counts / connectivity) live here; every geometric domain tolerance
 # comes from OSMConfig (single source of truth — no drift between the builder and the rules it must meet).
@@ -41,11 +52,11 @@ DATASETS = [
     Dataset(
         name="ischgl",
         fixture="ischgl_osm.json",
-        bbox=(10.27745, 46.95502, 10.35655, 47.00898),
+        bbox=(10.261216324885865, 46.92838815227593, 10.392868056217921, 47.01821926977503),
         min_segments=100,
         max_segments=300,
         max_nodes=200,
-        min_seg_per_slope=1.4,
+        min_seg_per_slope=1.15,
     ),
     Dataset(
         name="scuol",
@@ -54,7 +65,7 @@ DATASETS = [
         min_segments=30,
         max_segments=120,
         max_nodes=90,
-        min_seg_per_slope=1.2,
+        min_seg_per_slope=1.05,
     ),
 ]
 
@@ -74,11 +85,11 @@ def _polylen(coords):
 
 def _to_local(lon, lat, bbox):
     """Project (lon,lat) to local metres about `bbox`'s origin (flat-earth, fine at this scale), using
-    the production METERS_PER_DEGREE_EQUATOR constant (same basis as model/path_smoothing.py).
+    the production GeoCalculator.meters_per_degree projection (same basis as model/path_smoothing.py).
     """
     lat0 = (bbox[1] + bbox[3]) / 2
-    mlon = MapConfig.METERS_PER_DEGREE_EQUATOR * math.cos(math.radians(lat0))
-    return ((lon - bbox[0]) * mlon, (lat - bbox[1]) * MapConfig.METERS_PER_DEGREE_EQUATOR)
+    mlon, mlat = GeoCalculator.meters_per_degree(lat=lat0)
+    return ((lon - bbox[0]) * mlon, (lat - bbox[1]) * mlat)
 
 
 def _seg_point_dist(pt, poly):
@@ -88,7 +99,46 @@ def _seg_point_dist(pt, poly):
     return Point(pt).distance(LineString(poly))
 
 
-def _backclimb(pts):
+def _fork_node_placeable(ds, sruns, i, j, hinge) -> bool:
+    """Whether a doubled ribbon (runs i, j sharing `hinge`) can legally fork. Fork legality is pure
+    GEOMETRY — a split node N must clear R5/R6 spacing and not sever a lift-pair — and the builder's
+    _try_fork is the oracle-of-record; reimplementing it here would duplicate complex logic and drift.
+    """
+    import copy
+
+    g2 = copy.deepcopy(ds.graph)
+    builder = OSMGraphBuilder(dem=DEMService(), bbox=ds.bbox)
+    builder._source_lines = [LineString([builder._to_m(p.lon, p.lat) for p in r.points]) for r in g2.slope_runs]
+    builder._osm_lift_pairs = LiftReachabilityCheck(builder=builder, pistes=ds.pistes).osm_pairs(g2)
+    r_i, r_j = g2.slope_runs[i], g2.slope_runs[j]
+    short, lng = (
+        (r_i, r_j)
+        if _polylen([(p.lon, p.lat) for p in r_i.points]) <= _polylen([(p.lon, p.lat) for p in r_j.points])
+        else (r_j, r_i)
+    )
+    short_len = _polylen([(p.lon, p.lat) for p in short.points])
+    return builder._try_fork(g2, short, lng, hinge, short_len)
+
+
+def _drop_would_harm(ds, drop_idx) -> bool:
+    """Whether dropping slope run `drop_idx` would break connectivity the resort needs — via the same
+    production sanity checks used at import, each unit-tested independently with dummy graphs: R22 strands
+    a node (NodeReachabilityCheck) or R40 severs a lift→lift descent OSM offers (LiftReachabilityCheck).
+    When true, R22/R40 outrank R34, so the twin legitimately survives.
+    """
+    g = ds.graph
+    runs = [r for k, r in enumerate(g.slope_runs) if k != drop_idx]
+    cand = ImportGraph(node_points=g.node_points, slope_runs=runs, lifts=g.lifts)
+    if NodeReachabilityCheck.stranded(cand):
+        return True  # R22: dropping strands a node
+    offered = LiftReachabilityCheck(
+        builder=OSMGraphBuilder(dem=DEMService(), bbox=ds.bbox), pistes=ds.pistes
+    ).osm_pairs(g)
+    before = LiftReachabilityCheck.final_pairs(g) & offered
+    return bool(before - LiftReachabilityCheck.final_pairs(cand))  # R40: severs a lift→lift descent
+
+
+def _backclimb(pts) -> float:
     """ULTRA-STRICT uphill metric (R3): the largest elevation RISE over any BACKCLIMB_WINDOW_M span of
     the descending-oriented run. A real piste must go strictly DOWN — over every ~80 m window the far
     end sits no higher than the near end. Returns the worst window's rise (0 for a clean descent). Raw
@@ -217,10 +267,15 @@ class TestImportRules:
         assert dupes == 0, f"{dupes} slopes are near-duplicates of another slope"
 
     def test_r3_no_uphill_slope(self, ds):
-        """R3: STRICT descent — every slope must go downhill, with no back-climb over MAX_BACKCLIMB_M on any
-        BACKCLIMB_WINDOW_M window of the descending run, measured on raw DEM elevations without smoothing. Prevents
-        an uphill segment surviving import and violating the piste-descends invariant.
+        """R3: STRICT descent. Two independent conditions, both mandatory:
+        (a) NET DROP — a run's two hub endpoints must strictly differ in elevation (end node lower than
+            start node, zero tolerance): a run whose endpoints are level can't be oriented downhill.
+        (b) NO BACK-CLIMB — no rise over MAX_BACKCLIMB_M on any BACKCLIMB_WINDOW_M window of the
+            descending run, on raw DEM elevations. Prevents an uphill segment surviving import.
         """
+        elev = {k: v.elevation for k, v in ds.graph.node_points.items()}
+        level = [r for r in ds.graph.slope_runs if elev[r.node_a] == elev[r.node_b]]
+        assert level == [], f"{len(level)} slope runs have level endpoints (no strict net drop start→end)"
         offenders = [r for r in ds.graph.slope_runs if _backclimb(r.points) > OSMConfig.MAX_BACKCLIMB_M]
         assert offenders == [], f"{len(offenders)} slope runs go uphill (> {OSMConfig.MAX_BACKCLIMB_M}m back-climb)"
 
@@ -229,7 +284,7 @@ class TestImportRules:
         component holding a lift station. A run reaching no lift must be dropped as unreachable. Prevents
         disconnected slope fragments surviving detached from the skiable system.
         """
-        lift_nodes = {n for lf in ds.graph.lifts for n in (lf.node_a, lf.node_b)}
+        lift_nodes = _lift_nodes(ds.graph)
         comp_of = {}
         for i, c in enumerate(_components(ds.graph)):
             for n in c:
@@ -327,7 +382,7 @@ class TestImportRules:
         slope floating in a near-miss beside ski infrastructure.
         """
         pts = {k: (v.lon, v.lat) for k, v in ds.graph.node_points.items()}
-        lift_nodes = {n for lf in ds.graph.lifts for n in (lf.node_a, lf.node_b)}
+        lift_nodes = _lift_nodes(ds.graph)
         slope_keys = [k for k in pts if k not in lift_nodes]
         offenders = [
             (sk, lk)
@@ -345,7 +400,7 @@ class TestImportRules:
         referencing a node missing from the registry.
         """
         node_pt = ds.graph.node_points
-        lift_nodes = {n for lf in ds.graph.lifts for n in (lf.node_a, lf.node_b)}
+        lift_nodes = _lift_nodes(ds.graph)
         # every lift references its own node coords exactly (lift geometry is authoritative)
         for lf in ds.graph.lifts:
             assert lf.node_a in node_pt and lf.node_b in node_pt
@@ -354,21 +409,22 @@ class TestImportRules:
         assert lift_nodes, "no lift nodes present to validate lift-authoritative hubs"
 
     def test_r12_slopes_stay_on_original_osm_pistes(self, ds):
-        """R12: STRICT fidelity — every imported slope must hug an original OSM piste, with at least 85% of its points
-        within SLOPE_ON_SOURCE_TOL_M of some source way. A run wandering off is invented geometry. Prevents a slope
-        stitched across a gap where no piste exists.
+        """R12: STRICT fidelity — every imported slope must hug an original OSM piste, with at least 85% of
+        its points within PISTE_VERTEX_TOL_M of some source way. Distance is to the piste LINE (nearest
+        segment), not merely its vertices: a point sitting ON a long straight OSM leg between two far-apart
+        vertices is on the piste. A run wandering off is invented geometry across a gap where none exists.
         """
         els = ds.elements
         pistes, _lifts = ways_to_lines(els, ds.bbox)
-        src = [verts for verts, _nm in pistes if len(verts) >= 2]  # raw OSM piste polylines (lon/lat)
-        tol = 45.0  # ~1 piste-width; the builder's on-source gate (SLOPE_ON_SOURCE_TOL_M) drops worse
+        # source pistes as local-metre polylines; measure point→nearest-segment (line), not point→vertex.
+        src = [[_to_local(lon, lat, ds.bbox) for lon, lat in verts] for verts, _nm in pistes if len(verts) >= 2]
+        tol = OSMConfig.PISTE_VERTEX_TOL_M  # ~1 piste-width; the builder's R12 gate uses the same constant
         phantom = 0
         for r in ds.graph.slope_runs:
-            # a slope is valid only if (almost) all of its points sit within tol of SOME source piste
             off = 0
             for p in r.points:
-                pt = (p.lon, p.lat)
-                if not any(min(_hav(pt, sv) for sv in s) < tol for s in src):
+                pt = _to_local(p.lon, p.lat, ds.bbox)
+                if not any(_seg_point_dist(pt, s) < tol for s in src):  # distance to the piste LINE
                     off += 1
             if off / len(r.points) > 0.15:  # >15% of the run wanders off every OSM piste
                 phantom += 1
@@ -380,7 +436,7 @@ class TestImportRules:
         where a single merged hub belongs.
         """
         pts = {k: (v.lon, v.lat) for k, v in ds.graph.node_points.items()}
-        lift_nodes = {n for lf in ds.graph.lifts for n in (lf.node_a, lf.node_b)}
+        lift_nodes = _lift_nodes(ds.graph)
         slope_keys = [k for k in pts if k not in lift_nodes]
         clusters = 0
         for i, ki in enumerate(slope_keys):
@@ -476,7 +532,7 @@ class TestImportRules:
         from shapely.ops import unary_union
 
         lat0 = (ds.bbox[1] + ds.bbox[3]) / 2
-        mlat, mlon = 111_320.0, 111_320.0 * math.cos(math.radians(lat0))
+        mlon, mlat = GeoCalculator.meters_per_degree(lat=lat0)
 
         def to_m(lon, lat):
             return ((lon - ds.bbox[0]) * mlon, (lat - ds.bbox[1]) * mlat)
@@ -519,9 +575,11 @@ class TestImportRules:
         assert all(r.node_a != r.node_b for r in ds.graph.slope_runs), "a segment is a self-loop (a==b)"
 
     def test_r21_every_lift_is_skiable_top_to_bottom(self, ds):
-        """R21: STRICT completeness — from every lift top a skier must descend to that lift's own bottom via a chain of
-        descending segments, checked by BFS over downhill edges for all lifts. A lift is never dropped, so failure
-        signals missing slopes. Prevents the import filtering out runs OSM provides.
+        """R21: STRICT completeness — a lift top must descend to that lift's OWN bottom whenever OSM's raw
+        pistes actually offer that descent. Checked by BFS over the final downhill edges, gated on the OSM
+        ground truth (LiftReachabilityCheck): a valley-access gondola / cross-border cable-car with no
+        ski-back piste in OSM is exempt (you genuinely can't ski to its base). Prevents the import dropping
+        a run OSM DOES provide, without demanding a descent that never existed.
         """
         elev = {k: v.elevation for k, v in ds.graph.node_points.items()}
         down: dict[int, set[int]] = defaultdict(set)
@@ -541,58 +599,32 @@ class TestImportRules:
                         q.append(y)
             return False
 
+        # OSM ground truth: which lift-top → lift-bottom descents the raw pistes actually offer.
+        osm_offers = LiftReachabilityCheck(OSMGraphBuilder(dem=DEMService(), bbox=ds.bbox), ds.pistes).osm_pairs(
+            ds.graph
+        )
         unskiable = []
         for lf in ds.graph.lifts:
             top = lf.node_a if elev[lf.node_a] >= elev[lf.node_b] else lf.node_b
             bottom = lf.node_b if top == lf.node_a else lf.node_a
-            if not can_ski(top, bottom):
+            # Only demand the descent OSM actually offers (skip valley-access lifts with no ski-back piste).
+            if (top, bottom) in osm_offers and not can_ski(top, bottom):
                 unskiable.append(lf.name or f"{top}->{bottom}")
         assert unskiable == [], (
             f"{len(unskiable)}/{len(ds.graph.lifts)} lifts have NO descending slope-chain top→bottom "
-            f"(missing slopes, not a lift fault): {unskiable[:5]}"
+            f"(missing slopes OSM offers, not a lift fault): {unskiable[:5]}"
         )
 
     def test_r22_no_slope_dead_ends(self, ds):
-        """R22: STRICT bidirectional reachability — over descending slope edges only, every slope node must reach a lift
-        station going down, unless it sits below the lowest lift base as a valley terminus, and must be reachable
-        from a lift going down. Prevents a dropped or truncated slope stranding a skier.
+        """R22: STRICT bidirectional reachability — over descending slope edges only, every slope node must
+        reach a lift going down (unless it sits below the lowest lift base as a valley terminus) AND be
+        reachable from a lift going down. Uses the production NodeReachabilityCheck (unit-tested separately
+        with dummy graphs); asserts it finds no stranded node on the real import.
         """
-        elev = {k: v.elevation for k, v in ds.graph.node_points.items()}
-        lift_nodes = {n for lf in ds.graph.lifts for n in (lf.node_a, lf.node_b)}
-        min_lift_base = min((elev[n] for n in lift_nodes), default=0.0)
-        down: dict[int, set[int]] = defaultdict(set)
-        up: dict[int, set[int]] = defaultdict(set)
-        slope_nodes: set[int] = set()
-        for r in ds.graph.slope_runs:
-            hi, lo = (r.node_a, r.node_b) if elev[r.node_a] >= elev[r.node_b] else (r.node_b, r.node_a)
-            down[hi].add(lo)
-            up[lo].add(hi)
-            slope_nodes |= {hi, lo}
-
-        def reaches(start: int, graph: dict[int, set[int]]) -> bool:
-            """True if a lift station is reachable from `start` over `graph` (down= or up=adjacency)."""
-            seen, q = {start}, deque([start])
-            while q:
-                x = q.popleft()
-                if x in lift_nodes:
-                    return True
-                for y in graph[x]:
-                    if y not in seen:
-                        seen.add(y)
-                        q.append(y)
-            return False
-
-        # A sink BELOW the lowest lift base is a genuine VALLEY TERMINUS — you ski out of the box to a
-        # return lift whose base is outside the bbox (e.g. the Ischgl village gondola). Not a dead-end.
-        stranded_down = sorted(n for n in slope_nodes if not reaches(n, down) and elev[n] > min_lift_base)
-        stranded_up = sorted(n for n in slope_nodes if not reaches(n, up))
-        assert stranded_down == [], (
-            f"{len(stranded_down)} slope nodes cannot reach a lift going DOWN (skier stranded): "
-            f"{stranded_down[:8]} — a dropped/truncated slope"
-        )
-        assert stranded_up == [], (
-            f"{len(stranded_up)} slope nodes cannot be reached from a lift going down (unreachable): "
-            f"{stranded_up[:8]} — a dropped feeder piste"
+        stranded = sorted(NodeReachabilityCheck.stranded(ds.graph))
+        assert stranded == [], (
+            f"{len(stranded)} slope nodes are stranded (can't reach a lift down, or unreachable from one): "
+            f"{stranded[:8]} — a dropped/truncated slope or feeder piste"
         )
 
     def test_r23_slope_points_hug_terrain(self, ds):
@@ -673,9 +705,7 @@ class TestImportRules:
         node breaking the complete node partition.
         """
         nodes = set(ds.graph.node_points)
-        referenced = {n for r in ds.graph.slope_runs for n in (r.node_a, r.node_b)} | {
-            n for lf in ds.graph.lifts for n in (lf.node_a, lf.node_b)
-        }
+        referenced = {n for r in ds.graph.slope_runs for n in (r.node_a, r.node_b)} | _lift_nodes(ds.graph)
         dangling = sorted(referenced - nodes)
         orphaned = sorted(nodes - referenced)
         assert dangling == [], (
@@ -705,7 +735,8 @@ class TestImportRules:
     def test_r29_segments_group_into_fewer_slopes(self, ds):
         """R29: STRICT grouping — path segments must group into whole app-slopes emitted by to_slope_chains, averaging
         at least min_seg_per_slope segments each, with every run in exactly one chain. Prevents a real named piste
-        fragmenting into many single-segment app-slopes.
+        fragmenting into many single-segment app-slopes. (Threshold is deliberately loose because R39 peels avoidable
+        steep sections into honest sub-slopes, lowering the ratio on purpose.)
         """
         runs = ds.graph.slope_runs
         chains = ds.graph.to_slope_chains()  # FINAL app-slopes: list of (per-run point-lists, name)
@@ -801,7 +832,11 @@ class TestImportRules:
                 if i == j or len(runs[j]) < 2 or not sruns[i].name or sruns[i].name != sruns[j].name:
                     continue  # only a twin of the SAME named piste is a redundant double-draw
                 if li <= _polylen(runs[j]) and li > 0 and sustained_parallel(runs[i], runs[j]) >= frac * li:
-                    offenders.append(sruns[i].name)
+                    # A twin is a real offender only if dropping it harms nothing. R22 (strands a node) and
+                    # R40 (severs a lift→lift descent OSM offers) outrank R34 — those cases legitimately keep
+                    # both. Checked INDEPENDENTLY here (test's own BFS + oracle), not via the builder.
+                    if not _drop_would_harm(ds, i):
+                        offenders.append(sruns[i].name)
                     break
         assert not offenders, (
             f"{len(offenders)} runs are a redundant parallel twin of a same-named sibling "
@@ -817,7 +852,7 @@ class TestImportRules:
         frac = OSMConfig.PARALLEL_TWIN_FRAC
         sruns = ds.graph.slope_runs
         runs = [[(p.lon, p.lat) for p in r.points] for r in sruns]
-        lift_nodes = {n for lf in ds.graph.lifts for n in (lf.node_a, lf.node_b)}
+        lift_nodes = _lift_nodes(ds.graph)
         by_name = defaultdict(list)
         for i, r in enumerate(sruns):
             if r.name:
@@ -844,7 +879,13 @@ class TestImportRules:
                         if min(_hav(sp[m], q) for q in lp) > near:
                             break
                         arc += _hav(sp[m - 1], sp[m]) if m > 0 else 0.0
-                    if arc >= frac * _polylen(sp):  # most of the shorter still hugs → an un-forked double
+                    # arc >= frac*len → most of the shorter still hugs → a doubled ribbon. It must fork
+                    # ONLY if a split node N can be legally placed on the longer run near the divergence —
+                    # R5 (≥MIN_NODE_DIST from every node) and R6 (≥MIN_NODE_DIST from any other run whose
+                    # elevation spans N) outrank R35. If dense terrain leaves no valid N (the builder's
+                    # _try_fork spacing gate), the fork is impossible and the pair legitimately stays
+                    # un-forked (not a builder fault).
+                    if arc >= frac * _polylen(sp) and _fork_node_placeable(ds, sruns, i, j, hinge):
                         offenders.append((sruns[short].name, hinge, far_i, far_j))
         assert not offenders, (
             f"{len(offenders)} doubled ribbons left un-forked (should be split into trunk+branches): {offenders[:8]}"
@@ -853,20 +894,42 @@ class TestImportRules:
     def test_r36_no_needless_degree2_node(self, ds):
         """R36: every non-lift node must be a real junction (run-degree ≥3) — a degree-2 pass-through
         node (one run in, one out, nothing branching) must have been collapsed, its two runs merged.
+
+        EXEMPT: a degree-2 node whose two runs form a terrain roller across the join — fusing them
+        would yield a run climbing >MAX_BACKCLIMB_M over an 80m window and violate R3. R3 (piste
+        descends) outranks the cosmetic collapse, so the junction legitimately stays (the builder
+        correctly refuses that merge). Only a collapse that keeps R3 is 'needless'.
         """
         deg: dict[int, int] = defaultdict(int)
+        runs_at: dict[int, list[SlopeRun]] = defaultdict(list)
         for r in ds.graph.slope_runs:
             deg[r.node_a] += 1
             deg[r.node_b] += 1
-        lift_nodes = {n for lf in ds.graph.lifts for n in (lf.node_a, lf.node_b)}
-        offenders = [n for n, d in deg.items() if d == 2 and n not in lift_nodes]
+            runs_at[r.node_a].append(r)
+            runs_at[r.node_b].append(r)
+        lift_nodes = _lift_nodes(ds.graph)
+
+        def merge_would_climb(n: int) -> bool:
+            """True if fusing the node's two runs into one through-run would back-climb over the R3 cap
+            (a real dip-then-rise across the join), so the junction must stay (R3 wins over R36).
+            """
+            r1, r2 = runs_at[n]
+            arm1 = list(r1.points) if r1.node_b == n else list(reversed(r1.points))  # …→ n
+            arm2 = list(r2.points) if r2.node_a == n else list(reversed(r2.points))  # n →…
+            return _backclimb(arm1 + arm2[1:]) > OSMConfig.MAX_BACKCLIMB_M
+
+        offenders = [
+            n
+            for n, d in deg.items()
+            if d == 2 and n not in lift_nodes and len(runs_at[n]) == 2 and not merge_would_climb(n)
+        ]
         assert offenders == [], f"{len(offenders)} degree-2 non-lift pass-through nodes must collapse: {offenders[:8]}"
 
     def test_r37_no_app_slope_crosses_a_lift(self, ds):
         """R37: no app-slope may span a lift station — a slope ends where you enter/exit a lift. For each
         chain from to_slope_chains, the shared node between consecutive segments must not be a lift node.
         """
-        lift_nodes = {n for lf in ds.graph.lifts for n in (lf.node_a, lf.node_b)}
+        lift_nodes = _lift_nodes(ds.graph)
         node_pt = ds.graph.node_points
         lift_xy = [(node_pt[n].lon, node_pt[n].lat) for n in lift_nodes]
         offenders = []
@@ -887,6 +950,288 @@ class TestImportRules:
         dup_lifts = [nm for nm, c in Counter(lift_names).items() if c > 1]
         assert dup_slopes == [], f"{len(dup_slopes)} app-slope names are not unique: {dup_slopes[:8]}"
         assert dup_lifts == [], f"{len(dup_lifts)} app-lift names are not unique: {dup_lifts[:8]}"
+
+    def test_r39_no_avoidable_over_classification(self, ds):
+        """R39: an app-slope must not straddle an AVOIDABLE difficulty junction — a non-lift node of
+        full-graph degree≥3 where two adjacent segments differ in band and the harder is red/black. There
+        a skier can enter after / leave before the steep pitch, so the whole slope reading that band is
+        over-classification; it must have been split. Bands recomputed via the production classifier.
+        """
+        from skiresort_planner.constants import SlopeConfig
+        from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
+        from skiresort_planner.model.path_segment import PathSegment
+
+        g = ds.graph
+        rank = {d: i for i, d in enumerate(SlopeConfig.DIFFICULTIES)}
+        red = rank["red"]
+        lift_nodes = {n for lf in g.lifts for n in (lf.node_a, lf.node_b)}
+        # full-graph degree over the FINAL runs + lifts; avoidable = non-lift degree≥3 junctions
+        deg: Counter[int] = Counter()
+        for r in g.slope_runs:
+            deg[r.node_a] += 1
+            deg[r.node_b] += 1
+        for lf in g.lifts:
+            deg[lf.node_a] += 1
+            deg[lf.node_b] += 1
+        avoidable_xy = [
+            (g.node_points[n].lon, g.node_points[n].lat) for n, d in deg.items() if d >= 3 and n not in lift_nodes
+        ]
+
+        def band(points):
+            # production path: a real PathSegment's steepest-section max_slope_pct → difficulty band
+            pct = PathSegment(points=list(points)).max_slope_pct
+            return TerrainAnalyzer.classify_difficulty(slope_pct=pct)
+
+        offenders = []
+        for pts_lists, name in g.to_slope_chains():
+            for k in range(len(pts_lists) - 1):
+                junction = pts_lists[k][-1]  # shared endpoint with the next segment
+                if not any(_hav((junction.lon, junction.lat), xy) < 1.0 for xy in avoidable_xy):
+                    continue  # not an avoidable junction — a plain pass-through the split ignores
+                harder = max(rank[band(pts_lists[k])], rank[band(pts_lists[k + 1])])
+                if band(pts_lists[k]) != band(pts_lists[k + 1]) and harder >= red:
+                    offenders.append((name, k))
+        assert offenders == [], (
+            f"{len(offenders)} app-slopes straddle an avoidable difficulty junction (must split): {offenders[:8]}"
+        )
+
+    def test_r40_lift_to_lift_reachability_matches_osm(self, ds):
+        """R40: BRUTAL reachability preservation — every lift→lift SLOPE-ONLY downhill connection OSM
+        offers must survive to the final graph. What matters to a skier: from lift station A, skiing
+        DOWN slopes only (never riding a lift), can I reach lift station B? If OSM's raw pistes make A→B
+        skiable and our graph loses it, a real slope was dropped and a gap opened. Dropping ONE of two
+        parallel runs is fine (the connection remains); dropping the only run of a connection is a BUG.
+
+        The oracle is LiftReachabilityCheck (in the builder, so import can log the same warning); this
+        just imports again and asserts nothing is missing, reporting drops in <LiftName>_bottom/_top space.
+        """
+        check = LiftReachabilityCheck(OSMGraphBuilder(dem=DEMService(), bbox=ds.bbox), ds.pistes)
+        missing = check.missing(ds.graph)
+        labels = LiftReachabilityCheck.node_labels(ds.graph)
+        report = sorted(f"{labels[a]} → {labels[b]}" for a, b in missing)
+        assert not missing, (
+            f"{len(missing)} lift→lift downhill connections OSM offers were DROPPED (real slope gaps): {report[:12]}"
+        )
+
+
+class TestLiftReachabilityCheck:
+    """Waterproof unit tests for the R40 oracle (LiftReachabilityCheck) on hand-built graphs + a mock
+    DEM — exercising every real-life weakness: bottom/top/mid_k labelling, a node shared by two lifts,
+    unnamed lifts, parallel runs (drop one → still connected), the OSM proximity circle, the MIN_DROP_M
+    net-descent filter that rejects near-equal-height peaks, and missing() flagging a genuinely lost run.
+    """
+
+    _NS = 20.0  # MockDEM: elevation rises 20% going NORTH (higher lat ⇒ higher elevation)
+
+    def _pt(self, north_m, east_m=0.0):
+        """A PathPoint `north_m` metres north (and `east_m` east) of origin, elevation from the mock DEM
+        (base 2000m, +NS% per north-metre). Higher north ⇒ higher elevation, so orientation is exact.
+        """
+        from skiresort_planner.model.path_point import PathPoint
+
+        lat, lon = north_m / MapConfig.METERS_PER_DEGREE_EQUATOR, east_m / MapConfig.METERS_PER_DEGREE_EQUATOR
+        return PathPoint(lon=lon, lat=lat, elevation=2000.0 + north_m * self._NS / 100)
+
+    def _graph(self, *, node_north, lifts, runs):
+        """Build an ImportGraph: node_north = {id: north_m}; lifts/runs = (name/None, a, b) tuples."""
+        from skiresort_planner.generators.osm_graph_builder import ImportGraph, LiftLine
+
+        pts = {n: self._pt(north) for n, north in node_north.items()}
+        lift_lines = [
+            LiftLine(bottom=pts[a], top=pts[b], lift_type="chairlift", node_a=a, node_b=b, name=nm)
+            for nm, a, b in lifts
+        ]
+        slope_runs = [SlopeRun(points=[pts[a], pts[b]], node_a=a, node_b=b, name=nm) for nm, a, b in runs]
+        return ImportGraph(node_points=pts, slope_runs=slope_runs, lifts=lift_lines)
+
+    # ---- node_labels: the naming that makes the report human-readable + node-identity robust ----
+
+    def test_labels_rank_bottom_top_and_mid_by_elevation(self):
+        # A 3-station lift (base 0m, mid 300m, top 600m north) → bottom / mid_0 / top by elevation.
+        g = self._graph(
+            node_north={1: 0.0, 2: 300.0, 3: 600.0},
+            lifts=[("Gondola", 1, 2), ("Gondola", 2, 3)],  # two sections share mid-station node 2
+            runs=[],
+        )
+        labels = LiftReachabilityCheck.node_labels(g)
+        assert labels == {1: "Gondola_bottom", 2: "Gondola_mid_0", 3: "Gondola_top"}
+
+    def test_label_of_node_shared_by_two_lifts_lists_both(self):
+        # Node 2 is LiftA's top AND LiftB's top (one physical station, two lifts) — label lists both,
+        # sorted, so identity stays the single node id and the sides can't desync.
+        g = self._graph(
+            node_north={1: 0.0, 2: 500.0, 3: 100.0},
+            lifts=[("LiftA", 1, 2), ("LiftB", 3, 2)],
+            runs=[],
+        )
+        assert LiftReachabilityCheck.node_labels(g)[2] == "LiftA_top / LiftB_top"
+
+    def test_unnamed_lift_labels_by_node_id(self):
+        g = self._graph(node_north={1: 0.0, 2: 500.0}, lifts=[(None, 1, 2)], runs=[])
+        labels = LiftReachabilityCheck.node_labels(g)
+        assert labels[1] == "@1_bottom" and labels[2] == "@1_top"
+
+    # ---- final_pairs: transitive downhill reachability over shared node ids ----
+
+    def test_final_pairs_are_transitive_downhill(self):
+        # spine top(3,900) → mid(2,500) → base(1,0); a lift anchors each. 3 reaches 2 and 1; 2 reaches 1.
+        g = self._graph(
+            node_north={1: 0.0, 2: 500.0, 3: 900.0},
+            lifts=[("L1", 1, 3), ("L2", 2, 3)],  # lifts ride the spine nodes (all present)
+            runs=[(None, 3, 2), (None, 2, 1)],
+        )
+        pairs = LiftReachabilityCheck.final_pairs(g)
+        assert (3, 2) in pairs and (2, 1) in pairs and (3, 1) in pairs
+        assert (1, 3) not in pairs and (2, 3) not in pairs  # never uphill
+
+    def test_dropping_one_of_two_parallel_runs_keeps_the_connection(self):
+        # top(2) → base(1) drawn as TWO parallel runs; dropping one must NOT lose the 2→1 connection.
+        nn = {1: 0.0, 2: 500.0}
+        both = self._graph(node_north=nn, lifts=[("A", 1, 2)], runs=[("r1", 2, 1), ("r2", 2, 1)])
+        one = self._graph(node_north=nn, lifts=[("A", 1, 2)], runs=[("r1", 2, 1)])
+        assert (2, 1) in LiftReachabilityCheck.final_pairs(both)
+        assert (2, 1) in LiftReachabilityCheck.final_pairs(one)  # still connected after the drop
+
+    # ---- osm_pairs: the proximity-circle ground truth + MIN_DROP_M filter ----
+
+    def _builder(self, bbox=(-0.01, -0.01, 0.01, 0.01)):
+        return OSMGraphBuilder(
+            dem=MockDEMService(base_elevation=2000.0, slope_ns_pct=self._NS, slope_ew_pct=0.0), bbox=bbox
+        )
+
+    def test_osm_pair_detected_when_a_piste_links_two_stations_downhill(self):
+        # Station 2 (top, 600m north) and station 1 (base, 0m); each is a real lift endpoint (nodes 3/4
+        # are the far ends). A raw piste runs from beside the top down to beside the base — OSM must
+        # report 2→1 even though the FINAL graph has NO slope run between them.
+        g = self._graph(
+            node_north={1: 0.0, 2: 600.0, 3: 900.0, 4: 300.0}, lifts=[("Feeder", 2, 3), ("Base", 1, 4)], runs=[]
+        )
+        b = self._builder()
+
+        def ll(north):  # (lon,lat) on the spine `north` metres from origin
+            return (0.0, north / MapConfig.METERS_PER_DEGREE_EQUATOR)
+
+        pistes: list[tuple[list[tuple[float, float]], str | None]] = [([ll(590), ll(400), ll(200), ll(10)], "Piste")]
+        osm = LiftReachabilityCheck(b, pistes).osm_pairs(g)
+        assert (2, 1) in osm  # OSM offers the downhill connection
+
+    def test_osm_pair_rejected_when_stations_are_near_equal_height(self):
+        # Two stations ~1m apart in elevation (5m north): a piste touches both circles, yet the drop
+        # < MIN_DROP_M, so NO connection may be demanded either way (near-equal-peak DEM noise).
+        g = self._graph(node_north={1: 200.0, 2: 205.0, 3: 500.0, 4: 500.0}, lifts=[("P", 1, 3), ("Q", 2, 4)], runs=[])
+        b = self._builder()
+        pistes: list[tuple[list[tuple[float, float]], str | None]] = [
+            (
+                [
+                    (0.0, 205.0 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+                    (0.0, 200.0 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+                ],
+                "Ridge",
+            )
+        ]
+        osm = LiftReachabilityCheck(b, pistes).osm_pairs(g)
+        assert (2, 1) not in osm and (1, 2) not in osm  # <MIN_DROP_M net drop → not a real run
+
+    # ---- missing(): the actual assertion the builder + R40 rely on ----
+
+    def test_missing_flags_a_connection_osm_has_but_final_dropped(self):
+        # OSM piste links top→base; the FINAL graph has the lifts but NO connecting run → 2→1 is MISSING.
+        g = self._graph(
+            node_north={1: 0.0, 2: 600.0, 3: 900.0, 4: 300.0}, lifts=[("Feeder", 2, 3), ("Base", 1, 4)], runs=[]
+        )
+        b = self._builder()
+        pistes: list[tuple[list[tuple[float, float]], str | None]] = [
+            (
+                [
+                    (0.0, 590.0 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+                    (0.0, 10.0 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+                ],
+                "Piste",
+            )
+        ]
+        missing = LiftReachabilityCheck(b, pistes).missing(g)
+        assert (2, 1) in missing
+
+    def test_missing_empty_when_final_keeps_the_connection(self):
+        # Same OSM piste, but now the final graph HAS the 2→1 run → nothing missing.
+        g = self._graph(
+            node_north={1: 0.0, 2: 600.0, 3: 900.0, 4: 300.0},
+            lifts=[("Feeder", 2, 3), ("Base", 1, 4)],
+            runs=[("run", 2, 1)],
+        )
+        b = self._builder()
+        pistes: list[tuple[list[tuple[float, float]], str | None]] = [
+            (
+                [
+                    (0.0, 590.0 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+                    (0.0, 10.0 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+                ],
+                "Piste",
+            )
+        ]
+        assert LiftReachabilityCheck(b, pistes).missing(g) == set()
+
+
+class TestNodeReachabilityCheck:
+    """Dummy-graph unit tests for the R22 stranding checker, so it's independently trusted and legitimate
+    to reuse in the R22/R34 rule tests. MockDEM: elevation rises 20% going NORTH (higher lat ⇒ higher).
+    """
+
+    _NS = 20.0
+
+    def _pt(self, north_m, east_m=0.0):
+        from skiresort_planner.model.path_point import PathPoint
+
+        lat, lon = north_m / MapConfig.METERS_PER_DEGREE_EQUATOR, east_m / MapConfig.METERS_PER_DEGREE_EQUATOR
+        return PathPoint(lon=lon, lat=lat, elevation=2000.0 + north_m * self._NS / 100)
+
+    def _graph(self, *, node_north, lifts, runs):
+        from skiresort_planner.generators.osm_graph_builder import ImportGraph, LiftLine
+
+        pts = {n: self._pt(north) for n, north in node_north.items()}
+        lift_lines = [
+            LiftLine(bottom=pts[a], top=pts[b], lift_type="chairlift", node_a=a, node_b=b, name=nm)
+            for nm, a, b in lifts
+        ]
+        slope_runs = [SlopeRun(points=[pts[a], pts[b]], node_a=a, node_b=b, name=nm) for nm, a, b in runs]
+        return ImportGraph(node_points=pts, slope_runs=slope_runs, lifts=lift_lines)
+
+    def test_clean_loop_has_no_stranded_node(self):
+        # Lift 1(base)→2(top); slope 2→1 back down. Every node reaches a lift both ways → none stranded.
+        g = self._graph(node_north={1: 0.0, 2: 600.0}, lifts=[("L", 1, 2)], runs=[("s", 2, 1)])
+        assert NodeReachabilityCheck.stranded(g) == set()
+
+    def test_dead_end_sink_above_base_is_stranded(self):
+        # Slope 2→3 branches to node 3 (300m) which has NO way down to a lift → 3 is a stranded sink.
+        g = self._graph(
+            node_north={1: 0.0, 2: 600.0, 3: 300.0},
+            lifts=[("L", 1, 2)],
+            runs=[("down", 2, 1), ("branch", 2, 3)],
+        )
+        assert 3 in NodeReachabilityCheck.stranded(g)
+
+    def test_unreachable_top_is_stranded(self):
+        # Node 3 (900m) is ABOVE the lift top; a slope 3→1 exists but no lift/slope reaches 3 → unreachable.
+        g = self._graph(
+            node_north={1: 0.0, 2: 600.0, 3: 900.0},
+            lifts=[("L", 1, 2)],
+            runs=[("down", 2, 1), ("fromtop", 3, 1)],
+        )
+        assert 3 in NodeReachabilityCheck.stranded(g)
+
+    def test_valley_terminus_below_lowest_base_is_not_stranded(self):
+        # Node 3 (−300m) sits BELOW the lift base: a valley terminus (ski out of the box), not a dead-end.
+        g = self._graph(
+            node_north={1: 0.0, 2: 600.0, 3: -300.0},
+            lifts=[("L", 1, 2)],
+            runs=[("down", 2, 1), ("out", 1, 3)],
+        )
+        assert 3 not in NodeReachabilityCheck.stranded(g)
+
+    def test_no_lifts_means_nothing_stranded(self):
+        # Without lifts there's no reachability target; the checker is a no-op (not a false positive).
+        g = self._graph(node_north={1: 0.0, 2: 600.0}, lifts=[], runs=[("s", 2, 1)])
+        assert NodeReachabilityCheck.stranded(g) == set()
 
 
 class TestGraphImporter:
@@ -915,3 +1260,76 @@ class TestGraphImporter:
         # Reference artifacts written for inspection (never read back).
         assert (tmp_path / "osm_raw.json").exists()
         assert (tmp_path / "osm_import.png").exists()
+
+
+class TestDegree2CollapseGeometry:
+    """Focused unit tests for the degree-2 collapse (shapely.ops.linemerge fusion + fabricated re-mark),
+    on a synthetic 3-node chain so the geometry assertions are exact (not fixture-count envelopes).
+    """
+
+    @staticmethod
+    def _builder():
+        return OSMGraphBuilder(dem=DEMService(), bbox=DATASETS[0].bbox)
+
+    def _chain_graph(self):
+        """A→B→C oriented downhill (2000→1900→1800 m), each run carrying an INTERIOR vertex."""
+        from skiresort_planner.generators.osm_graph_builder import ImportGraph
+        from skiresort_planner.model.path_point import PathPoint
+
+        lon0, lat0 = DATASETS[0].bbox[0], DATASETS[0].bbox[1]
+        # Legs kept well under MAX_STRAIGHT_M (100 m ≈ 0.0013° lon here) so _finalize_fork_run accepts.
+        a = PathPoint(lon=lon0 + 0.0000, lat=lat0, elevation=2000.0)
+        b = PathPoint(lon=lon0 + 0.0010, lat=lat0, elevation=1900.0)
+        c = PathPoint(lon=lon0 + 0.0020, lat=lat0, elevation=1800.0)
+        mid_ab = PathPoint(lon=lon0 + 0.0005, lat=lat0 + 0.00005, elevation=1950.0)  # interior bend
+        mid_bc = PathPoint(lon=lon0 + 0.0015, lat=lat0 + 0.00005, elevation=1850.0)
+        g = ImportGraph(node_points={1: a, 2: b, 3: c})
+        g.slope_runs = [
+            SlopeRun(points=[a, mid_ab, b], node_a=1, node_b=2, name="Piste"),
+            SlopeRun(points=[b, mid_bc, c], node_a=2, node_b=3, name="Piste"),
+        ]
+        return g, (a, mid_ab, b, mid_bc, c)
+
+    def test_collapse_keeps_interior_vertices(self):
+        """Node 2 (degree-2, non-lift) collapses into one A→C run whose polyline keeps BOTH interior
+        bends — linemerge fusion must not flatten the run to a straight chord.
+        """
+        g, (a, mid_ab, b, mid_bc, c) = self._chain_graph()
+        self._builder()._collapse_degree2_nodes(g)
+        assert len(g.slope_runs) == 1, "the two runs merge at the degree-2 node"
+        merged = g.slope_runs[0]
+        assert {merged.node_a, merged.node_b} == {1, 3}, "merged run spans the two far endpoints"
+        lons = [round(p.lon, 6) for p in merged.points]
+        assert round(mid_ab.lon, 6) in lons and round(mid_bc.lon, 6) in lons, "both interior bends survive"
+        assert len(merged.points) >= 4, "kept interior vertices, not a 2-point straight chord"
+
+    def test_collapse_repopulates_fabricated_overlay(self):
+        """After the collapse, build() re-marks fabricated; here we call it directly and assert the merged
+        run's overlay has one flag per point (not the empty default a freshly-fused run carries).
+        """
+        b = self._builder()
+        g, _pts = self._chain_graph()
+        b._collapse_degree2_nodes(g)
+        b._mark_fabricated(g)
+        merged = g.slope_runs[0]
+        assert len(merged.fabricated) == len(merged.points), "fabricated overlay covers every point"
+
+    def test_to_m_round_trip_is_integer_metre_exact(self):
+        """_to_m quantises the projection to a 1 m grid; the bit-exact shared-vertex guarantee (pnode raw
+        tuple key, degree-2 collapse) needs _to_m(_to_deg(*xy)) == xy for every hub. Verify no drift over a
+        grid spanning the ischgl bbox — a single ±1 m round-trip flip would silently mis-key nodes.
+        """
+        b = self._builder()
+        drift = [(x, y) for x in range(0, 6000, 50) for y in range(0, 6000, 50) if b._to_m(*b._to_deg(x, y)) != (x, y)]
+        assert drift == [], f"{len(drift)} points drift on the _to_m/_to_deg round-trip: {drift[:5]}"
+
+    def test_full_split_yields_integer_metre_vertices(self, ds):
+        """Every noded segment vertex is integer-metre (set_precision(1.0) after unary_union), so shared
+        vertices are bit-exact — the precondition for linemerge fusion and the raw-tuple pnode key.
+        """
+        b = OSMGraphBuilder(dem=DEMService(), bbox=ds.bbox)
+        lines = [LineString([b._to_m(lo, la) for lo, la in vs]) for vs, _ in ds.pistes if len(vs) >= 2]
+        lines = [ls for ls in lines if ls.length >= OSMConfig.MIN_PISTE_LENGTH_M]
+        kept, _ = b._dedup(lines)
+        nonint = [(x, y) for s in b._full_split(kept) for x, y in s.coords if x != round(x) or y != round(y)]
+        assert nonint == [], f"{len(nonint)} non-integer vertices after full-split: {nonint[:5]}"

@@ -92,14 +92,14 @@ def bump_dedup_epoch() -> None:
 
 
 def reload_map(*, center: tuple[float, float], zoom: int, pitch: float = MapConfig.VIEWING_PITCH) -> None:
-    """Recenter + remount the map on an EXPLICIT frame (center=(lon,lat)), north-up, then rerun.
+    """Recenter on an explicit (lon,lat) frame IN PLACE, then rerun — no camera_epoch bump.
 
-    The only way to intentionally move the camera; mandatory args so no caller can remount on a stale
-    view. Keep-current-view remounts use bump_camera_epoch(); in-place redraws use trigger_rerun().
+    The new view flows via ctx.map → the deck's initialViewState, which deck.gl applies to the mounted
+    component (bumping the epoch would remount the iframe = the ~0.5s gray-out). 2D↔3D still remounts via
+    the pitch-delta path in app.py. Mandatory args so no caller reframes on a stale view.
     """
     ctx = st.session_state.context
     ctx.map.set_view(lon=center[0], lat=center[1], zoom=zoom, pitch=pitch)
-    bump_camera_epoch()
     trigger_rerun()
 
 

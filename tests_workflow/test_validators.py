@@ -5,7 +5,7 @@ values. Tests assert BOTH the message type AND its fields, and pin the exact
 MIN_DROP_M / SEGMENT_LENGTH_MAX_M boundaries (imported, not hardcoded).
 """
 
-from skiresort_planner.constants import ConnectionConfig, PathConfig
+from skiresort_planner.constants import ConnectionConfig, MapConfig, PathConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.model.message import (
     SameNodeLiftMessage,
@@ -17,8 +17,6 @@ from skiresort_planner.ui.validators import (
     validate_custom_target_downhill,
     validate_lift_stations_differ,
 )
-
-M = 111320.0  # metres per degree near the equator
 
 
 class TestLiftStationsDiffer:
@@ -81,17 +79,20 @@ class TestCustomTargetDistance:
     def test_within_range_valid(self) -> None:
         # ~500m south of start.
         assert (
-            validate_custom_target_distance(start_lat=0.0, start_lon=0.0, target_lat=-500 / M, target_lon=0.0) is None
+            validate_custom_target_distance(
+                start_lat=0.0, start_lon=0.0, target_lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR, target_lon=0.0
+            )
+            is None
         )
 
     def test_at_max_distance_boundary_is_valid(self) -> None:
         # Exactly SEGMENT_LENGTH_MAX_M is allowed (reject is distance > max).
-        at_max = PathConfig.SEGMENT_LENGTH_MAX_M / M
+        at_max = PathConfig.SEGMENT_LENGTH_MAX_M / MapConfig.METERS_PER_DEGREE_EQUATOR
         assert validate_custom_target_distance(start_lat=0.0, start_lon=0.0, target_lat=-at_max, target_lon=0.0) is None
 
     def test_beyond_max_is_rejected_with_fields(self) -> None:
         # Well beyond the cap.
-        far_lat = -(PathConfig.SEGMENT_LENGTH_MAX_M + 500) / M
+        far_lat = -(PathConfig.SEGMENT_LENGTH_MAX_M + 500) / MapConfig.METERS_PER_DEGREE_EQUATOR
         result = validate_custom_target_distance(start_lat=0.0, start_lon=0.0, target_lat=far_lat, target_lon=0.0)
         assert isinstance(result, TargetTooFarMessage)
         assert result.max_distance_m == PathConfig.SEGMENT_LENGTH_MAX_M

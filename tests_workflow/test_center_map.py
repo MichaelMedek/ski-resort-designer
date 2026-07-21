@@ -5,11 +5,10 @@ the 2D/3D full-resort render, LayerCollection z-ordering, and the
 calculate_3d_view_for_* camera calculators.
 """
 
+from skiresort_planner.constants import MapConfig
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.ui.click_detector import ClickDetector
 from skiresort_planner.ui.context import ClickDeduplicationContext
-
-M = 111320.0  # metres per degree near the equator
 
 
 def _populate_full_resort(graph, dem):
@@ -24,7 +23,11 @@ def _populate_full_resort(graph, dem):
             ProposedPathSegment(
                 points=[
                     summit,
-                    PathPoint(lon=0.0, lat=-400 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-400 / M)),
+                    PathPoint(
+                        lon=0.0,
+                        lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                        elevation=dem.get_elevation_or_raise(lon=0.0, lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+                    ),
                 ],
                 target_difficulty="blue",
             )
@@ -37,7 +40,11 @@ def _populate_full_resort(graph, dem):
             ProposedPathSegment(
                 points=[
                     summit,
-                    PathPoint(lon=400 / M, lat=0.0, elevation=dem.get_elevation_or_raise(lon=400 / M, lat=0.0)),
+                    PathPoint(
+                        lon=400 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                        lat=0.0,
+                        elevation=dem.get_elevation_or_raise(lon=400 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0),
+                    ),
                 ],
                 is_connector=True,
                 kind=SegmentKind.ROAD,
@@ -48,11 +55,41 @@ def _populate_full_resort(graph, dem):
     road = graph.finish_road(segment_ids=[list(graph.segments.keys())[-1]])
     # Lift from valley up to summit.
     bottom, _ = graph.get_or_create_node(
-        lon=0.0, lat=-800 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-800 / M)
+        lon=0.0,
+        lat=-800 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+        elevation=dem.get_elevation_or_raise(lon=0.0, lat=-800 / MapConfig.METERS_PER_DEGREE_EQUATOR),
     )
     top, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
     lift = graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
     return road, lift
+
+
+class TestGrayOut:
+    """StyleConfig.gray_out — the pure color-muting helper behind the connectivity-defect dimming."""
+
+    def test_blends_each_channel_strongly_to_128_and_keeps_alpha(self) -> None:
+        from skiresort_planner.constants import StyleConfig
+
+        # chairlift purple [168,85,247,200] pulled 75% toward 128; alpha untouched.
+        assert StyleConfig.gray_out([168, 85, 247, 200]) == [138, 117, 158, 200]
+        # A fully opaque black stays opaque; 31→round(31*.25+128*.75)=104 etc.
+        assert StyleConfig.gray_out([31, 41, 55, 255]) == [104, 106, 110, 255]
+
+    def test_gray_is_a_fixed_point(self) -> None:
+        """Mid-gray blended toward mid-gray is unchanged — the muting converges there."""
+        from skiresort_planner.constants import StyleConfig
+
+        assert StyleConfig.gray_out([128, 128, 128, 200]) == [128, 128, 128, 200]
+
+    def test_moves_color_toward_gray_not_away(self) -> None:
+        """Every muted channel sits strictly between the original and 128 (never overshoots)."""
+        from skiresort_planner.constants import StyleConfig
+
+        for original in ([34, 197, 94, 200], [239, 68, 68, 200], [216, 180, 254, 200]):
+            muted = StyleConfig.gray_out(original)
+            for orig_c, muted_c in zip(original[:3], muted[:3], strict=True):
+                lo, hi = sorted((orig_c, 128))
+                assert lo <= muted_c <= hi
 
 
 class TestMapRendering:
@@ -95,6 +132,62 @@ class TestMapRendering:
         expected_color = list(StyleConfig.SLOPE_COLORS_RGBA["blue"])
         expected_color[3] = 100
         assert belt.data[0]["color"] == expected_color
+
+    def test_defective_slope_grays_belt_but_keeps_icon_hue(self, empty_graph, path_points_blue) -> None:
+        """A slope in defect_ids mutes its belt/centerline toward gray, but the center-circle icon
+        keeps its full difficulty hue so it stays a clear clickable marker. A non-defect slope keeps
+        the belt hue too.
+        """
+        from skiresort_planner.constants import StyleConfig
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
+        from skiresort_planner.ui.center_map import MapRenderer
+
+        graph = empty_graph
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        renderer = MapRenderer(graph=graph)
+
+        base = list(StyleConfig.SLOPE_COLORS_RGBA["blue"])
+        # Non-defect control: belt keeps base color (alpha dropped to 100 for the belt).
+        plain = renderer._create_segment_layers(use_3d=False)
+        plain_belt = next(layer for layer in plain["slopes"] if layer.id == "segments_belt")
+        assert plain_belt.data[0]["color"][:3] == base[:3]
+
+        # Defect: belt grays, but the icon marker stays the full difficulty color.
+        grayed = renderer._create_segment_layers(use_3d=False, defect_ids={slope.id})
+        grayed_belt = next(layer for layer in grayed["slopes"] if layer.id == "segments_belt")
+        grayed_icons = next(layer for layer in grayed["slopes"] if layer.id == "segments_icons")
+        assert grayed_belt.data[0]["color"][:3] == StyleConfig.gray_out(base)[:3]
+        assert grayed_icons.data[0]["color"] == list(StyleConfig.SLOPE_COLORS_RGBA["blue"])
+
+    def test_defective_lift_grays_cable_but_keeps_icon_hue(self, empty_graph, mock_dem_blue_slope) -> None:
+        """A lift in defect_ids mutes its cable toward gray, but the center icon keeps its per-type
+        purple so it stays a clear clickable marker; the control cable keeps its purple too.
+        """
+        from skiresort_planner.constants import StyleConfig
+        from skiresort_planner.ui.center_map import MapRenderer
+
+        graph = empty_graph
+        dem = mock_dem_blue_slope
+        bottom, _ = graph.get_or_create_node(
+            lon=0.0,
+            lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        )
+        top, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
+        lift = graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
+        renderer = MapRenderer(graph=graph)
+        base = list(StyleConfig.LIFT_COLORS_RGBA["chairlift"])
+
+        plain = renderer._create_lift_layers(use_3d=False)
+        plain_cable = next(layer for layer in plain["cables_icons"] if layer.id == "lift_cables")
+        assert plain_cable.data[0]["color"][:3] == base[:3]
+
+        grayed = renderer._create_lift_layers(use_3d=False, defect_ids={lift.id})
+        grayed_cable = next(layer for layer in grayed["cables_icons"] if layer.id == "lift_cables")
+        grayed_icons = next(layer for layer in grayed["cables_icons"] if layer.id == "lift_icons")
+        assert grayed_cable.data[0]["color"] == StyleConfig.gray_out(base)
+        assert grayed_icons.data[0]["color"] == base
 
     def test_map_renderer_renders_proposals(self, empty_graph, path_points_blue) -> None:
         """MapRenderer renders proposal paths."""
@@ -170,8 +263,8 @@ class TestMapRendering:
         graph.finish_slope(segment_ids=list(graph.segments.keys()))
         # Road as a separate short segment.
         road_pts = [
-            type(path_points_blue[0])(lon=500 / M, lat=0.0, elevation=2000.0),
-            type(path_points_blue[0])(lon=800 / M, lat=0.0, elevation=1990.0),
+            type(path_points_blue[0])(lon=500 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=2000.0),
+            type(path_points_blue[0])(lon=800 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=1990.0),
         ]
         graph.commit_paths(
             paths=[ProposedPathSegment(points=road_pts, is_connector=True, kind=SegmentKind.ROAD)], record_undo=False
@@ -209,7 +302,9 @@ class TestMapRendering:
         graph = empty_graph
         dem = mock_dem_blue_slope
         bottom, _ = graph.get_or_create_node(
-            lon=0.0, lat=-1000 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / M)
+            lon=0.0,
+            lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         )
         top, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
         lift = graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
@@ -219,6 +314,29 @@ class TestMapRendering:
         names = [d["name"] for layer in layers["cables_icons"] for d in layer.data if "name" in d and "lift_type" in d]
         assert names, "lift cable/icon records should exist"
         assert all(name == expected for name in names), names
+
+    def test_pylon_tooltip_uses_lift_display_name_not_id(self, empty_graph, mock_dem_blue_slope) -> None:
+        """A pylon's hover tooltip names its lift by display name (icon + name), not the raw "L5" id."""
+        from skiresort_planner.constants import StyleConfig
+        from skiresort_planner.ui.center_map import MapRenderer
+
+        graph = empty_graph
+        dem = mock_dem_blue_slope
+        bottom, _ = graph.get_or_create_node(
+            lon=0.0,
+            lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        )
+        top, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
+        lift = graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
+
+        layers = MapRenderer(graph=graph)._create_lift_layers(use_3d=False)
+        pylon_layer = next(layer for layer in layers["pylons"] if layer.id == "lift_pylons")
+        assert pylon_layer.data, "a lift should have pylons"
+        expected_suffix = f"{StyleConfig.LIFT_ICONS[lift.lift_type]} {lift.name}"
+        for record in pylon_layer.data:
+            assert record["name"].endswith(expected_suffix), record["name"]
+            assert lift.id not in record["name"], "tooltip must not fall back to the raw lift id"
 
     def test_segment_layers_render_parking_at_shared_node(self, empty_graph) -> None:
         """A road sharing a node with a slope renders that node as a parking marker.
@@ -237,7 +355,11 @@ class TestMapRendering:
         graph.commit_paths(
             paths=[
                 ProposedPathSegment(
-                    points=[shared, PathPoint(lon=0.0, lat=-300 / M, elevation=1900.0)], target_difficulty="blue"
+                    points=[
+                        shared,
+                        PathPoint(lon=0.0, lat=-300 / MapConfig.METERS_PER_DEGREE_EQUATOR, elevation=1900.0),
+                    ],
+                    target_difficulty="blue",
                 )
             ]
         )
@@ -245,7 +367,10 @@ class TestMapRendering:
         graph.commit_paths(
             paths=[
                 ProposedPathSegment(
-                    points=[shared, PathPoint(lon=300 / M, lat=0.0, elevation=1990.0)],
+                    points=[
+                        shared,
+                        PathPoint(lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=1990.0),
+                    ],
                     is_connector=True,
                     kind=SegmentKind.ROAD,
                 )
@@ -272,9 +397,9 @@ class TestMapRendering:
             assert point["color"] == list(MarkerConfig.NODE_MARKER_COLOR)
             assert point["radius"] == ClickConfig.NODE_MARKER_RADIUS
 
-    def test_merge_selection_overrides_parking_style(self, empty_graph) -> None:
-        """A node in merge_node_ids renders RED + big with the merge icon; merge styling wins
-        over the parking (blue) style even when the node is a shared road/slope parking node.
+    def test_selected_node_overrides_parking_style(self, empty_graph) -> None:
+        """A node in selected_node_ids renders RED + big with a neutral "Selected" tooltip; selection
+        styling wins over the parking (blue) style even for a shared road/slope parking node.
         """
         from skiresort_planner.constants import ClickConfig, StyleConfig
         from skiresort_planner.model.path_point import PathPoint
@@ -286,7 +411,11 @@ class TestMapRendering:
         graph.commit_paths(
             paths=[
                 ProposedPathSegment(
-                    points=[shared, PathPoint(lon=0.0, lat=-300 / M, elevation=1900.0)], target_difficulty="blue"
+                    points=[
+                        shared,
+                        PathPoint(lon=0.0, lat=-300 / MapConfig.METERS_PER_DEGREE_EQUATOR, elevation=1900.0),
+                    ],
+                    target_difficulty="blue",
                 )
             ]
         )
@@ -294,7 +423,10 @@ class TestMapRendering:
         graph.commit_paths(
             paths=[
                 ProposedPathSegment(
-                    points=[shared, PathPoint(lon=300 / M, lat=0.0, elevation=1990.0)],
+                    points=[
+                        shared,
+                        PathPoint(lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=1990.0),
+                    ],
                     is_connector=True,
                     kind=SegmentKind.ROAD,
                 )
@@ -304,15 +436,15 @@ class TestMapRendering:
 
         parking_ids = {n.id for n in graph.get_parking_nodes()}
         assert parking_ids, "shared road/slope node should be a parking node"
-        merge_id = next(iter(parking_ids))  # select the parking node itself for merge
+        selected_id = next(iter(parking_ids))  # select the parking node itself
 
-        node_layer = MapRenderer(graph=graph)._create_node_layer(use_3d=False, merge_node_ids=[merge_id])
-        record = next(d for d in node_layer.data if d["id"] == merge_id)
-        # Merge wins over parking: red (not parking blue), big radius, merge icon in the tooltip.
-        assert record["color"] == list(StyleConfig.MERGE_SELECTED_RGBA)
+        node_layer = MapRenderer(graph=graph)._create_node_layer(use_3d=False, selected_node_ids=[selected_id])
+        record = next(d for d in node_layer.data if d["id"] == selected_id)
+        # Selection wins over parking: red (not parking blue), big radius, neutral "Selected" tooltip.
+        assert record["color"] == list(StyleConfig.SELECTED_NODE_RGBA)
         assert record["color"] != list(StyleConfig.PARKING_COLOR_RGBA)
         assert record["radius"] == ClickConfig.NODE_MARKER_RADIUS_BIG
-        assert StyleConfig.MERGE_ICON in record["name"]
+        assert "Selected" in record["name"] and "merge" not in record["name"].lower()
 
 
 class TestFullResortRendering:
@@ -321,7 +453,6 @@ class TestFullResortRendering:
     """
 
     def test_render_2d_produces_layers(self, empty_graph, mock_dem_blue_slope) -> None:
-        from skiresort_planner.constants import MapConfig
         from skiresort_planner.ui.center_map import MapRenderer
 
         _populate_full_resort(empty_graph, mock_dem_blue_slope)
@@ -348,6 +479,56 @@ class TestFullResortRendering:
             first[2]
             == mock_dem_blue_slope.get_elevation_or_raise(lon=first[0], lat=first[1]) + MarkerConfig.PATH_Z_OFFSET_M
         )
+
+    def test_3d_slope_renders_at_real_belt_width(self, empty_graph, path_points_blue) -> None:
+        """In 3D the center-line PathLayer IS the belt: rendered at each segment's real width_m (a
+        terrain-draped ribbon; deck.gl widths are metres by default). 2D keeps the thin belt+line.
+        """
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
+        from skiresort_planner.ui.center_map import MapRenderer
+
+        graph = empty_graph
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        seg_width = next(iter(graph.segments.values())).width_m
+        renderer = MapRenderer(graph=graph)
+
+        layers_3d = renderer._create_segment_layers(use_3d=True)
+        centerline_3d = next(layer for layer in layers_3d["slopes"] if layer.id == "segments_centerline")
+        # width_units is NOT set (pydeck would mangle the string into a "@@=" accessor and break the
+        # layer); metres is the deck.gl default. get_width="width" reads the per-record width_m.
+        assert getattr(centerline_3d, "width_units", None) is None
+        assert centerline_3d.get_width == "@@=width"
+        assert centerline_3d.data[0]["width"] == seg_width
+        assert not any(layer.id.endswith("_belt") for layer in layers_3d["slopes"]), "3D has no flat belt"
+
+        # 2D: fixed thin line (numeric literal, unmangled) over the belt polygon.
+        layers_2d = renderer._create_segment_layers(use_3d=False)
+        centerline_2d = next(layer for layer in layers_2d["slopes"] if layer.id == "segments_centerline")
+        assert centerline_2d.get_width == 4
+        assert any(layer.id == "segments_belt" for layer in layers_2d["slopes"]), "2D has a belt polygon"
+
+    def test_3d_lift_cable_renders_at_ten_meter_width(self, empty_graph, mock_dem_blue_slope) -> None:
+        """The lift cable is a 10m-wide ribbon (CABLE_WIDTH metres) so it drapes over terrain in 3D."""
+        from skiresort_planner.constants import MarkerConfig
+        from skiresort_planner.ui.center_map import MapRenderer
+
+        graph = empty_graph
+        dem = mock_dem_blue_slope
+        bottom, _ = graph.get_or_create_node(
+            lon=0.0,
+            lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        )
+        top, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
+        graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
+
+        layers = MapRenderer(graph=graph)._create_lift_layers(use_3d=True)
+        cable = next(layer for layer in layers["cables_icons"] if layer.id == "lift_cables")
+        assert (
+            getattr(cable, "width_units", None) is None
+        )  # unset → deck.gl default metres (setting it breaks the layer)
+        assert cable.get_width == MarkerConfig.CABLE_WIDTH == 10  # numeric literal passes through unprefixed
 
     def test_render_with_proposals_and_selection(self, empty_graph, mock_dem_blue_slope, path_points_blue) -> None:
         from skiresort_planner.model.proposed_path import ProposedPathSegment
@@ -384,7 +565,13 @@ class TestThreeDViewCalculators:
                 ProposedPathSegment(
                     points=[
                         PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
-                        PathPoint(lon=0.0, lat=-400 / M, elevation=dem.get_elevation_or_raise(lon=0.0, lat=-400 / M)),
+                        PathPoint(
+                            lon=0.0,
+                            lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                            elevation=dem.get_elevation_or_raise(
+                                lon=0.0, lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR
+                            ),
+                        ),
                     ],
                     target_difficulty="blue",
                 )
@@ -392,7 +579,6 @@ class TestThreeDViewCalculators:
         )
         slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
 
-        from skiresort_planner.constants import MapConfig
         from skiresort_planner.core.geo_calculator import GeoCalculator
 
         start = graph.nodes[slope.start_node_id]
@@ -403,11 +589,9 @@ class TestThreeDViewCalculators:
         assert pitch == MapConfig.VIEW_3D_PITCH
         feature_bearing = GeoCalculator.initial_bearing_deg(lon1=start.lon, lat1=start.lat, lon2=end.lon, lat2=end.lat)
         assert bearing == (feature_bearing - 90) % 360
-        # High-elevation slope zooms out from the base 3D zoom, but never below the floor.
-        assert MapConfig.VIEW_3D_MIN_ZOOM <= zoom < MapConfig.VIEW_3D_ZOOM
+        assert zoom == MapConfig.VIEW_3D_ZOOM  # fixed 3D zoom (one tuned value, no elevation adjust)
 
     def test_lift_view(self, empty_graph, mock_dem_blue_slope) -> None:
-        from skiresort_planner.constants import MapConfig
         from skiresort_planner.core.geo_calculator import GeoCalculator
         from skiresort_planner.ui.center_map import MapRenderer
 
@@ -420,7 +604,7 @@ class TestThreeDViewCalculators:
         assert pitch == MapConfig.VIEW_3D_PITCH
         feature_bearing = GeoCalculator.initial_bearing_deg(lon1=start.lon, lat1=start.lat, lon2=end.lon, lat2=end.lat)
         assert bearing == (feature_bearing - 90) % 360
-        assert MapConfig.VIEW_3D_MIN_ZOOM <= zoom < MapConfig.VIEW_3D_ZOOM
+        assert zoom == MapConfig.VIEW_3D_ZOOM  # fixed 3D zoom
 
     def test_road_view(self, empty_graph, path_points_blue) -> None:
         from skiresort_planner.model.proposed_path import ProposedPathSegment
@@ -430,7 +614,6 @@ class TestThreeDViewCalculators:
         empty_graph.commit_paths(paths=[proposal], record_undo=False)
         road = empty_graph.finish_road(segment_ids=[list(empty_graph.segments.keys())[-1]])
 
-        from skiresort_planner.constants import MapConfig
         from skiresort_planner.core.geo_calculator import GeoCalculator
 
         start = empty_graph.nodes[road.start_node_id]
@@ -441,7 +624,7 @@ class TestThreeDViewCalculators:
         assert pitch == MapConfig.VIEW_3D_PITCH
         feature_bearing = GeoCalculator.initial_bearing_deg(lon1=start.lon, lat1=start.lat, lon2=end.lon, lat2=end.lat)
         assert bearing == (feature_bearing - 90) % 360
-        assert MapConfig.VIEW_3D_MIN_ZOOM <= zoom < MapConfig.VIEW_3D_ZOOM
+        assert zoom == MapConfig.VIEW_3D_ZOOM  # fixed 3D zoom
 
 
 class TestLayerCollection:
@@ -509,3 +692,38 @@ class TestImportBoxLayers:
         info = ClickDetector(dedup=_Dedup()).detect(clicked_object=marker, clicked_coordinate=None)
         assert info is not None
         assert info.click_type == MapClickType.MARKER and info.marker_type == MarkerType.IMPORT_CENTER
+
+
+class TestFlythroughHighlightRibbon:
+    """create_highlight_ribbon: the hot-orange signal ribbon over the current flythrough element, floated
+    FLYTHROUGH_HIGHLIGHT_FLOAT_ABOVE_M above terrain in 3D. Shares _path_layer with create_route_layers.
+    """
+
+    _POLY = ((0.0, 0.0, 2000.0), (0.0, 0.001, 1900.0))
+
+    def test_ribbon_color_id_and_3d_float(self, empty_graph) -> None:
+        from skiresort_planner.constants import MapConfig, MarkerConfig
+        from skiresort_planner.ui.center_map import MapRenderer
+
+        renderer = MapRenderer(graph=empty_graph)
+        layers = renderer.create_highlight_ribbon(self._POLY, use_3d=True)
+        assert len(layers) == 1 and layers[0].id == "flythrough_highlight"
+        assert layers[0].data[0]["color"] == MapConfig.FLYTHROUGH_HIGHLIGHT_COLOR, "hot-orange signal color"
+        z = layers[0].data[0]["path"][0][2]
+        expected = 2000.0 + MarkerConfig.PATH_Z_OFFSET_M + MapConfig.FLYTHROUGH_HIGHLIGHT_FLOAT_ABOVE_M
+        assert z == expected, f"3D ribbon floats 110m above terrain, got {z}"
+
+    def test_ribbon_flat_in_2d(self, empty_graph) -> None:
+        from skiresort_planner.ui.center_map import MapRenderer
+
+        layers = MapRenderer(graph=empty_graph).create_highlight_ribbon(self._POLY, use_3d=False)
+        assert layers[0].data[0]["path"][0][2] == 0.0, "2D ribbon is flat"
+
+    def test_short_polyline_fails_fast(self, empty_graph) -> None:
+        import pytest
+
+        from skiresort_planner.ui.center_map import MapRenderer
+
+        # A ribbon needs ≥2 points; a 1-point polyline is a broken invariant → fail loud, no silent [].
+        with pytest.raises(AssertionError):
+            MapRenderer(graph=empty_graph).create_highlight_ribbon(((0.0, 0.0, 1.0),), use_3d=True)
