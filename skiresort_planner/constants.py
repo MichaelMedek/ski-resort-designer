@@ -71,7 +71,7 @@ class MapConfig:
     # Higher number = more zoomed in, lower = more zoomed out
     # Reduced zoom levels to prevent camera going underground with 3D terrain
     VIEWING_ZOOM = 13  # Overview after finishing slope/lift + program start
-    VIEW_3D_ZOOM = 13.5  # 3D side view + flythrough — one tuned float
+    VIEW_3D_ZOOM = 13.0  # 3D side view + flythrough — one tuned value, can also be float
     IMPORT_OVERVIEW_ZOOM = 12  # Post-import overview: one step further out than building zoom
 
     # Pitch angles for different modes
@@ -81,11 +81,16 @@ class MapConfig:
     DEFAULT_PITCH = 0  # Always start top-down
     DEFAULT_BEARING = 0  # Map rotation in degrees (0 = north up)
 
-    # Flythrough ("Play") camera: drives along a viewed 3D element's polyline.
-    FLYTHROUGH_LOOKAHEAD_M = 200.0  # bearing aims this far ahead along the polyline
-    FLYTHROUGH_FRAMES = 80  # total frames start→finish (frame→progress in ViewingContext)
-    FLYTHROUGH_STEP_S = 0.12  # sleep between frames (server-driven ~8fps; deck.gl eases between)
-    FLYTHROUGH_TRANSITION_MS = 130  # deck.gl LinearInterpolator easing per frame
+    # Flythrough ("Play") camera: few element-anchored keyframes, glided between by deck.gl client-side.
+    FLYTHROUGH_ANCHOR_FRACTION = 0.5  # route: camera sits this far along each element
+    FLYTHROUGH_LOOK_AHEAD_M = 900.0  # center this far ahead (nav-style: "here" below centre)
+    FLYTHROUGH_MAX_KEYFRAMES = 40  # cap on route keyframes (bounds reruns)
+    FLYTHROUGH_STEP_S = 1.0  # sleep between keyframes ≈ glide duration
+    FLYTHROUGH_TRANSITION_MS = 1600  # deck.gl glide per keyframe (> STEP_S so it never stalls)
+    FLYTHROUGH_END_DWELL_S = 3.0  # hold at the final keyframe before reverting
+    # Current-element highlight ribbon while flying (hot orange, distinct from route/arrow palettes).
+    FLYTHROUGH_HIGHLIGHT_FLOAT_ABOVE_M = 110.0  # 10m above the 100m route overlay (no z-fight)
+    FLYTHROUGH_HIGHLIGHT_COLOR = [255, 120, 0, 235]
 
     # Node snapping threshold for lift placement (used when creating end nodes)
     LIFT_END_NODE_THRESHOLD_M = 80  # Extra generous for lift top station placement

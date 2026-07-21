@@ -15,8 +15,10 @@ Two route CATEGORIES, per cap:
       of optimal). COMPLETENESS is exact — every reachable lift is a TSP city — and asserted.
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
+from itertools import groupby
 from typing import cast
 
 import networkx as nx
@@ -83,18 +85,83 @@ class RouteStep:
     detail: str  # lift type for a lift; difficulty for a slope
 
 
+def _append_deduped(pts: list[tuple[float, float, float]], p: tuple[float, float, float]) -> None:
+    """Append `p` unless it repeats the running tail — drops the junction shared by adjacent geometry."""
+    if not pts or pts[-1] != p:
+        pts.append(p)
+
+
+def _concat_deduped(
+    polylines: Iterable[Iterable[tuple[float, float, float]]],
+) -> tuple[tuple[float, float, float], ...]:
+    """Join polylines end-to-end into one, deduping the junction each shares with its predecessor. Single
+    source for both `Route.path_points` (all elements) and a viewing group's folded run.
+    """
+    pts: list[tuple[float, float, float]] = []
+    for poly in polylines:
+        for p in poly:
+            _append_deduped(pts, p)
+    return tuple(pts)
+
+
+@dataclass(frozen=True)
+class ViewingGroup:
+    """One viewing unit for the flythrough / panel legs: a lift, or a run of consecutive slopes between
+    two lifts folded into one. `actual_polyline` is the run's real geometry (curves/cable); the camera
+    faces its `straight_line` (start→end) so the sweep is steady lift→lift, not curve-tracking.
+    """
+
+    is_lift: bool
+    actual_polyline: tuple[tuple[float, float, float], ...]
+    steps: tuple["RouteStep", ...] = ()  # the route steps this group covers (empty for a standalone entity)
+
+    @property
+    def straight_line(self) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+        """The (start, end) endpoints of the group — the gross sightline the camera faces along."""
+        return (self.actual_polyline[0], self.actual_polyline[-1])
+
+
+def build_viewing_groups(
+    steps: tuple["RouteStep", ...],
+    element_polylines: tuple[tuple[tuple[float, float, float], ...], ...],
+) -> tuple[ViewingGroup, ...]:
+    """Fold parallel steps + element polylines into viewing groups: each LIFT is its own group; a run of
+    consecutive SLOPES between lifts merges into one. Single source for the panel legs, the flythrough
+    keyframes, and the current-element highlight (they must never disagree on what "one unit" is).
+    """
+
+    def group_of(run: list[tuple["RouteStep", tuple[tuple[float, float, float], ...]]]) -> ViewingGroup:
+        return ViewingGroup(
+            is_lift=run[0][0].is_lift,
+            steps=tuple(s for s, _ in run),
+            actual_polyline=_concat_deduped(poly for _, poly in run),
+        )
+
+    groups: list[ViewingGroup] = []
+    for is_lift, run_iter in groupby(zip(steps, element_polylines, strict=True), key=lambda sp: sp[0].is_lift):
+        run = list(run_iter)
+        if is_lift:
+            groups.extend(group_of([pair]) for pair in run)  # each lift is its own group (never folded)
+        else:
+            groups.append(group_of(run))  # consecutive slopes fold into one
+    return tuple(groups)
+
+
 @dataclass(frozen=True)
 class Route:
     """A computed route: the entities to traverse + per-route totals + its computation premise.
 
-    node_path is the ordered node ids; path_points is the drawable polyline (lon, lat, elevation)
-    following the actual slope/cable geometry. difficulty_cap is the hardest band ALLOWED when this
-    route was computed (the premise, e.g. "red"); criteria lists every RouteCriterion this exact route
-    wins under that cap. For a scenic tour, scenic_lifts_visited/target report lift coverage.
+    node_path is the ordered node ids; element_polylines is one oriented polyline per traversed element
+    (slope/lift) and path_points (derived) is those joined. difficulty_cap is the hardest band ALLOWED
+    when computed; criteria lists every RouteCriterion this route wins under that cap. For a scenic tour,
+    scenic_lifts_visited/target report lift coverage.
     """
 
     node_path: tuple[str, ...]
-    path_points: tuple[tuple[float, float, float], ...]  # (lon, lat, elevation) along the pistes
+    # One oriented polyline per traversed element (parallel to `steps`), each running in ski-travel
+    # direction. The drawable `path_points` is DERIVED from this (single geometry source, no drift); the
+    # flythrough camera anchors one keyframe per element from it.
+    element_polylines: tuple[tuple[tuple[float, float, float], ...], ...]
     steps: tuple[RouteStep, ...]
     total_slope_length_m: float
     total_slope_drop_m: float
@@ -104,6 +171,20 @@ class Route:
     criteria: tuple[RouteCriterion, ...]
     scenic_lifts_visited: int = 0  # distinct lifts ridden on a scenic tour (0 for point-to-point)
     scenic_lifts_target: int = 0  # distinct lifts reachable under the cap (== visited: coverage is exact)
+
+    @property
+    def path_points(self) -> tuple[tuple[float, float, float], ...]:
+        """The drawable (lon, lat, elevation) polyline along the pistes — the elements joined end-to-end,
+        deduping the shared junction point between consecutive elements. Derived from element_polylines.
+        """
+        return _concat_deduped(self.element_polylines)
+
+    @property
+    def viewing_groups(self) -> tuple[ViewingGroup, ...]:
+        """Between-lift viewing units (lift, or a folded run of consecutive slopes) — shared by the panel
+        legs, the flythrough keyframes, and the current-element highlight so they can never drift.
+        """
+        return build_viewing_groups(steps=self.steps, element_polylines=self.element_polylines)
 
     @property
     def is_scenic(self) -> bool:
@@ -378,13 +459,8 @@ class RoutePlanner:
         slope_len = slope_drop = 0.0
         lift_count = 0
         hardest_idx = -1
-        points: list[tuple[float, float, float]] = []
-
-        def add_point(lon: float, lat: float, elev: float) -> None:
-            # Dedupe the shared junction point between consecutive edges.
-            p = (lon, lat, elev)
-            if not points or points[-1] != p:
-                points.append(p)
+        # One polyline per element, parallel to `steps`; consecutive same-slope segments extend the last.
+        element_polylines: list[list[tuple[float, float, float]]] = []
 
         for a, b in zip(node_path, node_path[1:], strict=False):  # consecutive node pairs
             owner = self._owner[(a, b)]
@@ -395,27 +471,29 @@ class RoutePlanner:
                 # Trace the actual sagged cable geometry (like slopes trace their segment points), oriented
                 # a→b: cable_points run start_node→end_node; reverse when riding the lift the other way.
                 cable = lift.cable_points if lift.start_node_id == a else list(reversed(lift.cable_points))
-                for p in cable:
-                    add_point(p.lon, p.lat, p.elevation)
+                element_polylines.append([p.lon_lat_elev for p in cable])
             else:
                 seg = self._segment_of(owner)
                 slope_len += seg.length_m
                 slope_drop += abs(seg.total_drop_m)
                 hardest_idx = max(hardest_idx, SlopeConfig.DIFFICULTIES.index(seg.difficulty))
                 slope = self.graph.slopes[owner.entity_id]
-                # Collapse consecutive segments of the same slope into a single step (reads once).
-                if not (steps and not steps[-1].is_lift and steps[-1].entity_id == slope.id):
+                # Collapse consecutive segments of the same slope into a single step + element polyline.
+                same_slope = steps and not steps[-1].is_lift and steps[-1].entity_id == slope.id
+                if not same_slope:
                     steps.append(RouteStep(is_lift=False, entity_id=slope.id, name=slope.name, detail=seg.difficulty))
+                    element_polylines.append([])
                 # Trace the segment's real geometry, oriented so it runs a→b (points are stored
-                # start_node→end_node; reverse when the route skis it the other way).
+                # start_node→end_node; reverse when the route skis it the other way). Dedupe the shared
+                # junction against the element's running tail so a collapsed slope reads as one line.
                 seg_points = seg.points if seg.start_node_id == a else list(reversed(seg.points))
                 for p in seg_points:
-                    add_point(p.lon, p.lat, p.elevation)
+                    _append_deduped(element_polylines[-1], p.lon_lat_elev)
         max_difficulty = SlopeConfig.DIFFICULTIES[hardest_idx] if hardest_idx >= 0 else SlopeConfig.DIFFICULTIES[0]
         visited, target = scenic_counts
         return Route(
             node_path=node_path,
-            path_points=tuple(points),
+            element_polylines=tuple(tuple(poly) for poly in element_polylines),
             steps=tuple(steps),
             total_slope_length_m=slope_len,
             total_slope_drop_m=slope_drop,

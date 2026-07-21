@@ -630,6 +630,29 @@ class TestSlopeBuildingClick:
         )
         assert ctx.proposals.selected_idx == 1
 
+    def test_selecting_proposal_bumps_dedup_epoch_so_reclick_commits(
+        self, fake_st, path_factory, mock_dem_red_slope_diagonal, path_points_blue
+    ) -> None:
+        """Regression: selecting a proposal must bump dedup_epoch. Object-clicks dedup on the id alone
+        (proposal_body_{idx}_v{epoch}); without the bump the commit re-click on the SAME body collides
+        with the select click and is swallowed, so the path never commits.
+        """
+        from skiresort_planner.ui.click_handlers import handle_path_building_click
+
+        _sm, ctx, _graph = self._building(fake_st, mock_dem_red_slope_diagonal, path_factory)
+        ctx.proposals.paths = [
+            ProposedPathSegment(points=path_points_blue, target_difficulty="blue"),
+            ProposedPathSegment(points=path_points_blue, target_difficulty="blue"),
+        ]
+        ctx.proposals.selected_idx = 0
+        epoch_before = fake_st.session_state["dedup_epoch"]
+
+        handle_path_building_click(
+            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_BODY, proposal_index=1),
+            elevation=None,
+        )
+        assert fake_st.session_state["dedup_epoch"] > epoch_before, "select must bump the epoch for the re-click"
+
     def test_body_click_on_already_selected_slope_proposal_commits(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal, path_points_blue
     ) -> None:

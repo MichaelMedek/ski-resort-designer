@@ -37,7 +37,8 @@ from skiresort_planner.model.message import (
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.resort_graph import ResortGraph
-from skiresort_planner.model.routing import Route, RoutePlanner, routes_for_cap
+from skiresort_planner.model.routing import Route, RoutePlanner, ViewingGroup, routes_for_cap
+from skiresort_planner.ui.center_map import MapRenderer
 from skiresort_planner.ui.context import PlannerContext
 from skiresort_planner.ui.infra import bump_dedup_epoch, trigger_rerun
 from skiresort_planner.ui.kind_spec import KIND_SPECS
@@ -146,6 +147,7 @@ def process_route_plan_pending() -> None:
     assert start is not None and end is not None, "route computation armed without both endpoints"
     ctx.route_plan.routes = RoutePlanner(graph).best_routes(start_node_id=start, end_node_id=end)
     ctx.route_plan.selected_index = 0
+    ctx.viewing.stop_flythrough()  # a fresh plan must not keep riding the previous route's playback
 
 
 def route_plan_shown_routes() -> list[Route]:
@@ -157,29 +159,55 @@ def route_plan_shown_routes() -> list[Route]:
     return routes_for_cap(rp.routes, max_difficulty=rp.selected_cap)
 
 
-def flythrough_points_for_view() -> list[PathPoint]:
-    """Ordered PathPoint polyline of whatever 3D element is currently being viewed, for the Play
-    flythrough. Dispatches on the viewed entity / selected route; empty when nothing flyable is in view.
+def selected_route() -> Route | None:
+    """The one route currently shown/selected (clamped index into the per-cap routes), or None. Single
+    source for "which route is active" — used by the map overlay and the flythrough resolver alike.
+    """
+    ctx: PlannerContext = st.session_state.context
+    routes = route_plan_shown_routes()
+    if not routes:
+        return None
+    return routes[ctx.route_plan.clamped_index(len(routes))]
 
-    slope/road → committed segment geometry; lift → cable_points (bottom→top, incl. sag);
-    route → the selected route's path_points. One resolver so the shared Play button works for all kinds.
+
+def flythrough_viewing_groups() -> list[ViewingGroup]:
+    """Viewing groups (between-lift units) of whatever 3D element is currently being viewed, for the Play
+    flythrough. A single slope/road/lift → one standalone group; a route → its `viewing_groups` (each lift
+    its own, consecutive slopes folded). Empty when nothing flyable is in view.
     """
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
     viewing = ctx.viewing
 
-    if viewing.slope_id is not None:
-        return graph.slopes[viewing.slope_id].get_all_points(segments=graph.segments)
-    if viewing.road_id is not None:
-        return graph.roads[viewing.road_id].get_all_points(segments=graph.segments)
-    if viewing.lift_id is not None:
-        return list(graph.lifts[viewing.lift_id].cable_points)
+    def standalone(points: list[PathPoint], *, is_lift: bool) -> list[ViewingGroup]:
+        return [ViewingGroup(is_lift=is_lift, actual_polyline=tuple(p.lon_lat_elev for p in points))]
 
-    routes = route_plan_shown_routes()
-    if routes:
-        idx = min(ctx.route_plan.selected_index, len(routes) - 1)
-        return [PathPoint(lon=lon, lat=lat, elevation=elev) for lon, lat, elev in routes[idx].path_points]
-    return []
+    if viewing.slope_id is not None:
+        return standalone(graph.slopes[viewing.slope_id].get_all_points(segments=graph.segments), is_lift=False)
+    if viewing.road_id is not None:
+        return standalone(graph.roads[viewing.road_id].get_all_points(segments=graph.segments), is_lift=False)
+    if viewing.lift_id is not None:
+        return standalone(list(graph.lifts[viewing.lift_id].cable_points), is_lift=True)
+
+    route = selected_route()
+    return list(route.viewing_groups) if route is not None else []
+
+
+def active_flythrough_groups() -> list[ViewingGroup]:
+    """The viewed element's viewing groups WHILE a flythrough is playing in 3D, else empty. Single source
+    for 'is the camera flying now' — the render fragment, the frame driver, and the highlight all read it.
+    """
+    ctx: PlannerContext = st.session_state.context
+    if not (ctx.viewing.view_3d and ctx.viewing.flythrough_active):
+        return []
+    return flythrough_viewing_groups()
+
+
+def flythrough_keyframe_count() -> int:
+    """Number of camera keyframes for the currently-viewed element (0 if nothing drivable). The Play
+    button seeds ViewingContext with this; the driver advances one keyframe per rerun up to it.
+    """
+    return len(MapRenderer.flythrough_keyframes(flythrough_viewing_groups()))
 
 
 def confirm_import_action(mode: OSMImportMode) -> None:

@@ -17,6 +17,7 @@ UI workflow documented in DETAILS_UI.md.
 """
 
 from skiresort_planner.ui.actions import (
+    active_flythrough_groups,
     cancel_current_road,
     cancel_current_slope,
     cancel_custom_path,
@@ -79,6 +80,7 @@ __all__ = [
     "render_control_panel",
     "bump_camera_epoch",
     "bump_dedup_epoch",
+    "active_flythrough_groups",
     "cancel_custom_path",
     "cancel_current_road",
     "cancel_current_slope",

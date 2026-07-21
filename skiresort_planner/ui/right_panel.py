@@ -15,7 +15,6 @@ Design Principles:
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
-from itertools import groupby
 from typing import TYPE_CHECKING, Literal
 
 import streamlit as st
@@ -47,7 +46,7 @@ from skiresort_planner.ui.actions import (
     confirm_import_action,
     confirm_merge_action,
     delete_nodes_action,
-    flythrough_points_for_view,
+    flythrough_keyframe_count,
     rename_entity_action,
     route_plan_shown_routes,
 )
@@ -62,7 +61,7 @@ if TYPE_CHECKING:
     from skiresort_planner.model.message import Message
     from skiresort_planner.model.proposed_path import ProposedPathSegment
     from skiresort_planner.model.road import Road
-    from skiresort_planner.model.routing import Route, RouteStep
+    from skiresort_planner.model.routing import Route, ViewingGroup
     from skiresort_planner.model.segment_path import SegmentPath
     from skiresort_planner.model.slope import Slope
     from skiresort_planner.ui.mode_registry import EntityKindSpec
@@ -70,20 +69,20 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def route_legs(steps: "tuple[RouteStep, ...]") -> list[str]:
-    """Collapse a route's flat step list into readable legs: each lift is its own leg; consecutive
-    slopes between lifts fold into ONE leg naming up to ROUTE_STEP_SLOPE_PREVIEW of them (colour-emoji
-    per difficulty, not "(black)" text), then "…" if more. Keeps the list short on scenic tours.
+def route_legs(groups: "tuple[ViewingGroup, ...]") -> list[str]:
+    """Render each viewing group as a readable leg: a lift shows its name; a folded slope run names up to
+    ROUTE_STEP_SLOPE_PREVIEW of its slopes (colour-emoji per difficulty), then "…" if more. Consumes the
+    model's `viewing_groups` so the panel legs and the flythrough units are provably the same.
     """
     legs: list[str] = []
-    for is_lift, group in groupby(steps, key=lambda s: s.is_lift):
-        run = list(group)
-        if is_lift:
-            legs.extend(f"{StyleConfig.LIFT_ICONS[s.detail]} **{s.name}**" for s in run)
+    for group in groups:
+        if group.is_lift:
+            step = group.steps[0]
+            legs.append(f"{StyleConfig.LIFT_ICONS[step.detail]} **{step.name}**")
         else:
-            preview = run[: RoutePlannerConfig.ROUTE_STEP_SLOPE_PREVIEW]
+            preview = group.steps[: RoutePlannerConfig.ROUTE_STEP_SLOPE_PREVIEW]
             named = " · ".join(f"{StyleConfig.DIFFICULTY_EMOJIS[s.detail]} {s.name}" for s in preview)
-            tail = " …" if len(run) > len(preview) else ""
+            tail = " …" if len(group.steps) > len(preview) else ""
             legs.append(f"{StyleConfig.SLOPE_ICON} {named}{tail}")
     return legs
 
@@ -216,13 +215,13 @@ def _render_flythrough_controls(ctx: PlannerContext, noun: str) -> None:
     (slope/road/lift/route). Play left, Stop right; each disabled when not applicable so the row is stable.
     """
     playing = ctx.viewing.flythrough_active
-    can_play = not playing and len(flythrough_points_for_view()) >= 2
+    can_play = not playing and flythrough_keyframe_count() >= 2
     left, right = st.columns(2)
     with left:
         if _action_button(
             "▶️ Play", key="flythrough_play", help=f"Fly the camera along this {noun}", disabled=not can_play
         ):
-            ctx.viewing.start_flythrough(tuple(flythrough_points_for_view()))
+            ctx.viewing.start_flythrough()
             trigger_rerun()
     with right:
         if _action_button("⏹️ Stop", key="flythrough_stop", help="Stop the flythrough", disabled=not playing):
@@ -647,7 +646,7 @@ class RouteViewingControlPanel(ControlPanel):
         routes = self._shown()
         if not routes:
             return None  # the yellow no-route message carries the whole story
-        idx = min(self.ctx.route_plan.selected_index, len(routes) - 1)
+        idx = self.ctx.route_plan.clamped_index(len(routes))
         return RouteResultsContextMessage(
             total=len(routes), selected_index=idx, difficulty_cap=self.ctx.route_plan.selected_cap
         )
@@ -670,9 +669,10 @@ class RouteViewingControlPanel(ControlPanel):
         if routes:
             self._render_route_browser(routes)
             self._render_route_stats(routes)
-            self._render_3d_toggle()  # side view of the selected route floating above the pistes
+            # Play/Stop sits ABOVE the 3D toggle (3D only) so the row order matches every entity panel.
             if self.ctx.viewing.view_3d:
-                _render_flythrough_controls(self.ctx, "route")  # Play/Stop flythrough
+                _render_flythrough_controls(self.ctx, "route")
+            self._render_3d_toggle()  # side view of the selected route floating above the pistes
         # Idiom: close the panel to leave. To plan again, re-enter Route Planner and pick two nodes.
         if st.button("✖️ Close", width="stretch", help="Close this panel to start building again"):
             self.sm.close_panel()  # type: ignore[attr-defined]  # dynamic python-statemachine event
@@ -706,30 +706,33 @@ class RouteViewingControlPanel(ControlPanel):
         if choice != rp.selected_cap:
             rp.selected_cap = choice
             rp.selected_index = 0
+            self.ctx.viewing.stop_flythrough()  # changing which route is shown must stop an active flythrough
             trigger_rerun()
 
     def _render_route_browser(self, routes: "list[Route]") -> None:
         """◀ ▶ browser over the shown routes (mirrors _render_proposal_browser)."""
         if len(routes) <= 1:
             return
-        idx = min(self.ctx.route_plan.selected_index, len(routes) - 1)
+        idx = self.ctx.route_plan.clamped_index(len(routes))
         col_prev, col_label, col_next = st.columns([1, 2, 1])
         with col_prev:
             if st.button("◀", key="route_prev", width="stretch"):
                 self.ctx.route_plan.selected_index = (idx - 1) % len(routes)
+                self.ctx.viewing.stop_flythrough()  # browsing to another route must stop an active flythrough
                 trigger_rerun()
         with col_label:
             st.markdown(f"**Route {idx + 1} / {len(routes)}**")
         with col_next:
             if st.button("▶", key="route_next", width="stretch"):
                 self.ctx.route_plan.selected_index = (idx + 1) % len(routes)
+                self.ctx.viewing.stop_flythrough()  # browsing to another route must stop an active flythrough
                 trigger_rerun()
 
     def _render_route_stats(self, routes: "list[Route]") -> None:
         """Stats for the selected route: a colour-swatch legend naming what it's best for + the premise
         it was computed under, then totals and the ordered slope/lift steps.
         """
-        idx = min(self.ctx.route_plan.selected_index, len(routes) - 1)
+        idx = self.ctx.route_plan.clamped_index(len(routes))
         route = routes[idx]
         # Colour swatch matching the map line (keyed by the route's criterion, as drawn).
         rgba = route.color
@@ -749,7 +752,7 @@ class RouteViewingControlPanel(ControlPanel):
             emoji = StyleConfig.DIFFICULTY_EMOJIS[route.max_difficulty]
             st.metric("Max Difficulty", f"{emoji} {route.max_difficulty.capitalize()}")
         with st.expander("📋 Route Steps", expanded=False):
-            for i, leg in enumerate(route_legs(route.steps), 1):
+            for i, leg in enumerate(route_legs(route.viewing_groups), 1):
                 st.markdown(f"{i}. {leg}")
 
 

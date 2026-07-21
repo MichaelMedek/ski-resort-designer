@@ -49,6 +49,11 @@ class PathPoint:
         """Return (lon, lat) tuple - GeoJSON/Pydeck order."""
         return (self.lon, self.lat)
 
+    @property
+    def lon_lat_elev(self) -> tuple[float, float, float]:
+        """Return (lon, lat, elevation) — the drawable 3-tuple polylines/routes are built from."""
+        return (self.lon, self.lat, self.elevation)
+
     def __post_init__(self) -> None:
         """Validate data after initialization."""
         if np.isnan(self.elevation):

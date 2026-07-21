@@ -692,3 +692,38 @@ class TestImportBoxLayers:
         info = ClickDetector(dedup=_Dedup()).detect(clicked_object=marker, clicked_coordinate=None)
         assert info is not None
         assert info.click_type == MapClickType.MARKER and info.marker_type == MarkerType.IMPORT_CENTER
+
+
+class TestFlythroughHighlightRibbon:
+    """create_highlight_ribbon: the hot-orange signal ribbon over the current flythrough element, floated
+    FLYTHROUGH_HIGHLIGHT_FLOAT_ABOVE_M above terrain in 3D. Shares _path_layer with create_route_layers.
+    """
+
+    _POLY = ((0.0, 0.0, 2000.0), (0.0, 0.001, 1900.0))
+
+    def test_ribbon_color_id_and_3d_float(self, empty_graph) -> None:
+        from skiresort_planner.constants import MapConfig, MarkerConfig
+        from skiresort_planner.ui.center_map import MapRenderer
+
+        renderer = MapRenderer(graph=empty_graph)
+        layers = renderer.create_highlight_ribbon(self._POLY, use_3d=True)
+        assert len(layers) == 1 and layers[0].id == "flythrough_highlight"
+        assert layers[0].data[0]["color"] == MapConfig.FLYTHROUGH_HIGHLIGHT_COLOR, "hot-orange signal color"
+        z = layers[0].data[0]["path"][0][2]
+        expected = 2000.0 + MarkerConfig.PATH_Z_OFFSET_M + MapConfig.FLYTHROUGH_HIGHLIGHT_FLOAT_ABOVE_M
+        assert z == expected, f"3D ribbon floats 110m above terrain, got {z}"
+
+    def test_ribbon_flat_in_2d(self, empty_graph) -> None:
+        from skiresort_planner.ui.center_map import MapRenderer
+
+        layers = MapRenderer(graph=empty_graph).create_highlight_ribbon(self._POLY, use_3d=False)
+        assert layers[0].data[0]["path"][0][2] == 0.0, "2D ribbon is flat"
+
+    def test_short_polyline_fails_fast(self, empty_graph) -> None:
+        import pytest
+
+        from skiresort_planner.ui.center_map import MapRenderer
+
+        # A ribbon needs ≥2 points; a 1-point polyline is a broken invariant → fail loud, no silent [].
+        with pytest.raises(AssertionError):
+            MapRenderer(graph=empty_graph).create_highlight_ribbon(((0.0, 0.0, 1.0),), use_3d=True)

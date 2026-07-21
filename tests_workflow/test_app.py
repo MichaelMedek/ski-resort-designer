@@ -12,7 +12,6 @@ import skiresort_planner.ui.pydeck_click_handler as pch
 from skiresort_planner import app
 from skiresort_planner.constants import ChartConfig, DEMConfig, MapConfig
 from skiresort_planner.model.click_info import ClickInfo
-from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
@@ -513,27 +512,52 @@ class TestReframeInPlace:
         assert key_2d is not None and "_2d_" in key_2d
         assert key_3d != key_2d and "_3d_" in key_3d, "2D↔3D toggle must remount (key changes)"
 
-    def test_flythrough_frames_keep_key_constant(self, fake_st, monkeypatch, mock_dem_blue_slope) -> None:
+    def test_flythrough_frames_keep_key_constant(
+        self, fake_st, monkeypatch, mock_dem_blue_slope, path_points_blue
+    ) -> None:
         """The flythrough camera advances frames on a CONSTANT key (in-place camera move, no per-frame
         remount) — the same mechanism as the reframe fix.
         """
         _stub_deckgl(monkeypatch)
         monkeypatch.setattr(infra, "trigger_rerun", lambda *a, **k: None)
-        _graph, _sm, ctx = _seed_full_session(fake_st, mock_dem_blue_slope)
+        graph, sm, ctx = _seed_full_session(fake_st, mock_dem_blue_slope)
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        sm.view_slope(slope_id=slope.id)
 
         ctx.viewing.enable_3d()
-        ctx.viewing.start_flythrough(
-            (
-                PathPoint(lon=10.30, lat=46.90, elevation=2800.0),
-                PathPoint(lon=10.31, lat=46.88, elevation=2600.0),
-                PathPoint(lon=10.32, lat=46.86, elevation=2400.0),
-            )
-        )
+        ctx.viewing.start_flythrough()  # a single slope → 2 keyframes (start, end)
 
         key0 = _render_key(fake_st)
-        ctx.viewing.flythrough_frame = 3
-        key3 = _render_key(fake_st)
-        ctx.viewing.flythrough_frame = 7
-        key7 = _render_key(fake_st)
+        ctx.viewing.flythrough_frame = 1
+        key1 = _render_key(fake_st)
 
-        assert key0 == key3 == key7, f"flythrough frames must render on a constant key; {key0!r}/{key3!r}/{key7!r}"
+        assert key0 == key1, f"flythrough frames must render on a constant key; {key0!r}/{key1!r}"
+
+    def test_flythrough_dwells_at_end_before_stopping(
+        self, fake_st, monkeypatch, mock_dem_blue_slope, path_points_blue
+    ) -> None:
+        """At the final keyframe the driver DWELLS (glide finishes + the viewer takes the finish in) before
+        stopping — so the camera doesn't snap back to the entry view the instant it arrives.
+        """
+        import time
+
+        _stub_deckgl(monkeypatch)
+        monkeypatch.setattr(infra, "trigger_rerun", lambda *a, **k: None)
+        monkeypatch.setattr(app, "trigger_rerun", lambda *a, **k: None)
+        sleeps: list[float] = []
+        monkeypatch.setattr(time, "sleep", lambda s: sleeps.append(s))
+        graph, sm, ctx = _seed_full_session(fake_st, mock_dem_blue_slope)
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        sm.view_slope(slope_id=slope.id)
+        ctx.viewing.enable_3d()
+
+        ctx.viewing.start_flythrough()
+        for _ in range(50):
+            if not ctx.viewing.flythrough_active:
+                break
+            app._advance_flythrough_if_playing()
+
+        assert not ctx.viewing.flythrough_active, "the flythrough terminates"
+        assert MapConfig.FLYTHROUGH_END_DWELL_S in sleeps, "must dwell at the final keyframe before stopping"

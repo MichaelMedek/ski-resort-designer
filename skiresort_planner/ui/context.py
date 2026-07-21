@@ -352,11 +352,10 @@ class ViewingContext(BaseContext):
     view_3d: bool = False
 
     # Flythrough ("Play") playback — active only while 3D is open. Not a state-machine state: a plain
-    # loop that reframes the camera IN PLACE (Part B mechanism) along the viewed element's polyline.
-    # Stop just clears active; the normal 3D view_state (calculate_3d_view_for_*) restores the entry fit.
+    # loop reframing the camera IN PLACE along the viewed element. Keyframes are resolved LIVE each frame
+    # (single source), so only the current frame index is stored here — no stale snapshot to drift.
     flythrough_active: bool = False
     flythrough_frame: int = 0
-    flythrough_points: tuple[PathPoint, ...] = ()  # snapshot at Play
 
     # =========================================================================
     # SETTER METHODS (called by state machine before_* hooks)
@@ -450,23 +449,27 @@ class ViewingContext(BaseContext):
     # FLYTHROUGH ("Play") PLAYBACK
     # =========================================================================
 
-    def start_flythrough(self, points: tuple[PathPoint, ...]) -> None:
-        """Begin playback along `points` (≥2, snapshotted at Play) from frame 0."""
-        assert len(points) >= 2, f"flythrough needs ≥2 points, got {len(points)}"
-        self.flythrough_points = points
+    def start_flythrough(self) -> None:
+        """Begin playback from the first keyframe. Keyframes are resolved live, so no count is stored."""
         self.flythrough_frame = 0
         self.flythrough_active = True
 
+    def advance_flythrough(self) -> None:
+        """Move the camera to the next keyframe (the driver calls this once per rerun while playing)."""
+        assert self.flythrough_active, "advance_flythrough called while not playing"
+        self.flythrough_frame += 1
+
     def stop_flythrough(self) -> None:
-        """End playback and forget the snapshot. The normal 3D view_state restores the entry framing."""
+        """End playback. The normal 3D view_state restores the entry framing on the next render."""
         self.flythrough_active = False
         self.flythrough_frame = 0
-        self.flythrough_points = ()
 
-    def flythrough_progress(self) -> float:
-        """Arc-length fraction 0..1 for the current frame (single place that maps frame→progress)."""
-        last = MapConfig.FLYTHROUGH_FRAMES - 1
-        return min(self.flythrough_frame, last) / last if last > 0 else 0.0
+    def flythrough_index(self, count: int) -> int:
+        """Current frame clamped to a valid index into a `count`-keyframe run. Single clamp for both the
+        camera keyframe pick and the current-element highlight, so they can never disagree.
+        """
+        assert count >= 1, f"flythrough_index needs ≥1 keyframe, got {count}"
+        return max(0, min(self.flythrough_frame, count - 1))
 
     # =========================================================================
     # QUERY METHODS (for UI to check state)
@@ -757,6 +760,12 @@ class RoutePlanContext(BaseContext):
         self.routes = []
         self.selected_index = 0
         self.selected_cap = SlopeConfig.DIFFICULTIES[-1]
+
+    def clamped_index(self, count: int) -> int:
+        """selected_index clamped to a valid index into a `count`-length shown-routes list. Single source
+        for "which shown route is selected" — the map overlay, the ◀▶ browser, and the stats all use it.
+        """
+        return min(self.selected_index, count - 1)
 
 
 @dataclass

@@ -1185,7 +1185,7 @@ class ResortGraph:
 
         # Split the 3D centerline at the projected point (Shapely substring preserves/interpolates z); the
         # split point becomes a NEW node at DEM ground level, shared by both halves (like any junction).
-        line = LineString([(p.lon, p.lat, p.elevation) for p in seg.points])
+        line = LineString([p.lon_lat_elev for p in seg.points])
         fraction, plon, plat = self._project_onto_path(seg, lon, lat)
         elevation = dem.get_elevation(lon=plon, lat=plat)
         if elevation is None:

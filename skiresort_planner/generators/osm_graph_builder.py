@@ -1915,8 +1915,8 @@ class OSMGraphBuilder:
             return False
         # far1 → node → far2: reverse piece 1 to end at the shared node, then directed line_merge chains
         # it head-to-tail with piece 2 (integer-metre vertices are bit-exact → they fuse, dropping the dup).
-        ls1 = LineString([(p.lon, p.lat, p.elevation) for p in reversed(pts1)])  # far1 → node
-        ls2 = LineString([(p.lon, p.lat, p.elevation) for p in pts2])  # node → far2
+        ls1 = LineString([p.lon_lat_elev for p in reversed(pts1)])  # far1 → node
+        ls2 = LineString([p.lon_lat_elev for p in pts2])  # node → far2
         fused = line_merge(MultiLineString([ls1, ls2]), directed=True)
         if fused.geom_type != "LineString":
             return False  # pieces didn't chain into one line (shared endpoint mismatch) — fail loud

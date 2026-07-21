@@ -390,7 +390,7 @@ def _mk_route(*, difficulty_cap: str, max_difficulty: str = "green") -> Route:
     """A minimal Route carrying only what routes_for_cap inspects (its computation premise)."""
     return Route(
         node_path=("A", "B"),
-        path_points=(),
+        element_polylines=(),
         steps=(RouteStep(is_lift=False, entity_id="SL1", name="SL1", detail=max_difficulty),),
         total_slope_length_m=0.0,
         total_slope_drop_m=0.0,
@@ -448,3 +448,51 @@ class TestRouteStatsFieldsGone:
         from skiresort_planner.ui import context
 
         assert not hasattr(context.RoutePlanContext(), "filter_lift_types")
+
+
+class TestViewingGroups:
+    """build_viewing_groups folds a route into between-lift units: each lift its own group, consecutive
+    slopes merged into one — the single source shared by the panel legs, keyframes, and the highlight.
+    """
+
+    def _step(self, *, is_lift: bool, entity_id: str) -> RouteStep:
+        return RouteStep(is_lift=is_lift, entity_id=entity_id, name=entity_id, detail="blue")
+
+    def test_lift_slope_slope_lift_slope_folds_slope_runs(self) -> None:
+        from skiresort_planner.model.routing import build_viewing_groups
+
+        steps = (
+            self._step(is_lift=True, entity_id="L1"),
+            self._step(is_lift=False, entity_id="SA"),
+            self._step(is_lift=False, entity_id="SB"),
+            self._step(is_lift=True, entity_id="L2"),
+            self._step(is_lift=False, entity_id="SC"),
+        )
+        polys = (
+            ((0.0, 0.0, 100.0), (0.0, 0.001, 200.0)),  # L1 cable
+            ((0.0, 0.001, 200.0), (0.0, 0.002, 190.0)),  # SA
+            ((0.0, 0.002, 190.0), (0.0, 0.003, 180.0)),  # SB (folds with SA)
+            ((0.0, 0.003, 180.0), (0.0, 0.004, 280.0)),  # L2 cable
+            ((0.0, 0.004, 280.0), (0.0, 0.005, 270.0)),  # SC
+        )
+        groups = build_viewing_groups(steps, polys)
+        assert [g.is_lift for g in groups] == [True, False, True, False], "each lift own; SA+SB folded"
+        # The folded slope group's polyline is SA+SB joined with the shared junction deduped.
+        assert groups[1].actual_polyline == ((0.0, 0.001, 200.0), (0.0, 0.002, 190.0), (0.0, 0.003, 180.0))
+        assert groups[1].steps == (steps[1], steps[2]), "folded group carries both slope steps"
+        assert groups[0].actual_polyline == polys[0], "a lift is its own group (its cable)"
+        assert groups[1].straight_line == (groups[1].actual_polyline[0], groups[1].actual_polyline[-1])
+
+    def test_route_viewing_groups_join_to_path_points(self, empty_graph: ResortGraph, dem: MockDEMService) -> None:
+        # viewing_groups' polylines, joined, reproduce the route's path_points (single geometry source).
+        add_node(empty_graph, "A", 0.0, 0.0, 2000.0)
+        add_node(empty_graph, "B", 0.0, -0.002, 1800.0)
+        add_slope(empty_graph, "SL1", top="A", bottom="B")
+        route = _route_for(RoutePlanner(empty_graph).best_routes("A", "B"), RouteCriterion.SHORTEST_SLOPE)
+        assert len(route.viewing_groups) == 1, "a lone slope route is one group"
+        joined: list[tuple[float, float, float]] = []
+        for g in route.viewing_groups:
+            for p in g.actual_polyline:
+                if not joined or joined[-1] != p:
+                    joined.append(p)
+        assert tuple(joined) == route.path_points, "groups joined == path_points"

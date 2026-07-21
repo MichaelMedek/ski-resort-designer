@@ -265,7 +265,7 @@ class _EntityViewingState(BuildState):
         *,
         use_3d: bool,
     ) -> list[pdk.Layer]:
-        return []
+        return []  # a viewed entity draws no overlay; the flythrough highlight is applied in app.py
 
     def view_state(self, ctx: PlannerContext, graph: ResortGraph, *, use_3d: bool) -> ViewState:
         entity_id = ENTITY_KIND_SPECS[self.kind].viewed_entity_id(ctx)
@@ -720,11 +720,12 @@ class _IdleViewingRouteState(BuildState):
         *,
         use_3d: bool,
     ) -> list[pdk.Layer]:
-        return renderer.create_route_layers(
-            routes=actions.route_plan_shown_routes(),
-            selected_index=ctx.route_plan.selected_index,
-            use_3d=use_3d,
-        )
+        # The current-element flythrough highlight is applied once at the render choke-point (app.py),
+        # not per state, so a new viewing state can't forget it. Here: just the selected route's ribbon.
+        route = actions.selected_route()
+        if route is None:  # no plan computed yet / the cap yields no routes — nothing to draw
+            return []
+        return renderer.create_route_layers(route=route, use_3d=use_3d)
 
     def view_state(self, ctx: PlannerContext, graph: ResortGraph, *, use_3d: bool) -> ViewState:
         rp = ctx.route_plan

@@ -44,7 +44,7 @@ if TYPE_CHECKING:
     from skiresort_planner.core.terrain_analyzer import TerrainOrientation
     from skiresort_planner.model.lift import Lift
     from skiresort_planner.model.road import Road
-    from skiresort_planner.model.routing import Route
+    from skiresort_planner.model.routing import Route, ViewingGroup
     from skiresort_planner.model.slope import Slope
 
 logger = logging.getLogger(__name__)
@@ -171,6 +171,10 @@ class MapRenderer:
             self.pitch = pitch
         if bearing is not None:
             self.bearing = bearing
+
+    def set_flythrough_easing(self, *, flying: bool) -> None:
+        """While flying, emit a deck.gl transition so the camera GLIDES between keyframes; else none."""
+        self.transition_duration = MapConfig.FLYTHROUGH_TRANSITION_MS if flying else None
 
     def render(
         self,
@@ -413,41 +417,49 @@ class MapRenderer:
         )
 
     @staticmethod
-    def flythrough_view_state(
-        path_points: "Sequence[PathPoint]", *, progress: float
-    ) -> tuple[float, float, float, float, float]:
-        """Follow-cam view at arc-length fraction `progress` (0..1) along an ordered PathPoint polyline.
+    def flythrough_keyframes(groups: "Sequence[ViewingGroup]") -> list[tuple[float, float, float]]:
+        """Camera keyframes (lat, lon, bearing) for a flythrough, glided between by deck.gl client-side.
 
-        Constant-speed: arc-length parameterised (equal progress → equal ground distance). Centered on the
-        CURRENT point (deck.gl MapView aims lat/lon at screen centre; pitch+bearing put the eye behind);
-        bearing points down-route toward a look-ahead point. Returns (lat, lon, bearing, zoom, pitch).
+        A single group → 2 keyframes (start, end): deck.gl glides the camera its whole length in one smooth
+        move. A multi-group route → one keyframe per group at FLYTHROUGH_ANCHOR_FRACTION + a final end
+        keyframe. Bearing is the group's gross straight-line heading (start→end), so a folded slope run is
+        one steady lift→lift sightline, not a curve-tracking wobble. Route keyframes capped at MAX_KEYFRAMES.
         """
-        if len(path_points) < 2:
-            raise ValueError("flythrough needs at least 2 points")
-        travelled = max(0.0, min(1.0, progress))
-        here = point_at_fraction(path_points, travelled)
-        # Look ahead a fixed ground distance (as a fraction of total length) for the bearing.
-        lookahead_frac = MapConfig.FLYTHROUGH_LOOKAHEAD_M / max(PathPoint.total_length_m(path_points), 1.0)
-        ahead = point_at_fraction(path_points, travelled + lookahead_frac)
-        bearing = GeoCalculator.initial_bearing_deg(lon1=here.lon, lat1=here.lat, lon2=ahead.lon, lat2=ahead.lat)
-        return (here.lat, here.lon, bearing, MapConfig.VIEW_3D_ZOOM, MapConfig.VIEW_3D_PITCH)
+        if not groups:  # nothing viewed / not flying — a real empty state, not a bad group
+            return []
+
+        def keyframe_at(group: "ViewingGroup", fraction: float) -> tuple[float, float, float]:
+            # A viewing group is always real committed geometry (slope/cable/route element) — never <2 pts.
+            assert len(group.actual_polyline) >= 2, f"viewing group has <2 points: {group.actual_polyline}"
+            points = [PathPoint(lon=lon, lat=lat, elevation=elev) for lon, lat, elev in group.actual_polyline]
+            here = point_at_fraction(points, fraction)
+            (s_lon, s_lat, _), (e_lon, e_lat, _) = group.straight_line
+            bearing = GeoCalculator.initial_bearing_deg(lon1=s_lon, lat1=s_lat, lon2=e_lon, lat2=e_lat)
+            # Nav-style: center the map AHEAD of the real position along the bearing, so "here" sits below
+            # screen centre and the run ahead is in view.
+            ahead_lon, ahead_lat = GeoCalculator.destination(
+                lon=here.lon, lat=here.lat, bearing_deg=bearing, distance_m=MapConfig.FLYTHROUGH_LOOK_AHEAD_M
+            )
+            return (ahead_lat, ahead_lon, bearing)
+
+        if len(groups) == 1:
+            return [keyframe_at(groups[0], 0.0), keyframe_at(groups[0], 1.0)]
+        keyframes = [keyframe_at(g, MapConfig.FLYTHROUGH_ANCHOR_FRACTION) for g in groups]
+        keyframes.append(keyframe_at(groups[-1], 1.0))
+        return keyframes[: MapConfig.FLYTHROUGH_MAX_KEYFRAMES]
 
     @staticmethod
-    def flythrough_dot_layer(path_points: "Sequence[PathPoint]", *, progress: float) -> pdk.Layer:
-        """A single marker at the current flythrough position (arc-length `progress`), floated above the
-        terrain so it reads as "you are here" during playback. Stable id so it diffs in place per frame.
+    def flythrough_view_state(
+        keyframes: "Sequence[tuple[float, float, float]]", index: int
+    ) -> tuple[float, float, float, float, float]:
+        """The camera pose at keyframe `index`: (lat, lon, bearing, zoom, pitch). Caller supplies a valid
+        index (via ViewingContext.flythrough_index). Zoom+pitch are the unified 3D-view constants so the
+        flythrough frames exactly like the standard 3D view.
         """
-        here = point_at_fraction(path_points, max(0.0, min(1.0, progress)))
-        z = here.elevation + MarkerConfig.PATH_Z_OFFSET_M + RoutePlannerConfig.ROUTE_FLOAT_ABOVE_M
-        return pdk.Layer(
-            "ScatterplotLayer",
-            [{"pos": [here.lon, here.lat, z]}],
-            get_position="pos",
-            get_fill_color=[30, 120, 255],
-            get_radius=ClickConfig.NODE_MARKER_RADIUS,
-            radius_min_pixels=8,
-            id="flythrough_dot",
-        )
+        if len(keyframes) < 2:
+            raise ValueError("flythrough needs at least 2 keyframes")
+        lat, lon, bearing = keyframes[index]
+        return (lat, lon, bearing, MapConfig.VIEW_3D_ZOOM, MapConfig.VIEW_3D_PITCH)
 
     # =========================================================================
     # SEGMENT LAYERS
@@ -1328,36 +1340,67 @@ class MapRenderer:
 
         return layers
 
-    def create_route_layers(self, routes: "list[Route]", *, selected_index: int, use_3d: bool) -> list[pdk.Layer]:
-        """One thick, semi-transparent polyline for the SELECTED route, tracing the actual slope
-        geometry. Wider than any slope belt (ROUTE_WIDTH_M) so it reads as an overlay; in 3D it floats
-        ROUTE_FLOAT_ABOVE_M above the pistes/lifts it traces. Only the selected route is drawn (others
-        appear as the ◀▶ browser cycles); its colour is keyed to its criterion. Empty when none.
+    def _path_layer(
+        self,
+        polyline: "Sequence[tuple[float, float, float]]",
+        *,
+        color: list[int],
+        width_m: float,
+        float_above_m: float,
+        use_3d: bool,
+        layer_id: str,
+        name: str = "",
+    ) -> list[pdk.Layer]:
+        """One floated PathLayer over a (lon,lat,elev) polyline — the shared body for the route overlay and
+        the flythrough highlight. In 3D it hovers `float_above_m` above terrain; flat in 2D.
         """
-        if not routes:
-            return []
-        idx = min(selected_index, len(routes) - 1)
-        route = routes[idx]
-        color = route.color
-        # In 3D, hover the line above the terrain; the flat 2D z-offset is unchanged.
-        z_offset = MarkerConfig.PATH_Z_OFFSET_M + (RoutePlannerConfig.ROUTE_FLOAT_ABOVE_M if use_3d else 0)
+        assert len(polyline) >= 2, f"a path layer needs ≥2 points, got {len(polyline)}"
+        z_offset = MarkerConfig.PATH_Z_OFFSET_M + (float_above_m if use_3d else 0)
         path = [
-            [lon, lat, self._get_z(elevation=elev, z_offset=z_offset, use_3d=use_3d)]
-            for lon, lat, elev in route.path_points
+            [lon, lat, self._get_z(elevation=elev, z_offset=z_offset, use_3d=use_3d)] for lon, lat, elev in polyline
         ]
-        data = [{"path": path, "color": color, "name": ", ".join(c.value for c in route.criteria)}]
         return [
             pdk.Layer(
                 "PathLayer",
-                data,
+                [{"path": path, "color": color, "name": name}],
                 get_path="path",
                 get_color="color",
-                get_width=RoutePlannerConfig.ROUTE_WIDTH_M,
+                get_width=width_m,
                 width_min_pixels=6,
                 cap_rounded=True,
-                id=f"route_{idx}",
+                id=layer_id,
             )
         ]
+
+    def create_route_layers(self, route: "Route", *, use_3d: bool) -> list[pdk.Layer]:
+        """One thick, semi-transparent polyline for the selected route, tracing the actual slope geometry.
+        Wider than any slope belt (ROUTE_WIDTH_M) so it reads as an overlay; in 3D it floats
+        ROUTE_FLOAT_ABOVE_M above the pistes/lifts it traces. Colour is keyed to its criterion.
+        """
+        return self._path_layer(
+            route.path_points,
+            color=route.color,
+            width_m=RoutePlannerConfig.ROUTE_WIDTH_M,
+            float_above_m=RoutePlannerConfig.ROUTE_FLOAT_ABOVE_M,
+            use_3d=use_3d,
+            layer_id="route_selected",
+            name=", ".join(c.value for c in route.criteria),
+        )
+
+    def create_highlight_ribbon(
+        self, polyline: "Sequence[tuple[float, float, float]]", *, use_3d: bool
+    ) -> list[pdk.Layer]:
+        """The hot-orange signal ribbon over the element currently being flown, floated
+        FLYTHROUGH_HIGHLIGHT_FLOAT_ABOVE_M (just above the route overlay). Follows the element's real path.
+        """
+        return self._path_layer(
+            polyline,
+            color=MapConfig.FLYTHROUGH_HIGHLIGHT_COLOR,
+            width_m=RoutePlannerConfig.ROUTE_WIDTH_M,
+            float_above_m=MapConfig.FLYTHROUGH_HIGHLIGHT_FLOAT_ABOVE_M,
+            use_3d=use_3d,
+            layer_id="flythrough_highlight",
+        )
 
     def create_import_bbox_layers(
         self,

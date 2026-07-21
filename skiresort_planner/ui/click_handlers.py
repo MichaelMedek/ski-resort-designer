@@ -73,6 +73,9 @@ def _select_or_commit_proposal(ctx: PlannerContext, idx: int) -> None:
         commit_selected_path(path_idx=idx)  # re-click the selected one → commit
     else:
         ctx.proposals.selected_idx = idx
+        # Bump the dedup epoch so the NEXT click on this SAME proposal body registers as fresh.
+        # otherwise the commit re-click collides with this select click and is swallowed.
+        bump_dedup_epoch()
         trigger_rerun()  # first click just highlights the proposal — redraw in place, no recenter
 
 
@@ -243,26 +246,13 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
                 raise RuntimeError(f"[IDLE] Segment click: unhandled parent kind {parent.kind}.")
             return
 
-        # LIFT → Show lift panel and sync build mode
-        if marker_type == MarkerType.LIFT:
+        # LIFT or its PYLON → show the parent lift's panel and sync build mode (both point at the lift).
+        if marker_type in {MarkerType.LIFT, MarkerType.PYLON}:
             assert click_info.lift_id is not None  # Validated in ClickInfo
             lift = graph.lifts.get(click_info.lift_id)
             if not lift:
                 raise RuntimeError(f"Lift {click_info.lift_id} not found in graph")
-            logger.debug(f"[IDLE] Lift click: showing panel for {lift.name}")
-            # Sync build mode to the viewed lift's type (single source of truth for selection)
-            ctx.build_mode.mode = lift.lift_type
-            center_on_lift(ctx=ctx, graph=graph, lift=lift, zoom=MapConfig.VIEWING_ZOOM)
-            sm.view_lift(lift_id=lift.id)  # Triggers st.rerun() via listener
-            return
-
-        # PYLON → Show parent lift panel and sync build mode
-        if marker_type == MarkerType.PYLON:
-            assert click_info.lift_id is not None  # Validated in ClickInfo
-            lift = graph.lifts.get(click_info.lift_id)
-            if not lift:
-                raise RuntimeError(f"Lift {click_info.lift_id} not found in graph")
-            logger.debug(f"[IDLE] Pylon click: showing panel for {lift.name}")
+            logger.debug(f"[IDLE] {marker_type.value} click: showing panel for {lift.name}")
             # Sync build mode to the viewed lift's type (single source of truth for selection)
             ctx.build_mode.mode = lift.lift_type
             center_on_lift(ctx=ctx, graph=graph, lift=lift, zoom=MapConfig.VIEWING_ZOOM)
