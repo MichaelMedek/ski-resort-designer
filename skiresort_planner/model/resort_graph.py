@@ -320,33 +320,36 @@ class ResortGraph:
     def node_deletability(self, node_id: str) -> NodeDeletability:
         """Why a node can/can't be deleted. Single source used by the UI button + the delete op.
 
-        Deletable when the node is a PURE INTERIOR node of one finished chain (its two segments
-        fuse into one) OR a CLEAN ENDPOINT of a >1-segment finished path (its lone boundary segment
-        trims off). Never for lift stations or shared/branch junctions.
+        Degree is counted WITHIN one kind. A degree-1 endpoint or degree-2 node (one chain OR two
+        same-kind paths meeting) is deletable — its segments fuse. A 3+ branch, a parking place (road
+        meets slope), and a lift station are immutable.
         """
         # A lift station is never deletable (delete the lift first) — checked before anything else.
-        if any(lift.touches(node_id) for lift in self.lifts.values()):
+        if any(lift.touches(node_id=node_id) for lift in self.lifts.values()):
             return NodeDeletability.IS_LIFT_STATION
 
-        touching = self._segments_touching(node_id)
-        owners = {owner.id: owner for s in touching if (owner := self.get_entity_by_segment_id(s.id)) is not None}
-        sole_owner = next(iter(owners.values())) if len(owners) == 1 else None
-        is_boundary_anywhere = any(p.touches(node_id) for p in self.segment_path_entities)
+        touching = self._segments_touching(node_id=node_id)
+        if len({seg.kind for seg in touching}) > 1:
+            # A road meeting a slope here = a parking place: immutable, like a lift station.
+            return NodeDeletability.IS_PARKING
 
-        # Exactly one classification per node — each an explicit positive condition, no silent default.
-        if len(touching) == 2 and sole_owner is not None and not is_boundary_anywhere:
-            # Interior of one finished chain (a boundary-of-another node is a branch → endpoint below).
-            return NodeDeletability.DELETABLE_INTERIOR
-        if len(touching) == 1 and sole_owner is not None and sole_owner.touches(node_id):
-            # Clean endpoint of one path; a sole-segment path would be emptied → delete the path.
-            if len(sole_owner.segment_ids) <= 1:
-                return NodeDeletability.LAST_SEGMENT
-            return NodeDeletability.DELETABLE_END
-        if is_boundary_anywhere:
-            # A boundary of some path but shared/branch (or interior of one + boundary of another).
-            return NodeDeletability.IS_PATH_ENDPOINT
-        # Anything else (isolated, unfinished-only, or a multi-path crossing) is simply not deletable.
-        return NodeDeletability.NOT_INTERIOR
+        degree = len(touching)
+        if degree == 0:
+            return NodeDeletability.NOT_INTERIOR  # isolated node, touched by nothing finished
+        if degree == 1:
+            # _paths_touching_node asserts the touching segment is owned (fail loud on unfinished).
+            owner = self._paths_touching_node(node_id=node_id)[0]
+            assert owner.touches(node_id=node_id), f"degree-1 node {node_id} must be its path's endpoint"
+            return NodeDeletability.LAST_SEGMENT if len(owner.segment_ids) <= 1 else NodeDeletability.DELETABLE_END
+        if degree == 2:
+            # Deletable only if the two segments pass THROUGH the node head-to-tail (one ends here, one
+            # starts here). A peak (both start here) or valley (both end here) → reject as a confluence.
+            ends_here = sum(1 for seg in touching if seg.end_node_id == node_id)
+            starts_here = sum(1 for seg in touching if seg.start_node_id == node_id)
+            if ends_here == 1 and starts_here == 1:
+                return NodeDeletability.DELETABLE_INTERIOR  # real pass THROUGH → accept
+            return NodeDeletability.IS_CONFLUENCE  # peak or valley → reject as a confluence
+        return NodeDeletability.IS_BRANCH  # 3+ segments of one kind meet → a real branch
 
     def delete_nodes_rejection(self, node_ids: list[str]) -> str | None:
         """Why the selected nodes can't be deleted together, or None if they can.
@@ -363,25 +366,68 @@ class ResortGraph:
             if reason not in (NodeDeletability.DELETABLE_INTERIOR, NodeDeletability.DELETABLE_END):
                 return deletability_reason(node_id=nid, reason=reason)
 
-        # Check 2 (per path): even all-individually-deletable nodes can, TOGETHER, empty a path (e.g.
-        # deleting both nodes of a 2-segment slope). Refuse any owning path left with < 2 surviving nodes.
+        # Check 2 (per resulting path): deletions can TOGETHER empty a path (e.g. both nodes of a
+        # 2-segment slope). A degree-2 node joining two paths FUSES them, so count survivors over the
+        # UNION of every path that ends up fused together — never over a to-be-absorbed path alone.
         drop = set(node_ids)
-        for path in self._paths_owning_nodes(node_ids):
-            node_seq = _chain_node_sequence([self.segments[sid] for sid in path.segment_ids])
-            if sum(1 for n in node_seq if n not in drop) < 2:
-                return f"this would delete the whole path {path.name} — delete the path instead"
+        for group in self._fused_path_groups(node_ids=node_ids):
+            group_nodes = {
+                n for path in group for n in _chain_node_sequence(segments=[self.segments[s] for s in path.segment_ids])
+            }
+            if sum(1 for n in group_nodes if n not in drop) < 2:
+                name = " + ".join(p.name for p in group)
+                return f"this would delete the whole path {name} — delete the path instead"
         return None  # both checks passed → the selection is safe to delete
 
-    def _owning_path(self, node_id: str) -> "SegmentPath | None":
-        """The finished slope/road that owns a segment touching node_id, or None."""
-        touching = self._segments_touching(node_id)
-        return self.get_entity_by_segment_id(touching[0].id) if touching else None
+    def _fused_path_groups(self, node_ids: list[str]) -> list[list["SegmentPath"]]:
+        """Group affected paths by which ones FUSE together when the given nodes are deleted.
+
+        A deleted degree-2 node joining two paths fuses them; fusion is transitive (deleting N1 joining
+        A+B and N2 joining B+C fuses A+B+C). Build an undirected graph (paths=vertices, fusing nodes=edges)
+        and return its connected components via networkx — the survivor check then counts over each whole.
+        """
+        by_id = {p.id: p for p in self._paths_owning_nodes(node_ids)}
+        graph = nx.Graph()
+        graph.add_nodes_from(by_id)
+        for nid in node_ids:
+            owners = self._paths_touching_node(node_id=nid)
+            if len(owners) == 2:  # this deleted node fuses its two owning paths
+                graph.add_edge(owners[0].id, owners[1].id)
+        return [[by_id[pid] for pid in component] for component in nx.connected_components(graph)]
+
+    def _paths_touching_node(self, node_id: str) -> list["SegmentPath"]:
+        """Every distinct finished path with a segment touching node_id (1 for an interior node, 2 where
+        two same-kind paths meet). Node-edit runs only from idle, so every touching segment is owned — an
+        unfinished one is a state-machine bug and fails loud, not silently skipped.
+        """
+        by_id: dict[str, SegmentPath] = {}
+        for seg in self._segments_touching(node_id=node_id):
+            owner = self.get_entity_by_segment_id(segment_id=seg.id)
+            assert owner is not None, f"node {node_id} touches unfinished segment {seg.id} (bug)"
+            by_id[owner.id] = owner
+        return list(by_id.values())
 
     def _paths_owning_nodes(self, node_ids: list[str]) -> list["SegmentPath"]:
         """The distinct finished paths owning the given nodes — the single node→path grouping used by
         both the delete precondition check and the delete executor, so they can't drift.
         """
-        by_id = {owner.id: owner for nid in node_ids if (owner := self._owning_path(nid)) is not None}
+        by_id = {p.id: p for nid in node_ids for p in self._paths_touching_node(nid)}
+        return list(by_id.values())
+
+    def direct_one_segment_connections(self, node_a_id: str, node_b_id: str) -> list["SegmentPath"]:
+        """Finished slopes/roads that DIRECTLY connect the two nodes with a SINGLE segment — i.e. own
+        exactly one segment whose endpoints are {node_a, node_b}. Multi-segment connections are excluded.
+        """
+        assert node_a_id in self.nodes and node_b_id in self.nodes, f"unknown node in ({node_a_id}, {node_b_id})"
+        assert node_a_id != node_b_id, "direct_one_segment_connections needs two distinct nodes"
+        pair = {node_a_id, node_b_id}
+        by_id: dict[str, SegmentPath] = {}
+        for seg in self._segments_touching(node_id=node_a_id):
+            if {seg.start_node_id, seg.end_node_id} != pair:
+                continue
+            owner = self.get_entity_by_segment_id(segment_id=seg.id)
+            if owner is not None and len(owner.segment_ids) == 1:
+                by_id[owner.id] = owner
         return list(by_id.values())
 
     # =========================================================================
@@ -1081,23 +1127,33 @@ class ResortGraph:
     def delete_nodes(self, node_ids: list[str], dem: "DEMService") -> None:
         """Delete path nodes, keeping the rest of each path (interior fusion / clean-endpoint trim).
 
-        An interior node fuses its two segments into one; a clean endpoint trims its lone boundary
-        segment. The caller pre-checks delete_nodes_rejection; this re-checks and raises ValueError
-        as a fail-fast backstop (never a user path). ONE undoable DeleteNodesAction.
+        A degree-2 node fuses its two segments — joining two same-kind paths into one first (shorter
+        absorbed into longer, longer's name kept). A clean endpoint trims its lone boundary segment. The
+        caller pre-checks delete_nodes_rejection; this re-checks as a fail-fast backstop. ONE undo action.
         """
         rejection = self.delete_nodes_rejection(node_ids)
         if rejection is not None:
             raise ValueError(f"delete_nodes: {rejection}")
+        assert node_ids, "delete_nodes called with no node_ids"
+        assert all(nid in self.nodes for nid in node_ids), f"delete_nodes: unknown node id in {node_ids}"
 
         to_delete = set(node_ids)
-        # Each deletable node belongs to exactly one finished path (guaranteed by the rejection check).
+        # Snapshot BEFORE any mutation: every path touching a deleted node (both sides of a cross-path
+        # node) + all their segments, so undo restores an absorbed path verbatim.
         affected_paths = self._paths_owning_nodes(node_ids)
-
         deleted_nodes = tuple(self.nodes[nid] for nid in node_ids)
         paths_before = tuple(copy.deepcopy(p) for p in affected_paths)
         segments_before = tuple(copy.deepcopy(self.segments[sid]) for p in affected_paths for sid in p.segment_ids)
 
-        for path in affected_paths:
+        # A degree-2 node shared by two same-kind paths: join them into one (shorter → longer) so the node
+        # becomes a pure interior of a single chain, then the per-path rebuild below fuses across it.
+        for nid in node_ids:
+            owners = self._paths_touching_node(node_id=nid)
+            if len(owners) == 2:
+                self._join_paths_at_node(node_id=nid, owners=owners)
+
+        # Re-resolve after joins (an absorbed path is gone; its nodes now belong to the survivor).
+        for path in self._paths_owning_nodes(node_ids):
             self._rebuild_chain_without_nodes(path=path, drop_nodes=to_delete, dem=dem)
 
         # Only remove a selected node once nothing references it.
@@ -1116,6 +1172,32 @@ class ResortGraph:
         )
         self.drop_undo_actions_for_removed_segments()
         logger.info(f"Deleted {len(node_ids)} node(s) across {len(affected_paths)} path(s)")
+
+    def _join_paths_at_node(self, node_id: str, owners: list["SegmentPath"]) -> None:
+        """Join two same-kind paths meeting HEAD-TO-TAIL at `node_id` into one (survivor keeps the longer
+        path's id/name), making `node_id` a pure interior node so the caller's rebuild fuses across it.
+
+        The deletability gate guarantees one chain ENDS at node_id and the other STARTS there (both slopes
+        descend through it), so they concatenate upstream→downstream with NO reversal. No geometry
+        recompute here — the caller fuses across node_id and re-drapes.
+        """
+        assert len(owners) == 2, f"_join_paths_at_node expects 2 owners, got {len(owners)}"
+        a, b = owners
+        assert a.id != b.id, f"_join_paths_at_node: a node cannot join a path to itself ({a.id})"
+        assert a.kind == b.kind, f"cannot join different kinds ({a.kind} + {b.kind}) — parking node is immutable"
+
+        # Head-to-tail: the path ENDING at node_id is upstream, the one STARTING there is downstream.
+        upstream, downstream = (a, b) if a.end_node_id == node_id else (b, a)
+        assert upstream.end_node_id == node_id and downstream.start_node_id == node_id, (
+            f"join: paths must meet head-to-tail at {node_id} (one ends here, one starts here)"
+        )
+        longer, shorter = (a, b) if (len(a.segment_ids), a.id) >= (len(b.segment_ids), b.id) else (b, a)
+
+        longer.segment_ids = list(upstream.segment_ids) + list(downstream.segment_ids)
+        longer.start_node_id = upstream.start_node_id
+        longer.end_node_id = downstream.end_node_id
+        self.entity_dict_for_kind(shorter.kind).pop(shorter.id, None)
+        logger.info(f"Joined {shorter.name} into {longer.name} at {node_id} (delete)")
 
     def _rebuild_chain_without_nodes(self, path: "SegmentPath", drop_nodes: set[str], dem: "DEMService") -> None:
         """Rewrite path.segment_ids with drop_nodes removed, via a single node-sequence walk.

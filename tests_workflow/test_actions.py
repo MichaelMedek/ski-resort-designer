@@ -356,14 +356,14 @@ class TestDeleteNodesAction:
         assert sm.is_node_edit_selecting, "stays in node edit so the user can adjust the selection"
         assert any("whole path" in t.lower() for t in toasts), "the user is told the delete was refused"
 
-    def test_branch_junction_refused_no_change(self, fake_st, empty_graph, mock_dem_blue_slope, monkeypatch) -> None:
-        """A node shared by two slopes is a branch junction — deleting it is refused (delete a path
-        first), nothing changes.
+    def test_degree2_junction_of_two_slopes_fuses(self, fake_st, empty_graph, mock_dem_blue_slope, monkeypatch) -> None:
+        """A degree-2 node where two slopes meet end-to-end fuses them into one on delete (was refused
+        before). The node is removed and one slope absorbs the other.
         """
         from skiresort_planner.ui.actions import delete_nodes_action
 
         dem = mock_dem_blue_slope
-        # Slope 1 south to a junction; slope 2 branches south-east from that same node.
+        # Slope 1 south (2 points) to a junction; slope 2 continues south-east from that same node.
         leg1 = [
             PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
             PathPoint(
@@ -390,6 +390,50 @@ class TestDeleteNodesAction:
         empty_graph.commit_paths(paths=[ProposedPathSegment(points=leg2, target_difficulty="blue")])
         empty_graph.finish_slope(segment_ids=list(set(empty_graph.segments) - before))
         sm, ctx = _session(fake_st, empty_graph, dem=dem)
+        sm.start_node_edit()
+        sm.toggle_node_edit_node(node_id=junction)
+
+        delete_nodes_action()
+
+        assert junction not in empty_graph.nodes, "the degree-2 junction is deleted (slopes fuse)"
+        assert len(empty_graph.slopes) == 1, "the two slopes fused into one"
+
+    def test_three_way_branch_refused_no_change(self, fake_st, empty_graph, mock_dem_blue_slope, monkeypatch) -> None:
+        """A node where THREE slopes meet is a real branch — deleting it is refused (delete a path
+        first), nothing changes.
+        """
+        from skiresort_planner.ui.actions import delete_nodes_action
+
+        dem = mock_dem_blue_slope
+        leg1 = [
+            PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
+            PathPoint(
+                lon=0.0,
+                lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                elevation=dem.get_elevation_or_raise(lon=0.0, lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            ),
+        ]
+        empty_graph.commit_paths(paths=[ProposedPathSegment(points=leg1, target_difficulty="blue")])
+        slope1 = empty_graph.finish_slope(segment_ids=list(empty_graph.segments.keys()))
+        junction = slope1.end_node_id
+        j = empty_graph.nodes[junction]
+        # Two more slopes both start at the junction → 3 segments meet there.
+        for d_lon in (400, -400):
+            leg = [
+                PathPoint(lon=j.lon, lat=j.lat, elevation=j.elevation),
+                PathPoint(
+                    lon=d_lon / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                    lat=j.lat - 400 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                    elevation=dem.get_elevation_or_raise(
+                        lon=d_lon / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                        lat=j.lat - 400 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                    ),
+                ),
+            ]
+            before = set(empty_graph.segments)
+            empty_graph.commit_paths(paths=[ProposedPathSegment(points=leg, target_difficulty="blue")])
+            empty_graph.finish_slope(segment_ids=list(set(empty_graph.segments) - before))
+        sm, ctx = _session(fake_st, empty_graph, dem=dem)
         stack_before = len(empty_graph.undo_stack)
         sm.start_node_edit()
         sm.toggle_node_edit_node(node_id=junction)
@@ -401,10 +445,108 @@ class TestDeleteNodesAction:
 
         delete_nodes_action()
 
-        assert junction in empty_graph.nodes, "a branch junction is not deleted"
+        assert junction in empty_graph.nodes, "a 3-way branch junction is not deleted"
         assert len(empty_graph.undo_stack) == stack_before, "no undo action recorded on refusal"
         assert sm.is_node_edit_selecting, "stays in node edit so the user can adjust the selection"
-        assert any("delete that path" in t.lower() for t in toasts), "the user is told to delete a path first"
+        assert any("delete a path" in t.lower() for t in toasts), "the user is told to delete a path first"
+
+
+class TestDeleteDirectConnectionAction:
+    """delete_direct_connection_action removes every 1-segment slope/road joining the 2 selected nodes,
+    leaves multi-segment connections alone, and toasts when none qualify.
+    """
+
+    def _one_seg_slope(self, graph, dem):
+        pts = [
+            PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
+            PathPoint(
+                lon=0.0,
+                lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                elevation=dem.get_elevation_or_raise(lon=0.0, lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            ),
+        ]
+        graph.commit_paths(paths=[ProposedPathSegment(points=pts, target_difficulty="blue")])
+        return graph.finish_slope(segment_ids=list(graph.segments.keys()))
+
+    def test_deletes_1_segment_slope_and_returns_to_idle(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
+        from skiresort_planner.ui.actions import delete_direct_connection_action
+
+        dem = mock_dem_blue_slope
+        slope = self._one_seg_slope(empty_graph, dem)
+        sm, ctx = _session(fake_st, empty_graph, dem=dem)
+        sm.start_node_edit()
+        sm.toggle_node_edit_node(node_id=slope.start_node_id)
+        sm.toggle_node_edit_node(node_id=slope.end_node_id)
+
+        delete_direct_connection_action()
+
+        assert slope.id not in empty_graph.slopes, "the 1-segment slope was deleted"
+        assert sm.is_idle_ready, "returns to idle after a successful delete"
+        assert ctx.node_edit.node_ids == [], "the selection is cleared by the before-hook"
+
+    def test_multi_segment_connection_not_deleted(self, fake_st, empty_graph, mock_dem_blue_slope, monkeypatch) -> None:
+        from skiresort_planner.ui.actions import delete_direct_connection_action
+
+        dem = mock_dem_blue_slope
+        # A 2-segment slope: its two ENDPOINTS are connected, but not by a single segment.
+        leg1 = [
+            PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
+            PathPoint(
+                lon=0.0,
+                lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                elevation=dem.get_elevation_or_raise(lon=0.0, lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            ),
+        ]
+        empty_graph.commit_paths(paths=[ProposedPathSegment(points=leg1, target_difficulty="blue")])
+        mid = list(empty_graph.segments.values())[-1].end_node_id
+        m = empty_graph.nodes[mid]
+        leg2 = [
+            PathPoint(lon=m.lon, lat=m.lat, elevation=m.elevation),
+            PathPoint(
+                lon=0.0,
+                lat=-800 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                elevation=dem.get_elevation_or_raise(lon=0.0, lat=-800 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            ),
+        ]
+        empty_graph.commit_paths(paths=[ProposedPathSegment(points=leg2, target_difficulty="blue")])
+        slope = empty_graph.finish_slope(segment_ids=list(empty_graph.segments.keys()))
+        sm, ctx = _session(fake_st, empty_graph, dem=dem)
+        sm.start_node_edit()
+        sm.toggle_node_edit_node(node_id=slope.start_node_id)
+        sm.toggle_node_edit_node(node_id=slope.end_node_id)
+
+        import streamlit
+
+        toasts: list[str] = []
+        monkeypatch.setattr(streamlit, "toast", lambda text, *a, **k: toasts.append(text))
+
+        delete_direct_connection_action()
+
+        assert slope.id in empty_graph.slopes, "a multi-segment connection is left alone"
+        assert sm.is_node_edit_selecting, "stays in node edit"
+        assert any("no direct connection" in t.lower() for t in toasts), "toast explains no 1-segment link"
+
+    def test_no_connection_toasts_and_no_change(self, fake_st, empty_graph, mock_dem_blue_slope, monkeypatch) -> None:
+        from skiresort_planner.ui.actions import delete_direct_connection_action
+
+        dem = mock_dem_blue_slope
+        slope = self._one_seg_slope(empty_graph, dem)
+        empty_graph.nodes["N_FAR"] = Node(id="N_FAR", location=PathPoint(lon=5.0, lat=5.0, elevation=2000.0))
+        sm, ctx = _session(fake_st, empty_graph, dem=dem)
+        sm.start_node_edit()
+        sm.toggle_node_edit_node(node_id=slope.start_node_id)
+        sm.toggle_node_edit_node(node_id="N_FAR")
+
+        import streamlit
+
+        toasts: list[str] = []
+        monkeypatch.setattr(streamlit, "toast", lambda text, *a, **k: toasts.append(text))
+
+        delete_direct_connection_action()
+
+        assert slope.id in empty_graph.slopes, "nothing deleted when the pair has no 1-segment link"
+        assert sm.is_node_edit_selecting, "stays in node edit"
+        assert any("no direct connection" in t.lower() for t in toasts)
 
 
 class TestAddNodeOnPathAction:

@@ -277,6 +277,18 @@ class UnableToDeleteMessage(WarningToast):
 
 
 @dataclass(frozen=True)
+class NoDirectConnectionMessage(WarningToast):
+    """The two selected nodes have no single-segment slope/road directly connecting them."""
+
+    node_a_id: str
+    node_b_id: str
+
+    @property
+    def message(self) -> str:
+        return f"No Direct Connection — no 1-segment slope/road joins {self.node_a_id} and {self.node_b_id}."
+
+
+@dataclass(frozen=True)
 class ClickingDisabledIn3DToast(WarningToast):
     """User clicked the map in 3D view, where deck.gl picking is unreliable (default ⚠️ icon)."""
 

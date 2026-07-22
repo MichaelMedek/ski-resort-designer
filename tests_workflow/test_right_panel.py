@@ -724,13 +724,19 @@ class TestMergeAndImportPanels:
 
         at_zero = _disabled_for([])
         assert at_zero["🔗 Confirm Merge"] and at_zero["🗑️ Delete Node(s)"], "both disabled at 0 selected"
+        assert at_zero["✂️ Delete Direct Connection"], "direct-connection disabled at 0 selected"
 
         at_one = _disabled_for(["A"])
         assert at_one["🔗 Confirm Merge"], "Confirm Merge still disabled at 1 selected"
         assert not at_one["🗑️ Delete Node(s)"], "one node enables Delete"
+        assert at_one["✂️ Delete Direct Connection"], "direct-connection disabled at 1 selected"
 
         at_two = _disabled_for(["A", "B"])
         assert not at_two["🔗 Confirm Merge"], "two selected nodes must enable Confirm Merge"
+        assert not at_two["✂️ Delete Direct Connection"], "exactly 2 selected enables direct-connection"
+
+        at_three = _disabled_for(["A", "B", "C"])
+        assert at_three["✂️ Delete Direct Connection"], "direct-connection disabled at 3 selected (needs exactly 2)"
 
     def test_confirm_merge_fires_action(self, fake_st, empty_graph, monkeypatch) -> None:
         from skiresort_planner.ui import right_panel

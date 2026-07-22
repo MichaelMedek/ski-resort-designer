@@ -46,6 +46,7 @@ from skiresort_planner.ui.actions import (
     apply_lift_retype_action,
     confirm_import_action,
     confirm_merge_action,
+    delete_direct_connection_action,
     delete_nodes_action,
     flythrough_keyframe_count,
     rename_entity_action,
@@ -643,6 +644,21 @@ class NodeEditingControlPanel(ControlPanel):
         ):
             logger.debug(f"UI: Delete Node(s) clicked for {count} nodes")
             delete_nodes_action()
+        # Delete the direct connection: enabled at exactly 2 nodes; whether link exists is checked on click.
+        exactly_two = count == 2
+        if st.button(
+            "✂️ Delete Direct Connection",
+            type="secondary",
+            width="stretch",
+            disabled=not exactly_two,
+            help=(
+                "Select exactly 2 nodes to delete the connection"
+                if not exactly_two
+                else "Delete the single-segment path directly connecting the 2 nodes"
+            ),
+        ):
+            logger.debug(f"UI: Delete Direct Connection clicked for {count} nodes")
+            delete_direct_connection_action()
         # Discoverability hint, mirroring the path builder's "click any point" caption.
         st.caption("🎯 Or click any path on the map to add a node there.")
 
