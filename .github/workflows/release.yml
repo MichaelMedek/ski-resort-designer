@@ -1,0 +1,76 @@
+name: Release
+
+# Build + publish desktop installers when version.txt changes on main. The version.txt value is the
+# single source of truth: a release is cut only when its tag doesn't already exist, so ordinary merges
+# that don't bump the version just build (and skip publishing) instead of colliding on a duplicate tag.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write  # create tags + releases
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      should_release: ${{ steps.v.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0  # full history + all tags — fetch-tags alone is a no-op on the default shallow clone (actions/checkout#1471); the version gate needs real tags
+      - id: v
+        run: |
+          version=$(tail -n1 version.txt | tr -d '[:space:]')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if git rev-parse --verify --quiet "refs/tags/v$version" >/dev/null; then
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "Tag v$version already exists — skipping release."
+          else
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "New version v$version — will build and release."
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.should_release == 'true'
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest   # Apple Silicon (arm64)
+            script: bash deploy/build_mac.sh
+            artifact: deploy/dist/AlpinArchitect.dmg
+          - os: windows-latest
+            script: powershell -ExecutionPolicy Bypass -File deploy/build_windows.ps1
+            artifact: deploy/dist/AlpinArchitect-win.zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install deps + build tools
+        run: pip install -r requirements.txt -r deploy/requirements-build.txt
+      - name: Build installer
+        run: ${{ matrix.script }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.os }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error
+
+  release:
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true  # flatten both installers into one dir
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v${{ needs.check.outputs.version }}
+          name: Alpin Architect v${{ needs.check.outputs.version }}
+          generate_release_notes: true
+          files: artifacts/*
