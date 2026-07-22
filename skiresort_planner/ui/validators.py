@@ -10,9 +10,10 @@ Design Principles:
 - Caller controls when/how to display the message
 """
 
-from skiresort_planner.constants import ConnectionConfig, PathConfig
+from skiresort_planner.constants import ConnectionConfig, LiftConfig, LiftType, PathConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.model.message import (
+    LiftTooShortMessage,
     SameNodeLiftMessage,
     TargetNotDownhillMessage,
     TargetTooFarMessage,
@@ -20,22 +21,24 @@ from skiresort_planner.model.message import (
 )
 
 
-def validate_lift_stations_differ(
+def validate_lift_stations(
     first_lon: float,
     first_lat: float,
     second_lon: float,
     second_lat: float,
+    lift_type: str,
 ) -> ToastMessage | None:
-    """Validate that the two lift stations are distinct points.
+    """Validate the two lift stations: distinct points, and far enough apart to place the type's pylons.
 
-    Orientation (which is bottom/top) is decided by elevation at completion, so the only
-    geometric failure left is a lift from a point to itself.
-
-    Returns:
-        None if the two coordinates differ, SameNodeLiftMessage if they coincide.
+    A lift shorter than the type's min_spacing_m can't span station-to-station without pylons closer than
+    allowed, so it is refused. Returns None if valid, else the toast to show.
     """
     if first_lon == second_lon and first_lat == second_lat:
         return SameNodeLiftMessage()
+    length_m = GeoCalculator.haversine_distance_m(lat1=first_lat, lon1=first_lon, lat2=second_lat, lon2=second_lon)
+    min_length_m = float(LiftConfig.PYLON_CONFIG[LiftType(lift_type)]["min_spacing_m"])
+    if length_m < min_length_m:
+        return LiftTooShortMessage(length_m=length_m, min_length_m=min_length_m)
     return None
 
 

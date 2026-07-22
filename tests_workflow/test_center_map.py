@@ -530,6 +530,35 @@ class TestFullResortRendering:
         )  # unset → deck.gl default metres (setting it breaks the layer)
         assert cable.get_width == MarkerConfig.CABLE_WIDTH == 10  # numeric literal passes through unprefixed
 
+    def test_lift_icon_hovers_over_actual_cable_not_straight_line(self, empty_graph, mock_dem_blue_slope) -> None:
+        # Regression: the center hover icon must sit a FIXED offset above the actual (sagging) cable, not
+        # at the straight station-to-station average elevation which floats far above a deep-sag cable.
+        from skiresort_planner.constants import MarkerConfig
+        from skiresort_planner.ui.center_map import MapRenderer
+
+        dem = mock_dem_blue_slope
+        bottom, _ = empty_graph.get_or_create_node(
+            lon=0.0,
+            lat=-1500 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1500 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        )
+        top, _ = empty_graph.get_or_create_node(
+            lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)
+        )
+        lift = empty_graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="gondola", dem=dem)
+
+        layers = MapRenderer(graph=empty_graph)._create_lift_layers(use_3d=True)
+        icons = next(layer for layer in layers["cables_icons"] if layer.id == "lift_icons")
+        icon_z = icons.data[0]["position"][2]
+        cable_mid_elev = lift.cable_points[len(lift.cable_points) // 2].elevation
+        straight_avg = (bottom.elevation + top.elevation) / 2
+        assert abs(icon_z - (cable_mid_elev + MarkerConfig.MARKER_Z_OFFSET_M)) < 1e-6, (
+            "icon must hover a fixed offset above the real cable midpoint, not the straight-line average"
+        )
+        # The actual cable midpoint differs from the straight station-to-station average (pylons lift it,
+        # sag drops it) — the whole point of the fix. Guard they are meaningfully different here.
+        assert abs(cable_mid_elev - straight_avg) > 1.0, "fixture must exercise cable != straight-line average"
+
     def test_render_with_proposals_and_selection(self, empty_graph, mock_dem_blue_slope, path_points_blue) -> None:
         from skiresort_planner.model.proposed_path import ProposedPathSegment
         from skiresort_planner.ui.center_map import MapRenderer

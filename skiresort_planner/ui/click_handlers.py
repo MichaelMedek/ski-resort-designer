@@ -37,7 +37,7 @@ from skiresort_planner.ui.kind_spec import KIND_SPECS
 from skiresort_planner.ui.validators import (
     validate_custom_target_distance,
     validate_custom_target_downhill,
-    validate_lift_stations_differ,
+    validate_lift_stations,
 )
 
 if TYPE_CHECKING:
@@ -545,11 +545,14 @@ def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) ->
         raise RuntimeError(f"Expected NODE or TERRAIN click but got {click_info.click_type}")
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Reject a lift from a point to itself — the only geometric failure left now that
-    # orientation is decided by elevation, not click order. No nodes created yet.
+    # Reject a lift from a point to itself, or too short to fit its pylon spacing. No nodes created yet.
     # ─────────────────────────────────────────────────────────────────────────
-    if error := validate_lift_stations_differ(
-        first_lon=first_lon, first_lat=first_lat, second_lon=second_lon, second_lat=second_lat
+    if error := validate_lift_stations(
+        first_lon=first_lon,
+        first_lat=first_lat,
+        second_lon=second_lon,
+        second_lat=second_lat,
+        lift_type=ctx.build_mode.mode,
     ):
         logger.info(f"Lift station validation failed: {error.message}")
         error.display()

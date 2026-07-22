@@ -5,9 +5,10 @@ values. Tests assert BOTH the message type AND its fields, and pin the exact
 MIN_DROP_M / SEGMENT_LENGTH_MAX_M boundaries (imported, not hardcoded).
 """
 
-from skiresort_planner.constants import ConnectionConfig, MapConfig, PathConfig
+from skiresort_planner.constants import ConnectionConfig, LiftConfig, LiftType, MapConfig, PathConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.model.message import (
+    LiftTooShortMessage,
     SameNodeLiftMessage,
     TargetNotDownhillMessage,
     TargetTooFarMessage,
@@ -15,19 +16,49 @@ from skiresort_planner.model.message import (
 from skiresort_planner.ui.validators import (
     validate_custom_target_distance,
     validate_custom_target_downhill,
-    validate_lift_stations_differ,
+    validate_lift_stations,
 )
 
 
-class TestLiftStationsDiffer:
-    def test_distinct_points_valid(self) -> None:
-        # Orientation is decided by elevation later, so distinct coordinates always pass here —
-        # even a downhill or equal-elevation second point (that just flips which end is bottom).
-        assert validate_lift_stations_differ(first_lon=0.0, first_lat=0.0, second_lon=0.0, second_lat=1.0) is None
+class TestLiftStations:
+    def test_distinct_far_enough_points_valid(self) -> None:
+        # Orientation is decided by elevation later, so distinct coordinates 1° apart (~111km) pass.
+        assert (
+            validate_lift_stations(first_lon=0.0, first_lat=0.0, second_lon=0.0, second_lat=1.0, lift_type="chairlift")
+            is None
+        )
 
     def test_coincident_points_rejected(self) -> None:
-        result = validate_lift_stations_differ(first_lon=5.0, first_lat=6.0, second_lon=5.0, second_lat=6.0)
+        result = validate_lift_stations(
+            first_lon=5.0, first_lat=6.0, second_lon=5.0, second_lat=6.0, lift_type="chairlift"
+        )
         assert isinstance(result, SameNodeLiftMessage)
+
+    def test_too_short_lift_rejected(self) -> None:
+        # A gondola needs >= min_spacing_m (75m) between stations; ~30m apart must be refused.
+        result = validate_lift_stations(
+            first_lon=0.0,
+            first_lat=0.0,
+            second_lon=0.0,
+            second_lat=30.0 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            lift_type="gondola",
+        )
+        assert isinstance(result, LiftTooShortMessage)
+        assert result.min_length_m == LiftConfig.PYLON_CONFIG[LiftType("gondola")]["min_spacing_m"]
+
+    def test_at_min_length_boundary_valid(self) -> None:
+        # Exactly min_spacing_m apart is allowed (reject is length < min).
+        min_len = float(LiftConfig.PYLON_CONFIG[LiftType("surface_lift")]["min_spacing_m"])
+        assert (
+            validate_lift_stations(
+                first_lon=0.0,
+                first_lat=0.0,
+                second_lon=0.0,
+                second_lat=(min_len + 1.0) / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                lift_type="surface_lift",
+            )
+            is None
+        )
 
 
 class TestCustomTargetDownhill:

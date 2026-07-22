@@ -715,9 +715,6 @@ class MapRenderer:
         icon_data = []
 
         for lift_id, lift in self.graph.lifts.items():
-            start_node = self.graph.nodes[lift.start_node_id]
-            end_node = self.graph.nodes[lift.end_node_id]
-
             color = list(StyleConfig.LIFT_COLORS_RGBA[lift.lift_type])
             # Connectivity-defect lift → mute only the cable (the "line") toward gray ("half-dead").
             # The center icon keeps its full hue so it stays a clear clickable marker.
@@ -768,11 +765,11 @@ class MapRenderer:
                     }
                 )
 
-            # Lift icon at midpoint (average elevation)
-            mid_lon, mid_lat = lift.center(nodes=self.graph.nodes)
-            mid_elev = (start_node.elevation + end_node.elevation) / 2
+            # Lift icon at the ACTUAL cable midpoint. MARKER_Z_OFFSET_M then sits it a fixed height over the cable.
+            cable_mid = lift.cable_points[len(lift.cable_points) // 2]
+            mid_lon, mid_lat = cable_mid.lon, cable_mid.lat
             icon_z = self._get_z(
-                elevation=mid_elev,
+                elevation=cable_mid.elevation,
                 z_offset=MarkerConfig.MARKER_Z_OFFSET_M,
                 use_3d=use_3d,
                 flat_z=MapConfig.Z_OFFSET_2D_ICONS,

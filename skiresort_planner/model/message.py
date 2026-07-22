@@ -164,6 +164,18 @@ class SameNodeLiftMessage(WarningToast):
 
 
 @dataclass(frozen=True)
+class LiftTooShortMessage(WarningToast):
+    """Stations are closer than the lift type needs to place a single pylon span."""
+
+    length_m: float
+    min_length_m: float
+
+    @property
+    def message(self) -> str:
+        return f"Lift Too Short — {math.ceil(self.length_m):.0f}m (min: {self.min_length_m:.0f}m for this type)."
+
+
+@dataclass(frozen=True)
 class TargetTooFarMessage(WarningToast):
     """User clicked too far away in custom connect mode."""
 
