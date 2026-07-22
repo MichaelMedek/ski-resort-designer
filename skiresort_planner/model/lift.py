@@ -12,14 +12,16 @@ Reference: DETAILS.md
 """
 
 import logging
+import math
 import random
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
-from skiresort_planner.constants import EntityPrefixes, LiftConfig, LiftType, NameConfig
+from skiresort_planner.constants import EntityPrefixes, GeometricTuningConfig, LiftConfig, LiftType, NameConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.model.node_connected import NodeConnected
 from skiresort_planner.model.path_point import PathPoint
+from skiresort_planner.model.path_smoothing import simplify_path_points_vertical
 from skiresort_planner.model.pylon import Pylon
 
 if TYPE_CHECKING:
@@ -232,17 +234,51 @@ class Lift(NodeConnected):
             raise ValueError(f"Lift {self.id} must have at least 2 cable_points, got {len(self.cable_points)}")
 
     @staticmethod
+    def finalize_geometry(
+        terrain_points: list[PathPoint], lift_type: str
+    ) -> tuple[list[PathPoint], list["Pylon"], list[PathPoint]]:
+        """Single source of truth for a lift's geometry: vertical-DP the terrain profile, then recompute
+        pylons + cable from it. Pure — no DEM, no nodes — so it runs identically at build and JSON load.
+
+        A lift is horizontally a straight line, so the terrain is thinned in the (distance, elevation)
+        plane (keeps bends, drops straight runs). Endpoints of terrain ARE the stations, so start/end
+        elevation and total length come from the (thinned) terrain itself. Idempotent: DP of already-
+        thinned terrain is a no-op, and pylons/cable are deterministic in the unchanged terrain.
+
+        Returns:
+            Tuple of (thinned_terrain_points, pylons, cable_points).
+        """
+        thinned = simplify_path_points_vertical(
+            points=terrain_points, tolerance_m=GeometricTuningConfig.TERRAIN_SIMPLIFY_TOLERANCE_M
+        )
+        assert len(thinned) >= 2, f"vertical-DP collapsed terrain below 2 points: {len(thinned)}"
+        total_m = PathPoint.total_length_m(points=thinned)
+        assert total_m > 0, f"finalize_geometry: thinned terrain has non-positive length {total_m}"
+        pylons = Lift.calculate_pylons(terrain_points=thinned, lift_type=lift_type, total_distance_m=total_m)
+        cable_points = Lift.calculate_cable_points(
+            terrain_points=thinned,
+            pylons=pylons,
+            start_elevation=thinned[0].elevation,
+            end_elevation=thinned[-1].elevation,
+            lift_type=lift_type,
+            total_distance_m=total_m,
+        )
+        assert len(cable_points) >= 2, f"finalize_geometry produced <2 cable points: {len(cable_points)}"
+        return thinned, pylons, cable_points
+
+    @staticmethod
     def _compute_type_dependent_data(
         terrain_points: list[PathPoint],
         start_node: "Node",
         end_node: "Node",
         lift_type: str,
         lift_id: str,
-    ) -> tuple[str, list["Pylon"], list[PathPoint], float]:
-        """Compute all type-dependent lift data.
+    ) -> tuple[str, list[PathPoint], list["Pylon"], list[PathPoint], float]:
+        """Compute all type-dependent lift data (name + finalized geometry).
 
-        Single source of truth for name, pylons, cable_points calculation.
-        Used by both create() and update_type() to ensure consistency.
+        Single source of truth for name, terrain thinning, pylons, cable_points. Used by create() /
+        update_type() / rebuild() to stay consistent; geometry is delegated to finalize_geometry so the
+        build path applies the same thinning that JSON load does.
 
         Args:
             terrain_points: Pre-sampled terrain along lift path
@@ -252,7 +288,7 @@ class Lift(NodeConnected):
             lift_id: Lift ID for naming (e.g., "L1")
 
         Returns:
-            Tuple of (name, pylons, cable_points, length_m)
+            Tuple of (name, thinned_terrain_points, pylons, cable_points, length_m).
         """
         # Calculate metrics
         length_m = GeoCalculator.haversine_distance_m(
@@ -280,24 +316,10 @@ class Lift(NodeConnected):
             avg_bearing=avg_bearing,
         )
 
-        # Calculate pylons via catenary simulation
-        pylons = Lift.calculate_pylons(
-            terrain_points=terrain_points,
-            lift_type=lift_type,
-            total_distance_m=length_m,
-        )
+        # Thin terrain + recompute pylons/cable via the shared geometry finalizer.
+        thinned, pylons, cable_points = Lift.finalize_geometry(terrain_points=terrain_points, lift_type=lift_type)
 
-        # Calculate cable points (depend on pylons)
-        cable_points = Lift.calculate_cable_points(
-            terrain_points=terrain_points,
-            pylons=pylons,
-            start_elevation=start_node.elevation,
-            end_elevation=end_node.elevation,
-            lift_type=lift_type,
-            total_distance_m=length_m,
-        )
-
-        return name, pylons, cable_points, length_m
+        return name, thinned, pylons, cable_points, length_m
 
     @classmethod
     def create(
@@ -330,8 +352,8 @@ class Lift(NodeConnected):
             dem=dem,
         )
 
-        # Compute all type-dependent data via shared helper
-        name, pylons, cable_points, length_m = cls._compute_type_dependent_data(
+        # Compute all type-dependent data via shared helper (thins terrain to final density)
+        name, terrain_points, pylons, cable_points, length_m = cls._compute_type_dependent_data(
             terrain_points=terrain_points,
             start_node=start_node,
             end_node=end_node,
@@ -420,7 +442,7 @@ class Lift(NodeConnected):
         self.lift_type = new_type
 
         # Recompute type-dependent geometry via shared helper; keep the existing name.
-        _name, self.pylons, self.cable_points, _length = self._compute_type_dependent_data(
+        _name, self.terrain_points, self.pylons, self.cable_points, _length = self._compute_type_dependent_data(
             terrain_points=self.terrain_points,
             start_node=start_node,
             end_node=end_node,
@@ -445,7 +467,7 @@ class Lift(NodeConnected):
             dem: DEM service for terrain sampling.
         """
         self.terrain_points = self.sample_terrain(start_node=start_node, end_node=end_node, dem=dem)
-        _name, self.pylons, self.cable_points, _length = self._compute_type_dependent_data(
+        _name, self.terrain_points, self.pylons, self.cable_points, _length = self._compute_type_dependent_data(
             terrain_points=self.terrain_points,
             start_node=start_node,
             end_node=end_node,
@@ -460,15 +482,17 @@ class Lift(NodeConnected):
         lift_type: str,
         total_distance_m: float,
     ) -> list[Pylon]:
-        """Calculate pylon positions using 3-phase catenary simulation.
+        """Calculate pylon positions using 3-phase catenary simulation, in DISTANCE-space.
 
         Phases: place pylons where clearance < min, enforce max_spacing with midpoints, re-check
-        clearance. Cable sag z(t) = (1-t)·z₀ + t·z₁ − 4·s·t·(1-t), t=x/L, s=sag_factor·L.
+        clearance. Cable sag z(t) = (1-t)·z₀ + t·z₁ − 4·s·t·(1-t), t=x/L, s=sag_factor·L. All spacing
+        and spans are measured in metres along the terrain polyline (`cumulative_distances`), so the sim
+        is correct whether terrain is uniformly sampled (build) or coarsely DP-thinned (load).
 
         Args:
             terrain_points: List of PathPoint sampled along lift path
             lift_type: Type of lift (determines pylon parameters from LiftConfig)
-            total_distance_m: Total horizontal distance of lift
+            total_distance_m: Total horizontal distance of lift (validation only; spans use terrain arc)
 
         Returns:
             List of Pylon objects with calculated positions.
@@ -477,26 +501,23 @@ class Lift(NodeConnected):
             raise ValueError(f"terrain_points must have at least 2 points, got {len(terrain_points)}")
         if total_distance_m <= 0:
             raise ValueError(f"total_distance_m must be positive, got {total_distance_m}")
-        if len(terrain_points) < 3:
-            logger.warning(
-                f"Not enough terrain points for pylon calculation (got {len(terrain_points)}), skipping pylons"
-            )
-            return []
 
         config = cast(dict[str, int | float], LiftConfig.PYLON_CONFIG[LiftType(lift_type)])
-        n = len(terrain_points)
-        dist_per_step = total_distance_m / (n - 1) if n > 1 else 0
+        # Run the physics on a fine uniform internal grid so pylon placement resolution is independent
+        # of how coarse the stored (vertical-DP thinned) terrain is. The grid is transient.
+        grid = Lift._resample_uniform(terrain_points=terrain_points, step_m=LiftConfig.TERRAIN_SAMPLE_STEP_M)
+        n = len(grid)
+        assert n >= 2, f"resampled grid must have >=2 points, got {n}"
+        dists = PathPoint.cumulative_distances(points=grid)  # metres along the terrain polyline
+        assert dists[-1] > 0, f"resampled grid has non-positive arc length {dists[-1]}"
 
-        terrain_elevs = [p.elevation for p in terrain_points]
+        terrain_elevs = [p.elevation for p in grid]
         pylon_height = cast(int, config["pylon_height_m"])
         station_height = cast(int, config["station_height_m"])
         min_spacing_m = cast(int, config["min_spacing_m"])
         min_clearance = cast(int, config["min_clearance_m"])
         sag_factor = cast(float, config["sag_factor"])
         max_spacing_m = cast(int, config["max_spacing_m"])
-
-        # Minimum spacing in indices
-        min_spacing_idx = max(2, int(min_spacing_m / dist_per_step)) if dist_per_step > 0 else 2
 
         # Station cable elevations
         start_cable_elev = terrain_elevs[0] + station_height
@@ -510,10 +531,10 @@ class Lift(NodeConnected):
             end_elev=end_cable_elev,
             pylon_set=set(),
             terrain_elevs=terrain_elevs,
-            min_spacing_idx=min_spacing_idx,
+            dists=dists,
+            min_spacing_m=min_spacing_m,
             min_clearance=min_clearance,
             pylon_height=pylon_height,
-            dist_per_step=dist_per_step,
             sag_factor=sag_factor,
         )
         pylon_indices = sorted(set(pylon_indices))
@@ -522,7 +543,7 @@ class Lift(NodeConnected):
         pylon_indices = Lift._enforce_max_spacing(
             pylon_indices=pylon_indices,
             n=n,
-            dist_per_step=dist_per_step,
+            dists=dists,
             max_spacing_m=max_spacing_m,
         )
 
@@ -533,22 +554,21 @@ class Lift(NodeConnected):
             start_cable_elev=start_cable_elev,
             end_cable_elev=end_cable_elev,
             terrain_elevs=terrain_elevs,
-            min_spacing_idx=min_spacing_idx,
+            dists=dists,
+            min_spacing_m=min_spacing_m,
             min_clearance=min_clearance,
             pylon_height=pylon_height,
-            dist_per_step=dist_per_step,
             sag_factor=sag_factor,
         )
 
-        # Convert indices to Pylon objects
+        # Convert indices to Pylon objects (distance is the terrain arc length at that grid vertex)
         pylons = []
         for idx in pylon_indices:
-            assert 0 <= idx < len(terrain_points), f"pylon index {idx} out of range [0, {len(terrain_points)})"
-            point = terrain_points[idx]
+            assert 0 <= idx < n, f"pylon index {idx} out of range [0, {n})"
+            point = grid[idx]
             pylons.append(
                 Pylon(
-                    index=idx,
-                    distance_m=idx * dist_per_step,
+                    distance_m=dists[idx],
                     lat=point.lat,
                     lon=point.lon,
                     ground_elevation_m=point.elevation,
@@ -565,15 +585,15 @@ class Lift(NodeConnected):
         z0: float,
         z1: float,
         idx: int,
-        dist_per_step: float,
+        dists: list[float],
         sag_factor: float,
     ) -> float:
-        """Cable elevation at index using Lift.cable_elevation."""
-        if end_idx <= start_idx:
+        """Cable elevation at a terrain index using Lift.cable_elevation, in distance-space."""
+        span_m = dists[end_idx] - dists[start_idx]
+        if span_m <= 0:
             return z0
-        span_idx = end_idx - start_idx
-        t = (idx - start_idx) / span_idx
-        span_m = span_idx * dist_per_step
+        t = (dists[idx] - dists[start_idx]) / span_m
+        assert 0.0 <= t <= 1.0, f"_cable_elev_at_idx: t={t} out of [0,1] (idx={idx} in [{start_idx},{end_idx}])"
         return Lift.cable_elevation(t=t, start_elev=z0, end_elev=z1, span_m=span_m, sag_factor=sag_factor)
 
     @staticmethod
@@ -584,21 +604,25 @@ class Lift(NodeConnected):
         end_elev: float,
         pylon_set: set[int],
         terrain_elevs: list[float],
-        min_spacing_idx: int,
+        dists: list[float],
+        min_spacing_m: float,
         min_clearance: int,
         pylon_height: int,
-        dist_per_step: float,
         sag_factor: float,
     ) -> list[int]:
-        """Recursively find where cable clearance is below minimum."""
-        if end_idx - start_idx < min_spacing_idx * 2:
+        """Recursively find terrain indices where cable clearance is below minimum (distance-space)."""
+        if dists[end_idx] - dists[start_idx] < min_spacing_m * 2:
             return []
 
         worst_violation: float = 0.0
         worst_idx = -1
 
-        for i in range(start_idx + min_spacing_idx, end_idx - min_spacing_idx + 1):
+        for i in range(start_idx + 1, end_idx):
+            # Cable at pylons can not be a violation
             if i in pylon_set:
+                continue
+            # Honour min spacing to either anchor in metres, not index count.
+            if dists[i] - dists[start_idx] < min_spacing_m or dists[end_idx] - dists[i] < min_spacing_m:
                 continue
             cable_elev = Lift._cable_elev_at_idx(
                 start_idx=start_idx,
@@ -606,7 +630,7 @@ class Lift(NodeConnected):
                 z0=start_elev,
                 z1=end_elev,
                 idx=i,
-                dist_per_step=dist_per_step,
+                dists=dists,
                 sag_factor=sag_factor,
             )
             clearance = cable_elev - terrain_elevs[i]
@@ -629,10 +653,10 @@ class Lift(NodeConnected):
             end_elev=pylon_top_elev,
             pylon_set=new_pylon_set,
             terrain_elevs=terrain_elevs,
-            min_spacing_idx=min_spacing_idx,
+            dists=dists,
+            min_spacing_m=min_spacing_m,
             min_clearance=min_clearance,
             pylon_height=pylon_height,
-            dist_per_step=dist_per_step,
             sag_factor=sag_factor,
         )
         right_pylons = Lift._find_clearance_violations(
@@ -642,27 +666,41 @@ class Lift(NodeConnected):
             end_elev=end_elev,
             pylon_set=new_pylon_set,
             terrain_elevs=terrain_elevs,
-            min_spacing_idx=min_spacing_idx,
+            dists=dists,
+            min_spacing_m=min_spacing_m,
             min_clearance=min_clearance,
             pylon_height=pylon_height,
-            dist_per_step=dist_per_step,
             sag_factor=sag_factor,
         )
 
         return left_pylons + [worst_idx] + right_pylons
 
     @staticmethod
+    def _nearest_index_to_distance(dists: list[float], target_m: float, lo: int, hi: int) -> int:
+        """Terrain index in the OPEN interval (lo, hi) whose arc distance is nearest target_m, or -1
+        if the interval has no interior index (can happen on coarse DP-thinned terrain).
+        """
+        best_idx = -1
+        best_gap = float("inf")
+        for i in range(lo + 1, hi):
+            gap = abs(dists[i] - target_m)
+            if gap < best_gap:
+                best_gap = gap
+                best_idx = i
+        return best_idx
+
+    @staticmethod
     def _enforce_max_spacing(
         pylon_indices: list[int],
         n: int,
-        dist_per_step: float,
+        dists: list[float],
         max_spacing_m: int,
     ) -> list[int]:
-        """Phase 2: insert midpoint pylons so no span exceeds max_spacing."""
-        if dist_per_step <= 0:
-            return pylon_indices
-        max_spacing_idx = int(max_spacing_m / dist_per_step)
+        """Phase 2: insert midpoint pylons so no span exceeds max_spacing (distance-space).
 
+        The midpoint is the terrain vertex nearest the span's distance-midpoint. On coarse terrain a
+        span may have no interior vertex to host one — then it is left as-is (bounded, non-fatal).
+        """
         for _ in range(20):  # Safety limit
             anchors = [0] + sorted(pylon_indices) + [n - 1]
             new_spacing_pylons = []
@@ -670,11 +708,16 @@ class Lift(NodeConnected):
             for seg_idx in range(len(anchors) - 1):
                 seg_start = anchors[seg_idx]
                 seg_end = anchors[seg_idx + 1]
-                span_idx = seg_end - seg_start
 
-                if span_idx > max_spacing_idx:
-                    mid_idx = (seg_start + seg_end) // 2
-                    if mid_idx not in pylon_indices and 0 < mid_idx < n - 1:
+                if dists[seg_end] - dists[seg_start] > max_spacing_m:
+                    mid_target = (dists[seg_start] + dists[seg_end]) / 2
+                    mid_idx = Lift._nearest_index_to_distance(
+                        dists=dists, target_m=mid_target, lo=seg_start, hi=seg_end
+                    )
+                    if mid_idx >= 0 and mid_idx not in pylon_indices:
+                        assert seg_start < mid_idx < seg_end, (
+                            f"midpoint pylon {mid_idx} not strictly inside span ({seg_start}, {seg_end})"
+                        )
                         new_spacing_pylons.append(mid_idx)
 
             if not new_spacing_pylons:
@@ -690,13 +733,13 @@ class Lift(NodeConnected):
         start_cable_elev: float,
         end_cable_elev: float,
         terrain_elevs: list[float],
-        min_spacing_idx: int,
+        dists: list[float],
+        min_spacing_m: float,
         min_clearance: int,
         pylon_height: int,
-        dist_per_step: float,
         sag_factor: float,
     ) -> list[int]:
-        """Phase 3: re-check clearance per span after spacing pylons added."""
+        """Phase 3: re-check clearance per span after spacing pylons added (distance-space)."""
         pylon_set = set(pylon_indices)
         anchors = [0] + sorted(pylon_indices) + [n - 1]
         anchor_elevs = [start_cable_elev]
@@ -718,10 +761,10 @@ class Lift(NodeConnected):
                 end_elev=seg_end_elev,
                 pylon_set=pylon_set,
                 terrain_elevs=terrain_elevs,
-                min_spacing_idx=min_spacing_idx,
+                dists=dists,
+                min_spacing_m=min_spacing_m,
                 min_clearance=min_clearance,
                 pylon_height=pylon_height,
-                dist_per_step=dist_per_step,
                 sag_factor=sag_factor,
             )
             new_clearance_pylons.extend(additional)
@@ -773,6 +816,9 @@ class Lift(NodeConnected):
         anchor_y = [start_elevation + station_height]
 
         for pylon in pylons:
+            assert 0 < pylon.distance_m < total_distance_m, (
+                f"pylon distance {pylon.distance_m} outside lift (0, {total_distance_m})"
+            )
             anchor_x.append(pylon.distance_m)
             anchor_y.append(pylon.top_elevation_m)
 
@@ -786,7 +832,8 @@ class Lift(NodeConnected):
 
         # Generate cable curve with sag for each segment
         cable_points = []
-        n_terrain = len(terrain_points)
+        terrain_dists = PathPoint.cumulative_distances(terrain_points)
+        assert terrain_dists[-1] > 0, f"terrain polyline has non-positive length {terrain_dists[-1]}"
 
         for seg_idx in range(len(anchor_x) - 1):
             start_x = anchor_x[seg_idx]
@@ -798,8 +845,12 @@ class Lift(NodeConnected):
             if span <= 0:
                 continue
 
-            # Generate points along segment with parabolic sag
-            n_seg_points = max(10, int(span / 20))
+            # Curvature-adaptive sampling: the cable is a parabola with max sag = sag_factor*span, so an
+            # n-segment chord deviates by ~sag/n². Pick n to hold that under CABLE_SAG_TOLERANCE_M — short
+            # low-sag spans get 1-2 points, long deep-sag spans get more. Anchors (i=0 / i=n) stay pinned.
+            max_sag = sag_factor * span
+            n_seg_points = max(1, math.ceil(math.sqrt(max_sag / LiftConfig.CABLE_SAG_TOLERANCE_M)))
+            assert n_seg_points >= 1, f"n_seg_points must be >=1, got {n_seg_points} (span={span})"
             for i in range(n_seg_points + 1):
                 # Skip duplicate at segment boundaries (except first segment start)
                 if seg_idx > 0 and i == 0:
@@ -814,22 +865,29 @@ class Lift(NodeConnected):
                     span_m=span,
                     sag_factor=sag_factor,
                 )
-
-                # Interpolate lat/lon from terrain points
-                terrain_frac = x / total_distance_m
-                terrain_idx = terrain_frac * (n_terrain - 1)
-                idx_low = int(terrain_idx)
-                idx_high = min(idx_low + 1, n_terrain - 1)
-                interp_frac = terrain_idx - idx_low
-
-                pt_low = terrain_points[idx_low]
-                pt_high = terrain_points[idx_high]
-                lon = pt_low.lon + (pt_high.lon - pt_low.lon) * interp_frac
-                lat = pt_low.lat + (pt_high.lat - pt_low.lat) * interp_frac
-
-                cable_points.append(PathPoint(lon=lon, lat=lat, elevation=cable_elev))
+                pt = PathPoint.interpolate_at_distance(terrain_points, terrain_dists, x)
+                cable_points.append(PathPoint(lon=pt.lon, lat=pt.lat, elevation=cable_elev))
 
         return cable_points
+
+    @staticmethod
+    def _resample_uniform(terrain_points: list[PathPoint], step_m: float) -> list[PathPoint]:
+        """Resample terrain onto a uniform step_m grid (endpoints included) by distance interpolation.
+
+        The pylon physics runs on this fine internal grid so its resolution is independent of how coarse
+        the STORED terrain is (which may be aggressively vertical-DP thinned). Purely transient — the
+        grid is never stored; only the resulting pylon distances are.
+        """
+        assert len(terrain_points) >= 2, f"_resample_uniform needs >=2 terrain points, got {len(terrain_points)}"
+        assert step_m > 0, f"_resample_uniform step_m must be positive, got {step_m}"
+        dists = PathPoint.cumulative_distances(terrain_points)
+        total = dists[-1]
+        n_steps = max(1, round(total / step_m))
+        grid = [
+            PathPoint.interpolate_at_distance(terrain_points, dists, total * i / n_steps) for i in range(n_steps + 1)
+        ]
+        assert grid[0].elevation == terrain_points[0].elevation, "resample must preserve the start station"
+        return grid
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> "Lift":
@@ -846,7 +904,6 @@ class Lift(NodeConnected):
             terrain_points=[PathPoint(**p) for p in cast(list[dict[str, float]], data["terrain_points"])],
             pylons=[
                 Pylon(
-                    index=int(p["index"]),
                     distance_m=float(p["distance_m"]),
                     lat=float(p["lat"]),
                     lon=float(p["lon"]),

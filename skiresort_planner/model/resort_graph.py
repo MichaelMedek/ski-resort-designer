@@ -548,19 +548,53 @@ class ResortGraph:
             corridor_weight=GeometricTuningConfig.CORRIDOR_WEIGHT,
         )
         for seg, pts in zip(segments, smoothed, strict=True):
-            # Shed the dense ~7m resampling on straight runs (Shapely Douglas–Peucker). Junctions/
-            # endpoints are the first/last of each segment and are always kept.
-            simplified = simplify_path_points(pts, tolerance_m=GeometricTuningConfig.FINISH_SIMPLIFY_TOLERANCE_M)
-            # DP always keeps the first/last point, so endpoints are untouched — assert the invariant the
-            # whole segment-chain model relies on (adjacent segments share a junction point by value).
-            assert len(simplified) >= 2, f"simplify collapsed {seg.id} below 2 points"
-            assert simplified[0] == pts[0] and simplified[-1] == pts[-1], f"simplify moved an endpoint of {seg.id}"
-            seg.points = simplified
+            seg.points = pts
+        # Shed the dense ~7m resampling on straight runs (Douglas–Peucker) — the SAME thinning that runs
+        # on OSM import and on JSON load, via the one emitter below.
+        self._simplify_segments(segment_ids=segment_ids)
         after = max(seg.max_slope_pct for seg in segments)
         total_pts = sum(len(seg.points) for seg in segments)
         logger.info(
             f"Smoothed finished path {segment_ids}: max_slope_pct {before:.1f}% -> {after:.1f}%, {total_pts} points"
         )
+
+    def _simplify_segments(self, segment_ids: list[str]) -> None:
+        """Douglas–Peucker each segment's points in place — the single DP emitter shared by finish
+        smoothing, OSM import (via finish), and JSON load re-thinning. Idempotent: DP of already-thinned
+        points is a no-op, so re-running on load never drifts geometry.
+
+        Junctions/endpoints are the first/last of each segment and are always kept, so adjacent segments
+        keep sharing a junction point by value — the invariant the whole segment-chain model relies on.
+        """
+        for sid in segment_ids:
+            seg = self.segments[sid]
+            simplified = simplify_path_points(
+                points=seg.points, tolerance_m=GeometricTuningConfig.FINISH_SIMPLIFY_TOLERANCE_M
+            )
+            assert len(simplified) >= 2, f"simplify collapsed {seg.id} below 2 points"
+            assert simplified[0] == seg.points[0] and simplified[-1] == seg.points[-1], (
+                f"simplify moved an endpoint of {seg.id}"
+            )
+            seg.points = simplified
+
+    def _rethin_on_load(self) -> None:
+        """Re-apply current thinning to all loaded geometry. DEM-free and idempotent, so reloading an
+        already-thinned save is a no-op (counts stable) — this is why the serialization round-trip holds.
+
+        Lifts: re-run the shared geometry finalizer (vertical-DP terrain + recompute pylons/cable).
+        Slopes/roads: DP-thin only — NEVER re-spline, which is not idempotent and would drift the ribbon
+        and max_slope_pct on every reload.
+        """
+        # Recalculate lift geometry with the latest code parameters
+        for lift in self.lifts.values():
+            lift.terrain_points, lift.pylons, lift.cable_points = Lift.finalize_geometry(
+                terrain_points=lift.terrain_points, lift_type=lift.lift_type
+            )
+        # Recalculate path geometry with the latest code parameters (TODO: Add new path tpyes here if any added)
+        for slope in self.slopes.values():
+            self._simplify_segments(segment_ids=slope.segment_ids)
+        for road in self.roads.values():
+            self._simplify_segments(segment_ids=road.segment_ids)
 
     # =========================================================================
     # Slope Operations
@@ -1790,6 +1824,9 @@ class ResortGraph:
             for sid in orphan_segment_ids:
                 del graph.segments[sid]
             graph.cleanup_isolated_nodes()
+
+        # Re-apply current thinning to loaded geometry (DEM-free, idempotent).
+        graph._rethin_on_load()
 
         counters = cast(dict[str, int], data["counters"])
         graph._node_counter = counters["node"]

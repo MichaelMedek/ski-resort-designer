@@ -868,6 +868,63 @@ class TestFinishSmoothing:
         assert after[-1] == before[-1], "end endpoint pinned exactly"
 
 
+class TestSimplifySegments:
+    """_simplify_segments: the ONE Douglas–Peucker emitter shared by finish, OSM import, and JSON load.
+    DP-thins each segment in place, keeps endpoints, is idempotent.
+    """
+
+    def test_thins_and_pins_endpoints(self, empty_graph, path_points_blue) -> None:
+        graph = empty_graph
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        seg_id = list(graph.segments.keys())[0]
+        before = list(graph.segments[seg_id].points)
+
+        graph._simplify_segments(segment_ids=[seg_id])
+
+        after = graph.segments[seg_id].points
+        assert len(after) >= 2 and len(after) <= len(before)
+        assert after[0] == before[0] and after[-1] == before[-1], "endpoints pinned exactly"
+
+    def test_idempotent(self, empty_graph, path_points_blue) -> None:
+        graph = empty_graph
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        seg_id = list(graph.segments.keys())[0]
+        graph._simplify_segments(segment_ids=[seg_id])
+        once = list(graph.segments[seg_id].points)
+        graph._simplify_segments(segment_ids=[seg_id])
+        assert graph.segments[seg_id].points == once, "re-thinning already-thinned points is a no-op"
+
+
+class TestRethinOnLoad:
+    """_rethin_on_load: DEM-free, idempotent re-thinning applied inside from_dict (lifts via
+    finalize_geometry; slopes/roads DP-only, never re-splined).
+    """
+
+    def test_thins_slopes_and_is_idempotent(self, empty_graph, path_points_blue) -> None:
+        graph = empty_graph
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        seg_id = list(graph.segments.keys())[0]
+
+        graph._rethin_on_load()
+        once = list(graph.segments[seg_id].points)
+        graph._rethin_on_load()
+        assert graph.segments[seg_id].points == once, "slope geometry stable across repeated on-load thinning"
+
+    def test_does_not_respline_slope_coords(self, empty_graph, path_points_blue) -> None:
+        # DP-only on load: coordinates must not drift (re-splining would move them every reload).
+        graph = empty_graph
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        seg_id = list(graph.segments.keys())[0]
+        graph._rethin_on_load()  # first load already thinned at finish; this is the settled state
+        settled = list(graph.segments[seg_id].points)
+
+        graph._rethin_on_load()
+        for a, b in zip(settled, graph.segments[seg_id].points, strict=True):
+            assert a.lon == b.lon and a.lat == b.lat and a.elevation == b.elevation, "no coord drift on reload"
+
+
 class TestImportOSMBatch:
     """An OSM import is ONE undoable batch: it adds many slopes+lifts under a single undo entry,
     and one undo wipes the whole import (so the user can import a different selection).

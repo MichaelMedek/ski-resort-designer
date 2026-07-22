@@ -9,7 +9,7 @@ like a bridge/cut/fill.
 """
 
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -97,6 +97,7 @@ def _eval_spline(fit: _SplineFit, dists: npt.NDArray[np.float64]) -> list[PathPo
     profile (clamped to the fitted arc-length range so end samples never extrapolate).
     """
     new_x, new_y = splev(dists, fit.tck)
+    assert len(new_x) == len(dists), f"_eval_spline: splev returned {len(new_x)} pts for {len(dists)} params"
     clamped = np.clip(dists, 0.0, float(fit.cumdist[-1]))
     new_elev = fit.elevation(clamped)
     return [
@@ -171,6 +172,9 @@ def smooth_joined_path(
         ..., junction_{n-1}, outer end]; length == len(segment_point_lists) + 1.
     """
     assert segment_point_lists, "smooth_joined_path needs at least one segment"
+    assert len(node_anchors) == len(segment_point_lists) + 1, (
+        f"node_anchors must be one per boundary: got {len(node_anchors)} for {len(segment_point_lists)} segments"
+    )
 
     # Join, deduping each segment's first point against the previous segment's last.
     joined: list[PathPoint] = list(segment_point_lists[0])
@@ -211,42 +215,66 @@ def smooth_joined_path(
         result.append(smoothed[start : cut + 1])
         start = cut
     result.append(smoothed[start:])
+    assert len(result) == len(segment_point_lists), (
+        f"re-slice must return one list per segment: {len(result)} vs {len(segment_point_lists)}"
+    )
     return result
 
 
-def simplify_path_points(points: list[PathPoint], tolerance_m: float) -> list[PathPoint]:
-    """Douglas–Peucker (Shapely `LineString.simplify`) dropping interior points within `tolerance_m`
-    horizontally of the line between kept neighbours. First/last points are always kept.
+def _simplify_projected(
+    points: list[PathPoint], projected: list[tuple[float, float]], tolerance_m: float
+) -> list[PathPoint]:
+    """Douglas–Peucker over a caller-supplied 2D projection, returning the SURVIVING original PathPoints.
 
-    Runs in a local meter frame (lon/lat → metres about the first point) so the tolerance is metres;
-    surviving points keep their real elevation, so the ribbon reconstructs within tolerance. Sheds the
-    dense ~7 m resampling on straight runs at finish time — cutting render/serialize/transport cost.
+    `projected` is the metric plane DP measures in (horizontal x/y, or along-track distance/elevation),
+    one coord per input point. DP with preserve_topology=False keeps a subsequence of the input vertices
+    unchanged, so we recover survivors by walking the simplified coords against `projected` in order — no
+    coordinate rebuild, so lat/lon/elevation stay bit-exact. First/last always kept.
+
+    Precondition: >2 points (public wrappers return the trivial path early), so this fails loud if called
+    with a degenerate path instead of silently short-circuiting.
+    """
+    assert len(points) > 2, f"_simplify_projected needs >2 points (wrappers guard the trivial case), got {len(points)}"
+    assert len(projected) == len(points), f"projected/points length mismatch: {len(projected)} vs {len(points)}"
+    simplified = LineString(projected).simplify(tolerance_m, preserve_topology=False)
+    # Two-pointer walk: the simplified coords are an in-order subsequence of `projected` (DP never
+    # moves a vertex), so advance the input cursor to each kept coord and gather that original point.
+    out: list[PathPoint] = []
+    cursor = 0
+    for coord in simplified.coords:
+        while projected[cursor] != coord:
+            cursor += 1
+        out.append(points[cursor])
+    assert len(out) >= 2 and out[0] is points[0] and out[-1] is points[-1], "DP dropped an endpoint"
+    return out
+
+
+def simplify_path_points(points: list[PathPoint], tolerance_m: float) -> list[PathPoint]:
+    """Douglas–Peucker dropping interior points within `tolerance_m` HORIZONTALLY of the line between
+    kept neighbours. First/last always kept.
+
+    Projects lon/lat → metres about the first point so the tolerance is metres; survivors keep their
+    real elevation, so the ribbon reconstructs within tolerance. Sheds the dense ~7 m resampling on
+    straight runs at finish time — cutting render/serialize/transport cost.
     """
     if len(points) <= 2:
         return list(points)
     lon0, lat0 = points[0].lon, points[0].lat
     m_per_deg_lon, m_per_deg_lat = GeoCalculator.meters_per_degree(lat=lat0)
-    # LineString in metres about the origin; z carries the elevation so simplify keeps it on survivors.
-    line = LineString([((p.lon - lon0) * m_per_deg_lon, (p.lat - lat0) * m_per_deg_lat, p.elevation) for p in points])
-    simplified = line.simplify(tolerance_m, preserve_topology=False)
-    out = [
-        PathPoint(lon=lon0 + x / m_per_deg_lon, lat=lat0 + y / m_per_deg_lat, elevation=z)
-        for x, y, z in simplified.coords
-    ]
-    # DP always keeps the endpoints; restore the originals so the meter-frame round-trip can't drift them.
-    out[0], out[-1] = points[0], points[-1]
-    return out
+    projected = [((p.lon - lon0) * m_per_deg_lon, (p.lat - lat0) * m_per_deg_lat) for p in points]
+    return _simplify_projected(points=points, projected=projected, tolerance_m=tolerance_m)
 
 
-def point_at_fraction(points: Sequence[PathPoint], fraction: float) -> PathPoint:
-    """The PathPoint at normalized arc-length `fraction` (0..1) along `points`, via Shapely
-    `LineString.interpolate` — constant-speed by construction. Used by the flythrough camera + its dot.
+def simplify_path_points_vertical(points: list[PathPoint], tolerance_m: float) -> list[PathPoint]:
+    """Douglas–Peucker turned around: measure in the (along-track distance, elevation) plane instead of
+    horizontally. First/last always kept.
 
-    Interpolates in a local meter frame (lon/lat → metres about the first point) so spacing is metric and
-    z (elevation) is carried through; fraction 0→first point, 1→last, so endpoints are hit exactly.
+    A lift is horizontally a straight line — all its shape is the vertical terrain profile. Projecting
+    onto (cumulative distance, elevation) keeps points where the profile BENDS and drops them on
+    straight vertical runs, within `tolerance_m`.
     """
-    lon0, lat0 = points[0].lon, points[0].lat
-    m_per_deg_lon, m_per_deg_lat = GeoCalculator.meters_per_degree(lat=lat0)
-    line = LineString([((p.lon - lon0) * m_per_deg_lon, (p.lat - lat0) * m_per_deg_lat, p.elevation) for p in points])
-    p = line.interpolate(max(0.0, min(1.0, fraction)), normalized=True)
-    return PathPoint(lon=lon0 + p.x / m_per_deg_lon, lat=lat0 + p.y / m_per_deg_lat, elevation=p.z)
+    if len(points) <= 2:
+        return list(points)
+    cumdist = PathPoint.cumulative_distances(points)
+    projected = [(cumdist[i], points[i].elevation) for i in range(len(points))]
+    return _simplify_projected(points=points, projected=projected, tolerance_m=tolerance_m)

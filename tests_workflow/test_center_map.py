@@ -631,9 +631,10 @@ class TestLayerCollection:
     """Tests for layer collection z-ordering."""
 
     def test_layer_collection_maintains_z_order(self) -> None:
-        """LayerCollection z-order: terrain → pylons → slopes → roads → lifts → nodes → proposals → markers.
+        """LayerCollection z-order: terrain → slopes → roads → lifts → pylons → nodes → proposals → markers.
 
-        Parking is not its own bucket — a parking node renders inside the nodes layer.
+        Pylons render AFTER lift cables so a pylon marker wins the hover/pick over its cable. Parking is
+        not its own bucket — a parking node renders inside the nodes layer.
         """
         from skiresort_planner.ui.center_map import LayerCollection
 
@@ -643,6 +644,8 @@ class TestLayerCollection:
         collection.terrain.append({"id": "terrain"})
         collection.slopes.append({"id": "slopes"})
         collection.roads.append({"id": "roads"})
+        collection.lifts.append({"id": "lifts"})
+        collection.pylons.append({"id": "pylons"})
         collection.nodes.append({"id": "nodes"})
         collection.markers.append({"id": "markers"})
 
@@ -652,7 +655,9 @@ class TestLayerCollection:
         layer_ids = [layer["id"] for layer in layers]
         assert layer_ids.index("terrain") < layer_ids.index("slopes"), "terrain before slopes"
         assert layer_ids.index("slopes") < layer_ids.index("roads"), "slopes before roads"
-        assert layer_ids.index("roads") < layer_ids.index("nodes"), "roads before nodes"
+        assert layer_ids.index("roads") < layer_ids.index("lifts"), "roads before lifts"
+        assert layer_ids.index("lifts") < layer_ids.index("pylons"), "lifts before pylons (pylon wins hover)"
+        assert layer_ids.index("pylons") < layer_ids.index("nodes"), "pylons before nodes"
         assert layer_ids.index("nodes") < layer_ids.index("markers"), "nodes before markers"
 
 

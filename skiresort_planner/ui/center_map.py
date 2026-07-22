@@ -36,7 +36,6 @@ from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.generators.osm_importer import bbox_around
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
-from skiresort_planner.model.path_smoothing import point_at_fraction
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 
@@ -54,11 +53,13 @@ logger = logging.getLogger(__name__)
 class LayerCollection:
     """Manages Pydeck layers with correct z-ordering.
 
-    Z-order (back to front): terrain → pylons → slopes → roads → lifts → nodes → proposals → markers
+    Z-order (back to front): terrain → slopes → roads → lifts → pylons → nodes → proposals → markers
 
     Slopes and roads render in separate buckets (built by one shared segment
-    loop, kept distinct for z-order and brown-vs-difficulty styling). Nodes are
-    placed AFTER slopes/lifts so they:
+    loop, kept distinct for z-order and brown-vs-difficulty styling). Pylons render
+    AFTER their lift cables so a pylon marker wins the hover/pick over the cable
+    beneath it (matching Z_OFFSET_2D_PYLONS > Z_OFFSET_2D_LIFTS). Nodes are
+    placed AFTER slopes/lifts/pylons so they:
     1. Render visually on top of lines (correct for junction display)
     2. Get click priority over slopes/lifts (nodes are small, need priority)
 
@@ -81,10 +82,10 @@ class LayerCollection:
         """Return all layers in correct z-order (back to front)."""
         return (
             self.terrain
-            + self.pylons
             + self.slopes
             + self.roads
             + self.lifts
+            + self.pylons
             + self.nodes
             + self.proposals
             + self.markers
@@ -432,7 +433,7 @@ class MapRenderer:
             # A viewing group is always real committed geometry (slope/cable/route element) — never <2 pts.
             assert len(group.actual_polyline) >= 2, f"viewing group has <2 points: {group.actual_polyline}"
             points = [PathPoint(lon=lon, lat=lat, elevation=elev) for lon, lat, elev in group.actual_polyline]
-            here = point_at_fraction(points=points, fraction=fraction)
+            here = PathPoint.interpolate_at_fraction(points=points, fraction=fraction)
             (s_lon, s_lat, _), (e_lon, e_lat, _) = group.straight_line
             bearing = GeoCalculator.initial_bearing_deg(lon1=s_lon, lat1=s_lat, lon2=e_lon, lat2=e_lat)
             # Nav-style: center the map AHEAD of the real position along the bearing, so "here" sits below
