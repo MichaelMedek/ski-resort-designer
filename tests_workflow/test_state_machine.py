@@ -540,12 +540,18 @@ class TestImportSelecting:
         sm.start_import(lon=1.0, lat=2.0)
         assert ctx.pending.osm_import_center_lon == 1.0
 
-        with sm.undo_running():  # force_* is undo-only
+        with sm.undo_running():  # force_idle is undo-only
             sm.force_idle()
 
         assert sm.is_idle_ready
         assert ctx.pending.osm_import_center_lon is None, "force_idle must run exit_import_selecting (clears center)"
         assert ctx.pending.osm_import_center_lat is None
+
+    def test_force_idle_is_the_only_force_method(self) -> None:
+        # force_idle is the sole state-force helper. Any other force_* is forbidden — the undo model
+        # only stays-in-place-and-re-arms or force_idles; it never forces the machine INTO a build state.
+        force_methods = [name for name in dir(PlannerStateMachine) if name.startswith("force_")]
+        assert force_methods == ["force_idle"], f"only force_idle is allowed, found: {force_methods}"
 
 
 class TestViewSwitching:
@@ -598,7 +604,7 @@ class TestStateGraphIsComplete:
 
     NOTE: this checks the FORWARD workflow graph only. Undo deliberately jumps to prior states the
     forward graph doesn't connect (e.g. idle_viewing_slope → slope_building after undoing a finish),
-    which is why undo uses force_* instead of transitions — see the module docstring / docs/workflows.
+    which is why undo uses force_idle instead of transitions — see the module docstring / docs/workflows.
     """
 
     def _edges(self, sm) -> dict[str, set[str]]:

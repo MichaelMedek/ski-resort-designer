@@ -9,6 +9,7 @@ delete actions for slope/lift/road uniformly.
 import pytest
 
 from skiresort_planner.constants import MapConfig
+from skiresort_planner.model.actions import ActionType
 from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
@@ -85,6 +86,38 @@ def _make_road(graph):
         paths=[ProposedPathSegment(points=pts, is_connector=True, kind=SegmentKind.ROAD)], record_undo=False
     )
     return graph.finish_road(segment_ids=[list(graph.segments.keys())[-1]])
+
+
+def _straight_points(dem: MockDEMService) -> list[PathPoint]:
+    """A 2-point straight south slope polyline sampled from the DEM (for _make_slope in the matrix)."""
+    return [
+        PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
+        PathPoint(
+            lon=0.0,
+            lat=-300 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-300 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        ),
+    ]
+
+
+def _build_finish_slope(fake_st, factory, dem):
+    """Build+finish a 1-segment slope on a fresh session; leave the SM in idle_viewing_slope.
+
+    Returns (sm, ctx, graph, slope, seg_id).
+    """
+    graph = ResortGraph()
+    sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+    pts = [
+        PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
+        PathPoint(lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=1990.0),
+    ]
+    endpoint_ids = graph.commit_paths(paths=[ProposedPathSegment(points=pts, target_difficulty="blue")])
+    seg_id = list(graph.segments.keys())[-1]
+    sm.start_slope(lon=0.0, lat=0.0, elevation=2000.0, node_id=None)
+    sm.commit_path(segment_id=seg_id, endpoint_node_id=endpoint_ids[0])
+    slope = graph.finish_slope(segment_ids=ctx.build(kind=SegmentKind.SLOPE).segments)
+    sm.finish_slope(entity_id=slope.id)
+    return sm, ctx, graph, slope, seg_id
 
 
 def _commit_straight_slope_len(graph, dem, n_segments: int, start_lat: float = 0.0):
@@ -1524,3 +1557,304 @@ class TestMapEpochs:
         cancel_current_build(kind=SegmentKind.ROAD)
 
         assert fake_st.session_state["camera_epoch"] == camera_before, "cancel must NOT recenter"
+
+
+class TestUndoDispatchMatrix:
+    """Exhaustive undo dispatch: every ActionType, driven through the real undo_last_action() (which
+    runs graph.undo_last() plus the _UNDO_SIDE_EFFECTS state-machine side-effect inside
+    `with sm.undo_running()`), asserting the resulting SM state and graph effect — never a
+    TransitionNotAllowed. A completeness guard asserts every ActionType has a scenario, so a new
+    action type fails this suite until it is covered here.
+    """
+
+    def _lift_id(self, graph: ResortGraph, dem: MockDEMService) -> str:
+        """Add a bottom→top lift on the graph; return its id (records ADD_LIFT)."""
+        bottom = _node_at(dem=dem, node_id="LB", lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR)
+        top = _node_at(dem=dem, node_id="LT", lon=0.0, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR)
+        graph.nodes[bottom.id] = bottom
+        graph.nodes[top.id] = top
+        return graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem).id
+
+    def _two_seg_building(self, fake_st, factory, dem):
+        """Drive the SM to slope_building with 2 committed segments; return (sm, ctx, graph)."""
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+        ctx.build_mode.mode = SegmentKind.SLOPE.value
+        sm.start_slope(lon=0.0, lat=0.0, elevation=2000.0, node_id=None)
+        for i in range(1, 3):
+            pts = [
+                PathPoint(
+                    lon=(i - 1) * 300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=2000.0 - (i - 1) * 10
+                ),
+                PathPoint(lon=i * 300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=2000.0 - i * 10),
+            ]
+            endpoint_ids = graph.commit_paths(paths=[ProposedPathSegment(points=pts, target_difficulty="blue")])
+            sm.commit_path(segment_id=list(graph.segments.keys())[-1], endpoint_node_id=endpoint_ids[0])
+        return sm, ctx, graph
+
+    # One scenario builder per case; each seeds pre-undo state and returns (sm, ctx, graph, check).
+
+    def _scn_add_segments_two_remain(self, fake_st, factory, dem):
+        sm, ctx, graph = self._two_seg_building(fake_st=fake_st, factory=factory, dem=dem)
+
+        def check() -> None:
+            assert sm.is_slope_building_only, "one segment remains → stay in slope_building"
+            assert len(ctx.build(kind=SegmentKind.SLOPE).segments) == 1
+            assert SegmentKind.SLOPE in ctx.pending.fan_generation, "fan re-armed from the moved endpoint"
+
+        return sm, ctx, graph, check
+
+    def _scn_add_segments_last_seg(self, fake_st, factory, dem):
+        sm, ctx, graph = self._two_seg_building(fake_st=fake_st, factory=factory, dem=dem)
+        from skiresort_planner.ui.actions import undo_last_action
+
+        undo_last_action()  # peel one → still building with 1 segment
+
+        def check() -> None:
+            assert sm.is_idle_ready, "undoing the last segment cancels the build to idle_ready"
+            assert len(ctx.build(kind=SegmentKind.SLOPE).segments) == 0
+
+        return sm, ctx, graph, check
+
+    def _scn_add_segments_in_custom_path(self, fake_st, factory, dem):
+        sm, ctx, graph = self._two_seg_building(fake_st=fake_st, factory=factory, dem=dem)
+        target = (300 / MapConfig.METERS_PER_DEGREE_EQUATOR, -300 / MapConfig.METERS_PER_DEGREE_EQUATOR, 1980.0)
+        sm.select_custom_target(target_location=target)
+        assert sm.is_slope_custom_path
+
+        def check() -> None:
+            assert sm.is_slope_custom_path, "undo of a committed segment while targeting stays in custom-path"
+            assert ctx.pending.custom_connect is True, "custom routes regenerate from the re-anchored origin"
+
+        return sm, ctx, graph, check
+
+    def _scn_finish_slope(self, fake_st, factory, dem):
+        sm, ctx, graph, slope, _seg = _build_finish_slope(fake_st=fake_st, factory=factory, dem=dem)
+
+        def check() -> None:
+            assert sm.is_idle_ready, "undo of finish → idle_ready"
+            assert slope.id not in graph.slopes, "the whole slope is deleted"
+            assert graph.undo_stack == [], "the per-segment ADD_SEGMENTS entry is scrubbed with the segments"
+
+        return sm, ctx, graph, check
+
+    def _scn_finish_road(self, fake_st, factory, dem):
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+        sm.start_road(node_id=None, location=PathPoint(lon=0.0, lat=0.0, elevation=2000.0))
+        pts = [
+            PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
+            PathPoint(lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=1990.0),
+        ]
+        endpoint_ids = graph.commit_paths(paths=[ProposedPathSegment(points=pts, kind=SegmentKind.ROAD)])
+        sm.commit_road(segment_id=list(graph.segments.keys())[-1], endpoint_node_id=endpoint_ids[0])
+        road = graph.finish_road(segment_ids=ctx.build(kind=SegmentKind.ROAD).segments)
+        sm.finish_road(entity_id=road.id)
+
+        def check() -> None:
+            assert sm.is_idle_ready, "undo of finish → idle_ready"
+            assert road.id not in graph.roads, "the whole road is deleted"
+
+        return sm, ctx, graph, check
+
+    def _scn_add_lift_while_placing(self, fake_st, factory, dem):
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+        lift_id = self._lift_id(graph=graph, dem=dem)
+        sm.start_lift(node_id=None, location=None)  # in lift_placing when the lift-add is undone
+
+        def check() -> None:
+            assert sm.is_idle_ready, "undoing the lift while placing forces idle"
+            assert lift_id not in graph.lifts
+
+        return sm, ctx, graph, check
+
+    def _scn_add_lift_while_viewing(self, fake_st, factory, dem):
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+        lift_id = self._lift_id(graph=graph, dem=dem)
+        sm.view_lift(lift_id=lift_id)
+
+        def check() -> None:
+            assert sm.is_idle_ready, "undoing the viewed lift forces idle"
+            assert lift_id not in graph.lifts
+
+        return sm, ctx, graph, check
+
+    def _scn_add_lift_elsewhere(self, fake_st, factory, dem):
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+        lift_id = self._lift_id(graph=graph, dem=dem)  # stay in idle_ready
+
+        def check() -> None:
+            assert sm.is_idle_ready, "undo from idle stays idle (redraw only)"
+            assert lift_id not in graph.lifts
+
+        return sm, ctx, graph, check
+
+    def _scn_delete_slope(self, fake_st, factory, dem):
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+        slope = _make_slope(graph=graph, path_points=_straight_points(dem=dem))
+        graph.delete_slope(slope_id=slope.id)  # top of stack = DELETE_SLOPE
+
+        def check() -> None:
+            assert sm.is_idle_ready
+            assert slope.id in graph.slopes, "undo of delete restores the slope"
+
+        return sm, ctx, graph, check
+
+    def _scn_delete_road(self, fake_st, factory, dem):
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+        road = _make_road(graph=graph)
+        graph.delete_road(road_id=road.id)
+
+        def check() -> None:
+            assert sm.is_idle_ready
+            assert road.id in graph.roads, "undo of delete restores the road"
+
+        return sm, ctx, graph, check
+
+    def _scn_delete_lift(self, fake_st, factory, dem):
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+        lift_id = self._lift_id(graph=graph, dem=dem)
+        graph.undo_stack.clear()  # drop the ADD_LIFT so DELETE_LIFT is the top of the stack
+        graph.delete_lift(lift_id=lift_id)
+
+        def check() -> None:
+            assert sm.is_idle_ready
+            assert lift_id in graph.lifts, "undo of delete restores the lift"
+
+        return sm, ctx, graph, check
+
+    def _scn_import_osm_viewing_removed(self, fake_st, factory, dem):
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+        graph.import_osm(result=_fake_import_result(dem=dem), dem=dem)
+        slope_id = next(iter(graph.slopes))  # the batch created exactly one slope
+        sm.view_slope(slope_id=slope_id)  # viewing an imported entity when the batch is undone
+
+        def check() -> None:
+            assert sm.is_idle_ready, "undoing the import while viewing a removed entity forces idle"
+            assert slope_id not in graph.slopes
+
+        return sm, ctx, graph, check
+
+    def _scn_import_osm_elsewhere(self, fake_st, factory, dem):
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+        graph.import_osm(result=_fake_import_result(dem=dem), dem=dem)
+        slope_id = next(iter(graph.slopes))  # stay in idle_ready
+
+        def check() -> None:
+            assert sm.is_idle_ready, "undo from idle stays idle (redraw only)"
+            assert slope_id not in graph.slopes
+
+        return sm, ctx, graph, check
+
+    def _scn_merge_nodes(self, fake_st, factory, dem):
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+        slope = _commit_straight_slope_len(graph=graph, dem=dem, n_segments=2)
+        junction_id = graph.segments[slope.segment_ids[0]].end_node_id  # shared node between the 2 segments
+        jn = graph.nodes[junction_id]
+        near_lat = jn.lat - 8 / MapConfig.METERS_PER_DEGREE_EQUATOR
+        graph.nodes["X"] = _node_at(dem=dem, node_id="X", lon=jn.lon, lat=near_lat)
+        graph.merge_nodes(node_ids=[junction_id, "X"], dem=dem)
+
+        def check() -> None:
+            assert sm.is_idle_ready, "node-edit undo is redraw-only (no state change)"
+            assert "X" in graph.nodes, "undo of merge restores the merged-away node"
+
+        return sm, ctx, graph, check
+
+    def _scn_delete_nodes(self, fake_st, factory, dem):
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+        slope = _commit_straight_slope_len(graph=graph, dem=dem, n_segments=2)
+        junction_id = graph.segments[slope.segment_ids[0]].end_node_id  # interior node: deletable
+        graph.delete_nodes(node_ids=[junction_id], dem=dem)
+
+        def check() -> None:
+            assert sm.is_idle_ready, "node-edit undo is redraw-only (no state change)"
+            assert junction_id in graph.nodes, "undo of delete-nodes restores the node"
+
+        return sm, ctx, graph, check
+
+    def _scn_insert_node(self, fake_st, factory, dem):
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+        slope = _commit_straight_slope_len(graph=graph, dem=dem, n_segments=1)
+        seg_id = slope.segment_ids[0]
+        seg = graph.segments[seg_id]
+        # A finished straight run simplifies to its two endpoints, so use the geometric midpoint of
+        # the leg (far from both vertices) rather than a stored interior point.
+        mid_lon = (seg.points[0].lon + seg.points[-1].lon) / 2
+        mid_lat = (seg.points[0].lat + seg.points[-1].lat) / 2
+        graph.insert_node_on_path(segment_id=seg_id, lon=mid_lon, lat=mid_lat, dem=dem)
+
+        def check() -> None:
+            assert sm.is_idle_ready, "node-edit undo is redraw-only (no state change)"
+            assert seg_id in graph.segments, "undo of insert restores the original segment"
+
+        return sm, ctx, graph, check
+
+    def _scn_cut_segment(self, fake_st, factory, dem):
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+        slope = _commit_straight_slope_len(graph=graph, dem=dem, n_segments=1)
+        seg = slope.segment_ids[0]
+        a = graph.segments[seg].start_node_id
+        b = graph.segments[seg].end_node_id
+        graph.cut_segments_between(node_a_id=a, node_b_id=b)
+
+        def check() -> None:
+            assert sm.is_idle_ready, "node-edit undo is redraw-only (no state change)"
+            assert seg in graph.segments, "undo of cut restores the segment"
+
+        return sm, ctx, graph, check
+
+    def _scenarios(self):
+        """(ActionType exercised, scenario builder) rows. Several ActionTypes have more than one row
+        (e.g. ADD_SEGMENTS: segments-remain / last-segment / in-custom-path); each row is tagged with
+        the ActionType it exercises, and the guard below unions the tags to prove full coverage.
+        """
+        A = ActionType
+        return [
+            (A.ADD_SEGMENTS, self._scn_add_segments_two_remain),
+            (A.ADD_SEGMENTS, self._scn_add_segments_last_seg),
+            (A.ADD_SEGMENTS, self._scn_add_segments_in_custom_path),
+            (A.FINISH_SLOPE, self._scn_finish_slope),
+            (A.FINISH_ROAD, self._scn_finish_road),
+            (A.ADD_LIFT, self._scn_add_lift_while_placing),
+            (A.ADD_LIFT, self._scn_add_lift_while_viewing),
+            (A.ADD_LIFT, self._scn_add_lift_elsewhere),
+            (A.DELETE_SLOPE, self._scn_delete_slope),
+            (A.DELETE_ROAD, self._scn_delete_road),
+            (A.DELETE_LIFT, self._scn_delete_lift),
+            (A.IMPORT_OSM, self._scn_import_osm_viewing_removed),
+            (A.IMPORT_OSM, self._scn_import_osm_elsewhere),
+            (A.MERGE_NODES, self._scn_merge_nodes),
+            (A.DELETE_NODES, self._scn_delete_nodes),
+            (A.INSERT_NODE, self._scn_insert_node),
+            (A.CUT_SEGMENT, self._scn_cut_segment),
+        ]
+
+    def test_every_action_type_has_a_scenario(self) -> None:
+        covered = {action_type for action_type, _ in self._scenarios()}
+        assert covered == set(ActionType), (
+            f"undo dispatch matrix must cover every ActionType. "
+            f"Missing: {set(ActionType) - covered}; extra: {covered - set(ActionType)}"
+        )
+
+    @pytest.mark.parametrize("idx", range(17))
+    def test_undo_dispatch(self, fake_st, path_factory, mock_dem_blue_slope, idx) -> None:
+        from skiresort_planner.ui.actions import undo_last_action
+
+        action_type, builder = self._scenarios()[idx]
+        _sm, _ctx, _graph, check = builder(fake_st, path_factory, mock_dem_blue_slope)
+        undo_last_action()  # must never raise TransitionNotAllowed
+        assert action_type in set(ActionType)  # the row's tag is a real ActionType
+        check()

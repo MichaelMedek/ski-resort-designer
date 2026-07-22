@@ -58,12 +58,12 @@ This simplifies the state machine and separates concerns:
 When undo is triggered:
     1. Action layer (_exit_active_mode_for_undo) cancels any active mode (custom picking, lift placing)
     2. History manager reverts the graph changes
-    3. Action layer uses force_idle() or force_building() to set the target state
-    4. These force methods BYPASS the state machine transitions entirely
+    3. Action layer stays in the current build state (re-arming proposal generation) when segments
+       remain, or calls force_idle() when the build empties / a finish is undone (entity deleted)
+    4. force_idle() BYPASSES the state machine transitions entirely
 
-Available force methods:
+Available force method:
     - force_idle(): Jump to IdleReady, clearing all building/viewing state
-    - force_building(): Jump to SlopeBuilding, preserving building context
 
 This design means:
     - No undo transitions in the state machine (simpler, fewer edge cases)
@@ -233,7 +233,7 @@ Transition Summary Table
 
     All other (state, event) combinations are NOT ALLOWED — they would bypass required workflow steps.
 
-    NOTE: Undo is handled via force_idle()/force_building() methods, NOT via transitions.
+    NOTE: Undo is handled by staying in place (re-arming) or force_idle(), NOT via transitions.
           See "Undo Architecture" section above.
 
 Cleanup Policy
@@ -519,7 +519,7 @@ class PlannerStateMachine(StateMachine):
     # 5. Transitions: From SLOPE_BUILDING (1+ segments)
     # ==========================================================================
     # Events available: commit_path, cancel_slope, select_custom_target
-    # NOTE: Undo is handled via force_idle()/force_building(), NOT transitions
+    # NOTE: Undo is handled by staying in place (re-arming) or force_idle(), NOT transitions
     # 5.1. cancel_from_building [event: cancel_slope]: Cancel button (discard all)
     # 5.2. finish_slope [direct]: Finish button
     # 5.5. commit_continue_path [event: commit_path, self-loop]: Commit more segments
@@ -1321,11 +1321,11 @@ class PlannerStateMachine(StateMachine):
 
     @contextmanager
     def undo_running(self) -> Iterator[None]:
-        """Mark that an undo is in progress so force_* (the transition bypass) is permitted.
+        """Mark that an undo is in progress so force_idle (the transition bypass) is permitted.
 
         The undo dispatcher wraps its side-effect in `with sm.undo_running():`. Outside this scope
-        force_idle/force_building/force_starting raise — the bypass is undo-only by construction, so
-        no one can use it as a shortcut in normal flow (which would skip guards/validation).
+        force_idle raises — the bypass is undo-only by construction, so no one can use it as a
+        shortcut in normal flow (which would skip guards/validation).
         """
         self._undo_in_progress = True
         try:
@@ -1336,8 +1336,9 @@ class PlannerStateMachine(StateMachine):
     def force_idle(self) -> None:
         """Force state machine to IdleReady state without transition.
 
-        Used after undo operations when no building context remains. Clears ALL build
-        kinds, custom, and viewing state. Does NOT trigger st.rerun().
+        Used after an undo that leaves no building context (segment-undo to zero, or undo-of-finish
+        which deletes the entity). Clears ALL build kinds, custom, and viewing state. idle_ready
+        accepts any build_mode, so this never desyncs the armed mode from the state. No st.rerun().
         """
         logger.debug(f"[STATE] Forcing state from {self.get_state_name()} to IdleReady")
         self.context.clear_builds()
@@ -1348,41 +1349,6 @@ class PlannerStateMachine(StateMachine):
         self._set_current_state(state=self.idle_ready)
         # Run entry hook to ensure consistent state
         enter_idle_ready(self.context)
-
-    def force_building(self, kind: SegmentKind) -> None:
-        """Force state machine to the kind's BUILDING state without transition (undo helper).
-
-        Used after undoing a segment/finish when segments remain. Assumes the caller has
-        restored ctx.build(kind). Kind-generic: resolves the State + enter hook from the
-        kind's building_state id.
-        """
-        self._force_fan_state(kind=kind, state_id=KIND_SPECS[kind].building_state)
-
-    def force_starting(self, kind: SegmentKind) -> None:
-        """Force state machine to the kind's STARTING state without transition (undo helper).
-
-        Used after undoing the last segment when the origin remains but no segments do.
-        """
-        self._force_fan_state(kind=kind, state_id=KIND_SPECS[kind].starting_state)
-
-    def _force_fan_state(self, kind: SegmentKind, state_id: str) -> None:
-        """Force the machine into one of the kind's fan states (STARTING/BUILDING) after undo.
-
-        force_* bypasses transitions, but it still runs the state's enter hook below, and every
-        kind's enter_*_starting/building arms the fan (Single Point of Truth) — so the next deferred
-        pass regenerates proposals. Both undo callers rely on that enter-hook arming.
-        """
-        logger.debug(f"[STATE] Forcing state from {self.get_state_name()} to {kind.value} {state_id}")
-        self.context.clear_custom_connect()
-        self.context.viewing.clear()
-        state: State = getattr(self, state_id)
-        assert state is not None, f"state_id {state_id} must resolve to a State object for kind {kind.value}"
-        self._set_current_state(state=state)
-        self._run_enter_hook(state)
-
-    def _run_enter_hook(self, state: State) -> None:
-        """Invoke the on_enter_<state> hook for a force-set state (undo helpers)."""
-        getattr(self, f"on_enter_{state.id}")()
 
     def _set_current_state(self, state: State) -> None:
         """Force the state value directly, running the current state's real exit teardown first.
