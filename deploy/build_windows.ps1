@@ -5,7 +5,13 @@ $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot   # deploy\ — the spec resolves the repo root as its parent
 
 Remove-Item -Recurse -Force build, dist -ErrorAction SilentlyContinue
-pyinstaller skiresort.spec --clean --noconfirm
+
+# Use pyinstaller on PATH if present, else invoke it as a module (robust in fresh venvs / CI).
+if (Get-Command pyinstaller -ErrorAction SilentlyContinue) {
+  pyinstaller skiresort.spec --clean --noconfirm
+} else {
+  python -m PyInstaller skiresort.spec --clean --noconfirm
+}
 
 Compress-Archive -Path "dist\AlpinArchitect\*" -DestinationPath "dist\AlpinArchitect-win.zip" -Force
 
