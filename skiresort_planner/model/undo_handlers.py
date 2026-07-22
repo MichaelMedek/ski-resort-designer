@@ -20,6 +20,7 @@ from skiresort_planner.model.actions import (
     ActionType,
     AddLiftAction,
     AddSegmentsAction,
+    CutSegmentAction,
     DeleteLiftAction,
     DeleteNodesAction,
     DeleteRoadAction,
@@ -300,6 +301,28 @@ class _InsertNodeHandler(UndoHandler):
         return "Remove the inserted node"
 
 
+class _CutSegmentHandler(UndoHandler):
+    action_type = ActionType.CUT_SEGMENT
+
+    def apply_undo(self, graph: "ResortGraph", action: UndoAction) -> None:
+        # Reverse a cut: drop the fresh 'after' entities (interior splits), restore every cut segment +
+        # each owner's original chain (re-putting paths_before covers trim + sole-segment-delete), and
+        # re-add any nodes orphaned by the cut.
+        cut = cast(CutSegmentAction, action)
+        for new_path in cut.new_paths:
+            del graph.entity_dict_for_kind(new_path.kind)[new_path.id]
+        for seg in cut.deleted_segments:
+            graph.segments[seg.id] = seg
+        for path_before in cut.paths_before:
+            graph.entity_dict_for_kind(path_before.kind)[path_before.id] = path_before
+        for node in cut.deleted_nodes:
+            graph.nodes[node.id] = node
+        logger.info(f"Reverted cut of {len(cut.deleted_segments)} segment(s)")
+
+    def describe(self, action: UndoAction, graph: "ResortGraph") -> str:
+        return "Rejoin the cut path"
+
+
 _UNDO_HANDLER_LIST: list[UndoHandler] = [
     _AddSegmentsHandler(),
     _FinishSlopeHandler(),
@@ -312,6 +335,7 @@ _UNDO_HANDLER_LIST: list[UndoHandler] = [
     _MergeNodesHandler(),
     _DeleteNodesHandler(),
     _InsertNodeHandler(),
+    _CutSegmentHandler(),
 ]
 
 # Keyed by ActionType.name (str) — reload-safe (see module docstring).

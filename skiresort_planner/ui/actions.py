@@ -32,7 +32,7 @@ from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.message import (
     InvalidClickMessage,
     MergeTooFarMessage,
-    NoDirectConnectionMessage,
+    NotAdjacentNodesMessage,
     UnableToDeleteMessage,
 )
 from skiresort_planner.model.path_point import PathPoint
@@ -284,11 +284,11 @@ def delete_nodes_action() -> None:
 
 
 def delete_direct_connection_action() -> None:
-    """Delete every SINGLE-segment slope/road directly connecting the two selected nodes, return to idle.
+    """Cut EVERY segment directly joining the two selected ADJACENT nodes, splitting each owner in two.
 
-    The button is enabled only at exactly 2 selected nodes; whether a 1-segment connection actually
-    exists is checked here (post-click) — if none, a NoDirectConnectionMessage shows and nothing changes.
-    Multi-segment connections between the two nodes are left alone.
+    The button is enabled only at exactly 2 selected nodes; whether they are actually adjacent (joined by
+    at least one segment) is checked here (post-click) — if not, a NotAdjacentNodesMessage shows and
+    nothing changes. An interior cut splits the slope/road into two; a boundary cut trims one end.
     """
     ctx: PlannerContext = st.session_state.context
     sm: PlannerStateMachine = st.session_state.state_machine
@@ -298,20 +298,12 @@ def delete_direct_connection_action() -> None:
     # The button is disabled unless exactly 2 are selected, so any other count is a bug, not a user path.
     assert len(node_ids) == 2, f"delete_direct_connection_action needs exactly 2 nodes, got {len(node_ids)}"
 
-    connections = graph.direct_one_segment_connections(node_a_id=node_ids[0], node_b_id=node_ids[1])
-    if not connections:
-        logger.info(f"No direct one-segment connection between {node_ids[0]} and {node_ids[1]}")
-        NoDirectConnectionMessage(node_a_id=node_ids[0], node_b_id=node_ids[1]).display()
+    if not graph.segments_between(node_a_id=node_ids[0], node_b_id=node_ids[1]):
+        logger.info(f"No segment between {node_ids[0]} and {node_ids[1]} — nothing to cut")
+        NotAdjacentNodesMessage(node_a_id=node_ids[0], node_b_id=node_ids[1]).display()
         return  # no state change — the user can adjust the selection
 
-    for path in connections:
-        if path.kind == SegmentKind.SLOPE:
-            graph.delete_slope(path.id)
-        elif path.kind == SegmentKind.ROAD:
-            graph.delete_road(path.id)
-        else:
-            raise ValueError(f"unexpected path kind {path.kind} for {path.id}")
-    logger.info(f"Deleted {len(connections)} direct connection(s) between {node_ids[0]} and {node_ids[1]}")
+    graph.cut_segments_between(node_a_id=node_ids[0], node_b_id=node_ids[1])
     bump_dedup_epoch()
     sm.finish_node_edit()  # → idle_ready; the before-hook clears the selection
 
@@ -990,6 +982,7 @@ _UNDO_SIDE_EFFECTS: dict[str, "Callable[[UndoAction], None]"] = {
     ActionType.MERGE_NODES.name: _undo_redraw_only,
     ActionType.DELETE_NODES.name: _undo_redraw_only,
     ActionType.INSERT_NODE.name: _undo_redraw_only,
+    ActionType.CUT_SEGMENT.name: _undo_redraw_only,
 }
 _action_names = {t.name for t in ActionType}
 assert set(_UNDO_SIDE_EFFECTS) == _action_names, (

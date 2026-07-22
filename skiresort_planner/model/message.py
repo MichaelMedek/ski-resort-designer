@@ -277,15 +277,15 @@ class UnableToDeleteMessage(WarningToast):
 
 
 @dataclass(frozen=True)
-class NoDirectConnectionMessage(WarningToast):
-    """The two selected nodes have no single-segment slope/road directly connecting them."""
+class NotAdjacentNodesMessage(WarningToast):
+    """The two selected nodes aren't joined by a single segment, so there's no link to cut."""
 
     node_a_id: str
     node_b_id: str
 
     @property
     def message(self) -> str:
-        return f"No Direct Connection — no 1-segment slope/road joins {self.node_a_id} and {self.node_b_id}."
+        return f"Not Adjacent — {self.node_a_id} and {self.node_b_id} aren't joined by one segment to cut."
 
 
 @dataclass(frozen=True)
@@ -636,7 +636,10 @@ class NodeEditActionMessage(WarningMessage):
         actions = "\n".join(
             [
                 line("🔗 **Merge** — collapse ≥2 nodes to one (needs at least 2)", available=(n >= 2)),
-                line("✂️ **Delete Direct Connection** — cut the 1-segment link (needs exactly 2)", available=(n == 2)),
+                line(
+                    "✂️ **Delete Direct Connection** — split the path at the segment (needs 2 adjacent)",
+                    available=(n == 2),
+                ),
                 line("🗑️ **Delete** — remove interior/end nodes (needs at least 1)", available=(n >= 1)),
                 "- 👆 Click **node markers** to (de)select, or a **path** to add a node",
             ]

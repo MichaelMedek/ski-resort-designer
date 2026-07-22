@@ -24,7 +24,12 @@ from skiresort_planner.model.actions import (
     FinishSlopeAction,
 )
 from skiresort_planner.model.node import Node
-from skiresort_planner.model.node_editing import NodeDeletability, deletability_reason
+from skiresort_planner.model.node_editing import (
+    _NON_DELETABLE_REASONS,
+    DELETABLE_MEMBERS,
+    NodeDeletability,
+    deletability_reason,
+)
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import PathSegment, SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
@@ -1705,8 +1710,88 @@ def _commit_straight_slope(graph, dem, n_segments: int):
     return graph.finish_slope(segment_ids=list(graph.segments.keys()))
 
 
+def _commit_straight_road(graph, dem, n_segments: int):
+    """Commit n straight due-south connector segments into one finished road; return the road."""
+    lat = 0.0
+    for _ in range(n_segments):
+        leg = _leg(0.0, lat, 0.0, -20.0, 25, dem)  # ~480m south per segment
+        graph.commit_paths(paths=[ProposedPathSegment(points=leg, is_connector=True, kind=SegmentKind.ROAD)])
+        lat = leg[-1].lat
+    return graph.finish_road(segment_ids=list(graph.segments.keys()))
+
+
+def _commit_slope_with_branch_at_end(graph, dem):
+    """Slope A-B-C (2 seg, due south), then a branch slope starting at C going south-west.
+
+    The branch's first point sits exactly on C, so it reuses that node (get_or_create_node snap).
+    Returns (main_slope, branch_slope, c_id). C is thus shared by both slopes.
+    """
+    main = _commit_straight_slope(graph, dem, n_segments=2)
+    c = graph.nodes[main.end_node_id]
+    before = set(graph.segments)
+    # South-west leg from C: south component keeps it descending on the 20%-south mock DEM.
+    branch_pts = [
+        PathPoint(lon=c.lon, lat=c.lat, elevation=c.elevation),
+        PathPoint(
+            lon=c.lon - 300 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            lat=c.lat - 300 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(
+                lon=c.lon - 300 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                lat=c.lat - 300 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            ),
+        ),
+    ]
+    graph.commit_paths(paths=[ProposedPathSegment(points=branch_pts, target_difficulty="blue")])
+    branch = graph.finish_slope(segment_ids=[sid for sid in graph.segments if sid not in before])
+    assert c.id in {branch.start_node_id, branch.end_node_id}, "branch must reuse node C"
+    return main, branch, c.id
+
+
+def _commit_two_slopes_sharing_pair(graph, dem):
+    """Two 1-seg slopes along the SAME two points, both reusing the identical endpoint nodes.
+
+    The second slope's endpoints snap onto the first's nodes. Returns (slope1, slope2).
+    """
+    s1 = _commit_straight_slope(graph, dem, n_segments=1)
+    a, b = graph.nodes[s1.start_node_id], graph.nodes[s1.end_node_id]
+    before = set(graph.segments)
+    pts = [
+        PathPoint(lon=a.lon, lat=a.lat, elevation=a.elevation),
+        PathPoint(lon=b.lon, lat=b.lat, elevation=b.elevation),
+    ]
+    graph.commit_paths(paths=[ProposedPathSegment(points=pts, target_difficulty="blue")])
+    s2 = graph.finish_slope(segment_ids=[sid for sid in graph.segments if sid not in before])
+    assert {s2.start_node_id, s2.end_node_id} == {s1.start_node_id, s1.end_node_id}, "s2 must reuse s1's nodes"
+    return s1, s2
+
+
+def _commit_slope_and_road_sharing_pair(graph, dem):
+    """A 1-seg slope and a 1-seg road along the SAME two points, sharing both endpoint nodes.
+
+    The road is committed as a connector so its endpoints snap onto the slope's existing nodes,
+    so both segments join the identical node pair. Returns (slope, road).
+    """
+    slope = _commit_straight_slope(graph, dem, n_segments=1)
+    a, b = graph.nodes[slope.start_node_id], graph.nodes[slope.end_node_id]
+    road_pts = [
+        PathPoint(lon=a.lon, lat=a.lat, elevation=a.elevation),
+        PathPoint(lon=b.lon, lat=b.lat, elevation=b.elevation),
+    ]
+    road = _commit_road(graph, road_pts)
+    assert {road.start_node_id, road.end_node_id} == {slope.start_node_id, slope.end_node_id}, (
+        "road must reuse the slope's two nodes"
+    )
+    return slope, road
+
+
 class TestNodeDeletability:
     """node_deletability classifies why a node can/can't be deleted (single source for UI + op)."""
+
+    def test_deletable_and_reasoned_partition_the_enum(self) -> None:
+        # The import-time partition guard, re-asserted: every NodeDeletability is either deletable or
+        # has exactly one reason sentence — no member missing, none in both (single source, no drift).
+        assert DELETABLE_MEMBERS.isdisjoint(_NON_DELETABLE_REASONS)
+        assert DELETABLE_MEMBERS | set(_NON_DELETABLE_REASONS) == set(NodeDeletability)
 
     def test_interior_node_is_deletable_interior(self, empty_graph, mock_dem_blue_slope) -> None:
         slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=3)
@@ -2115,39 +2200,255 @@ class TestDeleteNodeFusesTwoPaths:
             assert seg.start_node_id in graph.nodes and seg.end_node_id in graph.nodes, "no orphan refs"
 
 
-class TestDirectOneSegmentConnections:
-    """direct_one_segment_connections finds finished paths that DIRECTLY join two nodes with one segment."""
+class TestSegmentsBetween:
+    """segments_between returns EVERY finished segment directly joining two adjacent nodes."""
 
-    def test_finds_single_segment_slope_both_directions(self, empty_graph, mock_dem_blue_slope) -> None:
+    def test_finds_segment_both_directions(self, empty_graph, mock_dem_blue_slope) -> None:
         slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=1)
         a, b = slope.start_node_id, slope.end_node_id
-        assert [p.id for p in empty_graph.direct_one_segment_connections(node_a_id=a, node_b_id=b)] == [slope.id]
-        assert [p.id for p in empty_graph.direct_one_segment_connections(node_a_id=b, node_b_id=a)] == [slope.id]
+        assert [s.id for s in empty_graph.segments_between(node_a_id=a, node_b_id=b)] == [slope.segment_ids[0]]
+        assert [s.id for s in empty_graph.segments_between(node_a_id=b, node_b_id=a)] == [slope.segment_ids[0]]
 
-    def test_multi_segment_connection_excluded(self, empty_graph, mock_dem_blue_slope) -> None:
-        # A 3-segment slope's two ENDPOINTS are connected, but not by a SINGLE segment → excluded.
-        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=3)
-        result = empty_graph.direct_one_segment_connections(node_a_id=slope.start_node_id, node_b_id=slope.end_node_id)
-        assert result == [], "a multi-segment connection is not a direct 1-segment link"
-
-    def test_interior_pair_of_multisegment_is_the_middle_segment(self, empty_graph, mock_dem_blue_slope) -> None:
-        # Two ADJACENT interior nodes of a 3-seg slope ARE joined by that slope's single middle segment,
-        # but the slope owns 3 segments (not 1), so it does not qualify.
+    def test_finds_middle_segment_of_multisegment_slope(self, empty_graph, mock_dem_blue_slope) -> None:
+        # Two ADJACENT interior nodes of a 3-seg slope ARE joined by that slope's single middle segment.
         slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=3)
         n0 = empty_graph.segments[slope.segment_ids[0]].end_node_id
         n1 = empty_graph.segments[slope.segment_ids[1]].end_node_id
-        assert empty_graph.direct_one_segment_connections(node_a_id=n0, node_b_id=n1) == []
+        assert [s.id for s in empty_graph.segments_between(node_a_id=n0, node_b_id=n1)] == [slope.segment_ids[1]]
 
-    def test_no_connection_returns_empty(self, empty_graph, mock_dem_blue_slope) -> None:
+    def test_non_adjacent_endpoints_of_multisegment_return_empty(self, empty_graph, mock_dem_blue_slope) -> None:
+        # The two ENDPOINTS of a 3-seg slope span a multi-segment gap → not joined by ONE segment.
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=3)
+        assert empty_graph.segments_between(node_a_id=slope.start_node_id, node_b_id=slope.end_node_id) == []
+
+    def test_unconnected_nodes_return_empty(self, empty_graph, mock_dem_blue_slope) -> None:
         slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=1)
-        # A fresh isolated node has no segment joining it to the slope's start.
         empty_graph.nodes["N_FAR"] = Node(id="N_FAR", location=PathPoint(lon=5.0, lat=5.0, elevation=2000.0))
-        assert empty_graph.direct_one_segment_connections(node_a_id=slope.start_node_id, node_b_id="N_FAR") == []
+        assert empty_graph.segments_between(node_a_id=slope.start_node_id, node_b_id="N_FAR") == []
 
-    def test_finds_single_segment_road(self, empty_graph, path_points_blue) -> None:
+    def test_finds_road_segment(self, empty_graph, path_points_blue) -> None:
         road = _commit_road(empty_graph, path_points_blue)
         a, b = road.start_node_id, road.end_node_id
-        assert [p.id for p in empty_graph.direct_one_segment_connections(node_a_id=a, node_b_id=b)] == [road.id]
+        assert [s.id for s in empty_graph.segments_between(node_a_id=a, node_b_id=b)] == [road.segment_ids[0]]
+
+    def test_two_paths_sharing_a_pair_are_both_returned(self, empty_graph, mock_dem_blue_slope) -> None:
+        # A slope and a road along the SAME two points → both segments join that node pair.
+        slope, road = _commit_slope_and_road_sharing_pair(empty_graph, mock_dem_blue_slope)
+        found = {s.id for s in empty_graph.segments_between(node_a_id=slope.start_node_id, node_b_id=slope.end_node_id)}
+        assert found == {slope.segment_ids[0], road.segment_ids[0]}, "both the slope's and road's segment are found"
+
+    def test_unfinished_segment_between_fails_loud(self, empty_graph, mock_dem_blue_slope) -> None:
+        # A committed-but-unfinished segment is owned by no path → node-edit invariant broken → fail loud
+        # (mirrors _paths_touching_node; NOT a silent skip).
+        empty_graph.commit_paths(
+            paths=[
+                ProposedPathSegment(
+                    points=_leg(0.0, 0.0, 0.0, -20.0, 25, mock_dem_blue_slope), target_difficulty="blue"
+                )
+            ]
+        )
+        seg = empty_graph.segments[list(empty_graph.segments)[0]]
+        with pytest.raises(AssertionError, match="unfinished segment"):
+            empty_graph.segments_between(node_a_id=seg.start_node_id, node_b_id=seg.end_node_id)
+
+
+class TestCutSegmentsBetween:
+    """cut_segments_between deletes EVERY segment between two adjacent nodes, SPLITTING each owner in two."""
+
+    def test_interior_cut_splits_slope_into_two(self, empty_graph, mock_dem_blue_slope) -> None:
+        # The repro: a 5-segment slope cut at its middle segment → two slopes (before + after chains).
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=5)
+        sid, name = slope.id, slope.name
+        cut_seg = slope.segment_ids[2]  # the middle segment
+        a = empty_graph.segments[cut_seg].start_node_id
+        b = empty_graph.segments[cut_seg].end_node_id
+        before_ids, after_ids = list(slope.segment_ids[:2]), list(slope.segment_ids[3:])
+
+        empty_graph.cut_segments_between(node_a_id=a, node_b_id=b)
+
+        assert cut_seg not in empty_graph.segments, "the cut segment is deleted"
+        assert empty_graph.slopes[sid].segment_ids == before_ids, "owner keeps the BEFORE chain + its id/name"
+        assert empty_graph.slopes[sid].name == name
+        # Exactly one NEW slope holds the AFTER chain.
+        new_slopes = [s for s in empty_graph.slopes.values() if s.id != sid]
+        assert len(new_slopes) == 1 and new_slopes[0].segment_ids == after_ids
+        for seg in empty_graph.segments.values():
+            assert seg.start_node_id in empty_graph.nodes and seg.end_node_id in empty_graph.nodes, "no orphan refs"
+
+    def test_boundary_cut_trims_without_new_entity(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=3)
+        first = slope.segment_ids[0]
+        a = empty_graph.segments[first].start_node_id  # the outer start
+        b = empty_graph.segments[first].end_node_id
+        kept = list(slope.segment_ids[1:])
+
+        empty_graph.cut_segments_between(node_a_id=a, node_b_id=b)
+
+        assert len(empty_graph.slopes) == 1, "a boundary cut trims — no new entity"
+        assert empty_graph.slopes[slope.id].segment_ids == kept, "the boundary segment is trimmed off"
+        assert first not in empty_graph.segments
+
+    def test_cut_only_segment_deletes_the_whole_path(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=1)
+        a, b = slope.start_node_id, slope.end_node_id
+        empty_graph.cut_segments_between(node_a_id=a, node_b_id=b)
+        assert slope.id not in empty_graph.slopes, "cutting a sole-segment path deletes it whole"
+        assert not empty_graph.segments, "its only segment is gone"
+
+    def test_cut_deletes_all_segments_sharing_the_pair(self, empty_graph, mock_dem_blue_slope) -> None:
+        # "delete ALL": a slope AND a road share the node pair → ONE cut removes BOTH.
+        slope, road = _commit_slope_and_road_sharing_pair(empty_graph, mock_dem_blue_slope)
+        a, b = slope.start_node_id, slope.end_node_id
+
+        empty_graph.cut_segments_between(node_a_id=a, node_b_id=b)
+
+        assert slope.id not in empty_graph.slopes and road.id not in empty_graph.roads, "both owners are gone"
+        assert not empty_graph.segments, "both shared segments are deleted in one cut"
+        assert len(empty_graph.undo_stack) == 1, "a multi-path cut is still ONE undo action"
+
+    def test_undo_interior_cut_rejoins_the_slope(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=5)
+        sid, chain = slope.id, list(slope.segment_ids)
+        cut_seg = slope.segment_ids[2]
+        a = empty_graph.segments[cut_seg].start_node_id
+        b = empty_graph.segments[cut_seg].end_node_id
+
+        empty_graph.cut_segments_between(node_a_id=a, node_b_id=b)
+        assert empty_graph.undo_stack[-1].action_type.name == "CUT_SEGMENT"
+        empty_graph.undo_last()
+
+        assert len(empty_graph.slopes) == 1, "the split-off slope is removed on undo"
+        assert empty_graph.slopes[sid].segment_ids == chain, "the original chain is restored verbatim"
+        assert cut_seg in empty_graph.segments, "the cut segment is restored"
+
+    def test_undo_multi_path_cut_restores_both(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope, road = _commit_slope_and_road_sharing_pair(empty_graph, mock_dem_blue_slope)
+        a, b = slope.start_node_id, slope.end_node_id
+
+        empty_graph.cut_segments_between(node_a_id=a, node_b_id=b)
+        empty_graph.undo_last()
+
+        assert slope.id in empty_graph.slopes and road.id in empty_graph.roads, "both owners restored"
+        assert set(empty_graph.segments) == {slope.segment_ids[0], road.segment_ids[0]}, "both segments restored"
+
+    def test_interior_cut_splits_road_into_two(self, empty_graph, mock_dem_blue_slope) -> None:
+        # The ROAD branch of the split kernel: a 3-seg road cut at its middle segment → two roads.
+        road = _commit_straight_road(empty_graph, mock_dem_blue_slope, n_segments=3)
+        rid = road.id
+        cut_seg = road.segment_ids[1]
+        a = empty_graph.segments[cut_seg].start_node_id
+        b = empty_graph.segments[cut_seg].end_node_id
+        before_ids, after_ids = list(road.segment_ids[:1]), list(road.segment_ids[2:])
+
+        empty_graph.cut_segments_between(node_a_id=a, node_b_id=b)
+
+        assert empty_graph.roads[rid].segment_ids == before_ids, "owner road keeps the BEFORE chain"
+        new_roads = [r for r in empty_graph.roads.values() if r.id != rid]
+        assert len(new_roads) == 1 and new_roads[0].segment_ids == after_ids, "a fresh road holds the AFTER chain"
+        assert cut_seg not in empty_graph.segments
+
+    def test_cut_last_segment_trims_from_the_end(self, empty_graph, mock_dem_blue_slope) -> None:
+        # Cut the LAST segment (has_before, not has_after) → owner keeps the before side, no new entity.
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=3)
+        last = slope.segment_ids[-1]
+        a = empty_graph.segments[last].start_node_id
+        b = empty_graph.segments[last].end_node_id  # the outer end
+        kept = list(slope.segment_ids[:-1])
+
+        empty_graph.cut_segments_between(node_a_id=a, node_b_id=b)
+
+        assert len(empty_graph.slopes) == 1, "a last-segment cut trims — no new entity"
+        assert empty_graph.slopes[slope.id].segment_ids == kept, "the last segment is trimmed off"
+        assert last not in empty_graph.segments
+
+    def test_boundary_cut_removes_orphaned_end_node(self, empty_graph, mock_dem_blue_slope) -> None:
+        # Cutting the FIRST segment frees its outer start node (touched by nothing else) → cleaned up.
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=3)
+        first = slope.segment_ids[0]
+        outer = empty_graph.segments[first].start_node_id
+        b = empty_graph.segments[first].end_node_id
+        assert empty_graph.get_connection_count(node_id=outer) == 1, "outer start touches only the first segment"
+
+        empty_graph.cut_segments_between(node_a_id=outer, node_b_id=b)
+
+        assert outer not in empty_graph.nodes, "the freed outer node is cleaned up"
+        # b is still shared by the surviving chain, so it stays.
+        assert b in empty_graph.nodes, "the shared junction node survives"
+
+    def test_undo_restores_orphaned_node(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=3)
+        chain = list(slope.segment_ids)
+        first = slope.segment_ids[0]
+        outer = empty_graph.segments[first].start_node_id
+        b = empty_graph.segments[first].end_node_id
+
+        empty_graph.cut_segments_between(node_a_id=outer, node_b_id=b)
+        assert outer not in empty_graph.nodes
+        empty_graph.undo_last()
+
+        assert outer in empty_graph.nodes, "the orphaned node is restored on undo"
+        assert empty_graph.slopes[slope.id].segment_ids == chain, "the chain is rejoined"
+
+    def test_shared_node_survives_when_another_path_uses_it(self, empty_graph, mock_dem_blue_slope) -> None:
+        # Slope A-B-C; a SECOND slope also starts at C. Cut B-C (last segment) → owner keeps A-B, and C is
+        # NOT orphaned because the branch still uses it (the user's "leave C only if not orphaned" case).
+        main, branch, c_id = _commit_slope_with_branch_at_end(empty_graph, mock_dem_blue_slope)
+        kept = list(main.segment_ids[:-1])  # A-B, captured before the cut mutates main
+        last = main.segment_ids[-1]  # B-C
+        b = empty_graph.segments[last].start_node_id
+        assert empty_graph.get_connection_count(node_id=c_id) >= 2, "C is shared before the cut"
+
+        empty_graph.cut_segments_between(node_a_id=b, node_b_id=c_id)
+
+        assert c_id in empty_graph.nodes, "the shared node C survives — the branch slope still uses it"
+        assert branch.id in empty_graph.slopes, "the branch slope is untouched by the cut"
+        assert empty_graph.slopes[main.id].segment_ids == kept, "owner trimmed to A-B"
+
+    def test_cut_deletes_two_slopes_sharing_the_pair(self, empty_graph, mock_dem_blue_slope) -> None:
+        # Two SLOPES (same kind) sharing the node pair → ONE cut removes both, exercising the loop.
+        s1, s2 = _commit_two_slopes_sharing_pair(empty_graph, mock_dem_blue_slope)
+        a, b = s1.start_node_id, s1.end_node_id
+
+        empty_graph.cut_segments_between(node_a_id=a, node_b_id=b)
+
+        assert s1.id not in empty_graph.slopes and s2.id not in empty_graph.slopes, "both slopes deleted"
+        assert not empty_graph.segments, "both shared segments gone in one cut"
+        assert len(empty_graph.undo_stack) == 1, "still ONE undo action"
+
+
+class TestCutSegmentHelpers:
+    """Fail-fast guards on the cut/split helpers — internal invariants must raise, not silently pass."""
+
+    def test_set_path_chain_rejects_broken_chain(self, empty_graph, mock_dem_blue_slope) -> None:
+        # Two DISCONNECTED slopes: their segments don't meet head-to-tail, so pointing one path at both raises.
+        s1 = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=1)
+        empty_graph.nodes["NX"] = Node(id="NX", location=PathPoint(lon=9.0, lat=9.0, elevation=1000.0))
+        empty_graph.nodes["NY"] = Node(id="NY", location=PathPoint(lon=9.0, lat=8.9, elevation=900.0))
+        empty_graph.commit_paths(
+            paths=[
+                ProposedPathSegment(
+                    points=[
+                        PathPoint(lon=9.0, lat=9.0, elevation=1000.0),
+                        PathPoint(lon=9.0, lat=8.9, elevation=900.0),
+                    ],
+                    target_difficulty="blue",
+                )
+            ]
+        )
+        far_seg = list(empty_graph.segments.keys())[-1]
+        with pytest.raises(AssertionError, match="broken chain"):
+            empty_graph._set_path_chain(empty_graph.slopes[s1.id], [s1.segment_ids[0], far_seg])
+
+    def test_set_path_chain_rejects_unknown_segment(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=1)
+        with pytest.raises(AssertionError, match="unknown segment"):
+            empty_graph._set_path_chain(empty_graph.slopes[slope.id], ["S_NOPE"])
+
+    def test_create_path_entity_rejects_unknown_kind(self, empty_graph, mock_dem_blue_slope) -> None:
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=1)
+        a, b = empty_graph.nodes[slope.start_node_id], empty_graph.nodes[slope.end_node_id]
+        with pytest.raises(ValueError, match="unexpected kind"):
+            empty_graph._create_path_entity(kind="lift", segment_ids=list(slope.segment_ids), start_node=a, end_node=b)
 
 
 class TestInsertNodeOnPath:

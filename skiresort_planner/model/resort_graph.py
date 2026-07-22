@@ -39,6 +39,7 @@ from skiresort_planner.generators.osm_importer import OSMImportResult
 from skiresort_planner.model.actions import (
     AddLiftAction,
     AddSegmentsAction,
+    CutSegmentAction,
     DeleteLiftAction,
     DeleteNodesAction,
     DeleteRoadAction,
@@ -54,6 +55,7 @@ from skiresort_planner.model.connectivity import CoreMembership, CoreResort, bot
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.node import Node
 from skiresort_planner.model.node_editing import (
+    DELETABLE_MEMBERS,
     INSERT_REJECT_NOT_FINISHED,
     INSERT_REJECT_TOO_CLOSE,
     NodeDeletability,
@@ -363,7 +365,7 @@ class ResortGraph:
         # The first one that isn't (lift station, branch junction, sole segment, …) names the reason.
         for nid in node_ids:
             reason = self.node_deletability(nid)
-            if reason not in (NodeDeletability.DELETABLE_INTERIOR, NodeDeletability.DELETABLE_END):
+            if reason not in DELETABLE_MEMBERS:
                 return deletability_reason(node_id=nid, reason=reason)
 
         # Check 2 (per resulting path): deletions can TOGETHER empty a path (e.g. both nodes of a
@@ -411,24 +413,175 @@ class ResortGraph:
         """The distinct finished paths owning the given nodes — the single node→path grouping used by
         both the delete precondition check and the delete executor, so they can't drift.
         """
-        by_id = {p.id: p for nid in node_ids for p in self._paths_touching_node(nid)}
+        by_id = {p.id: p for nid in node_ids for p in self._paths_touching_node(node_id=nid)}
         return list(by_id.values())
 
-    def direct_one_segment_connections(self, node_a_id: str, node_b_id: str) -> list["SegmentPath"]:
-        """Finished slopes/roads that DIRECTLY connect the two nodes with a SINGLE segment — i.e. own
-        exactly one segment whose endpoints are {node_a, node_b}. Multi-segment connections are excluded.
+    def segments_between(self, node_a_id: str, node_b_id: str) -> list[PathSegment]:
+        """EVERY finished-path segment directly joining two ADJACENT nodes (endpoints == {a, b}).
+
+        Empty if they aren't neighbours on any path. Usually one, but two paths (e.g. a slope and a road,
+        or two slopes) can share the same pair — the Cut tool splits each owner at its own segment.
         """
         assert node_a_id in self.nodes and node_b_id in self.nodes, f"unknown node in ({node_a_id}, {node_b_id})"
-        assert node_a_id != node_b_id, "direct_one_segment_connections needs two distinct nodes"
+        assert node_a_id != node_b_id, "segments_between needs two distinct nodes"
         pair = {node_a_id, node_b_id}
-        by_id: dict[str, SegmentPath] = {}
+        joining: list[PathSegment] = []
         for seg in self._segments_touching(node_id=node_a_id):
             if {seg.start_node_id, seg.end_node_id} != pair:
                 continue
-            owner = self.get_entity_by_segment_id(segment_id=seg.id)
-            if owner is not None and len(owner.segment_ids) == 1:
-                by_id[owner.id] = owner
-        return list(by_id.values())
+            # Node-edit runs only from idle, so every touching segment is owned — fail loud.
+            assert self.get_entity_by_segment_id(segment_id=seg.id) is not None, (
+                f"node {node_a_id} touches unfinished segment {seg.id} (bug)"
+            )
+            joining.append(seg)
+        return joining
+
+    def cut_segments_between(self, node_a_id: str, node_b_id: str) -> None:
+        """Delete every segment joining two adjacent nodes, splitting each owning path. ONE undo.
+
+        A-B-C-D cut at B-C → A-B and C-D; a sole segment → whole path deleted; an end segment → trimmed.
+        Two paths sharing the pair are each cut. Survivors keep id/name; no geometry recompute.
+        """
+        segs = self.segments_between(node_a_id=node_a_id, node_b_id=node_b_id)
+        assert segs, f"cut_segments_between: no segment joins {node_a_id} and {node_b_id}"
+
+        paths_before: list[SegmentPath] = []
+        deleted_segments: list[PathSegment] = []
+        new_paths: list[SegmentPath] = []
+        for seg in segs:
+            path_before, deleted_segment, new_path = self._cut_one_segment(seg=seg)
+            paths_before.append(path_before)
+            deleted_segments.append(deleted_segment)
+            if new_path is not None:
+                new_paths.append(new_path)
+
+        deleted_nodes = tuple(
+            self.nodes[nid] for nid in (node_a_id, node_b_id) if self.get_connection_count(node_id=nid) == 0
+        )
+        self.cleanup_isolated_nodes()
+        self._push_undo(
+            CutSegmentAction(
+                paths_before=tuple(paths_before),
+                deleted_segments=tuple(deleted_segments),
+                new_paths=tuple(new_paths),
+                deleted_nodes=deleted_nodes,
+            )
+        )
+        self.drop_undo_actions_for_removed_segments()
+        logger.info(f"Cut {len(segs)} segment(s) between {node_a_id}/{node_b_id}: {len(new_paths)} new split path(s)")
+
+    def _cut_one_segment(self, seg: PathSegment) -> tuple["SegmentPath", PathSegment, "SegmentPath | None"]:
+        """Cut `seg` out of its owning path; return (owner-snapshot-before, deleted-segment, new-'after'-entity).
+
+        Sole-segment path → owner deleted (new entity None). Interior cut → owner keeps the 'before' chain
+        and a fresh entity takes the 'after' chain. Boundary cut → owner keeps the surviving side (None).
+        """
+        owner = self.get_entity_by_segment_id(segment_id=seg.id)
+        assert owner is not None, f"segment {seg.id} has no owning path"
+        assert seg.id in owner.segment_ids, f"segment {seg.id} not in owner {owner.id}'s chain {owner.segment_ids}"
+        path_before = copy.deepcopy(owner)
+        deleted_segment = copy.deepcopy(seg)
+        idx = owner.segment_ids.index(seg.id)
+        before_ids, after_ids = owner.segment_ids[:idx], owner.segment_ids[idx + 1 :]
+
+        new_path: SegmentPath | None = None
+        has_before, has_after = bool(before_ids), bool(after_ids)
+        if not has_before and not has_after:
+            # Sole segment WAS the whole path → delete the entity outright.
+            del self.entity_dict_for_kind(owner.kind)[owner.id]
+        elif has_before and not has_after:
+            # Cut the LAST segment → owner keeps the 'before' side (trim).
+            self._set_path_chain(path=owner, segment_ids=list(before_ids))
+        elif not has_before and has_after:
+            # Cut the FIRST segment → owner keeps the 'after' side (trim).
+            self._set_path_chain(path=owner, segment_ids=list(after_ids))
+        elif has_before and has_after:
+            # Interior cut → owner keeps 'before'; a fresh entity takes 'after' (the split).
+            self._set_path_chain(path=owner, segment_ids=list(before_ids))
+            new_path = self._new_split_entity(kind=owner.kind, segment_ids=list(after_ids))
+        else:
+            raise ValueError(f"unexpected: has_before={has_before} has_after={has_after}")
+
+        del self.segments[seg.id]
+        return path_before, deleted_segment, new_path
+
+    def _set_path_chain(self, path: "SegmentPath", segment_ids: list[str]) -> None:
+        """Point a path at a new (non-empty) ordered segment chain, re-deriving its boundary node ids.
+
+        Asserts the chain is a real contiguous walk (every segment exists, consecutive ends meet).
+        """
+        assert segment_ids, "_set_path_chain needs a non-empty chain"
+        assert all(sid in self.segments for sid in segment_ids), f"_set_path_chain: unknown segment(s) in {segment_ids}"
+        for prev, nxt in zip(segment_ids, segment_ids[1:], strict=False):
+            assert self.segments[prev].end_node_id == self.segments[nxt].start_node_id, (
+                f"_set_path_chain: broken chain {prev}->{nxt}"
+            )
+        path.segment_ids = segment_ids
+        path.start_node_id = self.segments[segment_ids[0]].start_node_id
+        path.end_node_id = self.segments[segment_ids[-1]].end_node_id
+
+    def _new_split_entity(self, kind: SegmentKind, segment_ids: list[str]) -> "SegmentPath":
+        """Create + register a fresh slope/road owning `segment_ids` (the 'after' half of a cut).
+
+        Named like any freshly-built entity of its kind; segment names are re-stamped to match.
+        """
+        assert segment_ids, "_new_split_entity needs a non-empty chain"
+        start_node = self.nodes[self.segments[segment_ids[0]].start_node_id]
+        end_node = self.nodes[self.segments[segment_ids[-1]].end_node_id]
+        return self._create_path_entity(kind=kind, segment_ids=segment_ids, start_node=start_node, end_node=end_node)
+
+    def _create_path_entity(
+        self,
+        kind: SegmentKind,
+        segment_ids: list[str],
+        start_node: "Node",
+        end_node: "Node",
+        name: str | None = None,
+    ) -> "SegmentPath":
+        """Allocate an id, generate a name if none given, construct+register the slope/road, stamp segments.
+
+        The one place that turns a segment chain into a named, registered entity — shared by finish_slope,
+        finish_road and the cut/split path so naming and registration can't drift.
+        """
+        assert segment_ids, "_create_path_entity needs a non-empty chain"
+        avg_bearing = GeoCalculator.initial_bearing_deg(
+            lon1=start_node.lon, lat1=start_node.lat, lon2=end_node.lon, lat2=end_node.lat
+        )
+        if kind == SegmentKind.SLOPE:
+            entity_id = self._next_slope_id()
+            if name is None:
+                max_slope = max(self.segments[sid].max_slope_pct for sid in segment_ids)
+                name = Slope.generate_name(
+                    difficulty=TerrainAnalyzer.classify_difficulty(slope_pct=max_slope),
+                    slope_id=entity_id,
+                    start_elevation=start_node.elevation,
+                    end_elevation=end_node.elevation,
+                    avg_bearing=avg_bearing,
+                )
+            entity: SegmentPath = Slope(
+                id=entity_id,
+                name=name,
+                segment_ids=segment_ids,
+                start_node_id=start_node.id,
+                end_node_id=end_node.id,
+            )
+        elif kind == SegmentKind.ROAD:
+            entity_id = self._next_road_id()
+            if name is None:
+                name = Road.generate_name(road_id=entity_id, avg_bearing=avg_bearing)
+            entity = Road(
+                id=entity_id,
+                name=name,
+                segment_ids=segment_ids,
+                start_node_id=start_node.id,
+                end_node_id=end_node.id,
+            )
+        else:
+            raise ValueError(f"unexpected kind {kind} for a path entity")
+        self.entity_dict_for_kind(kind)[entity.id] = entity
+        for sid in segment_ids:
+            self.segments[sid].name = name
+        return entity
 
     # =========================================================================
     # Commit Operations
@@ -539,11 +692,11 @@ class ResortGraph:
 
         return end_node_ids
 
-    def _resolve_finish_endpoints(self, segment_ids: list[str]) -> tuple[PathSegment, PathSegment, Node, Node, float]:
-        """Validate a finish request and return (first_seg, last_seg, start_node, end_node, avg_bearing).
+    def _resolve_finish_endpoints(self, segment_ids: list[str]) -> tuple[PathSegment, PathSegment, Node, Node]:
+        """Validate a finish request and return (first_seg, last_seg, start_node, end_node).
 
         Raises ValueError if the segment list is empty or any segment/endpoint node is missing.
-        Shared by finish_slope / finish_road (validation + bearing only).
+        Shared by finish_slope / finish_road; bearing/naming is derived later in _create_path_entity.
         """
         if not segment_ids:
             raise ValueError("cannot finish: empty segment_ids")
@@ -563,11 +716,7 @@ class ResortGraph:
                 f"cannot finish: missing endpoint node(s) - start={first_seg.start_node_id} "
                 f"exists={start_node is not None}, end={last_seg.end_node_id} exists={end_node is not None}"
             )
-
-        avg_bearing = GeoCalculator.initial_bearing_deg(
-            lon1=start_node.lon, lat1=start_node.lat, lon2=end_node.lon, lat2=end_node.lat
-        )
-        return first_seg, last_seg, start_node, end_node, avg_bearing
+        return first_seg, last_seg, start_node, end_node
 
     def _smooth_finished_path(self, segment_ids: list[str], smoothing_factor: float) -> None:
         """Whole-path smooth a finished entity across its junctions, in place.
@@ -654,7 +803,7 @@ class ResortGraph:
         Returns:
             Created Slope.
         """
-        first_seg, last_seg, start_node, end_node, avg_bearing = self._resolve_finish_endpoints(segment_ids=segment_ids)
+        _first_seg, _last_seg, start_node, end_node = self._resolve_finish_endpoints(segment_ids=segment_ids)
         assert all(sid in self.segments for sid in segment_ids), (
             f"finish_slope: segment_ids contain missing segments {[s for s in segment_ids if s not in self.segments]}"
         )
@@ -662,37 +811,24 @@ class ResortGraph:
             segment_ids=segment_ids, smoothing_factor=GeometricTuningConfig.SLOPE_SMOOTHING_FACTOR
         )
 
-        slope_id = self._next_slope_id()
-        # Difficulty from the steepest section (max_slope_pct over rolling windows).
-        max_slope = max(self.segments[sid].max_slope_pct for sid in segment_ids)
-        difficulty = TerrainAnalyzer.classify_difficulty(slope_pct=max_slope)
-        if name is None:
-            name = Slope.generate_name(
-                difficulty=difficulty,
-                slope_id=slope_id,
-                start_elevation=start_node.elevation,
-                end_elevation=end_node.elevation,
-                avg_bearing=avg_bearing,
-            )
-
-        slope = Slope(
-            id=slope_id,
-            name=name,
-            segment_ids=segment_ids,
-            start_node_id=first_seg.start_node_id,
-            end_node_id=last_seg.end_node_id,
+        slope = cast(
+            Slope,
+            self._create_path_entity(
+                kind=SegmentKind.SLOPE,
+                segment_ids=segment_ids,
+                start_node=start_node,
+                end_node=end_node,
+                name=name,
+            ),
         )
-        self.slopes[slope_id] = slope
-        for seg_id in segment_ids:
-            self.segments[seg_id].name = name
-        logger.info(f"Slope finished: {name}, {len(segment_ids)} segments, difficulty={difficulty}")
+        logger.info(f"Slope finished: {slope.name}, {len(segment_ids)} segments")
         if record_undo:
             self._push_undo(
                 FinishSlopeAction(
-                    slope_id=slope_id,
+                    slope_id=slope.id,
                     segment_ids=tuple(segment_ids),
-                    slope_name=name,
-                    start_node_id=first_seg.start_node_id,
+                    slope_name=slope.name,
+                    start_node_id=start_node.id,
                 )
             )
         return slope
@@ -718,9 +854,7 @@ class ResortGraph:
         Returns:
             Created Road.
         """
-        first_seg, last_seg, _start_node, _end_node, avg_bearing = self._resolve_finish_endpoints(
-            segment_ids=segment_ids
-        )
+        _first_seg, _last_seg, start_node, end_node = self._resolve_finish_endpoints(segment_ids=segment_ids)
         assert all(sid in self.segments for sid in segment_ids), (
             f"finish_road: segment_ids contain missing segments {[s for s in segment_ids if s not in self.segments]}"
         )
@@ -728,27 +862,23 @@ class ResortGraph:
             segment_ids=segment_ids, smoothing_factor=GeometricTuningConfig.ROAD_SMOOTHING_FACTOR
         )
 
-        road_id = self._next_road_id()
-        if name is None:
-            name = Road.generate_name(road_id=road_id, avg_bearing=avg_bearing)
-
-        road = Road(
-            id=road_id,
-            name=name,
-            segment_ids=segment_ids,
-            start_node_id=first_seg.start_node_id,
-            end_node_id=last_seg.end_node_id,
+        road = cast(
+            Road,
+            self._create_path_entity(
+                kind=SegmentKind.ROAD,
+                segment_ids=segment_ids,
+                start_node=start_node,
+                end_node=end_node,
+                name=name,
+            ),
         )
-        self.roads[road_id] = road
-        for seg_id in segment_ids:
-            self.segments[seg_id].name = name
-        logger.info(f"Road finished: {name}, {len(segment_ids)} segments")
+        logger.info(f"Road finished: {road.name}, {len(segment_ids)} segments")
         self._push_undo(
             FinishRoadAction(
-                road_id=road_id,
+                road_id=road.id,
                 segment_ids=tuple(segment_ids),
-                road_name=name,
-                start_node_id=first_seg.start_node_id,
+                road_name=road.name,
+                start_node_id=start_node.id,
             )
         )
         return road
@@ -1196,7 +1326,7 @@ class ResortGraph:
         longer.segment_ids = list(upstream.segment_ids) + list(downstream.segment_ids)
         longer.start_node_id = upstream.start_node_id
         longer.end_node_id = downstream.end_node_id
-        self.entity_dict_for_kind(shorter.kind).pop(shorter.id, None)
+        del self.entity_dict_for_kind(shorter.kind)[shorter.id]
         logger.info(f"Joined {shorter.name} into {longer.name} at {node_id} (delete)")
 
     def _rebuild_chain_without_nodes(self, path: "SegmentPath", drop_nodes: set[str], dem: "DEMService") -> None:

@@ -452,8 +452,8 @@ class TestDeleteNodesAction:
 
 
 class TestDeleteDirectConnectionAction:
-    """delete_direct_connection_action removes every 1-segment slope/road joining the 2 selected nodes,
-    leaves multi-segment connections alone, and toasts when none qualify.
+    """delete_direct_connection_action cuts every segment joining the 2 selected ADJACENT nodes,
+    splitting each owner in two, and toasts NotAdjacentNodesMessage when the pair isn't adjacent.
     """
 
     def _one_seg_slope(self, graph, dem):
@@ -468,7 +468,21 @@ class TestDeleteDirectConnectionAction:
         graph.commit_paths(paths=[ProposedPathSegment(points=pts, target_difficulty="blue")])
         return graph.finish_slope(segment_ids=list(graph.segments.keys()))
 
-    def test_deletes_1_segment_slope_and_returns_to_idle(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
+    def _three_seg_slope(self, graph, dem):
+        lat = 0.0
+        for _ in range(3):
+            step = -400 / MapConfig.METERS_PER_DEGREE_EQUATOR
+            pts = [
+                PathPoint(lon=0.0, lat=lat, elevation=dem.get_elevation_or_raise(lon=0.0, lat=lat)),
+                PathPoint(lon=0.0, lat=lat + step, elevation=dem.get_elevation_or_raise(lon=0.0, lat=lat + step)),
+            ]
+            graph.commit_paths(paths=[ProposedPathSegment(points=pts, target_difficulty="blue")])
+            lat += step
+        return graph.finish_slope(segment_ids=list(graph.segments.keys()))
+
+    def test_cutting_sole_segment_deletes_it_and_returns_to_idle(
+        self, fake_st, empty_graph, mock_dem_blue_slope
+    ) -> None:
         from skiresort_planner.ui.actions import delete_direct_connection_action
 
         dem = mock_dem_blue_slope
@@ -480,36 +494,41 @@ class TestDeleteDirectConnectionAction:
 
         delete_direct_connection_action()
 
-        assert slope.id not in empty_graph.slopes, "the 1-segment slope was deleted"
-        assert sm.is_idle_ready, "returns to idle after a successful delete"
+        assert slope.id not in empty_graph.slopes, "the sole-segment slope was deleted"
+        assert sm.is_idle_ready, "returns to idle after a successful cut"
         assert ctx.node_edit.node_ids == [], "the selection is cleared by the before-hook"
 
-    def test_multi_segment_connection_not_deleted(self, fake_st, empty_graph, mock_dem_blue_slope, monkeypatch) -> None:
+    def test_interior_cut_splits_slope_into_two_and_returns_to_idle(
+        self, fake_st, empty_graph, mock_dem_blue_slope
+    ) -> None:
         from skiresort_planner.ui.actions import delete_direct_connection_action
 
         dem = mock_dem_blue_slope
-        # A 2-segment slope: its two ENDPOINTS are connected, but not by a single segment.
-        leg1 = [
-            PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
-            PathPoint(
-                lon=0.0,
-                lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR,
-                elevation=dem.get_elevation_or_raise(lon=0.0, lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR),
-            ),
-        ]
-        empty_graph.commit_paths(paths=[ProposedPathSegment(points=leg1, target_difficulty="blue")])
-        mid = list(empty_graph.segments.values())[-1].end_node_id
-        m = empty_graph.nodes[mid]
-        leg2 = [
-            PathPoint(lon=m.lon, lat=m.lat, elevation=m.elevation),
-            PathPoint(
-                lon=0.0,
-                lat=-800 / MapConfig.METERS_PER_DEGREE_EQUATOR,
-                elevation=dem.get_elevation_or_raise(lon=0.0, lat=-800 / MapConfig.METERS_PER_DEGREE_EQUATOR),
-            ),
-        ]
-        empty_graph.commit_paths(paths=[ProposedPathSegment(points=leg2, target_difficulty="blue")])
-        slope = empty_graph.finish_slope(segment_ids=list(empty_graph.segments.keys()))
+        slope = self._three_seg_slope(empty_graph, dem)
+        # The two ADJACENT interior nodes flanking the middle segment.
+        mid_seg = slope.segment_ids[1]
+        a = empty_graph.segments[slope.segment_ids[0]].end_node_id
+        b = empty_graph.segments[mid_seg].end_node_id
+        sm, ctx = _session(fake_st, empty_graph, dem=dem)
+        sm.start_node_edit()
+        sm.toggle_node_edit_node(node_id=a)
+        sm.toggle_node_edit_node(node_id=b)
+
+        delete_direct_connection_action()
+
+        assert len(empty_graph.slopes) == 2, "the interior cut split the slope into two"
+        assert mid_seg not in empty_graph.segments, "the middle segment was cut"
+        assert sm.is_idle_ready, "returns to idle after a successful cut"
+        assert ctx.node_edit.node_ids == [], "the selection is cleared by the before-hook"
+
+    def test_non_adjacent_pair_toasts_and_no_change(
+        self, fake_st, empty_graph, mock_dem_blue_slope, monkeypatch
+    ) -> None:
+        from skiresort_planner.ui.actions import delete_direct_connection_action
+
+        dem = mock_dem_blue_slope
+        # The two ENDPOINTS of a 3-seg slope span a multi-segment gap → not adjacent.
+        slope = self._three_seg_slope(empty_graph, dem)
         sm, ctx = _session(fake_st, empty_graph, dem=dem)
         sm.start_node_edit()
         sm.toggle_node_edit_node(node_id=slope.start_node_id)
@@ -522,11 +541,13 @@ class TestDeleteDirectConnectionAction:
 
         delete_direct_connection_action()
 
-        assert slope.id in empty_graph.slopes, "a multi-segment connection is left alone"
+        assert slope.id in empty_graph.slopes and len(empty_graph.slopes) == 1, "a non-adjacent pair is left alone"
         assert sm.is_node_edit_selecting, "stays in node edit"
-        assert any("no direct connection" in t.lower() for t in toasts), "toast explains no 1-segment link"
+        assert any("not adjacent" in t.lower() for t in toasts), "toast explains the pair isn't adjacent"
 
-    def test_no_connection_toasts_and_no_change(self, fake_st, empty_graph, mock_dem_blue_slope, monkeypatch) -> None:
+    def test_unconnected_pair_toasts_and_no_change(
+        self, fake_st, empty_graph, mock_dem_blue_slope, monkeypatch
+    ) -> None:
         from skiresort_planner.ui.actions import delete_direct_connection_action
 
         dem = mock_dem_blue_slope
@@ -544,9 +565,9 @@ class TestDeleteDirectConnectionAction:
 
         delete_direct_connection_action()
 
-        assert slope.id in empty_graph.slopes, "nothing deleted when the pair has no 1-segment link"
+        assert slope.id in empty_graph.slopes, "nothing cut when the pair has no joining segment"
         assert sm.is_node_edit_selecting, "stays in node edit"
-        assert any("no direct connection" in t.lower() for t in toasts)
+        assert any("not adjacent" in t.lower() for t in toasts)
 
 
 class TestAddNodeOnPathAction:

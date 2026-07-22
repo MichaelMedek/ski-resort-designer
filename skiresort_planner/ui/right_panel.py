@@ -633,7 +633,7 @@ class NodeEditingControlPanel(ControlPanel):
         ):
             logger.debug(f"UI: Confirm Merge clicked for {count} nodes")
             confirm_merge_action()
-        # Delete the direct connection: enabled at exactly 2 nodes; whether link exists is checked on click.
+        # Cut the segment between 2 adjacent nodes to SPLIT the path in two; adjacency checked on click.
         exactly_two = count == 2
         if st.button(
             "✂️ Delete Direct Connection",
@@ -641,9 +641,9 @@ class NodeEditingControlPanel(ControlPanel):
             width="stretch",
             disabled=not exactly_two,
             help=(
-                "Select exactly 2 nodes to delete the connection"
+                "Select exactly 2 adjacent nodes to delete the connection"
                 if not exactly_two
-                else "Delete the single-segment path directly connecting the 2 nodes"
+                else "Cut all single segments between the 2 nodes — splits the path in two"
             ),
         ):
             logger.debug(f"UI: Delete Direct Connection clicked for {count} nodes")

@@ -21,8 +21,13 @@ class NodeDeletability(StrEnum):
     NOT_INTERIOR = "not_interior"  # none of the deletable shapes (isolated / unfinished-only)
 
 
+# The two deletable shapes (one home — delete_nodes_rejection tests against this).
+DELETABLE_MEMBERS: frozenset[NodeDeletability] = frozenset(
+    {NodeDeletability.DELETABLE_INTERIOR, NodeDeletability.DELETABLE_END}
+)
+
 # Human sentence per non-deletable reason (one place, so the toast text can't drift from the enum).
-_DELETABILITY_REASONS: dict[NodeDeletability, str] = {
+_NON_DELETABLE_REASONS: dict[NodeDeletability, str] = {
     NodeDeletability.IS_BRANCH: "it is a branch of 3+ segments — delete a path first",
     NodeDeletability.IS_CONFLUENCE: "the two paths meet here going the same way (a peak or valley) — delete a path first",
     NodeDeletability.IS_PARKING: "it is a parking place (road meets slope) — delete a path first",
@@ -31,12 +36,18 @@ _DELETABILITY_REASONS: dict[NodeDeletability, str] = {
     NodeDeletability.NOT_INTERIOR: "it is not an interior or end node of a single path",
 }
 
+# Import-time partition guard: deletable + non-deletable members exactly cover the enum, no overlap.
+assert DELETABLE_MEMBERS.isdisjoint(_NON_DELETABLE_REASONS), "a member cannot be both deletable and non-deletable"
+assert DELETABLE_MEMBERS | set(_NON_DELETABLE_REASONS) == set(NodeDeletability), (
+    "DELETABLE_MEMBERS + _NON_DELETABLE_REASONS must partition NodeDeletability exactly"
+)
+
 
 def deletability_reason(node_id: str, reason: NodeDeletability) -> str:
     """Human sentence for why a node can't be deleted (used by the UnableToDeleteMessage toast)."""
-    return f"{node_id} {_DELETABILITY_REASONS[reason]}"
+    return f"{node_id} {_NON_DELETABLE_REASONS[reason]}"
 
 
-# Add-node-on-path rejection sentences (one place, mirroring _DELETABILITY_REASONS).
+# Add-node-on-path rejection sentences (one place, mirroring _NON_DELETABLE_REASONS).
 INSERT_REJECT_NOT_FINISHED = "click a finished path to add a node"
 INSERT_REJECT_TOO_CLOSE = "too close to an existing node (within {gap:.0f}m)"
