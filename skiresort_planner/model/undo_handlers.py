@@ -45,18 +45,21 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def _ungroup_finished_entity(
-    graph: "ResortGraph", kind: SegmentKind, entity_id: str, segment_ids: tuple[str, ...], entity_name: str
-) -> None:
-    """Undo a finish: drop the grouped entity, rename its segments back to building names.
+def _delete_finished_entity(graph: "ResortGraph", kind: SegmentKind, entity_id: str, entity_name: str) -> None:
+    """Undo a finish: delete the whole finished slope/road (entity + its segments).
 
-    Shared by the FINISH_SLOPE / FINISH_ROAD handlers. Segments survive (their own AddSegmentsAction
-    handles per-segment removal on further undo).
+    Shared by the FINISH_SLOPE / FINISH_ROAD handlers. Deleting the segments makes the underlying
+    per-segment AddSegmentsAction entries dangle; delete_slope/delete_road scrub them via
+    drop_undo_actions_for_removed_segments, so no orphaned undo entries survive.
     """
-    del graph.entity_dict_for_kind(kind)[entity_id]
-    for seg_id in segment_ids:
-        graph.segments[seg_id].name = f"Segment {seg_id[1:]}"
-    logger.info(f"Undid FINISH_{kind.value.upper()}: ungrouped {entity_name} to {len(segment_ids)} building segment(s)")
+    if kind == SegmentKind.SLOPE:
+        deleted = graph.delete_slope(slope_id=entity_id, record_undo=False)
+    elif kind == SegmentKind.ROAD:
+        deleted = graph.delete_road(road_id=entity_id, record_undo=False)
+    else:
+        raise RuntimeError(f"_delete_finished_entity: unhandled kind {kind}")
+    assert deleted, f"undo of FINISH_{kind.value.upper()}: {entity_id} must exist to delete"
+    logger.info(f"Undid FINISH_{kind.value.upper()}: deleted {entity_name}")
 
 
 def _restore_deleted_path_entity(
@@ -119,14 +122,16 @@ class _FinishSlopeHandler(UndoHandler):
     action_type = ActionType.FINISH_SLOPE
 
     def apply_undo(self, graph: "ResortGraph", action: UndoAction) -> None:
-        # Ungroup the slope but keep its segments; their own AddSegmentsAction
-        # entries handle per-segment removal on further undo.
+        # Undo of finish deletes the whole slope (entity + segments); the per-segment
+        # AddSegmentsAction entries are scrubbed by delete_slope's segment cleanup.
         finish = cast(FinishSlopeAction, action)
-        _ungroup_finished_entity(graph, SegmentKind.SLOPE, finish.slope_id, finish.segment_ids, finish.slope_name)
+        _delete_finished_entity(
+            graph=graph, kind=SegmentKind.SLOPE, entity_id=finish.slope_id, entity_name=finish.slope_name
+        )
 
     def describe(self, action: UndoAction, graph: "ResortGraph") -> str:
         finish_slope_act = cast(FinishSlopeAction, action)
-        return f"Restore slope **{finish_slope_act.slope_name}** to building mode"
+        return f"Delete slope **{finish_slope_act.slope_name}**"
 
 
 class _AddLiftHandler(UndoHandler):
@@ -148,13 +153,13 @@ class _FinishRoadHandler(UndoHandler):
 
     def apply_undo(self, graph: "ResortGraph", action: UndoAction) -> None:
         finish_road = cast(FinishRoadAction, action)
-        _ungroup_finished_entity(
-            graph, SegmentKind.ROAD, finish_road.road_id, finish_road.segment_ids, finish_road.road_name
+        _delete_finished_entity(
+            graph=graph, kind=SegmentKind.ROAD, entity_id=finish_road.road_id, entity_name=finish_road.road_name
         )
 
     def describe(self, action: UndoAction, graph: "ResortGraph") -> str:
         finish_road_act = cast(FinishRoadAction, action)
-        return f"Restore road **{finish_road_act.road_name}** to building mode"
+        return f"Delete road **{finish_road_act.road_name}**"
 
 
 class _DeleteSlopeHandler(UndoHandler):

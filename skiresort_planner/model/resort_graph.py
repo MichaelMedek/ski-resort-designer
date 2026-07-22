@@ -883,11 +883,13 @@ class ResortGraph:
         )
         return road
 
-    def delete_road(self, road_id: str) -> bool:
+    def delete_road(self, road_id: str, *, record_undo: bool = True) -> bool:
         """Delete a road and its segments.
 
         Args:
             road_id: ID of road to delete.
+            record_undo: Push a DeleteRoadAction. False when undo-of-finish deletes the road (the
+                finish undo is already the history step; a new delete entry would double-count).
 
         Returns:
             True if deleted, False if not found.
@@ -903,14 +905,15 @@ class ResortGraph:
 
         # Nodes orphaned by segment removal (connection_count == 0).
         orphaned_nodes = [self.nodes[nid] for nid in self.nodes if self.get_connection_count(node_id=nid) == 0]
-        self._push_undo(
-            DeleteRoadAction(
-                road_id=road_id,
-                deleted_road=road,
-                deleted_segments=tuple(deleted_segments),
-                deleted_nodes=tuple(orphaned_nodes),
+        if record_undo:
+            self._push_undo(
+                DeleteRoadAction(
+                    road_id=road_id,
+                    deleted_road=road,
+                    deleted_segments=tuple(deleted_segments),
+                    deleted_nodes=tuple(orphaned_nodes),
+                )
             )
-        )
         self.cleanup_isolated_nodes()
         self.drop_undo_actions_for_removed_segments()
         logger.info(f"Deleted road {road.name} with {len(road.segment_ids)} segments")
@@ -1514,11 +1517,13 @@ class ResortGraph:
                 self.segments[seg_id].name = new_name
         logger.info(f"Renamed {entity_id} to '{new_name}'")
 
-    def delete_slope(self, slope_id: str) -> bool:
+    def delete_slope(self, slope_id: str, *, record_undo: bool = True) -> bool:
         """Delete a slope and its segments.
 
         Args:
             slope_id: ID of slope to delete
+            record_undo: Push a DeleteSlopeAction. False when undo-of-finish deletes the slope (the
+                finish undo is already the history step; a new delete entry would double-count).
 
         Returns:
             True if deleted, False if not found.
@@ -1535,14 +1540,15 @@ class ResortGraph:
 
         # Nodes orphaned by segment removal (connection_count == 0).
         orphaned_nodes = [self.nodes[nid] for nid in self.nodes if self.get_connection_count(node_id=nid) == 0]
-        self._push_undo(
-            DeleteSlopeAction(
-                slope_id=slope_id,
-                deleted_slope=slope,
-                deleted_segments=tuple(deleted_segments),
-                deleted_nodes=tuple(orphaned_nodes),
+        if record_undo:
+            self._push_undo(
+                DeleteSlopeAction(
+                    slope_id=slope_id,
+                    deleted_slope=slope,
+                    deleted_segments=tuple(deleted_segments),
+                    deleted_nodes=tuple(orphaned_nodes),
+                )
             )
-        )
         self.cleanup_isolated_nodes()
         self.drop_undo_actions_for_removed_segments()
         logger.info(f"Deleted slope {slope.name} with {len(slope.segment_ids)} segments")

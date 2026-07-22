@@ -282,7 +282,7 @@ class TestDescribeUndoAction:
     def test_finish_road_label(self, empty_graph, path_points_blue) -> None:
         road_id = _build_road(empty_graph, path_points_blue)  # finish_road records FINISH_ROAD on top
         label = self._describe_top(empty_graph)
-        assert "Restore road" in label and empty_graph.roads[road_id].name in label
+        assert "Delete road" in label and empty_graph.roads[road_id].name in label
 
     def test_delete_slope_label(self, empty_graph, path_points_blue) -> None:
         slope_id = _build_slope(empty_graph, path_points_blue)

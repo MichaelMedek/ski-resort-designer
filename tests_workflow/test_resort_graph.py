@@ -408,8 +408,8 @@ class TestSlopeUndo:
         assert seg_ids[0] in graph.segments, "First segment should remain"
         assert seg_ids[1] not in graph.segments, "Second segment should be removed"
 
-    def test_undo_finish_slope_keeps_segments(self, empty_graph, path_points_blue) -> None:
-        """Undo FinishSlopeAction removes slope but preserves segments."""
+    def test_undo_finish_slope_deletes_slope_and_segments(self, empty_graph, path_points_blue) -> None:
+        """Undo FinishSlopeAction deletes the whole slope (entity + segments)."""
         graph = empty_graph
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
@@ -422,7 +422,8 @@ class TestSlopeUndo:
         assert isinstance(undone, FinishSlopeAction)
         assert undone.slope_name == slope_name
         assert len(graph.slopes) == 0, "Slope should be removed"
-        assert len(graph.segments) == 1, "Segment should remain"
+        assert len(graph.segments) == 0, "Segments are deleted with the slope"
+        assert graph.undo_stack == [], "the per-segment ADD_SEGMENTS entry is scrubbed with the segments"
 
     def test_undo_delete_slope_restores_slope(self, empty_graph, path_points_blue) -> None:
         """Undo DeleteSlopeAction restores the slope and its segments."""
@@ -546,18 +547,16 @@ class TestRoadGraphOps:
         assert isinstance(empty_graph.undo_stack[0], AddSegmentsAction)
         assert isinstance(empty_graph.undo_stack[-1], FinishRoadAction)
 
-    def test_undo_finish_road_ungroups_but_keeps_segments(self, empty_graph, path_points_blue) -> None:
+    def test_undo_finish_road_deletes_road_and_scrubs_segments(self, empty_graph, path_points_blue) -> None:
         road = _commit_road(empty_graph, path_points_blue)
-        seg_count = len(empty_graph.segments)
-        # First undo: pop the FinishRoadAction → road ungrouped, segments stay.
+        # Undo the finish: the whole road is deleted (entity + segments), and the underlying
+        # AddSegmentsAction entry is scrubbed with the segments — one step, empty stack.
         empty_graph.undo_last()
         assert road.id not in empty_graph.roads
         assert len(empty_graph.roads) == 0
-        assert len(empty_graph.segments) == seg_count, "Segments remain after ungrouping the road"
-        # Second undo: pop the AddSegmentsAction → segment (and orphan nodes) removed.
-        empty_graph.undo_last()
-        assert len(empty_graph.segments) == 0
-        assert len(empty_graph.nodes) == 0
+        assert len(empty_graph.segments) == 0, "segments are deleted with the road (not kept)"
+        assert len(empty_graph.nodes) == 0, "orphaned nodes are cleaned"
+        assert empty_graph.undo_stack == [], "the per-segment ADD_SEGMENTS entry is scrubbed, not left dangling"
 
     def test_delete_road_removes_and_records_undo(self, empty_graph, path_points_blue) -> None:
         road = _commit_road(empty_graph, path_points_blue)
@@ -822,17 +821,24 @@ class TestFinishSmoothing:
         slope = graph.slopes[list(graph.slopes)[0]]
         slope.get_all_points(segments=graph.segments)  # must not raise on the dedup
 
-    def test_undo_after_smoothed_finish_keeps_segments(self, empty_graph, mock_dem_blue_slope) -> None:
+    def test_undo_after_smoothed_finish_deletes_slope(self, empty_graph, mock_dem_blue_slope) -> None:
+        graph = empty_graph
+        seg_ids = _commit_L_slope(graph, mock_dem_blue_slope)
+        graph.finish_slope(segment_ids=seg_ids)
+
+        undone = graph.undo_last()
+
+        assert isinstance(undone, FinishSlopeAction)
+        assert list(graph.segments.keys()) == [], "finish-undo deletes the slope and its segments"
+        assert len(graph.slopes) == 0
+
+    def test_refinish_smoothed_slope_is_idempotent(self, empty_graph, mock_dem_blue_slope) -> None:
+        # Re-finishing an already-smoothed path is idempotent (sub-meter drift, non-accumulating).
         graph = empty_graph
         seg_ids = _commit_L_slope(graph, mock_dem_blue_slope)
         graph.finish_slope(segment_ids=seg_ids)
         after_first = [graph.segments[sid].max_slope_pct for sid in seg_ids]
 
-        undone = graph.undo_last()
-
-        assert isinstance(undone, FinishSlopeAction)
-        assert list(graph.segments.keys()) == seg_ids, "segments survive finish-undo"
-        # Re-finishing an already-smoothed path is idempotent (sub-meter drift, non-accumulating).
         graph.finish_slope(segment_ids=seg_ids)
         after_second = [graph.segments[sid].max_slope_pct for sid in seg_ids]
         for a, b in zip(after_first, after_second, strict=False):

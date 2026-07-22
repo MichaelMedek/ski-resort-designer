@@ -809,97 +809,68 @@ def cancel_current_road() -> None:
 
 
 def _undo_add_segments(undone: AddSegmentsAction) -> None:
-    """Handle undo of ADD_SEGMENTS action.
+    """Handle undo of ADD_SEGMENTS: peel the undone segments off the active build, stay in place.
 
-    Uses force_idle/force_building instead of state machine transitions.
-    This follows the expert recommendation to treat undo as history management,
-    not core workflow state transitions.
+    If segments remain we stay in the current build state (building or custom-path) and re-arm
+    proposal generation from the moved-back endpoint. If none remain the whole build is cancelled to
+    idle_ready (force_idle). Staying in custom-path is deliberate (explicit over implicit): the user
+    closes the connection to return to the fan.
     """
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
 
-    # Kind-generic: peel the undone segments off the active build, then force the kind's
-    # BUILDING state (segments remain) or STARTING state (origin remains, no segments).
-    # force_* re-triggers the kind's fan from the restored endpoint.
     kind = sm.active_build_kind
     build = ctx.build(kind)
     remaining = [s for s in build.segments if s not in undone.segment_ids]
     build.segments = remaining
     ctx.clear_proposals()
-    if remaining:
-        build.endpoints = [graph.segments[remaining[-1]].end_node_id]
-        logger.debug(f"[ACTION] {kind.value} undo leaves {len(remaining)} segments, forcing building")
-        sm.force_building(kind)
+
+    if not remaining:
+        # Nothing left to build → cancel the build to idle_ready.
+        logger.debug(f"[ACTION] {kind.value} undo leaves 0 segments, cancelling build to idle")
+        sm.force_idle()
+        bump_dedup_epoch()
+        trigger_rerun()
+        return
+
+    # Segments remain: stay in the current state, re-arm generation from the new endpoint.
+    new_endpoint = graph.segments[remaining[-1]].end_node_id
+    build.endpoints = [new_endpoint]
+    current = sm.get_current_state_id()
+    spec = KIND_SPECS[kind]
+    if current == spec.custom_path_state:
+        # Stay in custom-path (explicit): re-anchor the target's origin to the moved endpoint so the
+        # overlay + planner don't read a now-cleaned old endpoint, and regenerate the custom routes.
+        ctx.custom_connect.start_node = new_endpoint
+        ctx.pending.custom_connect = True
+        logger.debug(f"[ACTION] {kind.value} undo leaves {len(remaining)} segments, staying in custom-path")
+    elif current == spec.building_state:
+        ctx.pending.fan_generation.add(kind)  # re-arm the fan from the new endpoint
+        logger.debug(f"[ACTION] {kind.value} undo leaves {len(remaining)} segments, re-arming fan")
     else:
-        build.endpoints = []
-        build.start_node_id = None  # origin node cleaned as isolated; fall back to start_location
-        logger.debug(f"[ACTION] {kind.value} undo leaves 0 segments, forcing starting")
-        sm.force_starting(kind)
+        raise RuntimeError(f"_undo_add_segments with {len(remaining)} segments in unexpected state {current}")
     bump_dedup_epoch()
     trigger_rerun()
 
 
-def _restore_build_context(
-    build_ctx: "SegmentBuildContext",
-    segment_ids: tuple[str, ...],
-    name: str | None,
-    start_node_id: str | None,
-) -> str:
-    """Restore a build context from a finish-undo action; return the last endpoint node id.
+def _undo_finish(kind: SegmentKind) -> None:
+    """Handle undo of a FINISH action (slope or road): the graph already deleted the whole entity.
 
-    A finish action always references ≥1 committed segment (finish_slope/finish_road
-    return None otherwise) and those segments are kept on undo — so the context is always re-enterable.
+    Undoing a finish deletes the just-created slope/road (see undo_handlers._delete_finished_entity),
+    so the UI drops any open panel and returns to idle_ready. force_idle is safe from a viewing state
+    or from idle_ready alike; it never forces a build state, so build_mode can't desync.
     """
-    graph: ResortGraph = st.session_state.graph
-    logger.info(f"Undone finish, restoring {len(segment_ids)} segments")
-
-    build_ctx.segments = list(segment_ids)
-    build_ctx.name = name
-    build_ctx.start_node_id = start_node_id
-
-    assert build_ctx.segments, "finish-undo must have ≥1 segment (finish_* never records an empty finish)"
-    first_seg = graph.segments[build_ctx.segments[0]]
-    last_seg = graph.segments[build_ctx.segments[-1]]
-    assert first_seg.points, f"restored segment {build_ctx.segments[0]} must have points"
-    assert last_seg.points, f"restored segment {build_ctx.segments[-1]} must have points"
-
-    # Carry the origin as a LOCATION too, not only as start_node_id: undoing the segments one by one
-    # eventually cleans the origin node. The origin node still exists now, so snapshot the first segment's start point.
-    build_ctx.start_location = first_seg.points[0]
-    build_ctx.endpoints = [last_seg.end_node_id]
-    return last_seg.end_node_id
-
-
-def _undo_finish(kind: SegmentKind, segment_ids: tuple[str, ...], name: str, start_node_id: str | None) -> None:
-    """Handle undo of a FINISH action (slope or road): restore building + re-arm the fan.
-
-    The graph already ungrouped the entity (segments kept). Restore the kind's build
-    context and force its BUILDING state; force_building re-triggers the fan.
-    """
-    ctx: PlannerContext = st.session_state.context
     sm: PlannerStateMachine = st.session_state.state_machine
-
-    _restore_build_context(
-        build_ctx=ctx.build(kind),
-        segment_ids=segment_ids,
-        name=name,
-        start_node_id=start_node_id,
-    )
-    ctx.clear_proposals()  # force_building re-triggers the kind's fan from the endpoint
-    sm.force_building(kind)
+    logger.info(f"Undone finish: {kind.value} deleted, returning to idle")
+    sm.force_idle()
     bump_dedup_epoch()
     trigger_rerun()
 
 
 def _undo_finish_slope(undone: FinishSlopeAction) -> None:
     """Handle undo of FINISH_SLOPE."""
-    _undo_finish(
-        kind=SegmentKind.SLOPE,
-        segment_ids=undone.segment_ids,
-        name=undone.slope_name,
-        start_node_id=undone.start_node_id,
-    )
+    _undo_finish(kind=SegmentKind.SLOPE)
 
 
 def _undo_add_lift(undone: AddLiftAction) -> None:
@@ -932,12 +903,7 @@ def _undo_delete_entity(undone: DeleteSlopeAction | DeleteLiftAction | DeleteRoa
 
 def _undo_finish_road(undone: FinishRoadAction) -> None:
     """Handle undo of FINISH_ROAD (mirrors _undo_finish_slope)."""
-    _undo_finish(
-        kind=SegmentKind.ROAD,
-        segment_ids=undone.segment_ids,
-        name=undone.road_name,
-        start_node_id=undone.start_node_id,
-    )
+    _undo_finish(kind=SegmentKind.ROAD)
 
 
 def _undo_import_osm(undone: ImportOSMAction) -> None:

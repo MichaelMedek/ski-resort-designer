@@ -882,12 +882,12 @@ class TestSlopeBuildingActionFlow:
         assert sm.is_idle
         assert len(graph.slopes) == 0, "canceling discards the in-progress slope"
 
-    def test_finish_then_undo_restores_slope_building(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
-        # Finishing then undoing the finish must return to slope_building with segments + a regenerated fan.
+    def test_finish_then_undo_deletes_slope_to_idle(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
+        # Undoing a finish DELETES the whole slope and returns to idle_ready, so build_mode always
+        # matches the idle state.
         from skiresort_planner.ui.actions import (
             commit_selected_path,
             finish_current_slope,
-            process_path_generation_pending,
             recompute_paths,
             undo_last_action,
         )
@@ -896,16 +896,15 @@ class TestSlopeBuildingActionFlow:
         sm, ctx, graph = self._start_building(fake_st, path_factory, dem)
         recompute_paths()
         commit_selected_path(path_idx=0)
-        seg_id = ctx.build(SegmentKind.SLOPE).segments[-1]
         finish_current_slope()
         assert sm.is_idle_viewing_slope
+        assert len(graph.slopes) == 1
 
         undo_last_action()  # undo FINISH_SLOPE
-        assert sm.is_slope_building_only, "undo of finish returns to slope building"
-        assert ctx.build(SegmentKind.SLOPE).segments == [seg_id], "segments are restored"
-        # force_building arms the fan on the deferred pass (unified with the live flow).
-        process_path_generation_pending()
-        assert ctx.proposals.paths, "the fan is regenerated from the restored endpoint"
+        assert sm.is_idle_ready, "undo of finish returns to idle_ready"
+        assert len(graph.slopes) == 0, "the whole slope is deleted"
+        assert len(ctx.build(SegmentKind.SLOPE).segments) == 0, "build context is cleared"
+        assert not graph.undo_stack, "the per-segment ADD_SEGMENTS entry is scrubbed with the segments"
 
 
 class TestRoadBuildingActionFlow:
@@ -936,10 +935,10 @@ class TestRoadBuildingActionFlow:
         assert graph.segments[ctx.build(SegmentKind.ROAD).segments[-1]].kind == SegmentKind.ROAD
         assert graph.undo_stack[-1].action_type.name == "ADD_SEGMENTS", "per-segment undo recorded"
 
-    def test_finish_then_undo_restores_road_building(
+    def test_finish_then_undo_deletes_road_to_idle(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal, path_points_blue
     ) -> None:
-        # Finishing then undoing the finish must return to road_building with segments (no fan).
+        # Undoing a road finish DELETES the whole road and returns to idle_ready (mirrors slope).
         from skiresort_planner.model.path_segment import SegmentKind
         from skiresort_planner.ui.actions import commit_selected_path, finish_current_road, undo_last_action
 
@@ -950,14 +949,14 @@ class TestRoadBuildingActionFlow:
         ctx.proposals.paths = [ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)]
         ctx.proposals.selected_idx = 0
         commit_selected_path(path_idx=0)
-        seg_id = ctx.build(SegmentKind.ROAD).segments[-1]
         finish_current_road()
         assert sm.is_idle_viewing_road
+        assert len(graph.roads) == 1
 
         undo_last_action()  # undo FINISH_ROAD
-        assert sm.is_road_building_only, "undo of finish returns to road building"
-        assert ctx.build(SegmentKind.ROAD).segments == [seg_id], "segments are restored"
-        assert ctx.proposals.paths == [], "roads have no fan to regenerate"
+        assert sm.is_idle_ready, "undo of finish returns to idle_ready"
+        assert len(graph.roads) == 0, "the whole road is deleted"
+        assert len(ctx.build(SegmentKind.ROAD).segments) == 0, "build context is cleared"
 
     def test_connector_proposal_auto_finishes_to_viewing(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal, path_points_blue
@@ -1339,8 +1338,8 @@ class TestSegmentOrigin:
         from skiresort_planner.ui.actions import resolve_build_origin
         from skiresort_planner.ui.context import SegmentBuildContext
 
-        # The origin node was cleaned when the last segment was undone, but start_location survives
-        # (restored by _restore_build_context). The dangling id is ignored; the location is used.
+        # The origin node was cleaned when the last segment was undone, but start_location survives.
+        # The dangling id is ignored; the location is used.
         build = SegmentBuildContext(
             start_node_id="N999",  # cleaned as isolated
             start_location=PathPoint(lon=8.019, lat=46.584, elevation=3065.0),
@@ -1384,20 +1383,16 @@ class TestSegmentOrigin:
 
 
 class TestUndoToZeroAfterFinish:
-    """Regression: build a road, finish, undo the finish, then undo each segment back to zero.
-
-    The final undo cleans the origin node (now isolated); the build must stay resolvable — the fan
-    regenerates from the origin location, not a dangling start_node_id (was 'KeyError: N###').
+    """Undo semantics: undoing a finish deletes the whole entity in one step; undoing segments during
+    a build stays in place (re-arming) until the last one, which cancels the build to idle_ready.
     """
 
-    def test_undo_all_segments_after_finish_regenerates_without_crash(
+    def test_undo_finish_deletes_everything_cleanly(
         self, fake_st, empty_graph, path_factory, mock_dem_red_slope_diagonal
     ) -> None:
-        from skiresort_planner.ui.actions import (
-            process_path_generation_pending,
-            resolve_build_origin,
-            undo_last_action,
-        )
+        # Build a 2-segment road, finish, undo the finish → the whole road + its per-segment undo
+        # entries are gone in one step, landing idle_ready (was: peel back segment-by-segment).
+        from skiresort_planner.ui.actions import undo_last_action
 
         dem = mock_dem_red_slope_diagonal
         sm, ctx = _session(fake_st, empty_graph, path_factory, dem)
@@ -1420,27 +1415,18 @@ class TestUndoToZeroAfterFinish:
         sm.finish_road(entity_id=road.id)
         assert sm.is_idle_viewing_road
 
-        # Undo everything: finish, then each segment. The last undo cleans the origin node.
-        while empty_graph.undo_stack:
-            undo_last_action()
+        undo_last_action()  # undo FINISH_ROAD → deletes the whole road
+        assert sm.is_idle_ready
+        assert len(empty_graph.roads) == 0
+        assert len(ctx.build(SegmentKind.ROAD).segments) == 0
+        assert not empty_graph.undo_stack, "the finish-undo scrubs the per-segment ADD_SEGMENTS entries too"
 
-        # The build must still resolve its origin without a dangling id (the crash was here).
-        build = ctx.build(SegmentKind.ROAD)
-        if build.segments or build.start_location or build.start_node_id:
-            resolve_build_origin(build=build, graph=empty_graph)  # must not raise
-        process_path_generation_pending()  # the deferred fan pass must not raise either
-
-    def test_undo_all_then_custom_connect_overlay_no_keyerror(
+    def test_undo_segments_stays_building_then_cancels_to_idle(
         self, fake_st, empty_graph, path_factory, mock_dem_red_slope_diagonal
     ) -> None:
-        """Regression (KeyError: 'N#' @ overlay_layers): finish a slope, undo the finish, then undo
-        every segment back to zero, then click a custom-connect target. Undoing the finish restores
-        start_node_id to the origin node; undoing all segments then cleans that node as isolated — so
-        start_node_id must NOT survive dangling into custom_connect.start_node, else the overlay crashes.
-        """
-        from skiresort_planner.ui.actions import undo_last_action
-        from skiresort_planner.ui.center_map import MapRenderer
-        from skiresort_planner.ui.mode_registry import BUILD_STATES
+        # Undoing a committed segment (no finish) stays in slope_building and re-arms the fan; undoing
+        # the last remaining segment cancels the build to idle_ready.
+        from skiresort_planner.ui.actions import process_path_generation_pending, undo_last_action
 
         dem = mock_dem_red_slope_diagonal
         sm, ctx = _session(fake_st, empty_graph, path_factory, dem)
@@ -1458,32 +1444,18 @@ class TestUndoToZeroAfterFinish:
             endpoint_ids = empty_graph.commit_paths(paths=[ProposedPathSegment(points=pts, target_difficulty="blue")])
             seg = list(empty_graph.segments.keys())[-1]
             sm.commit_path(segment_id=seg, endpoint_node_id=endpoint_ids[0])
+        assert sm.is_slope_building_only and len(ctx.build(SegmentKind.SLOPE).segments) == 2
 
-        # Finish → the finish-undo restores start_node_id to the origin (the node the undos then clean).
-        slope = empty_graph.finish_slope(segment_ids=ctx.build(SegmentKind.SLOPE).segments)
-        sm.finish_slope(entity_id=slope.id)
+        undo_last_action()  # peel one segment → stay building, fan re-armed
+        assert sm.is_slope_building_only, "one segment remains → stay in slope_building"
+        assert len(ctx.build(SegmentKind.SLOPE).segments) == 1
+        assert SegmentKind.SLOPE in ctx.pending.fan_generation, "the fan is re-armed from the moved endpoint"
+        process_path_generation_pending()  # the deferred fan pass must not raise
+        assert ctx.proposals.paths, "the fan regenerates from the new endpoint"
 
-        # Undo finish, then each segment → back to slope_starting; the last undo cleans the origin node.
-        while empty_graph.undo_stack:
-            undo_last_action()
-        assert sm.is_slope_starting
-        build = ctx.build(SegmentKind.SLOPE)
-        assert build.start_node_id is None, "undo-to-zero must not leave a dangling origin id"
-
-        # Click a custom-connect target from starting: start_node is copied from build.start_node_id.
-        sm.select_custom_target(target_location=(300 / MapConfig.METERS_PER_DEGREE_EQUATOR, 0.0, 1990.0))
-        assert ctx.custom_connect.start_node is None, "no live origin node → no dangling custom_connect.start_node"
-
-        # The overlay render that crashed with KeyError must succeed (the origin arrow simply isn't drawn).
-        renderer = MapRenderer(center_lon=0.0, center_lat=0.0, zoom=13, pitch=0, bearing=0)
-        BUILD_STATES[sm.get_current_state_id()].overlay_layers(
-            ctx=ctx,
-            graph=empty_graph,
-            renderer=renderer,
-            terrain_analyzer=path_factory.terrain_analyzer,
-            dem=dem,
-            use_3d=False,
-        )  # must not raise
+        undo_last_action()  # peel the last segment → cancel to idle
+        assert sm.is_idle_ready, "undoing the last segment cancels the build to idle_ready"
+        assert len(ctx.build(SegmentKind.SLOPE).segments) == 0
 
 
 class TestMapEpochs:

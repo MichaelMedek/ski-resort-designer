@@ -806,12 +806,13 @@ class TestButtonInteractions:
         graph = at.session_state["graph"]
         assert len(graph.slopes) == 1, "Should have 1 slope before undo"
 
-        # Click undo button - this undoes the finish_slope
+        # Click undo button - this undoes the finish_slope, deleting the whole slope.
         at.button(key="btn_undo").click().run()
 
-        # We should be back in building state
+        # Undoing a finish deletes the slope and returns to idle_ready.
         sm = at.session_state["state_machine"]
-        assert sm.is_any_slope_state, f"Should be in slope state after undo, got {sm.get_state_name()}"
+        assert sm.is_idle_ready, f"Should be idle after undoing the finish, got {sm.get_state_name()}"
+        assert len(graph.slopes) == 0, "undo of finish deletes the slope"
 
     def test_radio_build_mode(
         self,

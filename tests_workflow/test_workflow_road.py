@@ -163,41 +163,26 @@ class TestRoadConnectorAutoFinish:
 
 
 class TestRoadForceStateMethods:
-    """force_road_building / force_road_starting (undo helpers), mirroring slope force methods."""
+    """force_idle() from a road build state (the sole surviving force helper, mirroring slope)."""
 
     def _sm(self, graph: ResortGraph):
         return PlannerStateMachine.create(graph=graph, add_ui_listener=False)
 
-    def test_force_road_building_when_segments_remain(self, empty_graph, path_points_blue) -> None:
-        # Simulate an undo that leaves ≥1 committed road segment → force RoadBuilding.
+    def test_force_idle_from_road_building_clears_context(self, empty_graph, path_points_blue) -> None:
+        # Simulate an undo that empties a road build → force_idle back to idle_ready.
         sm, ctx = self._sm(empty_graph)
         sm.start_road(node_id=None, location=path_points_blue[0])
         seg1 = _commit_road_segment(empty_graph, path_points_blue)
         sm.commit_road(segment_id=seg1, endpoint_node_id="N1")
         assert sm.current_state_value == "road_building"
 
-        # Seed a stale viewing panel that force_road_building must clear (via viewing.clear()).
+        # Seed a stale viewing panel that force_idle must clear (via viewing.clear()).
         ctx.viewing.set_road_id(road_id="R99")
         ctx.viewing.show_panel()
 
         with sm.undo_running():
-            sm.force_building(SegmentKind.ROAD)
-        assert sm.current_state_value == "road_building"
-        assert ctx.build(SegmentKind.ROAD).segments == [seg1]
-        assert ctx.viewing.road_id is None  # force_road_building cleared the stale viewing state
+            sm.force_idle()
+        assert sm.current_state_value == "idle_ready"
+        assert ctx.build(SegmentKind.ROAD).segments == []
+        assert ctx.viewing.road_id is None  # force_idle cleared the stale viewing state
         assert ctx.viewing.panel_visible is False
-
-    def test_force_road_starting_when_only_origin_remains(self, empty_graph, path_points_blue) -> None:
-        # Simulate undoing the last segment: origin still set, no segments → force RoadStarting.
-        sm, ctx = self._sm(empty_graph)
-        sm.start_road(node_id=None, location=path_points_blue[0])
-        seg1 = _commit_road_segment(empty_graph, path_points_blue)
-        sm.commit_road(segment_id=seg1, endpoint_node_id="N1")
-        assert sm.current_state_value == "road_building"
-
-        # Peel the segment back to the origin, then force RoadStarting.
-        ctx.build(SegmentKind.ROAD).segments = []
-        ctx.build(SegmentKind.ROAD).endpoints = []
-        with sm.undo_running():
-            sm.force_starting(SegmentKind.ROAD)
-        assert sm.current_state_value == "road_starting"
