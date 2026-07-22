@@ -141,7 +141,7 @@ class TestDeleteSlopeAction:
         slope = _make_slope(graph=empty_graph, path_points=path_points_blue)
         _session(fake_st=fake_st, graph=empty_graph)
 
-        assert delete_slope_action(slope_id=slope.id) is True
+        delete_slope_action(slope_id=slope.id)
         assert slope.id not in empty_graph.slopes
 
     def test_missing_slope_raises(self, fake_st, empty_graph) -> None:
@@ -198,7 +198,7 @@ class TestDeleteRoadAction:
         road = _make_road(graph=empty_graph)
         _session(fake_st=fake_st, graph=empty_graph)
 
-        assert delete_road_action(road_id=road.id) is True
+        delete_road_action(road_id=road.id)
         assert road.id not in empty_graph.roads
 
     def test_missing_road_raises(self, fake_st, empty_graph) -> None:
@@ -236,7 +236,7 @@ class TestDeleteLiftAction:
         lift = empty_graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
         _session(fake_st=fake_st, graph=empty_graph)
 
-        assert delete_lift_action(lift_id=lift.id) is True
+        delete_lift_action(lift_id=lift.id)
         assert lift.id not in empty_graph.lifts
 
 

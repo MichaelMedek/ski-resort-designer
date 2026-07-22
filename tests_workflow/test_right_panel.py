@@ -9,6 +9,8 @@ state change (3D toggle, close panel) is asserted.
 from contextlib import nullcontext
 from typing import Literal
 
+import pytest
+
 from skiresort_planner.constants import MapConfig, RoutePlannerConfig, StyleConfig
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
@@ -26,6 +28,7 @@ from skiresort_planner.ui.right_panel import (
     route_legs,
 )
 from skiresort_planner.ui.state_machine import PlannerStateMachine
+from tests_workflow.conftest import MockDEMService
 
 
 def _info_panel(kind: EntityKind, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph) -> None:
@@ -96,6 +99,16 @@ def _dispatch(sm, ctx, graph) -> None:
         on_commit=_noop,
         on_cancel_connection=_noop,
     )
+
+
+@pytest.fixture(autouse=True)
+def _seed_dem_service(fake_st, mock_dem_blue_slope):
+    """PathStatsPanel classifies each segment vs the DEM (bridge/tunnel) and reads dem_service from
+    session. Seed the SAME DEM that path_points_blue drapes onto, so segments stay GROUND and every
+    panel test's metric/warning assertions are unchanged. Tests wanting a structure seed their own.
+    """
+    fake_st.session_state["dem_service"] = mock_dem_blue_slope
+    return mock_dem_blue_slope
 
 
 # =============================================================================
@@ -198,6 +211,71 @@ class TestStatsPanelsRun:
             entity_id=_build_road(empty_graph, path_points_blue)
         )
         assert any("Segment Details" in e for e in expanders), "road panel must also show Segment Details"
+
+    def test_bridge_segment_shows_structure_info_instead_of_excavator(
+        self, fake_st, empty_graph, mock_dem_red_slope_diagonal, monkeypatch
+    ) -> None:
+        """A segment that floats far above terrain shows the 🌉 Bridge info line, and its Excavator
+        warning is suppressed (replaced). Built on the diagonal red DEM so there IS an excavator warning
+        to suppress; a flat far-below DEM makes the deck read as a bridge.
+        """
+        import streamlit as real_st
+
+        # Message.display() does a local `import streamlit` (INFO → st.info, WARNING → st.warning), so
+        # capture on the real module, not the per-module fake (same pattern as the building-panel test).
+        infos: list[str] = []
+        warnings: list[str] = []
+        monkeypatch.setattr(real_st, "info", lambda text, *a, **k: infos.append(str(text)), raising=False)
+        monkeypatch.setattr(real_st, "warning", lambda text, *a, **k: warnings.append(str(text)), raising=False)
+
+        # Draped on the diagonal DEM (steep cross-slope → excavator warning), then classified against a
+        # flat DEM 1000m BELOW the path → the whole segment floats far above ground → BRIDGE.
+        pts = [
+            PathPoint(lon=0.0, lat=0.0, elevation=mock_dem_red_slope_diagonal.get_elevation_or_raise(lon=0.0, lat=0.0)),
+            PathPoint(
+                lon=0.0,
+                lat=-0.005,
+                elevation=mock_dem_red_slope_diagonal.get_elevation_or_raise(lon=0.0, lat=-0.005),
+            ),
+        ]
+        slope_id = _build_slope(empty_graph, pts)
+        fake_st.session_state["dem_service"] = MockDEMService(base_elevation=0.0, slope_ns_pct=0.0, slope_ew_pct=0.0)
+
+        PathStatsPanel(graph=empty_graph, kind=SegmentKind.SLOPE).render(entity_id=slope_id)
+
+        assert any("🌉 Bridge" in m for m in infos), f"expected a bridge info line, got infos={infos}"
+        assert not any("Excavator" in w for w in warnings), f"excavator must be suppressed, got warnings={warnings}"
+
+    def test_tunnel_segment_shows_structure_info_instead_of_excavator(
+        self, fake_st, empty_graph, mock_dem_red_slope_diagonal, monkeypatch
+    ) -> None:
+        """A segment that cuts far below terrain shows the 🚇 Tunnel info line, and its Excavator
+        warning is suppressed. Built on the diagonal red DEM (excavator warning), classified against a
+        flat DEM far ABOVE the path so the deck reads as a tunnel.
+        """
+        import streamlit as real_st
+
+        # Message.display() does a local `import streamlit`, so capture on the real module (see bridge test).
+        infos: list[str] = []
+        warnings: list[str] = []
+        monkeypatch.setattr(real_st, "info", lambda text, *a, **k: infos.append(str(text)), raising=False)
+        monkeypatch.setattr(real_st, "warning", lambda text, *a, **k: warnings.append(str(text)), raising=False)
+
+        pts = [
+            PathPoint(lon=0.0, lat=0.0, elevation=mock_dem_red_slope_diagonal.get_elevation_or_raise(lon=0.0, lat=0.0)),
+            PathPoint(
+                lon=0.0,
+                lat=-0.005,
+                elevation=mock_dem_red_slope_diagonal.get_elevation_or_raise(lon=0.0, lat=-0.005),
+            ),
+        ]
+        slope_id = _build_slope(empty_graph, pts)
+        fake_st.session_state["dem_service"] = MockDEMService(base_elevation=9000.0, slope_ns_pct=0.0, slope_ew_pct=0.0)
+
+        PathStatsPanel(graph=empty_graph, kind=SegmentKind.SLOPE).render(entity_id=slope_id)
+
+        assert any("🚇 Tunnel" in m for m in infos), f"expected a tunnel info line, got infos={infos}"
+        assert not any("Excavator" in w for w in warnings), f"excavator must be suppressed, got warnings={warnings}"
 
 
 # =============================================================================
@@ -391,7 +469,7 @@ class TestInfoPanelButtonClicks:
             kind=EntityKind.SLOPE,
             entity_id=slope_id,
             entity=empty_graph.slopes[slope_id],
-            delete_fn=lambda _id: True,
+            delete_fn=lambda _id: None,
         )
 
         assert columns_calls == [2, 2], "two rows of st.columns(2) → a 2x2 grid"

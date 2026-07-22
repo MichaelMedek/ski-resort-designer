@@ -53,12 +53,11 @@ def _delete_finished_entity(graph: "ResortGraph", kind: SegmentKind, entity_id: 
     drop_undo_actions_for_removed_segments, so no orphaned undo entries survive.
     """
     if kind == SegmentKind.SLOPE:
-        deleted = graph.delete_slope(slope_id=entity_id, record_undo=False)
+        graph.delete_slope(slope_id=entity_id, record_undo=False)
     elif kind == SegmentKind.ROAD:
-        deleted = graph.delete_road(road_id=entity_id, record_undo=False)
+        graph.delete_road(road_id=entity_id, record_undo=False)
     else:
         raise RuntimeError(f"_delete_finished_entity: unhandled kind {kind}")
-    assert deleted, f"undo of FINISH_{kind.value.upper()}: {entity_id} must exist to delete"
     logger.info(f"Undid FINISH_{kind.value.upper()}: deleted {entity_name}")
 
 

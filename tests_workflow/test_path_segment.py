@@ -124,3 +124,20 @@ class TestWarningsByKind:
             side_slope_pct=60.0,
         )
         assert any(isinstance(w, ExcavatorWarning) for w in road.warnings)
+
+    def test_warning_kind_discriminates_earthwork_from_gradient(self) -> None:
+        """Kind drives the bridge/tunnel suppression in the panel — ONLY the excavator warning is
+        EARTHWORK; ski gradient warnings are TOO_STEEP/TOO_FLAT (they still show on a structure).
+        """
+        from skiresort_planner.core.terrain_analyzer import SideDirection
+        from skiresort_planner.model.warning import (
+            ExcavatorWarning,
+            TooFlatWarning,
+            TooSteepWarning,
+            WarningKind,
+        )
+
+        excavator = ExcavatorWarning(side_slope_pct=60.0, belt_width_m=20.0, side_slope_dir=SideDirection.LEFT)
+        assert excavator.kind == WarningKind.EARTHWORK
+        assert TooFlatWarning(slope_pct=1.0, min_threshold_pct=5.0).kind == WarningKind.TOO_FLAT
+        assert TooSteepWarning(slope_pct=90.0, max_threshold_pct=70.0).kind == WarningKind.TOO_STEEP

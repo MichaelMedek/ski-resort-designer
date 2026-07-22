@@ -26,9 +26,12 @@ import math
 import os
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import platformdirs
+
+if TYPE_CHECKING:
+    from skiresort_planner.model.segment_profile import SegmentProfile
 
 # Package root directory (where skiresort_planner/ lives)
 PACKAGE_DIR = Path(__file__).parent
@@ -309,6 +312,10 @@ class EarthworkConfig:
 
     # Roads are a fixed-width vehicle ribbon — unlike ski pistes
     ROAD_WIDTH_M = 12
+
+    # Bridge/tunnel bar: a smoothed deck floats a few m off ground routinely, so only a bigger
+    # deviation counts (not EXCAVATOR_THRESHOLD_M, which is a side cut).
+    BRIDGE_TUNNEL_THRESHOLD_M = 15.0
 
 
 assert set(EarthworkConfig.BELT_WIDTH_LIMITS.keys()) == set(SlopeConfig.DIFFICULTIES)
@@ -615,16 +622,39 @@ class StyleConfig:
     assert set(LIFT_DISPLAY_NAMES.keys()) == set(LiftConfig.TYPES)
 
     # How far a connectivity-defect color is pulled toward mid-gray (0 = unchanged, 1 = full gray).
+    GRAY_RGB = [128, 128, 128]  # gray
     DEFECT_GRAY_BLEND = 0.75
+
+    # Bridge/tunnel tint keyed by SegmentProfile value (reload-safe, no model import; bijection
+    # asserted in segment_profile.py). Bridge → lighter, tunnel → darker; GROUND has none.
+    STRUCTURE_TINT_RGB = {
+        "bridge": [255, 255, 255],  # blend toward white
+        "tunnel": [20, 20, 20],  # blend toward near-black
+    }
+    BRIDGE_TUNNEL_BLEND = 0.45  # how far the base hue is pulled toward the structure tint
+    BRIDGE_TUNNEL_WIDTH_MULT = 1.5  # bridge/tunnel ribbons render this much wider than a normal segment
+
+    @staticmethod
+    def _blend(rgba: list[int], target_rgb: list[int], t: float) -> list[int]:
+        """Blend rgb toward target_rgb by fraction t (0 = unchanged, 1 = full target); alpha preserved."""
+        r, g, b, a = rgba
+        return [round(c * (1 - t) + tc * t) for c, tc in zip((r, g, b), target_rgb, strict=True)] + [a]
 
     @staticmethod
     def gray_out(rgba: list[int]) -> list[int]:
         """Mute an entity color strongly toward gray — the "half-dead" tone for a connectivity-defect
         slope/lift: the difficulty/type hue is just barely readable but clearly demoted. Alpha kept.
         """
-        r, g, b, a = rgba
-        t = StyleConfig.DEFECT_GRAY_BLEND
-        return [round(c * (1 - t) + 128 * t) for c in (r, g, b)] + [a]
+        return StyleConfig._blend(rgba=rgba, target_rgb=StyleConfig.GRAY_RGB, t=StyleConfig.DEFECT_GRAY_BLEND)
+
+    @staticmethod
+    def structure_tint(rgba: list[int], profile: "SegmentProfile") -> list[int]:
+        """Blend a segment color toward its bridge/tunnel tint (bridge lighter, tunnel darker), alpha
+        kept — mirrors gray_out. GROUND has no tint and never reaches here (KeyError = fail loud).
+        """
+        return StyleConfig._blend(
+            rgba=rgba, target_rgb=StyleConfig.STRUCTURE_TINT_RGB[profile.value], t=StyleConfig.BRIDGE_TUNNEL_BLEND
+        )
 
 
 class NameConfig:

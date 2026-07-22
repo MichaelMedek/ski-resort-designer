@@ -312,7 +312,10 @@ class ResortGraph:
         """Create + register a PathSegment between two nodes (id/name from the counter, side slope
         computed from points). The single PathSegment assembly site — shared by commit and insert.
         """
-        side_slope_pct, side_slope_dir = self._side_slope_for_points(points)
+        side_slope_pct, side_slope_dir = self._side_slope_for_points(points=points)
+        assert start_node_id in self.nodes and end_node_id in self.nodes, (
+            f"_build_segment: endpoint node not in graph ({start_node_id}, {end_node_id})"
+        )
         segment = PathSegment(
             id=self._next_segment_id(),
             name=f"Segment {self._segment_counter}",
@@ -585,6 +588,7 @@ class ResortGraph:
             )
         else:
             raise ValueError(f"unexpected kind {kind} for a path entity")
+        assert entity.id not in self.entity_dict_for_kind(kind=kind), f"fresh {kind} id {entity.id} already registered"
         self.entity_dict_for_kind(kind=kind)[entity.id] = entity
         for sid in segment_ids:
             self.segments[sid].name = name
@@ -696,6 +700,7 @@ class ResortGraph:
                 )
             )
 
+        assert all(nid in self.nodes for nid in end_node_ids), "commit_paths returned a dangling end node id"
         return end_node_ids
 
     def _resolve_finish_endpoints(self, segment_ids: list[str]) -> tuple[PathSegment, PathSegment, Node, Node]:
@@ -905,6 +910,7 @@ class ResortGraph:
         Delete), so a missing id is a bug and raises via strict access.
         """
         entity = self.entity_dict_for_kind(kind=kind)[entity_id]
+        assert entity.kind == kind, f"{entity_id} is a {entity.kind} but was deleted as a {kind}"
 
         deleted_segments = tuple(self.segments[seg_id] for seg_id in entity.segment_ids)
         for seg_id in entity.segment_ids:
@@ -980,6 +986,7 @@ class ResortGraph:
         if name is not None:
             lift.name = name
 
+        assert lift_id not in self.lifts, f"fresh lift id {lift_id} already registered"
         self.lifts[lift_id] = lift
         if record_undo:
             self._push_undo(AddLiftAction(lift_id=lift_id))
@@ -1127,6 +1134,7 @@ class ResortGraph:
         survivor.location = PathPoint(lon=med_lon, lat=med_lat, elevation=med_elev)
         for nid in merged_ids:
             del self.nodes[nid]
+        assert survivor_id in self.nodes, f"merge survivor {survivor_id} must remain after dropping merged nodes"
         self.cleanup_isolated_nodes()
 
         self._remove_collapsed_and_restitch(
@@ -1172,6 +1180,7 @@ class ResortGraph:
 
         One uniform rule for every id-holder — the same convention the whole model uses.
         """
+        assert survivor_id in self.nodes, f"repoint target (survivor {survivor_id}) must be a live node"
         for seg in self.segments.values():
             if seg.start_node_id in merged:
                 seg.start_node_id = survivor_id
@@ -1345,6 +1354,7 @@ class ResortGraph:
         longer.segment_ids = list(upstream.segment_ids) + list(downstream.segment_ids)
         longer.start_node_id = upstream.start_node_id
         longer.end_node_id = downstream.end_node_id
+        assert longer.segment_ids, f"_join_paths_at_node produced an empty chain for {longer.id}"
         del self.entity_dict_for_kind(kind=shorter.kind)[shorter.id]
         logger.info(f"Joined {shorter.name} into {longer.name} at {node_id} (delete)")
 
@@ -1390,6 +1400,9 @@ class ResortGraph:
         path.segment_ids = new_ids
         path.start_node_id = self.segments[new_ids[0]].start_node_id
         path.end_node_id = self.segments[new_ids[-1]].end_node_id
+        assert path.start_node_id in self.nodes and path.end_node_id in self.nodes, (
+            f"_rebuild_chain_without_nodes left {path.id} with a dangling boundary node"
+        )
 
     @staticmethod
     def _project_onto_path(seg: PathSegment, lon: float, lat: float) -> tuple[float, float, float]:
@@ -1476,6 +1489,7 @@ class ResortGraph:
         idx = owner.segment_ids.index(segment_id)
         owner.segment_ids[idx : idx + 1] = new_ids  # boundary ids unchanged (interior insert)
         del self.segments[segment_id]
+        assert len(new_ids) == 2, f"interior insert must split one segment into two, got {len(new_ids)}"
 
         self._push_undo(
             InsertNodeAction(

@@ -10,8 +10,19 @@ Reference: DETAILS.md Section 4
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from enum import StrEnum
 
 from skiresort_planner.core.terrain_analyzer import SideDirection
+
+
+class WarningKind(StrEnum):
+    """What a construction warning is about — the discriminator (reload-safe StrEnum, compared with ==).
+    Callers dispatch on this instead of the concrete Warning class.
+    """
+
+    EARTHWORK = "earthwork"  # side cut / fill (excavator)
+    TOO_STEEP = "too_steep"
+    TOO_FLAT = "too_flat"
 
 
 @dataclass(frozen=True)
@@ -23,8 +34,15 @@ class Warning(ABC):
 
     @property
     @abstractmethod
+    def kind(self) -> WarningKind:
+        """Which category of warning this is (the discriminator callers dispatch on)."""
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
     def message(self) -> str:
         """Human-readable warning message with emoji prefix."""
+        raise NotImplementedError
 
     def __str__(self) -> str:
         return self.message
@@ -43,6 +61,10 @@ class ExcavatorWarning(Warning):
     side_slope_pct: float
     belt_width_m: float
     side_slope_dir: SideDirection
+
+    @property
+    def kind(self) -> WarningKind:
+        return WarningKind.EARTHWORK
 
     @property
     def vertical_cut_m(self) -> float:
@@ -71,6 +93,10 @@ class TooSteepWarning(Warning):
     max_threshold_pct: float
 
     @property
+    def kind(self) -> WarningKind:
+        return WarningKind.TOO_STEEP
+
+    @property
     def message(self) -> str:
         return (
             f"⚠️ Too Steep Warning: Gradient {self.slope_pct:.0f}% exceeds maximum "
@@ -89,6 +115,10 @@ class TooFlatWarning(Warning):
 
     slope_pct: float
     min_threshold_pct: float
+
+    @property
+    def kind(self) -> WarningKind:
+        return WarningKind.TOO_FLAT
 
     @property
     def message(self) -> str:

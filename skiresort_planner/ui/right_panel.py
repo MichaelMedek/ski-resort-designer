@@ -19,7 +19,15 @@ from typing import TYPE_CHECKING, Literal
 
 import streamlit as st
 
-from skiresort_planner.constants import LiftType, MapConfig, OSMImportMode, RoutePlannerConfig, SlopeConfig, StyleConfig
+from skiresort_planner.constants import (
+    EarthworkConfig,
+    LiftType,
+    MapConfig,
+    OSMImportMode,
+    RoutePlannerConfig,
+    SlopeConfig,
+    StyleConfig,
+)
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.model.connectivity import CoreMembership
@@ -38,10 +46,13 @@ from skiresort_planner.model.message import (
     RoutePlacingActionMessage,
     RoutePlacingContextMessage,
     RouteResultsContextMessage,
+    SegmentStructureMessage,
     SegmentWarningMessage,
 )
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.resort_graph import ResortGraph
+from skiresort_planner.model.segment_profile import SegmentProfile, classify_segment_profile
+from skiresort_planner.model.warning import WarningKind
 from skiresort_planner.ui.actions import (
     apply_lift_retype_action,
     confirm_import_action,
@@ -133,7 +144,7 @@ class _DeleteEntityDialog(ConfirmDialog):
         kind: EntityKind,
         entity_name: str,
         entity_id: str,
-        delete_fn: Callable[[str], bool],
+        delete_fn: Callable[[str], None],
     ) -> None:
         self.kind = kind
         self.entity_name = entity_name
@@ -149,8 +160,8 @@ class _DeleteEntityDialog(ConfirmDialog):
         st.caption("This action can be undone using the Undo button.")
 
     def _on_confirm(self) -> None:
-        if self.delete_fn(self.entity_id):
-            logger.info(f"Deleted {self.kind.value} {self.entity_name} (id={self.entity_id})")
+        self.delete_fn(self.entity_id)
+        logger.info(f"Deleted {self.kind.value} {self.entity_name} (id={self.entity_id})")
 
 
 class _RenameDialog(InputDialog):
@@ -306,7 +317,7 @@ def _render_entity_actions(
     kind: EntityKind,
     entity_id: str,
     entity: "Slope | Lift | Road",
-    delete_fn: Callable[[str], bool],
+    delete_fn: Callable[[str], None],
 ) -> None:
     """Render the viewed-entity action buttons in a 2x2 grid: 3D toggle + Rename on top,
     Close + Delete on the bottom, so every entity panel reads identically.
@@ -1053,6 +1064,8 @@ class PathStatsPanel(StatsPanel):
                 graph=self.graph, start_node_id=owner.start_node_id, end_node_id=owner.end_node_id, noun="slope"
             )
 
+        # DEM is loaded before any UI renders (load_dem_data blocks) — read it directly, as dispatch_click does.
+        dem = st.session_state.dem_service
         with st.expander("📋 Segment Details", expanded=False):
             for i, seg_id in enumerate(owner.segment_ids, 1):
                 seg = self.graph.segments[seg_id]
@@ -1062,8 +1075,22 @@ class PathStatsPanel(StatsPanel):
                 else:
                     line = f"{i}. {spec.icon} {seg.length_m:.0f}m, {seg.max_slope_pct:.0f}% steepest, {seg.width_m:.0f}m wide"
                 st.markdown(line)
-                for warning in seg.warnings:
-                    SegmentWarningMessage(warning_text=str(warning)).display()
+
+                # A bridge/tunnel shows its structure info INSTEAD of the earthwork (Excavator) warning;
+                # non-earthwork warnings (too steep/flat) still render. GROUND shows all warnings as before.
+                res = classify_segment_profile(
+                    segment=seg, dem=dem, threshold_m=EarthworkConfig.BRIDGE_TUNNEL_THRESHOLD_M
+                )
+                if res.profile == SegmentProfile.GROUND:
+                    for warning in seg.warnings:
+                        SegmentWarningMessage(warning_text=str(warning)).display()
+                else:  # Any not on ground structure, like brige or tunnel
+                    SegmentStructureMessage(
+                        profile=res.profile, max_above_m=res.max_above_m, max_below_m=res.max_below_m
+                    ).display()
+                    for warning in seg.warnings:
+                        if warning.kind != WarningKind.EARTHWORK:  # earthwork is replaced by the structure info line
+                            SegmentWarningMessage(warning_text=str(warning)).display()
 
 
 class LiftStatsPanel(StatsPanel):

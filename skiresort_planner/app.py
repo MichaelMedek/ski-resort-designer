@@ -468,6 +468,7 @@ def _run_app_ui() -> None:
     graph: ResortGraph = st.session_state.graph
     renderer: MapRenderer = st.session_state.map_renderer
     renderer.graph = graph
+    renderer.dem = st.session_state.dem_service  # for bridge/tunnel classification
 
     camera_epoch = st.session_state.get("camera_epoch", 0)
     logger.debug(
