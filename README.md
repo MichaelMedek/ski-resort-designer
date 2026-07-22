@@ -8,7 +8,7 @@ Design ski resorts on real terrain with an addictive, game-like interface.
 
 Get the app as a normal desktop program.
 
-1. Open the [**Releases**](/MichaelMedek/ski-resort-designer/releases/latest) page and download the file for your computer:
+1. Open the [**Releases**](https://github.com/MichaelMedek/ski-resort-designer/releases/latest) page and download the file for your computer:
    - **Mac** → `AlpinArchitect.dmg`
    - **Windows** → `AlpinArchitect-win.zip`
 2. Open it:
