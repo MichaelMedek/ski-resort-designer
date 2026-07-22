@@ -12,9 +12,9 @@ with open(HERE / "README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 with open(HERE / "requirements.txt", "r", encoding="utf-8") as fh:
-    requirements = [
-        line.strip() for line in fh if line.strip() and not line.startswith("#") and not line.startswith("-e")
-    ]
+    # Keep only real dependency specs: drop blanks, comments, and pip option lines
+    # (-e, --index-url, -r, …) which are not install_requires entries.
+    requirements = [line.strip() for line in fh if line.strip() and not line.startswith(("#", "-"))]
 
 setup(
     name="skiresort_planner",

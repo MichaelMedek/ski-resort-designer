@@ -23,9 +23,12 @@ Classes:
 """
 
 import math
+import os
 from enum import StrEnum
 from pathlib import Path
 from typing import Literal
+
+import platformdirs
 
 # Package root directory (where skiresort_planner/ lives)
 PACKAGE_DIR = Path(__file__).parent
@@ -33,14 +36,28 @@ PACKAGE_DIR = Path(__file__).parent
 # Project root directory (parent of skiresort_planner/)
 PROJECT_ROOT = PACKAGE_DIR.parent
 
-# Data directory outside package (downloaded separately, not shipped with package)
-DATA_DIR = PROJECT_ROOT / "data"
 
-# Output directory for saved graphs
-OUTPUT_DIR = PROJECT_ROOT / "output"
+def _user_data_root() -> Path:
+    """Writable root for DEM/output/backups — a per-user OS app-data dir.
+    platformdirs resolves the canonical location per OS (Application Support / %LOCALAPPDATA% / XDG).
+    SKIRESORT_DATA_ROOT overrides it (CI and power users) — an external condition, not an internal invariant.
+    """
+    override = os.environ.get("SKIRESORT_DATA_ROOT")
+    if override:
+        return Path(override)
+    return Path(platformdirs.user_data_dir("AlpinArchitect", appauthor=False))
+
+
+_DATA_ROOT = _user_data_root()
+
+# Data directory (DEM downloads here on first run — 285MB, not shipped with the package)
+DATA_DIR = _DATA_ROOT / "data"
+
+# Output directory for saved graphs / OSM import artifacts
+OUTPUT_DIR = _DATA_ROOT / "output"
 
 # Auto-saved resort backups (per-session crash/outage safety net)
-BACKUP_DIR = PROJECT_ROOT / "backups"
+BACKUP_DIR = _DATA_ROOT / "backups"
 
 
 class AppConfig:
