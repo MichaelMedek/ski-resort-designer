@@ -73,7 +73,7 @@ def _restore_deleted_path_entity(
     """Undo a slope/road delete: restore orphaned nodes first, then the entity and its segments."""
     for node in deleted_nodes:
         graph.nodes[node.id] = node
-    graph.entity_dict_for_kind(kind)[entity_id] = entity
+    graph.entity_dict_for_kind(kind=kind)[entity_id] = entity
     for seg in deleted_segments:
         graph.segments[seg.id] = seg
     logger.info(
@@ -168,12 +168,12 @@ class _DeleteSlopeHandler(UndoHandler):
     def apply_undo(self, graph: "ResortGraph", action: UndoAction) -> None:
         del_slope = cast(DeleteSlopeAction, action)
         _restore_deleted_path_entity(
-            graph,
-            SegmentKind.SLOPE,
-            del_slope.slope_id,
-            del_slope.deleted_slope,
-            del_slope.deleted_nodes,
-            del_slope.deleted_segments,
+            graph=graph,
+            kind=SegmentKind.SLOPE,
+            entity_id=del_slope.slope_id,
+            entity=del_slope.deleted_slope,
+            deleted_nodes=del_slope.deleted_nodes,
+            deleted_segments=del_slope.deleted_segments,
         )
 
     def describe(self, action: UndoAction, graph: "ResortGraph") -> str:
@@ -204,12 +204,12 @@ class _DeleteRoadHandler(UndoHandler):
     def apply_undo(self, graph: "ResortGraph", action: UndoAction) -> None:
         del_road = cast(DeleteRoadAction, action)
         _restore_deleted_path_entity(
-            graph,
-            SegmentKind.ROAD,
-            del_road.road_id,
-            del_road.deleted_road,
-            del_road.deleted_nodes,
-            del_road.deleted_segments,
+            graph=graph,
+            kind=SegmentKind.ROAD,
+            entity_id=del_road.road_id,
+            entity=del_road.deleted_road,
+            deleted_nodes=del_road.deleted_nodes,
+            deleted_segments=del_road.deleted_segments,
         )
 
     def describe(self, action: UndoAction, graph: "ResortGraph") -> str:
@@ -259,7 +259,7 @@ class _MergeNodesHandler(UndoHandler):
         for lift_before in merge.lifts_before:
             graph.lifts[lift_before.id] = lift_before
         for path_before in merge.paths_before:
-            graph.entity_dict_for_kind(path_before.kind)[path_before.id] = path_before
+            graph.entity_dict_for_kind(kind=path_before.kind)[path_before.id] = path_before
         logger.info(f"Reverted merge into {merge.survivor_id}: restored {len(merge.deleted_nodes)} nodes")
 
     def describe(self, action: UndoAction, graph: "ResortGraph") -> str:
@@ -280,7 +280,7 @@ class _DeleteNodesHandler(UndoHandler):
         for seg_before in delete.segments_before:
             graph.segments[seg_before.id] = seg_before
         for path_before in delete.paths_before:
-            graph.entity_dict_for_kind(path_before.kind)[path_before.id] = path_before
+            graph.entity_dict_for_kind(kind=path_before.kind)[path_before.id] = path_before
         logger.info(f"Reverted delete of {len(delete.deleted_nodes)} node(s)")
 
     def describe(self, action: UndoAction, graph: "ResortGraph") -> str:
@@ -298,7 +298,7 @@ class _InsertNodeHandler(UndoHandler):
         for seg_id in insert.created_segment_ids:
             del graph.segments[seg_id]
         graph.segments[insert.segment_before.id] = insert.segment_before
-        graph.entity_dict_for_kind(insert.path_before.kind)[insert.path_before.id] = insert.path_before
+        graph.entity_dict_for_kind(kind=insert.path_before.kind)[insert.path_before.id] = insert.path_before
         del graph.nodes[insert.created_node_id]
         logger.info(f"Reverted insert of node {insert.created_node_id}")
 
@@ -315,11 +315,11 @@ class _CutSegmentHandler(UndoHandler):
         # re-add any nodes orphaned by the cut.
         cut = cast(CutSegmentAction, action)
         for new_path in cut.new_paths:
-            del graph.entity_dict_for_kind(new_path.kind)[new_path.id]
+            del graph.entity_dict_for_kind(kind=new_path.kind)[new_path.id]
         for seg in cut.deleted_segments:
             graph.segments[seg.id] = seg
         for path_before in cut.paths_before:
-            graph.entity_dict_for_kind(path_before.kind)[path_before.id] = path_before
+            graph.entity_dict_for_kind(kind=path_before.kind)[path_before.id] = path_before
         for node in cut.deleted_nodes:
             graph.nodes[node.id] = node
         logger.info(f"Reverted cut of {len(cut.deleted_segments)} segment(s)")

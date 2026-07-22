@@ -919,15 +919,15 @@ class PlannerStateMachine(StateMachine):
 
     def is_slope_mode(self) -> bool:
         """Check if build mode is set to slope."""
-        return BuildMode.is_slope(self.context.build_mode.mode)
+        return BuildMode.is_slope(mode=self.context.build_mode.mode)
 
     def is_lift_mode(self) -> bool:
         """Check if build mode is set to any lift type."""
-        return BuildMode.is_lift(self.context.build_mode.mode)
+        return BuildMode.is_lift(mode=self.context.build_mode.mode)
 
     def is_road_mode(self) -> bool:
         """Check if build mode is set to road."""
-        return BuildMode.is_road(self.context.build_mode.mode)
+        return BuildMode.is_road(mode=self.context.build_mode.mode)
 
     # ==========================================================================
     # Entry Hooks - Using lifecycle functions
@@ -935,63 +935,63 @@ class PlannerStateMachine(StateMachine):
 
     def on_enter_idle_ready(self) -> None:
         """Hook: Entering idle ready state."""
-        enter_idle_ready(self.context)
+        enter_idle_ready(ctx=self.context)
 
     def on_enter_idle_viewing_slope(self) -> None:
         """Hook: Entering slope viewing state."""
-        enter_idle_viewing_slope(self.context)
+        enter_idle_viewing_slope(ctx=self.context)
 
     def on_enter_idle_viewing_lift(self) -> None:
         """Hook: Entering lift viewing state."""
-        enter_idle_viewing_lift(self.context)
+        enter_idle_viewing_lift(ctx=self.context)
 
     def on_enter_idle_viewing_road(self) -> None:
         """Hook: Entering road viewing state."""
-        enter_idle_viewing_road(self.context)
+        enter_idle_viewing_road(ctx=self.context)
 
     def on_enter_slope_starting(self) -> None:
         """Hook: Entering slope starting state."""
-        enter_slope_starting(self.context)
+        enter_slope_starting(ctx=self.context)
 
     def on_enter_slope_building(self) -> None:
         """Hook: Entering slope building state."""
-        enter_slope_building(self.context)
+        enter_slope_building(ctx=self.context)
 
     def on_enter_slope_custom_path(self) -> None:
         """Hook: Entering custom path state."""
-        enter_slope_custom_path(self.context)
+        enter_slope_custom_path(ctx=self.context)
 
     def on_enter_lift_placing(self) -> None:
         """Hook: Entering lift placing state."""
-        enter_lift_placing(self.context)
+        enter_lift_placing(ctx=self.context)
 
     def on_enter_import_selecting(self) -> None:
         """Hook: Entering import placing state (also fires on retarget self-loop)."""
-        enter_import_selecting(self.context)
+        enter_import_selecting(ctx=self.context)
 
     def on_enter_node_edit_selecting(self) -> None:
         """Hook: Entering the node editor (also fires on toggle self-loop)."""
-        enter_node_edit_selecting(self.context)
+        enter_node_edit_selecting(ctx=self.context)
 
     def on_enter_route_placing(self) -> None:
         """Hook: Entering route_placing — the start node was set by the completing click handler."""
-        enter_route_placing(self.context)
+        enter_route_placing(ctx=self.context)
 
     def on_enter_idle_viewing_route(self) -> None:
         """Hook: Entering idle_viewing_route (routes computed by the completing click handler)."""
-        enter_idle_viewing_route(self.context)
+        enter_idle_viewing_route(ctx=self.context)
 
     def on_enter_road_starting(self) -> None:
         """Hook: Entering road starting state."""
-        enter_road_starting(self.context)
+        enter_road_starting(ctx=self.context)
 
     def on_enter_road_building(self) -> None:
         """Hook: Entering road building state."""
-        enter_road_building(self.context)
+        enter_road_building(ctx=self.context)
 
     def on_enter_road_custom_path(self) -> None:
         """Hook: Entering road custom-path state."""
-        enter_road_custom_path(self.context)
+        enter_road_custom_path(ctx=self.context)
 
     # ==========================================================================
     # Exit Hooks - only states with real teardown need one; the rest exit as no-ops.
@@ -1001,7 +1001,7 @@ class PlannerStateMachine(StateMachine):
 
     def on_exit_lift_placing(self) -> None:
         """Hook: Exiting lift placing state — clears the lift scratch context."""
-        exit_lift_placing(self.context)
+        exit_lift_placing(ctx=self.context)
 
     # ==========================================================================
     # Transition Actions (before_* hooks)
@@ -1015,7 +1015,7 @@ class PlannerStateMachine(StateMachine):
 
     def _init_build(self, kind: SegmentKind, *, node_id: str | None, location: PathPoint | None, name: str) -> None:
         """Initialise a build's origin, name, and selection — the SHARED body for every kind."""
-        build = self.context.build(kind)
+        build = self.context.build(kind=kind)
         build.start_node_id = node_id
         build.start_location = None if node_id else location
         build.name = name
@@ -1173,7 +1173,7 @@ class PlannerStateMachine(StateMachine):
 
     def before_toggle_node_edit_node(self, node_id: str) -> None:
         """Self-loop in node_edit_selecting: add/remove the clicked node from the selection."""
-        self.context.node_edit.toggle(node_id)
+        self.context.node_edit.toggle(node_id=node_id)
 
     def before_cancel_node_edit(self) -> None:
         """Discard an unconfirmed node edit: clear the selected-node set."""
@@ -1202,7 +1202,7 @@ class PlannerStateMachine(StateMachine):
 
     def _active_build(self) -> SegmentBuildContext:
         """The build context for the active kind — one accessor, keyed by kind (no is_road)."""
-        return self.context.build(self.active_build_kind)
+        return self.context.build(kind=self.active_build_kind)
 
     def _before_target_from_starting(self, target_location: LonLatElev, target_node: str | None = None) -> None:
         """From *_STARTING: route to the target from the build's origin WITHOUT minting a node.
@@ -1293,7 +1293,7 @@ class PlannerStateMachine(StateMachine):
         # Block direct calls to variant transitions (setattr is more performant
         # than __getattribute__ and doesn't interfere with library internals)
         for trans_name in PlannerStateMachine._EVENT_ONLY_TRANSITIONS:
-            setattr(self, trans_name, _forbidden_call(trans_name))
+            setattr(self, trans_name, _forbidden_call(name=trans_name))
 
     # ==========================================================================
     # Utility Methods
@@ -1348,7 +1348,7 @@ class PlannerStateMachine(StateMachine):
         # Force state machine internal state (calls exit hook for current state)
         self._set_current_state(state=self.idle_ready)
         # Run entry hook to ensure consistent state
-        enter_idle_ready(self.context)
+        enter_idle_ready(ctx=self.context)
 
     def _set_current_state(self, state: State) -> None:
         """Force the state value directly, running the current state's real exit teardown first.

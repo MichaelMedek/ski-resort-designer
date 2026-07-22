@@ -157,7 +157,7 @@ def route_plan_shown_routes() -> list[Route]:
     """
     ctx: PlannerContext = st.session_state.context
     rp = ctx.route_plan
-    return routes_for_cap(rp.routes, max_difficulty=rp.selected_cap)
+    return routes_for_cap(routes=rp.routes, max_difficulty=rp.selected_cap)
 
 
 def selected_route() -> Route | None:
@@ -168,7 +168,7 @@ def selected_route() -> Route | None:
     routes = route_plan_shown_routes()
     if not routes:
         return None
-    return routes[ctx.route_plan.clamped_index(len(routes))]
+    return routes[ctx.route_plan.clamped_index(count=len(routes))]
 
 
 def flythrough_viewing_groups() -> list[ViewingGroup]:
@@ -243,7 +243,7 @@ def confirm_merge_action() -> None:
         # The Confirm button is disabled below 2, so this is a defensive guard, not a user path.
         raise RuntimeError("confirm_merge_action called with fewer than 2 selected nodes")
 
-    span = graph.max_node_span_m(node_ids)
+    span = graph.max_node_span_m(node_ids=node_ids)
     if span > MergeConfig.MAX_SPAN_M:
         logger.info(f"Merge refused: span {span:.0f}m > {MergeConfig.MAX_SPAN_M:.0f}m")
         MergeTooFarMessage(span_m=span, max_span_m=MergeConfig.MAX_SPAN_M).display()
@@ -272,7 +272,7 @@ def delete_nodes_action() -> None:
         # The Delete button is disabled at 0 selected, so this is a defensive guard, not a user path.
         raise RuntimeError("delete_nodes_action called with no selected nodes")
 
-    rejection = graph.delete_nodes_rejection(node_ids)
+    rejection = graph.delete_nodes_rejection(node_ids=node_ids)
     if rejection is not None:
         logger.info(f"Delete refused: {rejection}")
         UnableToDeleteMessage(reason=rejection).display()
@@ -367,7 +367,7 @@ def process_osm_import_pending(report: ProgressFn) -> bool:
     # failure propagates to run_pending_load, which shows its pre-given warning toast (no reframe).
     result = importer_cls(dem=dem, bbox=bbox).run(on_progress=sub_progress(report, 0.0, 0.95), dump_dir=OUTPUT_DIR)
     report(0.97, "Adding to the resort…")
-    graph.import_osm(result, dem=dem)
+    graph.import_osm(result=result, dem=dem)
     logger.info(
         f"OSM import ({mode}): {len(result.slope_chains)} slope chains + {len(result.lifts)} lifts "
         f"in {(time.perf_counter() - t0) * 1000:.0f}ms"
@@ -412,7 +412,7 @@ def _generate_fan_for_building_state(kind: SegmentKind) -> None:
     factory: PathFactory = st.session_state.path_factory
     spec = KIND_SPECS[kind]
 
-    lon, lat, elevation, start_node_id = resolve_build_origin(build=ctx.build(kind), graph=graph)
+    lon, lat, elevation, start_node_id = resolve_build_origin(build=ctx.build(kind=kind), graph=graph)
 
     t0 = time.perf_counter()
     fan = list(
@@ -491,7 +491,7 @@ def _generate_custom_connect_paths() -> None:
         raise RuntimeError(f"custom target ({target_lat:.6f}, {target_lon:.6f}) has no elevation")
     kind = sm.active_build_kind
     spec = KIND_SPECS[kind]
-    build = ctx.build(kind)
+    build = ctx.build(kind=kind)
 
     # Resolve the origin (shared resolver): a committed endpoint, the re-target origin, the starting
     # node, or the pending terrain location. start_node_id is None for a fresh terrain origin →
@@ -627,7 +627,7 @@ def _finalize_entity(kind: SegmentKind) -> "SegmentPath":
     """
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
-    build = ctx.build(kind)
+    build = ctx.build(kind=kind)
 
     entity = KIND_SPECS[kind].finish(graph, build.segments)
     logger.info(f"{kind.value.capitalize()} {entity.name} (id={entity.id}) finalized")
@@ -643,7 +643,7 @@ def _finish_current_entity(kind: SegmentKind) -> None:
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
 
-    build = ctx.build(kind)
+    build = ctx.build(kind=kind)
     if not build.segments:
         raise RuntimeError(f"finish called with no {kind.value} segments")
 
@@ -660,7 +660,7 @@ def _finish_connector(*, segment_id: str, kind: SegmentKind) -> None:
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
 
-    ctx.build(kind).segments.append(segment_id)
+    ctx.build(kind=kind).segments.append(segment_id)
     entity = _finalize_entity(kind)
     sm.send(KIND_SPECS[kind].connector_finish_event, segment_id=segment_id, entity_id=entity.id)
 
@@ -789,7 +789,7 @@ def cancel_current_build(kind: SegmentKind) -> None:
     """
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
-    _discard_build(build_ctx=ctx.build(kind))
+    _discard_build(build_ctx=ctx.build(kind=kind))
     sm.send(KIND_SPECS[kind].cancel_event)
 
 
@@ -821,7 +821,7 @@ def _undo_add_segments(undone: AddSegmentsAction) -> None:
     graph: ResortGraph = st.session_state.graph
 
     kind = sm.active_build_kind
-    build = ctx.build(kind)
+    build = ctx.build(kind=kind)
     remaining = [s for s in build.segments if s not in undone.segment_ids]
     build.segments = remaining
     ctx.clear_proposals()
@@ -964,7 +964,7 @@ def undo_cancels_current_build(sm: PlannerStateMachine, ctx: PlannerContext) -> 
     Single source of truth shared by undo_last_action (the branch) and the undo dialog (its label),
     so the confirmation text can never drift from what undo actually does.
     """
-    return sm.is_any_path_state and not ctx.build(sm.active_build_kind).segments
+    return sm.is_any_path_state and not ctx.build(kind=sm.active_build_kind).segments
 
 
 def undo_last_action() -> None:
