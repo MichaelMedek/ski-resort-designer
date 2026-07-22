@@ -17,7 +17,7 @@ open deploy/dist/AlpinArchitect.app
 
 Download from the repo's **Releases** page, then:
 
-- **macOS** — `AlpinArchitect.dmg` → open, drag to Applications, run. First launch: right-click → Open → Open.
+- **macOS** — `AlpinArchitect.dmg` → open, drag to Applications, run. First launch (unsigned): **System Settings → Privacy & Security → Open Anyway**, or run once: `xattr -dr com.apple.quarantine /Applications/AlpinArchitect.app`
 - **Windows** — `AlpinArchitect-win.zip` → unzip, run `AlpinArchitect.exe`. On the SmartScreen popup: More info → Run anyway.
 
 The 285 MB terrain data downloads automatically on first run.
