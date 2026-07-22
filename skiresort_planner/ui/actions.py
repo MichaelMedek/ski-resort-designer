@@ -1048,29 +1048,21 @@ def apply_lift_retype_action(lift_id: str, lift_type: str) -> None:
     logger.info(f"UI: Changed viewed lift {lift.id} type to {lift_type}")
 
 
-def _close_panel_and_refresh(*, deleted: bool, is_viewing_deleted: bool) -> bool:
-    """Shared delete tail: close the panel if the deleted entity was being viewed, refresh.
-
-    `deleted` is the graph.delete_* result; returns it unchanged.
-    """
-    if not deleted:
-        return False
+def _close_panel_and_refresh(*, is_viewing_deleted: bool) -> None:
+    """Shared delete tail: close the panel if the deleted entity was being viewed, then refresh."""
     sm: PlannerStateMachine = st.session_state.state_machine
     if is_viewing_deleted:
         sm.close_panel()  # type: ignore[attr-defined]  # dynamic python-statemachine event
     bump_dedup_epoch()
-    return True
 
 
-def delete_slope_action(slope_id: str) -> bool:
+def delete_slope_action(slope_id: str) -> None:
     """Delete a slope and trigger UI updates."""
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
-    deleted = graph.delete_slope(slope_id=slope_id)
-    return _close_panel_and_refresh(
-        deleted=deleted, is_viewing_deleted=sm.is_idle_viewing_slope and ctx.viewing.slope_id == slope_id
-    )
+    graph.delete_slope(slope_id=slope_id)
+    _close_panel_and_refresh(is_viewing_deleted=sm.is_idle_viewing_slope and ctx.viewing.slope_id == slope_id)
 
 
 def rename_entity_action(entity_id: str, new_name: str) -> None:
@@ -1087,23 +1079,19 @@ def rename_entity_action(entity_id: str, new_name: str) -> None:
     bump_dedup_epoch()
 
 
-def delete_lift_action(lift_id: str) -> bool:
+def delete_lift_action(lift_id: str) -> None:
     """Delete a lift and trigger UI updates."""
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
-    deleted = graph.delete_lift(lift_id=lift_id)
-    return _close_panel_and_refresh(
-        deleted=deleted, is_viewing_deleted=sm.is_idle_viewing_lift and ctx.viewing.lift_id == lift_id
-    )
+    graph.delete_lift(lift_id=lift_id)
+    _close_panel_and_refresh(is_viewing_deleted=sm.is_idle_viewing_lift and ctx.viewing.lift_id == lift_id)
 
 
-def delete_road_action(road_id: str) -> bool:
+def delete_road_action(road_id: str) -> None:
     """Delete a road and trigger UI updates."""
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
-    deleted = graph.delete_road(road_id=road_id)
-    return _close_panel_and_refresh(
-        deleted=deleted, is_viewing_deleted=sm.is_idle_viewing_road and ctx.viewing.road_id == road_id
-    )
+    graph.delete_road(road_id=road_id)
+    _close_panel_and_refresh(is_viewing_deleted=sm.is_idle_viewing_road and ctx.viewing.road_id == road_id)

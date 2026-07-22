@@ -144,11 +144,14 @@ class TestDeleteSlopeAction:
         assert delete_slope_action(slope_id=slope.id) is True
         assert slope.id not in empty_graph.slopes
 
-    def test_missing_slope_returns_false(self, fake_st, empty_graph) -> None:
+    def test_missing_slope_raises(self, fake_st, empty_graph) -> None:
+        # Delete only reaches the graph with a live viewed id (the panel asserts liveness first), so a
+        # missing id is an internal-invariant violation and fails loud rather than silently no-op'ing.
         from skiresort_planner.ui.actions import delete_slope_action
 
         _session(fake_st=fake_st, graph=empty_graph)
-        assert delete_slope_action(slope_id="SL999") is False
+        with pytest.raises(KeyError):
+            delete_slope_action(slope_id="SL999")
 
     def test_closes_panel_when_viewing_deleted_slope(self, fake_st, empty_graph, path_points_blue) -> None:
         from skiresort_planner.ui.actions import delete_slope_action
@@ -198,11 +201,13 @@ class TestDeleteRoadAction:
         assert delete_road_action(road_id=road.id) is True
         assert road.id not in empty_graph.roads
 
-    def test_missing_road_returns_false(self, fake_st, empty_graph) -> None:
+    def test_missing_road_raises(self, fake_st, empty_graph) -> None:
+        # A missing id is an internal-invariant violation (see test_missing_slope_raises) — fail loud.
         from skiresort_planner.ui.actions import delete_road_action
 
         _session(fake_st=fake_st, graph=empty_graph)
-        assert delete_road_action(road_id="R999") is False
+        with pytest.raises(KeyError):
+            delete_road_action(road_id="R999")
 
     def test_closes_panel_when_viewing_deleted_road(self, fake_st, empty_graph) -> None:
         from skiresort_planner.ui.actions import delete_road_action
@@ -315,11 +320,13 @@ class TestConfirmMergeAction:
         with pytest.raises(RuntimeError, match="fewer than 2"):
             confirm_merge_action()
 
-    def test_missing_lift_returns_false(self, fake_st, empty_graph) -> None:
+    def test_missing_lift_raises(self, fake_st, empty_graph) -> None:
+        # A missing id is an internal-invariant violation (see test_missing_slope_raises) — fail loud.
         from skiresort_planner.ui.actions import delete_lift_action
 
         _session(fake_st=fake_st, graph=empty_graph)
-        assert delete_lift_action(lift_id="L999") is False
+        with pytest.raises(KeyError):
+            delete_lift_action(lift_id="L999")
 
 
 class TestDeleteNodesAction:

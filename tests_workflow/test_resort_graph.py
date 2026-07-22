@@ -560,7 +560,7 @@ class TestRoadGraphOps:
 
     def test_delete_road_removes_and_records_undo(self, empty_graph, path_points_blue) -> None:
         road = _commit_road(graph=empty_graph, path_points=path_points_blue)
-        assert empty_graph.delete_road(road_id=road.id) is True
+        empty_graph.delete_road(road_id=road.id)
         assert road.id not in empty_graph.roads
         assert len(empty_graph.segments) == 0
         assert isinstance(empty_graph.undo_stack[-1], DeleteRoadAction)
@@ -573,8 +573,10 @@ class TestRoadGraphOps:
         assert road.id in empty_graph.roads
         assert len(empty_graph.segments) == seg_count
 
-    def test_delete_missing_road_is_false(self, empty_graph) -> None:
-        assert empty_graph.delete_road(road_id="R99") is False
+    def test_delete_missing_road_raises(self, empty_graph) -> None:
+        # A missing id is an internal-invariant violation — strict access fails loud.
+        with pytest.raises(KeyError):
+            empty_graph.delete_road(road_id="R99")
 
 
 class TestParkingNodes:
@@ -655,7 +657,7 @@ class TestNodeSharingDeletes:
         )
         assert empty_graph.get_connection_count(node_id=shared_id) >= 2  # slope seg + road seg
 
-        assert empty_graph.delete_slope(slope_id=slope.id) is True
+        empty_graph.delete_slope(slope_id=slope.id)
 
         assert shared_id in empty_graph.nodes, "node shared with the road must survive slope deletion"
         assert road.id in empty_graph.roads, "road is untouched by slope deletion"

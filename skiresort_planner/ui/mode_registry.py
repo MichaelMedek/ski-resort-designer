@@ -960,7 +960,7 @@ class EntityKindSpec(ABC):
         """Render this kind's stats panel for the given entity."""
 
     @abstractmethod
-    def delete_action(self, entity_id: str) -> bool:
+    def delete_action(self, entity_id: str) -> None:
         """Delete the entity (returns True if it was deleted)."""
 
 
@@ -976,7 +976,7 @@ class _SlopeKindSpec(EntityKindSpec):
     def render_stats(self, graph: ResortGraph, entity_id: str) -> None:
         right_panel.PathStatsPanel(graph=graph, kind=SegmentKind.SLOPE).render(entity_id=entity_id)
 
-    def delete_action(self, entity_id: str) -> bool:
+    def delete_action(self, entity_id: str) -> None:
         return actions.delete_slope_action(entity_id)
 
 
@@ -992,7 +992,7 @@ class _RoadKindSpec(EntityKindSpec):
     def render_stats(self, graph: ResortGraph, entity_id: str) -> None:
         right_panel.PathStatsPanel(graph=graph, kind=SegmentKind.ROAD).render(entity_id=entity_id)
 
-    def delete_action(self, entity_id: str) -> bool:
+    def delete_action(self, entity_id: str) -> None:
         return actions.delete_road_action(entity_id)
 
 
@@ -1008,7 +1008,7 @@ class _LiftKindSpec(EntityKindSpec):
     def render_stats(self, graph: ResortGraph, entity_id: str) -> None:
         right_panel.LiftStatsPanel(graph=graph).render(entity_id=entity_id)
 
-    def delete_action(self, entity_id: str) -> bool:
+    def delete_action(self, entity_id: str) -> None:
         return actions.delete_lift_action(entity_id)
 
 

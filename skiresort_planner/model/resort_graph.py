@@ -896,16 +896,15 @@ class ResortGraph:
         entity_id: str,
         make_action: "Callable[[SegmentPath, tuple[PathSegment, ...], tuple[Node, ...]], UndoAction]",
         record_undo: bool,
-    ) -> bool:
+    ) -> None:
         """Delete a slope/road (+ its segments) — the shared body for delete_slope/delete_road.
 
         Kind-generic: resolves the entity via entity_dict_for_kind, drops its segments, snapshots the
         orphaned nodes, and (when record_undo) pushes the per-kind Delete*Action built by make_action.
+        The entity id is an internal invariant (the panel asserts the entity is live before offering
+        Delete), so a missing id is a bug and raises via strict access.
         """
-        entity = self.entity_dict_for_kind(kind=kind).get(entity_id)
-        if not entity:
-            logger.debug(f"delete: {kind.value} {entity_id} not found, nothing to delete")
-            return False
+        entity = self.entity_dict_for_kind(kind=kind)[entity_id]
 
         deleted_segments = tuple(self.segments[seg_id] for seg_id in entity.segment_ids)
         for seg_id in entity.segment_ids:
@@ -918,20 +917,16 @@ class ResortGraph:
         self.cleanup_isolated_nodes()
         self.drop_undo_actions_for_removed_segments()
         logger.info(f"Deleted {kind.value} {entity.name} with {len(entity.segment_ids)} segments")
-        return True
 
-    def delete_road(self, road_id: str, *, record_undo: bool = True) -> bool:
+    def delete_road(self, road_id: str, *, record_undo: bool = True) -> None:
         """Delete a road and its segments.
 
         Args:
             road_id: ID of road to delete.
             record_undo: Push a DeleteRoadAction. False when undo-of-finish deletes the road (the
                 finish undo is already the history step; a new delete entry would double-count).
-
-        Returns:
-            True if deleted, False if not found.
         """
-        return self._delete_segment_path(
+        self._delete_segment_path(
             kind=SegmentKind.ROAD,
             entity_id=road_id,
             make_action=lambda road, segs, nodes: DeleteRoadAction(
@@ -1538,18 +1533,15 @@ class ResortGraph:
                 self.segments[seg_id].name = new_name
         logger.info(f"Renamed {entity_id} to '{new_name}'")
 
-    def delete_slope(self, slope_id: str, *, record_undo: bool = True) -> bool:
+    def delete_slope(self, slope_id: str, *, record_undo: bool = True) -> None:
         """Delete a slope and its segments.
 
         Args:
             slope_id: ID of slope to delete
             record_undo: Push a DeleteSlopeAction. False when undo-of-finish deletes the slope (the
                 finish undo is already the history step; a new delete entry would double-count).
-
-        Returns:
-            True if deleted, False if not found.
         """
-        return self._delete_segment_path(
+        self._delete_segment_path(
             kind=SegmentKind.SLOPE,
             entity_id=slope_id,
             make_action=lambda s, segs, nodes: DeleteSlopeAction(
@@ -1558,19 +1550,13 @@ class ResortGraph:
             record_undo=record_undo,
         )
 
-    def delete_lift(self, lift_id: str) -> bool:
+    def delete_lift(self, lift_id: str) -> None:
         """Delete a lift.
 
         Args:
             lift_id: ID of lift to delete
-
-        Returns:
-            True if deleted, False if not found.
         """
-        lift = self.lifts.get(lift_id)
-        if not lift:
-            logger.debug(f"delete_lift: lift {lift_id} not found, nothing to delete")
-            return False
+        lift = self.lifts[lift_id]  # internal invariant: the panel asserts the lift is live before Delete
 
         # Remove the lift
         del self.lifts[lift_id]
@@ -1589,7 +1575,6 @@ class ResortGraph:
         self.cleanup_isolated_nodes()  # Remove orphaned station nodes
 
         logger.info(f"Deleted lift {lift.name}")
-        return True
 
     # =========================================================================
     # Query Operations

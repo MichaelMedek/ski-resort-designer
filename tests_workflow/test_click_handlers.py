@@ -449,7 +449,7 @@ class TestIdleClickEdgeCases:
         slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
         assert slope is not None
         orphan_seg_id = slope.segment_ids[0]
-        assert graph.delete_slope(slope.id), "parent slope removed, segment id now orphaned"
+        graph.delete_slope(slope_id=slope.id)  # parent slope removed, segment id now orphaned
         sm, ctx = _session(fake_st=fake_st, graph=graph, factory=path_factory, dem=mock_dem_red_slope_diagonal)
 
         handle_idle_click(
