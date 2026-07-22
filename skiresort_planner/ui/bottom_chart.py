@@ -257,9 +257,9 @@ class ProfileChart:
             lon2=end_node.lon,
         )
 
-        # Use stored terrain_points, pylons, and cable_points
-        n_terrain = len(lift.terrain_points)
-        terrain_distances = [length_m * i / (n_terrain - 1) for i in range(n_terrain)] if n_terrain > 1 else [0]
+        # Use stored terrain_points, pylons, and cable_points. Terrain may be non-uniformly spaced
+        # (vertical-DP thinned), so distances are the actual cumulative arc lengths, not index*step.
+        terrain_distances = PathPoint.cumulative_distances(points=lift.terrain_points)
         terrain_elevs = [p.elevation for p in lift.terrain_points]
 
         # Use stored cable_points - compute distances from start
@@ -278,14 +278,11 @@ class ProfileChart:
             cable_x.append(dist)
             cable_y.append(cable_pt.elevation)
 
-            # Interpolate ground elevation from terrain points
-            terrain_frac = dist / length_m if length_m > 0 else 0
-            terrain_idx = terrain_frac * (n_terrain - 1)
-            idx_low = int(terrain_idx)
-            idx_high = min(idx_low + 1, n_terrain - 1)
-            interp_frac = terrain_idx - idx_low
-            ground_elev = terrain_elevs[idx_low] * (1 - interp_frac) + terrain_elevs[idx_high] * interp_frac
-            cable_ground_elevs.append(ground_elev)
+            # Ground elevation under the cable, by DISTANCE along the (possibly non-uniform) terrain.
+            ground = PathPoint.interpolate_at_distance(
+                points=lift.terrain_points, distances=terrain_distances, target_m=dist
+            )
+            cable_ground_elevs.append(ground.elevation)
 
         color = StyleConfig.LIFT_COLORS[lift.lift_type]
         fig = go.Figure()

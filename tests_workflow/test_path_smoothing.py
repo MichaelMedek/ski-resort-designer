@@ -13,8 +13,10 @@ from skiresort_planner.constants import GeometricTuningConfig, MapConfig
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_smoothing import (
+    _simplify_projected,
     resample_cubic_spline,
     simplify_path_points,
+    simplify_path_points_vertical,
     smooth_joined_path,
     smooth_proposal_points,
 )
@@ -317,3 +319,79 @@ class TestSimplifyPathPoints:
         step = 10 / MapConfig.METERS_PER_DEGREE_EQUATOR
         two = _leg(0.0, 0.0, 0.0, -step, 2, z0=2000.0, dz=-1.0)
         assert len(simplify_path_points(two, tolerance_m=1.0)) == 2
+
+
+class TestSimplifyPathPointsVertical:
+    """DP turned around: measures in the (along-track distance, elevation) plane. A lift is horizontally
+    a straight line, so horizontal DP would collapse it to 2 points and destroy its terrain profile.
+    """
+
+    def test_horizontally_straight_but_bending_profile_is_kept(self) -> None:
+        # Dead-straight horizontally; elevation ramps then kinks sharply upward at the midpoint.
+        step = 10 / MapConfig.METERS_PER_DEGREE_EQUATOR
+        pts = [
+            PathPoint(lon=0.0, lat=-step * i, elevation=2000.0 + (0.0 if i <= 10 else (i - 10) * 30.0))
+            for i in range(21)
+        ]
+        horizontal = simplify_path_points(pts, tolerance_m=1.0)
+        vertical = simplify_path_points_vertical(pts, tolerance_m=1.0)
+        assert len(horizontal) == 2, "horizontal DP collapses a straight line (destroys the profile)"
+        assert any(p is pts[10] for p in vertical), "vertical DP keeps the elevation kink at index 10"
+        assert 3 <= len(vertical) < len(pts), "kept the profile bend + ends, dropped the flat/linear runs"
+
+    def test_endpoints_preserved_by_identity(self) -> None:
+        step = 10 / MapConfig.METERS_PER_DEGREE_EQUATOR
+        pts = _leg(0.0, 0.0, 0.0, -step, 15, z0=2000.0, dz=-3.0)
+        out = simplify_path_points_vertical(pts, tolerance_m=1.0)
+        assert out[0] is pts[0] and out[-1] is pts[-1], "endpoints returned as the original objects"
+
+    def test_constant_grade_collapses_to_endpoints(self) -> None:
+        # Constant grade → a straight line in the (distance, elevation) plane → only the ends survive.
+        step = 10 / MapConfig.METERS_PER_DEGREE_EQUATOR
+        pts = _leg(0.0, 0.0, 0.0, -step, 20, z0=2000.0, dz=-2.0)
+        out = simplify_path_points_vertical(pts, tolerance_m=1.0)
+        assert len(out) == 2
+
+    def test_idempotent(self) -> None:
+        step = 10 / MapConfig.METERS_PER_DEGREE_EQUATOR
+        pts = [
+            PathPoint(lon=0.0, lat=-step * i, elevation=2000.0 + (0.0 if i <= 10 else (i - 10) * 30.0))
+            for i in range(21)
+        ]
+        once = simplify_path_points_vertical(pts, tolerance_m=1.0)
+        twice = simplify_path_points_vertical(once, tolerance_m=1.0)
+        assert [p.elevation for p in once] == [p.elevation for p in twice], "DP of thinned points is a no-op"
+
+
+class TestSimplifyProjected:
+    """The DP core: recovers surviving ORIGINAL points by a two-pointer walk over the projected coords
+    (DP keeps a subsequence unchanged). Fails loud on the degenerate <=2 case (wrappers guard it).
+    """
+
+    def test_recovers_original_points_by_identity(self) -> None:
+        # A dead-straight projection → DP keeps only the endpoints; survivors must be the SAME objects.
+        pts = [PathPoint(lon=0.0, lat=0.0, elevation=float(i)) for i in range(6)]
+        projected = [(float(i), 0.0) for i in range(6)]  # collinear in the projected plane
+        out = _simplify_projected(points=pts, projected=projected, tolerance_m=0.5)
+        assert len(out) == 2
+        assert out[0] is pts[0] and out[-1] is pts[-1], "survivors are the original objects (no rebuild)"
+
+    def test_keeps_a_projected_bend(self) -> None:
+        pts = [PathPoint(lon=0.0, lat=0.0, elevation=float(i)) for i in range(5)]
+        projected = [(0.0, 0.0), (1.0, 0.0), (2.0, 5.0), (3.0, 0.0), (4.0, 0.0)]  # spike at index 2
+        out = _simplify_projected(points=pts, projected=projected, tolerance_m=1.0)
+        assert pts[2] in out, "the projected spike survives"
+
+    def test_too_few_points_raises(self) -> None:
+        import pytest
+
+        pts = [PathPoint(lon=0.0, lat=0.0, elevation=0.0), PathPoint(lon=0.0, lat=0.001, elevation=1.0)]
+        with pytest.raises(AssertionError, match="needs >2 points"):
+            _simplify_projected(points=pts, projected=[(0.0, 0.0), (1.0, 0.0)], tolerance_m=1.0)
+
+    def test_length_mismatch_raises(self) -> None:
+        import pytest
+
+        pts = [PathPoint(lon=0.0, lat=0.0, elevation=float(i)) for i in range(3)]
+        with pytest.raises(AssertionError, match="length mismatch"):
+            _simplify_projected(points=pts, projected=[(0.0, 0.0), (1.0, 0.0)], tolerance_m=1.0)

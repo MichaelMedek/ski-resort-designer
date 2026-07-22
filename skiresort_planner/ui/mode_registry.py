@@ -28,7 +28,7 @@ from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui import actions, bottom_chart, click_handlers, right_panel, sidebar_panels
 from skiresort_planner.ui.center_map import MapRenderer
 from skiresort_planner.ui.context import BuildMode, EntityKind, PlannerContext
-from skiresort_planner.ui.infra import bump_camera_epoch, trigger_rerun
+from skiresort_planner.ui.infra import trigger_rerun
 from skiresort_planner.ui.kind_spec import KIND_SPECS
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
@@ -881,12 +881,17 @@ class _LiftOperation(BuilderOperation):
         return sm.is_idle_viewing_lift
 
     def on_select(self, ctx: PlannerContext, sm: PlannerStateMachine) -> None:
-        # Re-typing a viewed lift recomputes its geometry (a REAL map change) → bare remount so the
-        # redraw takes, keeping the current framing; otherwise a plain rerun (highlight only).
-        retyped_viewed_lift = sm.is_idle_viewing_lift
+        # Arm this type for the next lift either way; if viewing a DIFFERENT-typed lift, gate the retype
+        # behind a confirm dialog (avoids accidental retypes) which owns confirm/cancel + any remount.
         actions.select_lift_type_action(self.mode)
-        if retyped_viewed_lift:
-            bump_camera_epoch()
+        graph: ResortGraph = st.session_state.graph
+        if sm.is_idle_viewing_lift and ctx.viewing.lift_id:
+            lift = graph.lifts[ctx.viewing.lift_id]
+            if lift.lift_type != self.mode:
+                right_panel.show_change_lift_type_dialog(
+                    lift_id=lift.id, old_type=lift.lift_type, new_type=self.mode, sm=sm
+                )
+                return
         trigger_rerun()
 
 

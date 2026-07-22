@@ -65,3 +65,54 @@ class TestTotalLength:
     def test_fewer_than_two_points_is_zero(self) -> None:
         assert PathPoint.total_length_m([]) == 0.0
         assert PathPoint.total_length_m([PathPoint(lon=10.0, lat=46.0, elevation=2000.0)]) == 0.0
+
+
+class TestInterpolateAtDistance:
+    """PathPoint.interpolate_at_distance — the ONE distance-based bracket-lerp kernel (lift cable, terrain
+    resample, chart ground all call it). Correct for NON-uniform spacing; clamps outside [0, total].
+    """
+
+    _PTS = [
+        PathPoint(lon=0.0, lat=0.0, elevation=0.0),
+        PathPoint(lon=0.0, lat=0.01, elevation=100.0),
+        PathPoint(lon=0.0, lat=0.03, elevation=300.0),  # non-uniform: second span is 2x the first
+    ]
+
+    def _dists(self):
+        return PathPoint.cumulative_distances(self._PTS)
+
+    def test_endpoints_hit_exactly(self) -> None:
+        d = self._dists()
+        assert PathPoint.interpolate_at_distance(self._PTS, d, 0.0).elevation == 0.0
+        assert PathPoint.interpolate_at_distance(self._PTS, d, d[-1]).elevation == pytest.approx(300.0)
+
+    def test_clamps_outside_range(self) -> None:
+        d = self._dists()
+        assert PathPoint.interpolate_at_distance(self._PTS, d, -50.0).elevation == 0.0
+        assert PathPoint.interpolate_at_distance(self._PTS, d, d[-1] + 999).elevation == pytest.approx(300.0)
+
+    def test_lerps_within_a_span(self) -> None:
+        # Halfway along the FIRST span (by distance) → half its elevation, proving distance-based lerp.
+        d = self._dists()
+        mid = PathPoint.interpolate_at_distance(self._PTS, d, d[1] / 2)
+        assert mid.elevation == pytest.approx(50.0)
+
+
+class TestInterpolateAtFraction:
+    """interpolate_at_fraction wraps interpolate_at_distance (one kernel); fraction 0→first, 1→last."""
+
+    _PTS = [
+        PathPoint(lon=0.0, lat=0.0, elevation=0.0),
+        PathPoint(lon=0.0, lat=0.02, elevation=200.0),
+    ]
+
+    def test_endpoints(self) -> None:
+        assert PathPoint.interpolate_at_fraction(self._PTS, 0.0).elevation == 0.0
+        assert PathPoint.interpolate_at_fraction(self._PTS, 1.0).elevation == pytest.approx(200.0)
+
+    def test_midpoint(self) -> None:
+        assert PathPoint.interpolate_at_fraction(self._PTS, 0.5).elevation == pytest.approx(100.0)
+
+    def test_clamps(self) -> None:
+        assert PathPoint.interpolate_at_fraction(self._PTS, -1.0).elevation == 0.0
+        assert PathPoint.interpolate_at_fraction(self._PTS, 2.0).elevation == pytest.approx(200.0)

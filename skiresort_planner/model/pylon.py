@@ -15,7 +15,6 @@ class Pylon:
     """A support pylon for a ski lift.
 
     Attributes:
-        index: Position index along the sampled terrain points
         distance_m: Distance from lift start in meters
         lat: Latitude of pylon base
         lon: Longitude of pylon base
@@ -23,7 +22,6 @@ class Pylon:
         height_m: Pylon height from ground to top
     """
 
-    index: int
     distance_m: float
     lat: float
     lon: float
@@ -46,4 +44,4 @@ class Pylon:
         return (self.lon, self.lat)
 
     def __repr__(self) -> str:
-        return f"Pylon(idx={self.index}, {self.distance_m:.0f}m, {self.height_m:.0f}m tall)"
+        return f"Pylon({self.distance_m:.0f}m, {self.height_m:.0f}m tall)"

@@ -61,6 +61,9 @@ class ConfirmDialog(Dialog):
         """Run when the primary button is clicked."""
         raise NotImplementedError
 
+    def _on_cancel(self) -> None:
+        """Run when Cancel is clicked, before the rerun. Default no-op; override to flow elsewhere."""
+
     def _buttons(self) -> None:
         col_confirm, col_cancel = st.columns(2)
         with col_confirm:
@@ -69,6 +72,7 @@ class ConfirmDialog(Dialog):
                 trigger_rerun()
         with col_cancel:
             if st.button(self.CANCEL_LABEL, use_container_width=True, key="dialog_cancel"):
+                self._on_cancel()
                 trigger_rerun()
 
 

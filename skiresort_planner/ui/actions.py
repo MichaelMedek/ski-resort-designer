@@ -1034,26 +1034,25 @@ def cancel_custom_path() -> None:
 
 
 def select_lift_type_action(lift_type: str) -> None:
-    """Sidebar lift-type button: set the build mode, or re-type the viewed lift.
-
-    When viewing a lift, the four lift buttons change THAT lift's type (Lift.update_type recomputes
-    the pylons/catenary); otherwise they just set the build mode for the next lift. Either way the
-    build_mode.mode tracks the chosen type (the single source of truth) so a new lift uses it.
-    The caller (BuilderOperation.on_select) owns the reload, so this does not reload.
+    """Sidebar lift-type button: arm this type as build_mode for the next lift (single source of truth).
+    Never retypes an existing lift — that is the confirm-gated apply_lift_retype_action. No reload here.
     """
     ctx: PlannerContext = st.session_state.context
-    sm: PlannerStateMachine = st.session_state.state_machine
-    graph: ResortGraph = st.session_state.graph
-
     ctx.build_mode.mode = lift_type
 
-    if sm.is_idle_viewing_lift and ctx.viewing.lift_id:
-        lift = graph.lifts[ctx.viewing.lift_id]
-        if lift.lift_type != lift_type:
-            start_node = graph.nodes[lift.start_node_id]
-            end_node = graph.nodes[lift.end_node_id]
-            lift.update_type(new_type=lift_type, start_node=start_node, end_node=end_node)
-            logger.info(f"UI: Changed viewed lift {lift.id} type to {lift_type}")
+
+def apply_lift_retype_action(lift_id: str, lift_type: str) -> None:
+    """Re-type an existing lift in place (Lift.update_type recomputes pylons/catenary). Confirm-gated by
+    the change-lift-type dialog; no-op if already that type. The caller owns the reload.
+    """
+    graph: ResortGraph = st.session_state.graph
+    lift = graph.lifts[lift_id]
+    if lift.lift_type == lift_type:
+        return
+    start_node = graph.nodes[lift.start_node_id]
+    end_node = graph.nodes[lift.end_node_id]
+    lift.update_type(new_type=lift_type, start_node=start_node, end_node=end_node)
+    logger.info(f"UI: Changed viewed lift {lift.id} type to {lift_type}")
 
 
 def _close_panel_and_refresh(*, deleted: bool, is_viewing_deleted: bool) -> bool:

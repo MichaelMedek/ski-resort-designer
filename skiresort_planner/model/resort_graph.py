@@ -548,19 +548,44 @@ class ResortGraph:
             corridor_weight=GeometricTuningConfig.CORRIDOR_WEIGHT,
         )
         for seg, pts in zip(segments, smoothed, strict=True):
-            # Shed the dense ~7m resampling on straight runs (Shapely Douglas–Peucker). Junctions/
-            # endpoints are the first/last of each segment and are always kept.
-            simplified = simplify_path_points(pts, tolerance_m=GeometricTuningConfig.FINISH_SIMPLIFY_TOLERANCE_M)
-            # DP always keeps the first/last point, so endpoints are untouched — assert the invariant the
-            # whole segment-chain model relies on (adjacent segments share a junction point by value).
-            assert len(simplified) >= 2, f"simplify collapsed {seg.id} below 2 points"
-            assert simplified[0] == pts[0] and simplified[-1] == pts[-1], f"simplify moved an endpoint of {seg.id}"
-            seg.points = simplified
+            seg.points = pts
+        # Shed the dense ~7m resampling on straight runs (Douglas–Peucker) — the SAME thinning that runs
+        # on OSM import and on JSON load, via the one emitter below.
+        self._simplify_segments(segment_ids=segment_ids)
         after = max(seg.max_slope_pct for seg in segments)
         total_pts = sum(len(seg.points) for seg in segments)
         logger.info(
             f"Smoothed finished path {segment_ids}: max_slope_pct {before:.1f}% -> {after:.1f}%, {total_pts} points"
         )
+
+    def _simplify_segments(self, segment_ids: list[str]) -> None:
+        """Douglas–Peucker each segment in place — the single DP emitter shared by finish, OSM import, and
+        JSON load. Idempotent, and always keeps endpoints so adjacent segments still share junctions by value.
+        """
+        for sid in segment_ids:
+            seg = self.segments[sid]
+            simplified = simplify_path_points(
+                points=seg.points, tolerance_m=GeometricTuningConfig.FINISH_SIMPLIFY_TOLERANCE_M
+            )
+            assert len(simplified) >= 2, f"simplify collapsed {seg.id} below 2 points"
+            assert simplified[0] == seg.points[0] and simplified[-1] == seg.points[-1], (
+                f"simplify moved an endpoint of {seg.id}"
+            )
+            seg.points = simplified
+
+    def _rethin_on_load(self) -> None:
+        """Re-apply current thinning to loaded geometry (DEM-free, idempotent — reloading is a no-op).
+        Lifts via finalize_geometry; slopes/roads DP-only (never re-splined: that would drift on reload).
+        """
+        # Recalculate lift geometry with the latest code parameters.
+        for lift in self.lifts.values():
+            lift.terrain_points, lift.pylons, lift.cable_points = Lift.finalize_geometry(
+                terrain_points=lift.terrain_points, lift_type=lift.lift_type
+            )
+        # DP-thin every finished segment-group entity via the single accessor (its completeness guard
+        # enforces new SegmentPath kinds show up here — no hand-maintained per-kind loop).
+        for path in self.segment_path_entities:
+            self._simplify_segments(segment_ids=path.segment_ids)
 
     # =========================================================================
     # Slope Operations
@@ -1790,6 +1815,9 @@ class ResortGraph:
             for sid in orphan_segment_ids:
                 del graph.segments[sid]
             graph.cleanup_isolated_nodes()
+
+        # Re-apply current thinning to loaded geometry (DEM-free, idempotent).
+        graph._rethin_on_load()
 
         counters = cast(dict[str, int], data["counters"])
         graph._node_counter = counters["node"]

@@ -11,6 +11,7 @@ Used by:
 Reference: DETAILS.md
 """
 
+import bisect
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -90,6 +91,44 @@ class PathPoint:
     def total_length_m(points: Sequence["PathPoint"]) -> float:
         """Total polyline length (m) — 0 for fewer than two points. Single source for path length."""
         return PathPoint.cumulative_distances(points)[-1] if len(points) >= 2 else 0.0
+
+    @staticmethod
+    def interpolate_at_distance(
+        points: Sequence["PathPoint"], distances: Sequence[float], target_m: float
+    ) -> "PathPoint":
+        """Interpolate a PathPoint at arc distance `target_m` along the polyline. Single source for
+        distance-based lookup (bracket by cumulative distance + lerp); correct for NON-uniform spacing.
+
+        Args:
+            points: Polyline vertices.
+            distances: cumulative_distances(points), passed in so callers reuse it.
+            target_m: Arc distance; clamped to the endpoints outside [0, total].
+        """
+        idx_high = bisect.bisect_left(distances, target_m)
+        if idx_high <= 0:
+            return points[0]
+        if idx_high >= len(points):
+            return points[-1]
+        idx_low = idx_high - 1
+        seg = distances[idx_high] - distances[idx_low]
+        assert seg > 0, f"interpolate_at_distance: zero-length segment at idx {idx_low}->{idx_high} (dup point)"
+        frac = (target_m - distances[idx_low]) / seg
+        low, high = points[idx_low], points[idx_high]
+        return PathPoint(
+            lon=low.lon + (high.lon - low.lon) * frac,
+            lat=low.lat + (high.lat - low.lat) * frac,
+            elevation=low.elevation + (high.elevation - low.elevation) * frac,
+        )
+
+    @staticmethod
+    def interpolate_at_fraction(points: Sequence["PathPoint"], fraction: float) -> "PathPoint":
+        """PathPoint at normalized arc-length `fraction` (0..1, clamped) — thin wrapper over the ONE kernel
+        interpolate_at_distance (fraction × total length). Polyline arc-length IS piecewise-linear.
+        """
+        assert len(points) >= 2, f"interpolate_at_fraction needs >=2 points, got {len(points)}"
+        distances = PathPoint.cumulative_distances(points)
+        target_m = max(0.0, min(1.0, fraction)) * distances[-1]
+        return PathPoint.interpolate_at_distance(points=points, distances=distances, target_m=target_m)
 
     def __repr__(self) -> str:
         return f"PathPoint(lon={self.lon:.5f}, lat={self.lat:.5f}, elev={self.elevation:.1f}m)"

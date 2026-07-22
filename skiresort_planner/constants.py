@@ -67,9 +67,7 @@ class MapConfig:
     START_CENTER_LAT = 46.982  # Latitude
     START_CENTER_LON = 10.317  # Longitude
 
-    # Zoom levels for different modes
-    # Higher number = more zoomed in, lower = more zoomed out
-    # Reduced zoom levels to prevent camera going underground with 3D terrain
+    # Zoom levels (higher = more zoomed in). Reduced to keep the camera above ground with 3D terrain.
     VIEWING_ZOOM = 13  # Overview after finishing slope/lift + program start
     VIEW_3D_ZOOM = 13.0  # 3D side view + flythrough — one tuned value, can also be float
     IMPORT_OVERVIEW_ZOOM = 12  # Post-import overview: one step further out than building zoom
@@ -97,14 +95,12 @@ class MapConfig:
     # (haversine/destination in GeoCalculator) and the metres-per-degree constant below.
     EARTH_RADIUS_M = 6_371_000
 
-    # Metres per degree of latitude (≈ metres per degree of longitude at the equator). The single
-    # source for all lat/lon↔metre conversions across the codebase (tests included).
-    # A round nominal value; exact geodesics use GeoCalculator.haversine_distance_m.
+    # Metres per degree of latitude (≈ per degree longitude at equator). Single source for all
+    # lat/lon↔metre conversions; a round nominal — exact geodesics use GeoCalculator.haversine_distance_m.
     METERS_PER_DEGREE_EQUATOR = 111320.0
 
-    # 2D mode z-offsets (relative layer ordering, no terrain)
-    # Small offsets prevent z-fighting while keeping flat appearance
-    # Z-offsets for 2D mode - small values for proper layer ordering
+    # 2D-mode z-offsets: small values for relative layer ordering (no terrain), preventing z-fighting
+    # while keeping a flat appearance.
     Z_OFFSET_2D_SLOPES = 1  # Slope polygons at base
     Z_OFFSET_2D_ROADS = 2  # Road polygons just above slopes (matches slopes→roads z-order)
     Z_OFFSET_2D_LIFTS = 3  # Lift cables above roads
@@ -114,9 +110,8 @@ class MapConfig:
     Z_OFFSET_2D_NODES = 10  # Nodes above icons
     Z_OFFSET_2D_MARKERS = 20  # Interactive markers (commit/select) on top
 
-    # Flat-mode z-offset per committed-segment kind, keyed by SegmentKind value. Keyed by
-    # the string value (not the enum) to stay reload-safe and avoid a model import here.
-    # Kept in sync with SegmentKind by an assert in ui/kind_spec.py.
+    # Flat-mode z-offset per committed-segment kind, keyed by SegmentKind's string value (reload-safe,
+    # no model import). Kept in sync with SegmentKind by an assert in ui/kind_spec.py.
     SEGMENT_FLAT_Z = {
         "slope": Z_OFFSET_2D_SLOPES,
         "road": Z_OFFSET_2D_ROADS,
@@ -211,9 +206,8 @@ class PathConfig:
     # Minimum path points for valid path (less = terrain edge or error)
     MIN_PATH_POINTS = 4
 
-    # Roads for cars: the hard gradient cap enforced at build time.
-    # Cars may climb, descend, or run flat, but a proposal over this is refused.
-    # (Roads AIM for the green grades 7%/12% — see PathFactory.generate_manual_paths.)
+    # Hard gradient cap for car roads, enforced at build time (a proposal over this is refused). Roads
+    # AIM for green grades 7%/12% — see PathFactory.generate_manual_paths.
     ROAD_MAX_GRADIENT_PCT = 15
 
 
@@ -251,10 +245,12 @@ class GeometricTuningConfig:
     # Node weight vs corridor weight in the weighted spline fit.
     NODE_WEIGHT = 10.0  # Smooth spline should mathc very well at nodes
     CORRIDOR_WEIGHT = 1.0  # In between path points are less stricly used for attraction
-    # Shapely Douglas–Peucker tolerance applied after finish-smoothing: drop interior points within this
-    # horizontal distance of the line between kept neighbours. Straight runs collapse (~5x fewer points),
-    # cutting per-rerun render/serialize cost and saved size; 1m is far below the 60m DEM resolution.
-    FINISH_SIMPLIFY_TOLERANCE_M = 1.0
+    # Horizontal Douglas–Peucker tolerance after finish-smoothing: drop interior points within this of the
+    # line between kept neighbours. 3.5m is the coarsest that keeps junction turns gentle (<20°); >4m kinks.
+    FINISH_SIMPLIFY_TOLERANCE_M = 3.5
+    # Douglas–Peucker "turned around" for lifts: DP in the (along-track distance, elevation) plane of the
+    # terrain profile (horizontal is straight). 10m sheds ~half the points, keeping pylons near raw.
+    TERRAIN_SIMPLIFY_TOLERANCE_M = 10.0
 
 
 class EarthworkConfig:
@@ -415,12 +411,18 @@ class LiftConfig:
 
     # Terrain sampling step size for lift paths (meters)
     TERRAIN_SAMPLE_STEP_M = 30
+    # Cable sampling is curvature-adaptive: each span is a parabola with max sag sag_factor*span, so an
+    # n-segment chord errs ~sag/n². Pick n=ceil(sqrt(sag/tol)) — short spans get few points, long spans more.
+    CABLE_SAG_TOLERANCE_M = 6.0
+    # A buildable lift must be at least this many min_spacing_m long, so a pylon has comfortable room to
+    # each station. Below it the lift is refused at placement.
+    MIN_LENGTH_SPACING_FACTOR = 3
 
     PYLON_CONFIG = {
         LiftType.SURFACE_LIFT: {
             "pylon_height_m": 15,
             "station_height_m": 5,
-            "min_spacing_m": 10,
+            "min_spacing_m": 30,
             "max_spacing_m": 100,
             "min_clearance_m": 10,
             "sag_factor": 0.05,
@@ -428,7 +430,7 @@ class LiftConfig:
         LiftType.CHAIRLIFT: {
             "pylon_height_m": 25,
             "station_height_m": 6,
-            "min_spacing_m": 15,
+            "min_spacing_m": 50,
             "max_spacing_m": 200,
             "min_clearance_m": 15,
             "sag_factor": 0.06,
@@ -436,7 +438,7 @@ class LiftConfig:
         LiftType.GONDOLA: {
             "pylon_height_m": 35,
             "station_height_m": 6,
-            "min_spacing_m": 20,
+            "min_spacing_m": 75,
             "max_spacing_m": 300,
             "min_clearance_m": 20,
             "sag_factor": 0.06,
@@ -444,7 +446,7 @@ class LiftConfig:
         LiftType.AERIAL_TRAM: {
             "pylon_height_m": 60,
             "station_height_m": 10,
-            "min_spacing_m": 30,
+            "min_spacing_m": 100,
             "max_spacing_m": 1e6,  # Can span very long distances
             "min_clearance_m": 30,
             "sag_factor": 0.06,
@@ -754,10 +756,8 @@ class ConnectivityConfig:
 class RoutePlannerConfig:
     """Route planner (model/routing.py + ui route views): overlay colours + line geometry."""
 
-    # RGBA per route criterion, keyed by RouteCriterion's string value.
-    # Hue = the metric (cyan = fewest lifts, gold = shortest slope); the SCENIC tour of each metric
-    # is a DARKER tone of the same hue, so path length alone reads shortest-vs-scenic. Semi-transparent so
-    # the slope colour shows through. model/routing.py asserts this covers every RouteCriterion.
+    # RGBA per route criterion (keyed by RouteCriterion's string value): hue = metric (cyan=fewest lifts,
+    # gold=shortest), SCENIC = darker tone of same hue. Semi-transparent; routing.py asserts full coverage.
     ROUTE_COLORS = {
         "fewest_lifts": [0, 200, 210, 150],  # bright cyan
         "shortest_slope": [240, 200, 20, 150],  # bright gold
@@ -801,9 +801,8 @@ class OSMConfig:
     NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
     NOMINATIM_TIMEOUT_S = 10
 
-    # A lift/piste-only query is light, so the whole region is fetched in ONE query. Overpass gives
-    # a few slots per IP; on a transient 429/504 we wait for a free slot (from /api/status) and retry
-    # once. SLOT_WAIT_MAX_S caps that wait; SLOT_WAIT_FALLBACK_S is used when status can't be read.
+    # Whole region fetched in ONE query (light). On a transient 429/504, wait for a free slot (/api/status)
+    # and retry once: SLOT_WAIT_MAX_S caps the wait; SLOT_WAIT_FALLBACK_S applies when status is unreadable.
     SLOT_WAIT_MAX_S = 30.0
     SLOT_WAIT_FALLBACK_S = 3.0
 
