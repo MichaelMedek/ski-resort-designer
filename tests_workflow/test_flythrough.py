@@ -174,6 +174,38 @@ class TestFlythroughDriverGuard:
         ctx.viewing.enable_3d()  # in 3D but NOT playing (mirrors the frame right after Stop)
         assert not ctx.viewing.flythrough_active
 
-        app._advance_flythrough_if_playing()  # must return early, not assert inside advance_flythrough
+        # Not playing → active_flythrough_groups() is empty → the driver returns before ever sleeping/advancing.
+        app._advance_flythrough_if_playing()
 
         assert ctx.viewing.flythrough_frame == 0, "no frame advanced while stopped"
+
+    def test_stop_during_the_sleep_does_not_advance(self, fake_st, empty_graph, monkeypatch) -> None:
+        # Live race: the driver's time.sleep IS the interactive window — a Stop click during it flips
+        # flythrough_active on the shared session state. The driver must re-check after the sleep.
+        from skiresort_planner import app
+
+        dem = MockDEMService(base_elevation=2500.0, slope_ns_pct=20.0, slope_ew_pct=0.0)
+        add_node(empty_graph, "A", 0.0, 0.0, 2000.0)
+        add_node(empty_graph, "B", 0.0, -0.01, 1900.0)
+        add_slope(empty_graph, "SL1", top="A", bottom="B")
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        fake_st.session_state["graph"] = empty_graph
+        fake_st.session_state["state_machine"] = sm
+        fake_st.session_state["context"] = ctx
+        fake_st.session_state["dem_service"] = dem
+        sm.view_slope(slope_id="SL1")
+        ctx.viewing.enable_3d()
+        ctx.viewing.start_flythrough()  # active + ≥2 keyframes, so the driver reaches the sleep
+
+        def _stop_mid_sleep(_seconds: object) -> None:
+            ctx.viewing.stop_flythrough()  # the user clicks Stop while the driver is sleeping
+
+        def _must_not_rerun(*_a: object, **_k: object) -> None:
+            raise AssertionError("driver must not rerun after a Stop during the sleep")
+
+        monkeypatch.setattr("skiresort_planner.app.time.sleep", _stop_mid_sleep)
+        monkeypatch.setattr(app, "trigger_rerun", _must_not_rerun)
+
+        app._advance_flythrough_if_playing()  # re-checks after sleep → returns without advancing/rerunning
+
+        assert ctx.viewing.flythrough_frame == 0, "a Stop during the sleep must not advance the frame"

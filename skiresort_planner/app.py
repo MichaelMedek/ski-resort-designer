@@ -421,14 +421,16 @@ def _advance_flythrough_if_playing() -> None:
     """
     ctx: PlannerContext = st.session_state.context
     viewing = ctx.viewing
-    if not viewing.flythrough_active:
-        return  # not playing (e.g. the user just pressed Stop) — nothing to advance
     keyframes = MapRenderer.flythrough_keyframes(groups=active_flythrough_groups())
     if not keyframes:
-        return
+        return  # nothing to fly (active_flythrough_groups is empty unless playing in 3D)
     if viewing.flythrough_frame >= len(keyframes) - 1:
         return  # parked on the final keyframe — hold here (no rerun) until Stop/Close
     time.sleep(MapConfig.FLYTHROUGH_STEP_S)
+    # The sleep IS the interactive window (Stop renders before this driver). A Stop click during it flips
+    # flythrough_active on the shared session state — re-check so we don't advance a just-stopped playback.
+    if not viewing.flythrough_active:
+        return
     viewing.advance_flythrough()
     trigger_rerun()
 
