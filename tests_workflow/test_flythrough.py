@@ -152,3 +152,28 @@ class TestReplanStopsFlythrough:
 
         assert not ctx.viewing.flythrough_active, "a fresh route plan must stop the old flythrough"
         assert ctx.viewing.flythrough_frame == 0
+        # The plan also reframes the 2D map on the shown route: center = A/B midpoint, zoom fits its length.
+        a, b = empty_graph.nodes["A"], empty_graph.nodes["B"]
+        route = ctx.route_plan.routes[0]
+        assert ctx.map.lon == (a.lon + b.lon) / 2 and ctx.map.lat == (a.lat + b.lat) / 2
+        assert ctx.map.zoom == MapConfig.zoom_for_span_m(span_m=route.total_slope_length_m)
+
+
+class TestFlythroughDriverGuard:
+    """The frame driver only advances WHILE playing — pressing Stop must not trip advance_flythrough."""
+
+    def test_driver_is_a_noop_when_not_playing(self, fake_st, empty_graph) -> None:
+        from skiresort_planner import app
+
+        dem = MockDEMService(base_elevation=2500.0, slope_ns_pct=20.0, slope_ew_pct=0.0)
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        fake_st.session_state["graph"] = empty_graph
+        fake_st.session_state["state_machine"] = sm
+        fake_st.session_state["context"] = ctx
+        fake_st.session_state["dem_service"] = dem
+        ctx.viewing.enable_3d()  # in 3D but NOT playing (mirrors the frame right after Stop)
+        assert not ctx.viewing.flythrough_active
+
+        app._advance_flythrough_if_playing()  # must return early, not assert inside advance_flythrough
+
+        assert ctx.viewing.flythrough_frame == 0, "no frame advanced while stopped"

@@ -299,6 +299,7 @@ class TestInfoPanelButtonClicks:
         """Changing WHICH route is shown (◀▶ browser) mid-flythrough must stop it — otherwise the camera
         keeps riding the old route's keyframes over the new selection.
         """
+        from skiresort_planner.model.node import Node
         from skiresort_planner.model.routing import Route, RouteCriterion, RouteStep
         from skiresort_planner.ui.right_panel import RouteViewingControlPanel
 
@@ -320,6 +321,10 @@ class TestInfoPanelButtonClicks:
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         cap = ctx.route_plan.selected_cap
         ctx.route_plan.routes = [_route(cap, RouteCriterion.FEWEST_LIFTS), _route(cap, RouteCriterion.SHORTEST_SLOPE)]
+        # The route recenters on its A→B endpoints, so both nodes must exist and be the plan endpoints.
+        empty_graph.nodes["A"] = Node(id="A", location=PathPoint(lon=0.0, lat=0.0, elevation=2000.0))
+        empty_graph.nodes["B"] = Node(id="B", location=PathPoint(lon=0.0, lat=-0.001, elevation=1900.0))
+        ctx.route_plan.start_node_id, ctx.route_plan.end_node_id = "A", "B"
         fake_st.session_state["graph"] = empty_graph
         fake_st.session_state["state_machine"] = sm
         fake_st.session_state["context"] = ctx
