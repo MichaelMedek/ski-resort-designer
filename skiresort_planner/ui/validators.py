@@ -28,15 +28,15 @@ def validate_lift_stations(
     second_lat: float,
     lift_type: str,
 ) -> ToastMessage | None:
-    """Validate the two lift stations: distinct points, and far enough apart to place the type's pylons.
+    """Validate the two lift stations: distinct points, and long enough to host a pylon.
 
-    A lift shorter than the type's min_spacing_m can't span station-to-station without pylons closer than
-    allowed, so it is refused. Returns None if valid, else the toast to show.
+    A pylon needs min_spacing_m clearance to EACH station, so the lift must be >= 2*min_spacing_m long to
+    fit even one; shorter lifts are refused. Returns None if valid, else the toast to show.
     """
     if first_lon == second_lon and first_lat == second_lat:
         return SameNodeLiftMessage()
     length_m = GeoCalculator.haversine_distance_m(lat1=first_lat, lon1=first_lon, lat2=second_lat, lon2=second_lon)
-    min_length_m = float(LiftConfig.PYLON_CONFIG[LiftType(lift_type)]["min_spacing_m"])
+    min_length_m = 2 * float(LiftConfig.PYLON_CONFIG[LiftType(lift_type)]["min_spacing_m"])
     if length_m < min_length_m:
         return LiftTooShortMessage(length_m=length_m, min_length_m=min_length_m)
     return None
