@@ -237,13 +237,8 @@ class Lift(NodeConnected):
     def finalize_geometry(
         terrain_points: list[PathPoint], lift_type: str
     ) -> tuple[list[PathPoint], list["Pylon"], list[PathPoint]]:
-        """Single source of truth for a lift's geometry: vertical-DP the terrain profile, then recompute
-        pylons + cable from it. Pure — no DEM, no nodes — so it runs identically at build and JSON load.
-
-        A lift is horizontally a straight line, so the terrain is thinned in the (distance, elevation)
-        plane (keeps bends, drops straight runs). Endpoints of terrain ARE the stations, so start/end
-        elevation and total length come from the (thinned) terrain itself. Idempotent: DP of already-
-        thinned terrain is a no-op, and pylons/cable are deterministic in the unchanged terrain.
+        """Single source of truth for a lift's geometry: vertical-DP the terrain (distance,elevation)
+        profile, then recompute pylons + cable. Pure (no DEM/nodes) and idempotent — build == JSON load.
 
         Returns:
             Tuple of (thinned_terrain_points, pylons, cable_points).
@@ -274,11 +269,8 @@ class Lift(NodeConnected):
         lift_type: str,
         lift_id: str,
     ) -> tuple[str, list[PathPoint], list["Pylon"], list[PathPoint], float]:
-        """Compute all type-dependent lift data (name + finalized geometry).
-
-        Single source of truth for name, terrain thinning, pylons, cable_points. Used by create() /
-        update_type() / rebuild() to stay consistent; geometry is delegated to finalize_geometry so the
-        build path applies the same thinning that JSON load does.
+        """Single source of truth for name + finalized geometry (terrain thinning, pylons, cable). Used by
+        create/update_type/rebuild; geometry is delegated to finalize_geometry so build == JSON load.
 
         Args:
             terrain_points: Pre-sampled terrain along lift path
@@ -482,12 +474,8 @@ class Lift(NodeConnected):
         lift_type: str,
         total_distance_m: float,
     ) -> list[Pylon]:
-        """Calculate pylon positions using 3-phase catenary simulation, in DISTANCE-space.
-
-        Phases: place pylons where clearance < min, enforce max_spacing with midpoints, re-check
-        clearance. Cable sag z(t) = (1-t)·z₀ + t·z₁ − 4·s·t·(1-t), t=x/L, s=sag_factor·L. All spacing
-        and spans are measured in metres along the terrain polyline (`cumulative_distances`), so the sim
-        is correct whether terrain is uniformly sampled (build) or coarsely DP-thinned (load).
+        """Calculate pylon positions via 3-phase catenary sim (place on clearance<min, enforce max-spacing,
+        re-check) in DISTANCE-space — spans measured in metres, so uniform (build) or DP-thinned (load) both work.
 
         Args:
             terrain_points: List of PathPoint sampled along lift path
@@ -783,10 +771,8 @@ class Lift(NodeConnected):
         lift_type: str,
         total_distance_m: float,
     ) -> list[PathPoint]:
-        """Calculate cable points along the lift path with sag.
-
-        The cable follows parabolic sag between anchor points (stations and pylons).
-        This pre-computes cable positions for efficient rendering and GPX export.
+        """Calculate cable points along the lift path with parabolic sag between anchors (stations +
+        pylons). Pre-computes cable positions for efficient rendering and GPX export.
 
         Args:
             terrain_points: Terrain points along the lift path (for lat/lon interpolation)
@@ -865,18 +851,15 @@ class Lift(NodeConnected):
                     span_m=span,
                     sag_factor=sag_factor,
                 )
-                pt = PathPoint.interpolate_at_distance(terrain_points, terrain_dists, x)
+                pt = PathPoint.interpolate_at_distance(points=terrain_points, distances=terrain_dists, target_m=x)
                 cable_points.append(PathPoint(lon=pt.lon, lat=pt.lat, elevation=cable_elev))
 
         return cable_points
 
     @staticmethod
     def _resample_uniform(terrain_points: list[PathPoint], step_m: float) -> list[PathPoint]:
-        """Resample terrain onto a uniform step_m grid (endpoints included) by distance interpolation.
-
-        The pylon physics runs on this fine internal grid so its resolution is independent of how coarse
-        the STORED terrain is (which may be aggressively vertical-DP thinned). Purely transient — the
-        grid is never stored; only the resulting pylon distances are.
+        """Resample terrain onto a uniform step_m grid (endpoints included) by distance interpolation, so
+        the pylon physics runs at a fixed resolution independent of the coarse stored terrain. Transient.
         """
         assert len(terrain_points) >= 2, f"_resample_uniform needs >=2 terrain points, got {len(terrain_points)}"
         assert step_m > 0, f"_resample_uniform step_m must be positive, got {step_m}"
@@ -884,7 +867,8 @@ class Lift(NodeConnected):
         total = dists[-1]
         n_steps = max(1, round(total / step_m))
         grid = [
-            PathPoint.interpolate_at_distance(terrain_points, dists, total * i / n_steps) for i in range(n_steps + 1)
+            PathPoint.interpolate_at_distance(points=terrain_points, distances=dists, target_m=total * i / n_steps)
+            for i in range(n_steps + 1)
         ]
         assert grid[0].elevation == terrain_points[0].elevation, "resample must preserve the start station"
         return grid

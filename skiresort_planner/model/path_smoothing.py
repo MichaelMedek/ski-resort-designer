@@ -224,15 +224,8 @@ def smooth_joined_path(
 def _simplify_projected(
     points: list[PathPoint], projected: list[tuple[float, float]], tolerance_m: float
 ) -> list[PathPoint]:
-    """Douglas–Peucker over a caller-supplied 2D projection, returning the SURVIVING original PathPoints.
-
-    `projected` is the metric plane DP measures in (horizontal x/y, or along-track distance/elevation),
-    one coord per input point. DP with preserve_topology=False keeps a subsequence of the input vertices
-    unchanged, so we recover survivors by walking the simplified coords against `projected` in order — no
-    coordinate rebuild, so lat/lon/elevation stay bit-exact. First/last always kept.
-
-    Precondition: >2 points (public wrappers return the trivial path early), so this fails loud if called
-    with a degenerate path instead of silently short-circuiting.
+    """Douglas–Peucker over a caller-supplied 2D projection (horizontal x/y, or distance/elevation),
+    returning SURVIVING originals by index-walk (bit-exact). Fails loud on <=2 (wrappers guard it).
     """
     assert len(points) > 2, f"_simplify_projected needs >2 points (wrappers guard the trivial case), got {len(points)}"
     assert len(projected) == len(points), f"projected/points length mismatch: {len(projected)} vs {len(points)}"
@@ -250,12 +243,8 @@ def _simplify_projected(
 
 
 def simplify_path_points(points: list[PathPoint], tolerance_m: float) -> list[PathPoint]:
-    """Douglas–Peucker dropping interior points within `tolerance_m` HORIZONTALLY of the line between
-    kept neighbours. First/last always kept.
-
-    Projects lon/lat → metres about the first point so the tolerance is metres; survivors keep their
-    real elevation, so the ribbon reconstructs within tolerance. Sheds the dense ~7 m resampling on
-    straight runs at finish time — cutting render/serialize/transport cost.
+    """Douglas–Peucker dropping interior points within `tolerance_m` HORIZONTALLY (local meter frame);
+    survivors keep real elevation. Sheds the dense ~7m resampling on straight runs; first/last kept.
     """
     if len(points) <= 2:
         return list(points)
@@ -266,12 +255,8 @@ def simplify_path_points(points: list[PathPoint], tolerance_m: float) -> list[Pa
 
 
 def simplify_path_points_vertical(points: list[PathPoint], tolerance_m: float) -> list[PathPoint]:
-    """Douglas–Peucker turned around: measure in the (along-track distance, elevation) plane instead of
-    horizontally. First/last always kept.
-
-    A lift is horizontally a straight line — all its shape is the vertical terrain profile. Projecting
-    onto (cumulative distance, elevation) keeps points where the profile BENDS and drops them on
-    straight vertical runs, within `tolerance_m`.
+    """Douglas–Peucker turned around: measure in the (along-track distance, elevation) plane, so a
+    horizontally-straight lift keeps points where its terrain profile BENDS. First/last always kept.
     """
     if len(points) <= 2:
         return list(points)

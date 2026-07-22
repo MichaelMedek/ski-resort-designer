@@ -144,6 +144,72 @@ class TestResortGraphSerialization:
 
         assert _counts(once) == _counts(twice), "second load must not shrink already-thinned geometry"
 
+    def test_load_actually_rethins_a_dense_save(self, empty_graph, path_points_blue, mock_dem_blue_slope) -> None:
+        """Loading a DENSE legacy save must REDUCE point counts (not just be idempotent): the dense to_dict
+        is hand-inflated with collinear points, then from_dict re-thins slope segments AND lift geometry.
+        """
+        from skiresort_planner.model.node import Node
+        from skiresort_planner.model.path_point import PathPoint
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
+        from skiresort_planner.model.resort_graph import ResortGraph
+
+        graph = empty_graph
+        graph.commit_paths(
+            paths=[
+                ProposedPathSegment(
+                    points=path_points_blue, target_slope_pct=20.0, target_difficulty="blue", sector_name="S"
+                )
+            ]
+        )
+        graph.finish_slope(segment_ids=list(graph.segments.keys()), name="Slope")
+        graph.nodes["LN1"] = Node(
+            id="LN1",
+            location=PathPoint(
+                lon=0.0,
+                lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                elevation=mock_dem_blue_slope.get_elevation_or_raise(
+                    lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR
+                ),
+            ),
+        )
+        graph.nodes["LN2"] = Node(
+            id="LN2",
+            location=PathPoint(
+                lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0)
+            ),
+        )
+        lift = graph.add_lift(start_node_id="LN1", end_node_id="LN2", lift_type="chairlift", dem=mock_dem_blue_slope)
+
+        # Hand-inflate the serialized save with DENSE collinear points (simulating an old dense save).
+        data = graph.to_dict()
+        seg = next(iter(data["segments"].values()))
+        start, end = seg["points"][0], seg["points"][-1]
+        dense_seg = [
+            {
+                "lon": start["lon"] + (end["lon"] - start["lon"]) * i / 200,
+                "lat": start["lat"] + (end["lat"] - start["lat"]) * i / 200,
+                "elevation": start["elevation"] + (end["elevation"] - start["elevation"]) * i / 200,
+            }
+            for i in range(201)
+        ]
+        seg["points"] = dense_seg
+        lift_data = data["lifts"][lift.id]
+        t0, t1 = lift_data["terrain_points"][0], lift_data["terrain_points"][-1]
+        lift_data["terrain_points"] = [
+            {
+                "lon": t0["lon"] + (t1["lon"] - t0["lon"]) * i / 200,
+                "lat": t0["lat"] + (t1["lat"] - t0["lat"]) * i / 200,
+                "elevation": t0["elevation"] + (t1["elevation"] - t0["elevation"]) * i / 200,
+            }
+            for i in range(201)
+        ]
+
+        restored = ResortGraph.from_dict(data=data)
+        restored_seg = next(iter(restored.segments.values()))
+        restored_lift = restored.lifts[lift.id]
+        assert len(restored_seg.points) < 201, "dense collinear slope segment must be DP-thinned on load"
+        assert len(restored_lift.terrain_points) < 201, "dense lift terrain must be vertical-DP thinned on load"
+
     def test_load_does_not_respline_slope(self, empty_graph, path_points_blue) -> None:
         """Slopes are DP-thinned on load but NEVER re-splined: coordinates are stable across two loads
         (re-splining would drift the ribbon geometry every reload).

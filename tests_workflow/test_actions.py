@@ -581,7 +581,9 @@ class TestCenterHelpers:
 
 
 class TestSelectLiftTypeAction:
-    """The sidebar lift-type buttons set the build mode, and re-type the viewed lift."""
+    """The sidebar lift-type buttons only arm the build mode; retyping a viewed lift is a separate,
+    confirm-gated action (apply_lift_retype_action), so the button never silently mutates a lift.
+    """
 
     def test_sets_build_mode_when_not_viewing_a_lift(self, fake_st, empty_graph) -> None:
         from skiresort_planner.ui.actions import select_lift_type_action
@@ -591,7 +593,7 @@ class TestSelectLiftTypeAction:
 
         assert ctx.build_mode.mode == "gondola", "the next lift will be built as a gondola"
 
-    def test_retypes_the_viewed_lift(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
+    def test_does_not_retype_a_viewed_lift(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         from skiresort_planner.ui.actions import select_lift_type_action
 
         dem = mock_dem_blue_slope
@@ -609,8 +611,42 @@ class TestSelectLiftTypeAction:
 
         select_lift_type_action(lift_type="gondola")
 
-        assert empty_graph.lifts[lift.id].lift_type == "gondola", "update_type re-typed the viewed lift"
-        assert ctx.build_mode.mode == "gondola"
+        assert empty_graph.lifts[lift.id].lift_type == "chairlift", "the button must NOT retype the viewed lift"
+        assert ctx.build_mode.mode == "gondola", "but it arms the new type for the next build"
+
+
+class TestApplyLiftRetypeAction:
+    """apply_lift_retype_action is the confirm-gated retype: Lift.update_type recomputes pylons/cable."""
+
+    def _viewed_lift(self, fake_st, empty_graph, dem):
+        bottom, _ = empty_graph.get_or_create_node(
+            lon=0.0,
+            lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        )
+        top, _ = empty_graph.get_or_create_node(
+            lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)
+        )
+        lift = empty_graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
+        _session(fake_st, empty_graph, dem=dem)
+        return lift
+
+    def test_retypes_the_lift(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
+        from skiresort_planner.ui.actions import apply_lift_retype_action
+
+        lift = self._viewed_lift(fake_st, empty_graph, mock_dem_blue_slope)
+        apply_lift_retype_action(lift_id=lift.id, lift_type="gondola")
+
+        assert empty_graph.lifts[lift.id].lift_type == "gondola", "update_type re-typed the lift"
+
+    def test_same_type_is_a_noop(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
+        from skiresort_planner.ui.actions import apply_lift_retype_action
+
+        lift = self._viewed_lift(fake_st, empty_graph, mock_dem_blue_slope)
+        pylons_before = lift.pylons
+        apply_lift_retype_action(lift_id=lift.id, lift_type="chairlift")
+
+        assert lift.pylons is pylons_before, "re-typing to the same type must not recompute geometry"
 
 
 class TestSlopeBuildingActionFlow:

@@ -97,10 +97,12 @@ class PathPoint:
         points: Sequence["PathPoint"], distances: Sequence[float], target_m: float
     ) -> "PathPoint":
         """Interpolate a PathPoint at arc distance `target_m` along the polyline. Single source for
-        distance-based lookup (bracket by cumulative distance + lerp), correct for NON-uniform spacing.
+        distance-based lookup (bracket by cumulative distance + lerp); correct for NON-uniform spacing.
 
-        distances: cumulative_distances(points), passed in so callers reuse it. Clamps to the endpoints
-        outside [0, total].
+        Args:
+            points: Polyline vertices.
+            distances: cumulative_distances(points), passed in so callers reuse it.
+            target_m: Arc distance; clamped to the endpoints outside [0, total].
         """
         idx_high = bisect.bisect_left(distances, target_m)
         if idx_high <= 0:
@@ -109,7 +111,8 @@ class PathPoint:
             return points[-1]
         idx_low = idx_high - 1
         seg = distances[idx_high] - distances[idx_low]
-        frac = (target_m - distances[idx_low]) / seg if seg > 0 else 0.0
+        assert seg > 0, f"interpolate_at_distance: zero-length segment at idx {idx_low}->{idx_high} (dup point)"
+        frac = (target_m - distances[idx_low]) / seg
         low, high = points[idx_low], points[idx_high]
         return PathPoint(
             lon=low.lon + (high.lon - low.lon) * frac,
@@ -119,11 +122,8 @@ class PathPoint:
 
     @staticmethod
     def interpolate_at_fraction(points: Sequence["PathPoint"], fraction: float) -> "PathPoint":
-        """The PathPoint at normalized arc-length `fraction` (0..1) along `points`. Clamps to [0, 1].
-
-        Thin wrapper over interpolate_at_distance (the ONE interpolation kernel) — fraction × total length
-        → absolute distance. A polyline's arc-length interpolation IS piecewise-linear between vertices,
-        so this matches the old Shapely LineString.interpolate without building a geometry per call.
+        """PathPoint at normalized arc-length `fraction` (0..1, clamped) — thin wrapper over the ONE kernel
+        interpolate_at_distance (fraction × total length). Polyline arc-length IS piecewise-linear.
         """
         assert len(points) >= 2, f"interpolate_at_fraction needs >=2 points, got {len(points)}"
         distances = PathPoint.cumulative_distances(points)

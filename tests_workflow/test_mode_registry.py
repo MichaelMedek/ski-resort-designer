@@ -125,14 +125,12 @@ class TestOperationBijection:
             # Pure pre-selection from idle → no map content change → no deck.gl remount.
             assert fake_st.session_state["map_version"] == 0, f"{mode}: highlight must not bump map_version"
 
-    def test_lift_operation_on_select_retypes_via_select_lift_type_action(
+    def test_lift_operation_on_select_arms_type_via_select_lift_type_action(
         self, fake_st, empty_graph, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # _LiftOperation.on_select routes through actions.select_lift_type_action (which sets the
-        # build mode AND, when viewing a lift, re-types it via Lift.update_type). Spy that the
-        # delegation fires once with the button's own mode. mode_registry calls it as
-        # `actions.select_lift_type_action`. (The spy replaces the real setter, so build_mode.mode
-        # isn't set here — that is select_lift_type_action's own tested job.)
+        # _LiftOperation.on_select routes through actions.select_lift_type_action (which arms the build
+        # mode). Spy that the delegation fires once with the button's own mode. Not viewing a lift → no
+        # dialog, pure highlight. (The spy replaces the real setter, so build_mode.mode isn't set here.)
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         fake_st.session_state["state_machine"] = sm
         fake_st.session_state["context"] = ctx
@@ -148,6 +146,40 @@ class TestOperationBijection:
         assert calls == [BuildMode.GONDOLA]
         # Not viewing a lift → pure highlight → no map remount (map_version unchanged).
         assert fake_st.session_state["map_version"] == 0, "lift-type pre-selection must not remount the map"
+
+    def test_lift_operation_on_select_confirms_retype_when_viewing_other_type(
+        self, fake_st, empty_graph, mock_dem_blue_slope, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Viewing a chairlift, clicking Gondola must OPEN the confirm dialog (not silently retype).
+        from skiresort_planner.constants import MapConfig
+
+        dem = mock_dem_blue_slope
+        bottom, _ = empty_graph.get_or_create_node(
+            lon=0.0,
+            lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        )
+        top, _ = empty_graph.get_or_create_node(
+            lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)
+        )
+        lift = empty_graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
+        sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        fake_st.session_state["state_machine"] = sm
+        fake_st.session_state["context"] = ctx
+        fake_st.session_state["graph"] = empty_graph
+        sm.view_lift(lift_id=lift.id)
+
+        shown: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            "skiresort_planner.ui.right_panel.show_change_lift_type_dialog",
+            lambda lift_id, old_type, new_type, sm: shown.append((old_type, new_type)),
+        )
+
+        OPERATIONS[BuildMode.GONDOLA].on_select(ctx=ctx, sm=sm)
+
+        assert shown == [("chairlift", "gondola")], "must open the change-type confirm dialog"
+        assert empty_graph.lifts[lift.id].lift_type == "chairlift", "no retype until confirmed"
+        assert ctx.build_mode.mode == BuildMode.GONDOLA, "the new type is armed regardless of the dialog"
 
 
 class TestEntityKindSpecBijection:

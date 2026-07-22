@@ -43,6 +43,7 @@ from skiresort_planner.model.message import (
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.ui.actions import (
+    apply_lift_retype_action,
     confirm_import_action,
     confirm_merge_action,
     delete_nodes_action,
@@ -166,6 +167,44 @@ class _RenameDialog(InputDialog):
 
     def _on_save(self, value: str) -> None:
         rename_entity_action(entity_id=self.entity_id, new_name=value)
+
+
+class _ChangeLiftTypeDialog(ConfirmDialog):
+    """Confirm re-typing the viewed lift (guards accidental retypes). Confirm → retype, keep viewing;
+    Cancel → keep the lift, close the view so the armed new type builds the next lift.
+    """
+
+    def __init__(self, lift_id: str, old_type: str, new_type: str, sm: PlannerStateMachine) -> None:
+        self.lift_id = lift_id
+        self.old_type = old_type
+        self.new_type = new_type
+        self.sm = sm
+
+    @property
+    def title(self) -> str:
+        return "🚡 Change Lift Type?"
+
+    def _body(self) -> None:
+        old = f"{StyleConfig.LIFT_ICONS[self.old_type]} {StyleConfig.LIFT_DISPLAY_NAMES[self.old_type]}"
+        new = f"{StyleConfig.LIFT_ICONS[self.new_type]} {StyleConfig.LIFT_DISPLAY_NAMES[self.new_type]}"
+        st.write(f"Change this lift from **{old}** to **{new}**?")
+        st.caption(f"Cancel keeps it a {old} and starts building a new {new} instead.")
+
+    def _on_confirm(self) -> None:
+        apply_lift_retype_action(lift_id=self.lift_id, lift_type=self.new_type)
+        bump_camera_epoch()  # geometry changed → bare remount so the redraw takes
+
+    def _on_cancel(self) -> None:
+        # Lift untouched; leave the view so the armed new type (build_mode.mode, already set) drives
+        # the next build. close_panel resolves to close_lift_panel from the lift view.
+        self.sm.close_panel()  # type: ignore[attr-defined]  # dynamic python-statemachine event
+
+
+def show_change_lift_type_dialog(lift_id: str, old_type: str, new_type: str, sm: PlannerStateMachine) -> None:
+    """Public entrypoint for the confirm-retype dialog — the sidebar op triggers it through this (matching
+    how right_panel's other public UI is called cross-module), keeping the dialog class private.
+    """
+    _ChangeLiftTypeDialog(lift_id=lift_id, old_type=old_type, new_type=new_type, sm=sm).show()
 
 
 # =============================================================================

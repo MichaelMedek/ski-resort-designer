@@ -559,12 +559,8 @@ class ResortGraph:
         )
 
     def _simplify_segments(self, segment_ids: list[str]) -> None:
-        """Douglas–Peucker each segment's points in place — the single DP emitter shared by finish
-        smoothing, OSM import (via finish), and JSON load re-thinning. Idempotent: DP of already-thinned
-        points is a no-op, so re-running on load never drifts geometry.
-
-        Junctions/endpoints are the first/last of each segment and are always kept, so adjacent segments
-        keep sharing a junction point by value — the invariant the whole segment-chain model relies on.
+        """Douglas–Peucker each segment in place — the single DP emitter shared by finish, OSM import, and
+        JSON load. Idempotent, and always keeps endpoints so adjacent segments still share junctions by value.
         """
         for sid in segment_ids:
             seg = self.segments[sid]
@@ -578,23 +574,18 @@ class ResortGraph:
             seg.points = simplified
 
     def _rethin_on_load(self) -> None:
-        """Re-apply current thinning to all loaded geometry. DEM-free and idempotent, so reloading an
-        already-thinned save is a no-op (counts stable) — this is why the serialization round-trip holds.
-
-        Lifts: re-run the shared geometry finalizer (vertical-DP terrain + recompute pylons/cable).
-        Slopes/roads: DP-thin only — NEVER re-spline, which is not idempotent and would drift the ribbon
-        and max_slope_pct on every reload.
+        """Re-apply current thinning to loaded geometry (DEM-free, idempotent — reloading is a no-op).
+        Lifts via finalize_geometry; slopes/roads DP-only (never re-splined: that would drift on reload).
         """
-        # Recalculate lift geometry with the latest code parameters
+        # Recalculate lift geometry with the latest code parameters.
         for lift in self.lifts.values():
             lift.terrain_points, lift.pylons, lift.cable_points = Lift.finalize_geometry(
                 terrain_points=lift.terrain_points, lift_type=lift.lift_type
             )
-        # Recalculate path geometry with the latest code parameters (TODO: Add new path tpyes here if any added)
-        for slope in self.slopes.values():
-            self._simplify_segments(segment_ids=slope.segment_ids)
-        for road in self.roads.values():
-            self._simplify_segments(segment_ids=road.segment_ids)
+        # DP-thin every finished segment-group entity via the single accessor (its completeness guard
+        # enforces new SegmentPath kinds show up here — no hand-maintained per-kind loop).
+        for path in self.segment_path_entities:
+            self._simplify_segments(segment_ids=path.segment_ids)
 
     # =========================================================================
     # Slope Operations
