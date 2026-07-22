@@ -15,6 +15,7 @@ Reference: DETAILS.md
 import copy
 import logging
 import statistics
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, NamedTuple, TypedDict, cast
@@ -216,6 +217,12 @@ class ResortGraph:
             return not segment_ids or any(sid in self.segments for sid in segment_ids)
 
         self.undo_stack = [action for action in self.undo_stack if keep(action)]
+
+    def _orphaned_nodes(self) -> list[Node]:
+        """Nodes with no remaining connections (connection_count == 0) — the delete-time snapshot the
+        delete_slope/road/lift undo actions carry so undo can restore them. One computation, three callers.
+        """
+        return [self.nodes[nid] for nid in self.nodes if self.get_connection_count(node_id=nid) == 0]
 
     # =========================================================================
     # Node Operations
@@ -882,6 +889,37 @@ class ResortGraph:
         )
         return road
 
+    def _delete_segment_path(
+        self,
+        *,
+        kind: SegmentKind,
+        entity_id: str,
+        make_action: "Callable[[SegmentPath, tuple[PathSegment, ...], tuple[Node, ...]], UndoAction]",
+        record_undo: bool,
+    ) -> bool:
+        """Delete a slope/road (+ its segments) — the shared body for delete_slope/delete_road.
+
+        Kind-generic: resolves the entity via entity_dict_for_kind, drops its segments, snapshots the
+        orphaned nodes, and (when record_undo) pushes the per-kind Delete*Action built by make_action.
+        """
+        entity = self.entity_dict_for_kind(kind=kind).get(entity_id)
+        if not entity:
+            logger.debug(f"delete: {kind.value} {entity_id} not found, nothing to delete")
+            return False
+
+        deleted_segments = tuple(self.segments[seg_id] for seg_id in entity.segment_ids)
+        for seg_id in entity.segment_ids:
+            del self.segments[seg_id]
+        del self.entity_dict_for_kind(kind=kind)[entity_id]
+
+        orphaned_nodes = tuple(self._orphaned_nodes())
+        if record_undo:
+            self._push_undo(make_action(entity, deleted_segments, orphaned_nodes))
+        self.cleanup_isolated_nodes()
+        self.drop_undo_actions_for_removed_segments()
+        logger.info(f"Deleted {kind.value} {entity.name} with {len(entity.segment_ids)} segments")
+        return True
+
     def delete_road(self, road_id: str, *, record_undo: bool = True) -> bool:
         """Delete a road and its segments.
 
@@ -893,30 +931,14 @@ class ResortGraph:
         Returns:
             True if deleted, False if not found.
         """
-        road = self.roads.get(road_id)
-        if not road:
-            return False
-
-        deleted_segments = [self.segments[seg_id] for seg_id in road.segment_ids]
-        for seg_id in road.segment_ids:
-            self.segments.pop(seg_id, None)
-        del self.roads[road_id]
-
-        # Nodes orphaned by segment removal (connection_count == 0).
-        orphaned_nodes = [self.nodes[nid] for nid in self.nodes if self.get_connection_count(node_id=nid) == 0]
-        if record_undo:
-            self._push_undo(
-                DeleteRoadAction(
-                    road_id=road_id,
-                    deleted_road=road,
-                    deleted_segments=tuple(deleted_segments),
-                    deleted_nodes=tuple(orphaned_nodes),
-                )
-            )
-        self.cleanup_isolated_nodes()
-        self.drop_undo_actions_for_removed_segments()
-        logger.info(f"Deleted road {road.name} with {len(road.segment_ids)} segments")
-        return True
+        return self._delete_segment_path(
+            kind=SegmentKind.ROAD,
+            entity_id=road_id,
+            make_action=lambda road, segs, nodes: DeleteRoadAction(
+                road_id=road_id, deleted_road=cast(Road, road), deleted_segments=segs, deleted_nodes=nodes
+            ),
+            record_undo=record_undo,
+        )
 
     # =========================================================================
     # Lift Operations
@@ -1217,8 +1239,8 @@ class ResortGraph:
         its snapshot already carries this entity and its segments for restore.
         """
         for seg_id in path.segment_ids:
-            self.segments.pop(seg_id, None)
-        self.entity_dict_for_kind(kind=path.kind).pop(path.id, None)
+            del self.segments[seg_id]
+        del self.entity_dict_for_kind(kind=path.kind)[path.id]
         logger.info(f"Merge collapsed {path.name} to zero length — deleted it and its {len(path.segment_ids)} segments")
         return path.segment_ids
 
@@ -1228,7 +1250,7 @@ class ResortGraph:
         No own undo action / no cleanup: the enclosing merge owns the single MergeNodesAction and
         its snapshot already carries this lift for restore.
         """
-        self.lifts.pop(lift.id, None)
+        del self.lifts[lift.id]
         logger.info(f"Merge collapsed lift {lift.name} to zero length — deleted it")
 
     def _drop_collapsed_segments_in_chain(self, path: "SegmentPath") -> list[str]:
@@ -1527,31 +1549,14 @@ class ResortGraph:
         Returns:
             True if deleted, False if not found.
         """
-        slope = self.slopes.get(slope_id)
-        if not slope:
-            logger.debug(f"delete_slope: slope {slope_id} not found, nothing to delete")
-            return False
-
-        deleted_segments = [self.segments[seg_id] for seg_id in slope.segment_ids]
-        for seg_id in slope.segment_ids:
-            self.segments.pop(seg_id, None)
-        del self.slopes[slope_id]
-
-        # Nodes orphaned by segment removal (connection_count == 0).
-        orphaned_nodes = [self.nodes[nid] for nid in self.nodes if self.get_connection_count(node_id=nid) == 0]
-        if record_undo:
-            self._push_undo(
-                DeleteSlopeAction(
-                    slope_id=slope_id,
-                    deleted_slope=slope,
-                    deleted_segments=tuple(deleted_segments),
-                    deleted_nodes=tuple(orphaned_nodes),
-                )
-            )
-        self.cleanup_isolated_nodes()
-        self.drop_undo_actions_for_removed_segments()
-        logger.info(f"Deleted slope {slope.name} with {len(slope.segment_ids)} segments")
-        return True
+        return self._delete_segment_path(
+            kind=SegmentKind.SLOPE,
+            entity_id=slope_id,
+            make_action=lambda s, segs, nodes: DeleteSlopeAction(
+                slope_id=slope_id, deleted_slope=cast(Slope, s), deleted_segments=segs, deleted_nodes=nodes
+            ),
+            record_undo=record_undo,
+        )
 
     def delete_lift(self, lift_id: str) -> bool:
         """Delete a lift.
@@ -1570,8 +1575,7 @@ class ResortGraph:
         # Remove the lift
         del self.lifts[lift_id]
 
-        # Identify nodes that will be orphaned (connection_count == 0 after removal)
-        orphaned_nodes = [self.nodes[nid] for nid in self.nodes if self.get_connection_count(node_id=nid) == 0]
+        orphaned_nodes = self._orphaned_nodes()
 
         # Push to undo stack with full data for restore (including orphaned nodes)
         self._push_undo(
