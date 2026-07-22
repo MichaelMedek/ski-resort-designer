@@ -273,6 +273,7 @@ def _render_flythrough_controls(ctx: PlannerContext, noun: str) -> None:
     with right:
         if _action_button("⏹️ Stop", key="flythrough_stop", help="Stop the flythrough", disabled=not playing):
             ctx.viewing.stop_flythrough()
+            bump_camera_epoch()  # remount → re-read the 3D entry fit (view_3d stays on): reframe there, not 2D
             trigger_rerun()
 
 

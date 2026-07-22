@@ -588,12 +588,6 @@ class MapContext(BaseContext):
         self.pitch = pitch
         self.bearing = MapConfig.DEFAULT_BEARING
 
-    def reset_view(self) -> None:
-        """Reset zoom, pitch, and bearing to defaults for 2D viewing."""
-        self.zoom = MapConfig.VIEWING_ZOOM
-        self.pitch = MapConfig.DEFAULT_PITCH
-        self.bearing = MapConfig.DEFAULT_BEARING
-
     def clear(self) -> None:
         """Reset to default map position and view settings."""
         self.lon = MapConfig.START_CENTER_LON
