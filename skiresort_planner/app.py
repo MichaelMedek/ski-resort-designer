@@ -123,12 +123,15 @@ def init_session_state() -> None:
     if "_upload_counter" not in st.session_state:
         st.session_state._upload_counter = 0
 
-    # Two independent counters (see infra.py): camera_epoch keys the map component (remount → recenter),
-    # dedup_epoch keys click ids (proposal/marker regeneration) without moving the camera.
+    # camera_epoch keys the map component (remount → recenter).
     if "camera_epoch" not in st.session_state:
         st.session_state.camera_epoch = 0
+    # dedup_epoch keys click ids (proposal/marker regeneration) without moving the camera.
     if "dedup_epoch" not in st.session_state:
         st.session_state.dedup_epoch = 0
+    # window_size_epoch keys the js-eval window-height probe; bumping it re-measures the window (see Reset View).
+    if "window_size_epoch" not in st.session_state:
+        st.session_state.window_size_epoch = 0
 
 
 def _init_resort_from_url_or_new() -> None:

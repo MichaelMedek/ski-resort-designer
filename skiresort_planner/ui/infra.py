@@ -67,6 +67,15 @@ def trigger_rerun(scope: Literal["app", "fragment"] = "app") -> None:
     st.rerun(scope=scope)
 
 
+def _bump_epoch(key: str) -> None:
+    """Increment a session-state remount epoch. Tolerant get is load-bearing (pre-bootstrap in
+    tests), NOT defensive — see the autosave-choke-point tolerant-gets note.
+    """
+    old = st.session_state.get(key, 0)
+    st.session_state[key] = old + 1
+    logger.debug(f"[MAP] Bumped {key}: {old} -> {old + 1}")
+
+
 def bump_camera_epoch() -> None:
     """Increment camera_epoch → remount the Pydeck component so it re-reads initial_view_state.
 
@@ -74,9 +83,7 @@ def bump_camera_epoch() -> None:
     also gives the fresh component clean click state. Do NOT call it for in-place interactions
     (commit/cancel/undo/start/toggle) — those must keep the user's live pan.
     """
-    old = st.session_state.get("camera_epoch", 0)
-    st.session_state.camera_epoch = old + 1
-    logger.debug(f"[MAP] Bumped camera_epoch: {old} -> {old + 1}")
+    _bump_epoch("camera_epoch")
 
 
 def bump_dedup_epoch() -> None:
@@ -86,9 +93,16 @@ def bump_dedup_epoch() -> None:
     camera. Bump it whenever the proposal/marker set is regenerated so that re-clicking the same
     proposal index (or re-toggling the same node) after regeneration counts as a fresh click.
     """
-    old = st.session_state.get("dedup_epoch", 0)
-    st.session_state.dedup_epoch = old + 1
-    logger.debug(f"[MAP] Bumped dedup_epoch: {old} -> {old + 1}")
+    _bump_epoch("dedup_epoch")
+
+
+def bump_window_size_epoch() -> None:
+    """Increment window_size_epoch → remount the js-eval probe so it re-reads parent.innerHeight.
+
+    The only way to re-measure the browser window (e.g. after a resize); the static key otherwise
+    reads it once per session and caches it forever.
+    """
+    _bump_epoch("window_size_epoch")
 
 
 def reload_map(*, center: tuple[float, float], zoom: float, pitch: float = MapConfig.VIEWING_PITCH) -> None:
@@ -114,7 +128,8 @@ def viewport_map_height() -> int | None:
     Returns None only before the very first successful read (caller shows a placeholder);
     thereafter the cached viewport height, floored at a minimum.
     """
-    value = streamlit_js_eval(js_expressions="parent.innerHeight", key="window_inner_height")
+    epoch = st.session_state.get("window_size_epoch", 0)
+    value = streamlit_js_eval(js_expressions="parent.innerHeight", key=f"window_inner_height_{epoch}")
     if isinstance(value, int | float):
         st.session_state.window_height_px = int(value)
     window_height = st.session_state.get("window_height_px")

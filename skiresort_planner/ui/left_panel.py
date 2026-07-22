@@ -35,7 +35,7 @@ from skiresort_planner.persistence import backup_store
 from skiresort_planner.ui.actions import undo_cancels_current_build, undo_last_action
 from skiresort_planner.ui.context import BuildMode, PlannerContext
 from skiresort_planner.ui.dialogs import ConfirmDialog
-from skiresort_planner.ui.infra import bump_camera_epoch, reload_map, trigger_rerun
+from skiresort_planner.ui.infra import bump_camera_epoch, bump_window_size_epoch, reload_map, trigger_rerun
 from skiresort_planner.ui.mode_registry import BUILD_STATES, OPERATIONS, BuilderOperation, OperationGroup
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
@@ -263,21 +263,24 @@ class SidebarRenderer:
 
     def _render_reset_view_button(self) -> None:
         """Reset the camera to the last SET view — the stored 2D frame in 2D, or the entity's 3D entry
-        fit in 3D (a flythrough is stopped first). Forces a remount so deck.gl re-reads that framing.
+        fit in 3D (a flythrough is stopped first). Forces a remount so deck.gl re-reads that framing,
+        and re-measures the browser window so a resize since load re-fits the map to the new size.
         """
         if st.button(
             "📷 Reset View",
             width="stretch",
-            help="Reset the camera to the last framed view",
+            help="Re-frame the camera to the last set view and re-fit the map to the current browser window size",
         ):
             self.ctx.viewing.stop_flythrough()  # a fly-away must snap back to the 3D entry fit
             # Manual cleanup fallback for any orphaned nodes
             removed = self.graph.cleanup_isolated_nodes()
             if removed > 0:
                 logger.warning(f"Reset View cleaned {removed} orphaned node(s)")
-            # The current state's view_state() already IS the target (stored 2D view, or the 3D entry fit):
-            # a remount makes deck.gl re-read it, discarding the user's live pan/tilt.
+            # Remount so deck.gl re-reads the current state's view_state(), discarding the live pan/tilt.
             bump_camera_epoch()
+            # Re-measure the browser window (the js-eval probe reads it once per session otherwise) to re-fit on resize.
+            bump_window_size_epoch()
+            # Rerun so the remount + re-measure take effect this pass.
             trigger_rerun()
 
     def _render_mode_selector(self) -> None:
