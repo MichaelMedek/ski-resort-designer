@@ -631,7 +631,7 @@ class StyleConfig:
         "tunnel": [20, 20, 20],  # blend toward near-black
     }
     BRIDGE_TUNNEL_BLEND = 0.45  # how far the base hue is pulled toward the structure tint
-    BRIDGE_TUNNEL_WIDTH_MULT = 1.5  # bridge/tunnel ribbons render this much wider than a normal segment
+    BRIDGE_TUNNEL_WIDTH_MULT = 2.0  # bridge/tunnel ribbons render this much wider than a normal segment
 
     @staticmethod
     def _blend(rgba: list[int], target_rgb: list[int], t: float) -> list[int]:
