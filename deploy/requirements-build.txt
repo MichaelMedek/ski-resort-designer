@@ -1,0 +1,5 @@
+# Build-only dependencies for packaging the desktop app (NOT app runtime deps — keep out of requirements.txt).
+# Install into the same venv used to run the app, then run deploy/build_mac.sh or build_windows.ps1.
+--index-url https://pypi.org/simple
+pyinstaller>=6.0
+pywebview>=5.0

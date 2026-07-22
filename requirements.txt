@@ -1,6 +1,10 @@
 # Requirements for ski_terrain_planner module
 # Install with: pip install -r requirements.txt
 
+# Install from public PyPI (self-contained: no machine/global pip config needed).
+# setup.py skips this line when reading deps; pip honors it for the whole install.
+--index-url https://pypi.org/simple
+
 # Web UI
 streamlit>=1.30.0
 streamlit-deckgl>=0.5.0  # Full deck.gl events including terrain clicks
