@@ -685,6 +685,25 @@ class TestThreeDViewCalculators:
         assert bearing == (feature_bearing - 90) % 360
         assert zoom == MapConfig.VIEW_3D_ZOOM  # fixed 3D zoom
 
+    def test_route_view_sits_half_step_further_out_than_entities(self, empty_graph, mock_dem_blue_slope) -> None:
+        # Static 3D route view = one flat VIEW_3D_ROUTE_ZOOM_OUT step out from an entity's 3D zoom (so a
+        # whole route fits), regardless of size; center/bearing still follow the endpoints.
+        from skiresort_planner.core.geo_calculator import GeoCalculator
+        from skiresort_planner.ui.center_map import MapRenderer
+
+        _road, lift = _populate_full_resort(empty_graph, mock_dem_blue_slope)
+        a, b = lift.start_node_id, lift.end_node_id
+        start, end = empty_graph.nodes[a], empty_graph.nodes[b]
+        lat, lon, bearing, zoom, pitch = MapRenderer.calculate_3d_view_for_route(
+            graph=empty_graph, start_node_id=a, end_node_id=b
+        )
+        assert lat == (start.lat + end.lat) / 2
+        assert lon == (start.lon + end.lon) / 2
+        assert pitch == MapConfig.VIEW_3D_PITCH
+        feature_bearing = GeoCalculator.initial_bearing_deg(lon1=start.lon, lat1=start.lat, lon2=end.lon, lat2=end.lat)
+        assert bearing == (feature_bearing - 90) % 360
+        assert zoom == MapConfig.VIEW_3D_ZOOM - MapConfig.VIEW_3D_ROUTE_ZOOM_OUT
+
 
 class TestLayerCollection:
     """Tests for layer collection z-ordering."""

@@ -87,6 +87,20 @@ def _make_road(graph):
     return graph.finish_road(segment_ids=[list(graph.segments.keys())[-1]])
 
 
+def _commit_straight_slope_len(graph, dem, n_segments: int, start_lat: float = 0.0):
+    """Commit n straight ~480m south segments into one finished slope; longer n = longer slope."""
+    before = set(graph.segments)
+    lat = start_lat
+    for _ in range(n_segments):
+        pts = []
+        for i in range(25):
+            plat = lat - 20.0 * i / MapConfig.METERS_PER_DEGREE_EQUATOR
+            pts.append(PathPoint(lon=0.0, lat=plat, elevation=dem.get_elevation_or_raise(lon=0.0, lat=plat)))
+        graph.commit_paths(paths=[ProposedPathSegment(points=pts, target_difficulty="blue")])
+        lat = pts[-1].lat
+    return graph.finish_slope(segment_ids=[sid for sid in graph.segments if sid not in before])
+
+
 class TestDeleteSlopeAction:
     def test_removes_slope(self, fake_st, empty_graph, path_points_blue) -> None:
         from skiresort_planner.ui.actions import delete_slope_action
@@ -691,35 +705,48 @@ class TestUndoLastActionDispatch:
 
 
 class TestCenterHelpers:
-    """center_on_* set the map to the entity midpoint at the given zoom."""
+    """center_on_* set the map to the entity midpoint at a zoom that fits the entity's length."""
 
-    def test_center_on_slope_sets_map(self, empty_graph, path_points_blue) -> None:
-        from skiresort_planner.ui.actions import center_on_slope
+    def test_center_on_segment_path_slope_sets_map(self, empty_graph, path_points_blue) -> None:
+        from skiresort_planner.ui.actions import center_on_segment_path
 
         slope = _make_slope(empty_graph, path_points_blue)
         _sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        center_on_slope(ctx=ctx, graph=empty_graph, slope=slope, zoom=15)
+        center_on_segment_path(ctx=ctx, graph=empty_graph, path=slope)
 
         start_pt = empty_graph.segments[slope.segment_ids[0]].points[0]
         end_pt = empty_graph.segments[slope.segment_ids[-1]].points[-1]
-        assert ctx.map.zoom == 15
+        assert ctx.map.zoom == MapConfig.zoom_for_span_m(span_m=slope.get_total_length(segments=empty_graph.segments))
         assert ctx.map.lon == (start_pt.lon + end_pt.lon) / 2, "centered on the path midpoint"
         assert ctx.map.lat == (start_pt.lat + end_pt.lat) / 2
         assert ctx.map.pitch == MapConfig.VIEWING_PITCH
 
-    def test_center_on_road_sets_map(self, empty_graph) -> None:
-        from skiresort_planner.ui.actions import center_on_road
+    def test_center_on_segment_path_road_sets_map(self, empty_graph) -> None:
+        from skiresort_planner.ui.actions import center_on_segment_path
 
         road = _make_road(empty_graph)
         _sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        center_on_road(ctx=ctx, graph=empty_graph, road=road, zoom=16)
+        center_on_segment_path(ctx=ctx, graph=empty_graph, path=road)
 
         start_pt = empty_graph.segments[road.segment_ids[0]].points[0]
         end_pt = empty_graph.segments[road.segment_ids[-1]].points[-1]
-        assert ctx.map.zoom == 16
+        assert ctx.map.zoom == MapConfig.zoom_for_span_m(span_m=road.get_total_length(segments=empty_graph.segments))
         assert ctx.map.lon == (start_pt.lon + end_pt.lon) / 2, "centered on the road midpoint"
         assert ctx.map.lat == (start_pt.lat + end_pt.lat) / 2
         assert ctx.map.pitch == MapConfig.VIEWING_PITCH
+
+    def test_shorter_slope_zooms_in_more_than_a_longer_one(self, empty_graph, mock_dem_blue_slope) -> None:
+        # The adaptive law: a shorter build frames at a HIGHER (more-in) zoom than a longer one.
+        short = _commit_straight_slope_len(empty_graph, mock_dem_blue_slope, n_segments=2)
+        long = _commit_straight_slope_len(empty_graph, mock_dem_blue_slope, n_segments=8, start_lat=-1.0)
+        _sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        from skiresort_planner.ui.actions import center_on_segment_path
+
+        center_on_segment_path(ctx=ctx, graph=empty_graph, path=short)
+        short_zoom = ctx.map.zoom
+        center_on_segment_path(ctx=ctx, graph=empty_graph, path=long)
+        long_zoom = ctx.map.zoom
+        assert short_zoom > long_zoom, "the shorter slope frames tighter (higher zoom)"
 
     def test_center_on_lift_sets_map(self, empty_graph, mock_dem_blue_slope) -> None:
         from skiresort_planner.ui.actions import center_on_lift
@@ -736,8 +763,8 @@ class TestCenterHelpers:
         lift = empty_graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
         _sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
 
-        center_on_lift(ctx=ctx, graph=empty_graph, lift=lift, zoom=14)
-        assert ctx.map.zoom == 14
+        center_on_lift(ctx=ctx, graph=empty_graph, lift=lift)
+        assert ctx.map.zoom == MapConfig.zoom_for_span_m(span_m=lift.get_length_m(nodes=empty_graph.nodes))
         assert ctx.map.lon == (bottom.lon + top.lon) / 2, "centered on the lift-station midpoint"
         assert ctx.map.lat == (bottom.lat + top.lat) / 2
         assert ctx.map.pitch == MapConfig.VIEWING_PITCH
