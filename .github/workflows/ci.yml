@@ -15,6 +15,10 @@ concurrency:
 jobs:
   ci:
     runs-on: ubuntu-latest
+    # DATA_DIR/OUTPUT_DIR/BACKUP_DIR now resolve to a per-user OS app-data dir, so pin the root to a
+    # workspace path here — otherwise the DEM would download outside the cached location every run.
+    env:
+      SKIRESORT_DATA_ROOT: ${{ github.workspace }}/.skiresort-data
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
@@ -30,8 +34,8 @@ jobs:
       - name: Cache Alps DEM
         uses: actions/cache@v4
         with:
-          path: data/alps_dem.tif
-          key: alps-dem-v1
+          path: ${{ github.workspace }}/.skiresort-data/data/alps_dem.tif
+          key: alps-dem-v2
       # Many tests need the real DEM. Reuse the app's own downloader, which
       # skips if the file already exists (i.e. was restored from cache).
       - name: Download Alps DEM if missing
