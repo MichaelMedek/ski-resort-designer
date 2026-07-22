@@ -313,9 +313,8 @@ class EarthworkConfig:
     # Roads are a fixed-width vehicle ribbon — unlike ski pistes
     ROAD_WIDTH_M = 12
 
-    # Bridge/tunnel bar: a smoothed deck floats a few m off ground routinely, so only a bigger
-    # deviation counts (not EXCAVATOR_THRESHOLD_M, which is a side cut).
-    BRIDGE_TUNNEL_THRESHOLD_M = 15.0
+    # Bridge/tunnel bar: a smoothed deck floats a few m off ground routinely, max ground deviation.
+    BRIDGE_TUNNEL_THRESHOLD_M = 50.0
 
 
 assert set(EarthworkConfig.BELT_WIDTH_LIMITS.keys()) == set(SlopeConfig.DIFFICULTIES)
