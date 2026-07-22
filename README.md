@@ -13,8 +13,8 @@ You've cloned the repository and opened the folder in Terminal. Follow these ste
 A virtual environment keeps this project's dependencies separate from other Python projects:
 
 ```bash
-python3.11 -m venv ".venv-skiresort"
-source ".venv-skiresort/bin/activate"
+python3.11 -m venv .venv-skiresort
+source .venv-skiresort/bin/activate
 ```
 
 ### Step 2: Install Dependencies
@@ -38,7 +38,7 @@ To stop the server, press `Ctrl+C` in your terminal.
 ### Running Again Later
 
 ```bash
-source ".venv-skiresort/bin/activate"
+source .venv-skiresort/bin/activate
 streamlit run skiresort_planner/app.py
 ```
 
