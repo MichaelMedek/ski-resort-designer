@@ -4,48 +4,27 @@ Design ski resorts on real terrain with an addictive, game-like interface.
 
 ![Full Resort Overview](docs/images/7-FullResort.png)
 
-## Installation Guide (macOS)
+## Download & Run
 
-You've cloned the repository and opened the folder in Terminal. Follow these steps to run the app.
+Get the app as a normal desktop program.
 
-### Step 1: Create a Python Virtual Environment
+1. Open the [**Releases**](/MichaelMedek/ski-resort-designer/releases/latest) page and download the file for your computer:
+   - **Mac** → `AlpinArchitect.dmg`
+   - **Windows** → `AlpinArchitect-win.zip`
+2. Open it:
+   - **Mac** → double-click the `.dmg`, drag **Alpin Architect** into **Applications**, then open it.
+   - **Windows** → unzip the file, open the folder, double-click **`AlpinArchitect.exe`**.
+3. First open shows a one-time safety prompt (the app isn't code-signed):
+   - **Mac** → right-click the app → **Open** → **Open**.
+   - **Windows** → **"Windows protected your PC"** → **More info** → **Run anyway**.
 
-A virtual environment keeps this project's dependencies separate from other Python projects:
+On first launch it downloads ~285 MB of terrain data automatically (once); after that it starts fast.
 
-```bash
-python3.11 -m venv .venv-skiresort
-source .venv-skiresort/bin/activate
-```
+## Use the app from your browser
 
-### Step 2: Install Dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### Step 3: Run the Application
-
-```bash
-streamlit run skiresort_planner/app.py
-```
-
-The app opens automatically at http://localhost:8501
-
-On first launch, the terrain data (~285MB) is automatically downloaded from [Hugging Face](https://huggingface.co/datasets/MichaelMedek/alps_eurodem). This only happens once - subsequent runs use the cached local copy.
-
-To stop the server, press `Ctrl+C` in your terminal.
-
-### Running Again Later
-
-```bash
-source .venv-skiresort/bin/activate
-streamlit run skiresort_planner/app.py
-```
-
-Or to launch it in debug mode and log to file:
-```bash
-SKIRESORT_LOG_LEVEL=DEBUG streamlit run skiresort_planner/app.py 2>&1 | tee output/debug_$(date +%Y%m%d_%H%M%S).log
-```
+No install needed: open **https://ski-resort-designer.streamlit.app/**. If it's been idle it may be
+asleep — click the **wake-up button** and wait a minute or two, then use it normally. Handy on a tablet
+or any device that can't run the desktop app; just expect it to be a bit slower than the native version.
 
 ---
 
@@ -65,3 +44,21 @@ Detailed documentation  about how to use the app UI and the underlying algorithm
 |----------|----------|
 | [User Guide](docs/DETAILS_UI.md) | How to use the application |
 | [Technical Reference](docs/DETAILS.md) | Architecture and algorithms |
+
+---
+
+## Run from source (developers)
+
+```bash
+python3.11 -m venv .venv-skiresort && source .venv-skiresort/bin/activate
+pip install -r requirements.txt
+streamlit run skiresort_planner/app.py                      # opens at http://localhost:8501
+```
+
+Terrain data downloads on first run (see above); `Ctrl+C` stops the server. Debug logging:
+
+```bash
+SKIRESORT_LOG_LEVEL=DEBUG streamlit run skiresort_planner/app.py 2>&1 | tee output/debug_$(date +%Y%m%d_%H%M%S).log
+```
+
+Packaging the desktop app (installers are built automatically by CI on release) — see [deploy/README.md](deploy/README.md).
