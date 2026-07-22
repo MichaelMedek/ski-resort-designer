@@ -48,9 +48,7 @@ from skiresort_planner.ui.state_machine import PlannerStateMachine
 if TYPE_CHECKING:
     from skiresort_planner.model.node import Node
     from skiresort_planner.model.proposed_path import ProposedPathSegment
-    from skiresort_planner.model.road import Road
     from skiresort_planner.model.segment_path import SegmentPath
-    from skiresort_planner.model.slope import Slope
     from skiresort_planner.ui.context import SegmentBuildContext
 
 logger = logging.getLogger(__name__)
@@ -65,46 +63,36 @@ def center_on_segment_path(
     ctx: PlannerContext,
     graph: ResortGraph,
     path: "SegmentPath",
-    zoom: int,
     pitch: float = MapConfig.VIEWING_PITCH,
 ) -> None:
-    """Center map on a segment-group entity's midpoint (shared by slopes and roads)."""
+    """Center map on a segment-group entity's midpoint (shared by slopes and roads); zoom fits its length."""
     lon, lat = path.center(segments=graph.segments)
+    zoom = MapConfig.zoom_for_span_m(span_m=path.get_total_length(segments=graph.segments))
     ctx.map.set_view(lon=lon, lat=lat, zoom=zoom, pitch=pitch)
-
-
-def center_on_slope(
-    ctx: PlannerContext,
-    graph: ResortGraph,
-    slope: "Slope",
-    zoom: int,
-    pitch: float = MapConfig.VIEWING_PITCH,
-) -> None:
-    """Center map on slope midpoint with specified zoom and pitch."""
-    center_on_segment_path(ctx=ctx, graph=graph, path=slope, zoom=zoom, pitch=pitch)
-
-
-def center_on_road(
-    ctx: PlannerContext,
-    graph: ResortGraph,
-    road: "Road",
-    zoom: int,
-    pitch: float = MapConfig.VIEWING_PITCH,
-) -> None:
-    """Center map on road midpoint with specified zoom and pitch."""
-    center_on_segment_path(ctx=ctx, graph=graph, path=road, zoom=zoom, pitch=pitch)
 
 
 def center_on_lift(
     ctx: PlannerContext,
     graph: ResortGraph,
     lift: Lift,
-    zoom: int,
     pitch: float = MapConfig.VIEWING_PITCH,
 ) -> None:
-    """Center map on lift midpoint with specified zoom and pitch."""
+    """Center map on lift midpoint; zoom fits its length."""
     lon, lat = lift.center(nodes=graph.nodes)
+    zoom = MapConfig.zoom_for_span_m(span_m=lift.get_length_m(nodes=graph.nodes))
     ctx.map.set_view(lon=lon, lat=lat, zoom=zoom, pitch=pitch)
+
+
+def center_on_route(
+    ctx: PlannerContext,
+    graph: ResortGraph,
+    route: "Route",
+    pitch: float = MapConfig.VIEWING_PITCH,
+) -> None:
+    """Center map on a route's start→end midpoint; zoom fits the route's total slope length."""
+    start, end = graph.nodes[route.node_path[0]], graph.nodes[route.node_path[-1]]
+    zoom = MapConfig.zoom_for_span_m(span_m=route.total_slope_length_m)
+    ctx.map.set_view(lon=(start.lon + end.lon) / 2, lat=(start.lat + end.lat) / 2, zoom=zoom, pitch=pitch)
 
 
 # =============================================================================
@@ -149,6 +137,18 @@ def process_route_plan_pending() -> None:
     ctx.route_plan.routes = RoutePlanner(graph).best_routes(start_node_id=start, end_node_id=end)
     ctx.route_plan.selected_index = 0
     ctx.viewing.stop_flythrough()  # a fresh plan must not keep riding the previous route's playback
+    recenter_on_selected_route()  # frame the shown route (adaptive zoom to its length)
+
+
+def recenter_on_selected_route() -> None:
+    """Reframe the 2D map on the currently-shown route (called on plan + whenever the shown route
+    changes). No-op if no route is shown. Center is the shared start→end midpoint; zoom fits its length.
+    """
+    ctx: PlannerContext = st.session_state.context
+    graph: ResortGraph = st.session_state.graph
+    route = selected_route()
+    if route is not None:
+        center_on_route(ctx=ctx, graph=graph, route=route)
 
 
 def route_plan_shown_routes() -> list[Route]:
@@ -634,7 +634,7 @@ def _finalize_entity(kind: SegmentKind) -> "SegmentPath":
     # Frame the finished entity IN PLACE (no remount); do NOT rerun here — the caller fires the finish event
     # whose state-machine listener reruns. The new view flows via ctx.map → initialViewState, which deck.gl
     # applies to the mounted component (no camera_epoch bump = no gray-out iframe remount).
-    center_on_segment_path(ctx=ctx, graph=graph, path=entity, zoom=MapConfig.VIEWING_ZOOM)
+    center_on_segment_path(ctx=ctx, graph=graph, path=entity)
     return entity
 
 

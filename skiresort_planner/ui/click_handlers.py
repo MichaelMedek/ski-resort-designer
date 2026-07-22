@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING
 
 import streamlit as st
 
-from skiresort_planner.constants import MapConfig
 from skiresort_planner.model.click_info import ClickInfo, MapClickType, MarkerType
 from skiresort_planner.model.message import InvalidClickMessage, OutsideTerrainMessage
 from skiresort_planner.model.node import Node
@@ -26,9 +25,7 @@ from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.ui.actions import (
     add_node_on_path_action,
     center_on_lift,
-    center_on_road,
     center_on_segment_path,
-    center_on_slope,
     commit_selected_path,
     resolve_build_origin,
 )
@@ -215,7 +212,7 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
             if not slope:
                 raise RuntimeError(f"Slope {click_info.slope_id} not found in graph")
             logger.debug(f"[IDLE] Slope click: showing panel for {slope.name}")
-            center_on_slope(ctx=ctx, graph=graph, slope=slope, zoom=MapConfig.VIEWING_ZOOM)
+            center_on_segment_path(ctx=ctx, graph=graph, path=slope)
             sm.view_slope(slope_id=slope.id)  # Triggers st.rerun() via listener
             return
 
@@ -237,7 +234,7 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
                 return
             logger.debug(f"[IDLE] Segment click: showing panel for {parent.name}")
             # parent is a SegmentPath; branch on its reload-safe .kind (never isinstance).
-            center_on_segment_path(ctx=ctx, graph=graph, path=parent, zoom=MapConfig.VIEWING_ZOOM)
+            center_on_segment_path(ctx=ctx, graph=graph, path=parent)
             if parent.kind == SegmentKind.SLOPE:
                 sm.view_slope(slope_id=parent.id)
             elif parent.kind == SegmentKind.ROAD:
@@ -255,7 +252,7 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
             logger.debug(f"[IDLE] {marker_type.value} click: showing panel for {lift.name}")
             # Sync build mode to the viewed lift's type (single source of truth for selection)
             ctx.build_mode.mode = lift.lift_type
-            center_on_lift(ctx=ctx, graph=graph, lift=lift, zoom=MapConfig.VIEWING_ZOOM)
+            center_on_lift(ctx=ctx, graph=graph, lift=lift)
             sm.view_lift(lift_id=lift.id)  # Triggers st.rerun() via listener
             return
 
@@ -266,7 +263,7 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
             if not road:
                 raise RuntimeError(f"Road {click_info.road_id} not found in graph")
             logger.debug(f"[IDLE] Road click: showing panel for {road.name}")
-            center_on_road(ctx=ctx, graph=graph, road=road, zoom=MapConfig.VIEWING_ZOOM)
+            center_on_segment_path(ctx=ctx, graph=graph, path=road)
             sm.view_road(road_id=road.id)  # Triggers st.rerun() via listener
             return
 
@@ -598,7 +595,7 @@ def handle_lift_placing_click(click_info: ClickInfo, elevation: float | None) ->
     logger.info(f"Lift {lift.name} created successfully")
     # Frame the new lift IN PLACE (no remount); do NOT rerun here — sm.complete_lift's listener reruns.
     # The new view flows via ctx.map → initialViewState (no camera_epoch bump = no gray-out iframe remount).
-    center_on_lift(ctx=ctx, graph=graph, lift=lift, zoom=MapConfig.VIEWING_ZOOM)
+    center_on_lift(ctx=ctx, graph=graph, lift=lift)
     sm.complete_lift(lift_id=lift.id)
 
 

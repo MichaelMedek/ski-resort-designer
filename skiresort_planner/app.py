@@ -194,7 +194,7 @@ def run_pending_load(
     work: Callable[[ProgressFn], object],
     *,
     reset_center: tuple[float, float],
-    reset_zoom: int,
+    reset_zoom: float,
     catch: type[Exception] | tuple[type[Exception], ...] | None = None,
     failure_message: WarningToast | None = None,
 ) -> None:
@@ -478,11 +478,13 @@ def _run_app_ui() -> None:
         # Capture the box center BEFORE process_* consumes (nulls) it — the reframe target on success.
         lon, lat = ctx.pending.osm_import_center_lon, ctx.pending.osm_import_center_lat
         assert lon is not None and lat is not None, "a pending OSM import always has a placed center"
+        # The framed box IS the extent: side = 2 * half-width → adaptive overview zoom (same scale as builds).
+        box_side_m = 2 * ctx.pending.osm_import_half_width_km * 1000.0
         run_pending_load(
             message=OSMImportLoadingMessage(mode=ctx.pending.osm_import_mode),
             work=process_osm_import_pending,
             reset_center=(lon, lat),
-            reset_zoom=MapConfig.IMPORT_OVERVIEW_ZOOM,
+            reset_zoom=MapConfig.zoom_for_span_m(span_m=box_side_m),
             catch=requests.RequestException,  # only a network failure is soft; a parse/logic bug must raise
             failure_message=OSMImportErrorMessage(error="the area could not be imported — network error"),
         )

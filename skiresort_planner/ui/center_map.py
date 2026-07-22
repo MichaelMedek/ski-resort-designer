@@ -405,9 +405,11 @@ class MapRenderer:
         start_node_id: str,
         end_node_id: str,
     ) -> tuple[float, float, float, float, float]:
-        """Side-view camera framing a route between its start and end nodes (same helper as entities)."""
+        """Side-view camera framing a route between its start and end nodes (same helper as entities),
+        but one flat VIEW_3D_ROUTE_ZOOM_OUT step further out so a whole route fits (not per-size).
+        """
         start, end = graph.nodes[start_node_id], graph.nodes[end_node_id]
-        return MapRenderer._calculate_3d_view_for_endpoints(
+        lat, lon, bearing, zoom, pitch = MapRenderer._calculate_3d_view_for_endpoints(
             start_lat=start.lat,
             start_lon=start.lon,
             start_elev=start.elevation,
@@ -416,6 +418,7 @@ class MapRenderer:
             end_elev=end.elevation,
             camera_bearing_offset=-90,
         )
+        return (lat, lon, bearing, zoom - MapConfig.VIEW_3D_ROUTE_ZOOM_OUT, pitch)
 
     @staticmethod
     def flythrough_keyframes(groups: "Sequence[ViewingGroup]") -> list[tuple[float, float, float]]:

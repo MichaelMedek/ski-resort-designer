@@ -543,7 +543,7 @@ class MapContext(BaseContext):
 
     lon: float = MapConfig.START_CENTER_LON
     lat: float = MapConfig.START_CENTER_LAT
-    zoom: int = MapConfig.VIEWING_ZOOM
+    zoom: float = MapConfig.VIEWING_ZOOM
     pitch: float = MapConfig.DEFAULT_PITCH
     bearing: float = MapConfig.DEFAULT_BEARING
 
@@ -580,7 +580,7 @@ class MapContext(BaseContext):
         self.lon = lon
         self.lat = lat
 
-    def set_view(self, lon: float, lat: float, zoom: int, pitch: float = MapConfig.VIEWING_PITCH) -> None:
+    def set_view(self, lon: float, lat: float, zoom: float, pitch: float = MapConfig.VIEWING_PITCH) -> None:
         """Frame the map on an explicit center+zoom (north-up). Single source for camera framing."""
         self.lon = lon
         self.lat = lat

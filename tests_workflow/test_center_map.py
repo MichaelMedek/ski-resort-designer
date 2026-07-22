@@ -5,10 +5,40 @@ the 2D/3D full-resort render, LayerCollection z-ordering, and the
 calculate_3d_view_for_* camera calculators.
 """
 
+import pytest
+
 from skiresort_planner.constants import MapConfig
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.ui.click_detector import ClickDetector
 from skiresort_planner.ui.context import ClickDeduplicationContext
+
+
+class TestZoomForSpanM:
+    """MapConfig.zoom_for_span_m: log law around the ~4km anchor, clamped [12, 15], smooth in between."""
+
+    def test_anchor_and_edge_values(self) -> None:
+        # 4km fits at the base; each halving/doubling of span = ±1 zoom; the clamp edges are exact.
+        assert MapConfig.zoom_for_span_m(span_m=4000.0) == 13.0  # anchor = VIEWING_ZOOM
+        assert MapConfig.zoom_for_span_m(span_m=2000.0) == 14.0  # one step in
+        assert MapConfig.zoom_for_span_m(span_m=1000.0) == 15.0  # clamp-in edge (raw == 15)
+        assert MapConfig.zoom_for_span_m(span_m=8000.0) == 12.0  # clamp-out edge (raw == 12)
+
+    def test_out_of_range_clamps_to_the_edge_values(self) -> None:
+        # Tiny builds pin at the max-in clamp; huge ones at the max-out clamp.
+        assert MapConfig.zoom_for_span_m(span_m=500.0) == 15.0
+        assert MapConfig.zoom_for_span_m(span_m=200.0) == 15.0
+        assert MapConfig.zoom_for_span_m(span_m=12000.0) == 12.0
+        assert MapConfig.zoom_for_span_m(span_m=50000.0) == 12.0
+
+    def test_monotonic_non_increasing_in_span(self) -> None:
+        spans = [300.0, 800.0, 1000.0, 1500.0, 2000.0, 4000.0, 6000.0, 8000.0, 15000.0]
+        zooms = [MapConfig.zoom_for_span_m(span_m=s) for s in spans]
+        assert zooms == sorted(zooms, reverse=True), "bigger span must never zoom in more"
+
+    def test_non_positive_span_raises(self) -> None:
+        for bad in (0.0, -1.0):
+            with pytest.raises(AssertionError, match="positive span"):
+                MapConfig.zoom_for_span_m(span_m=bad)
 
 
 def _populate_full_resort(graph, dem):

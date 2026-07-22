@@ -49,6 +49,7 @@ from skiresort_planner.ui.actions import (
     delete_direct_connection_action,
     delete_nodes_action,
     flythrough_keyframe_count,
+    recenter_on_selected_route,
     rename_entity_action,
     route_plan_shown_routes,
 )
@@ -230,19 +231,25 @@ def _action_button(
 
 
 def _render_3d_toggle(
-    ctx: PlannerContext, *, key_noun: str, noun: str, compute_2d_center: Callable[[], tuple[float, float]]
+    ctx: PlannerContext,
+    *,
+    key_noun: str,
+    noun: str,
+    compute_2d_view: Callable[[], tuple[tuple[float, float], float]],
 ) -> None:
     """The single 3D/2D view toggle, shared by every viewing panel (slope/road/lift AND routes).
 
     The enable-3D branch and the button rendering are identical everywhere; the ONLY thing that
-    differs is where the 2D map reframes when leaving 3D — supplied as `compute_2d_center`. The 3D
-    camera fit itself lives in each state's view_state. Never returns when clicked (reload/rerun).
+    differs is where the 2D map reframes when leaving 3D — supplied as `compute_2d_view` (returns the
+    (center, adaptive-zoom) for the viewed element). The 3D camera fit itself lives in each state's
+    view_state. Never returns when clicked (reload/rerun).
     """
     if ctx.viewing.view_3d:
         if _action_button("🗺️ Return to 2D View", key=f"{key_noun}_2d_view", help="Return to the top-down 2D map"):
             logger.debug(f"Switching to 2D view from {noun}")
             ctx.viewing.disable_3d()
-            reload_map(center=compute_2d_center(), zoom=MapConfig.VIEWING_ZOOM)  # Never returns
+            center, zoom = compute_2d_view()
+            reload_map(center=center, zoom=zoom)  # Never returns
     elif _action_button("🏔️ View in 3D", key=f"{key_noun}_3d_view", help=f"View {noun} from the side with terrain"):
         logger.debug(f"Switching to 3D view for {noun}")
         ctx.viewing.enable_3d()
@@ -270,18 +277,25 @@ def _render_flythrough_controls(ctx: PlannerContext, noun: str) -> None:
 
 
 def _render_entity_3d_toggle(ctx: PlannerContext, graph: ResortGraph, kind: EntityKind, entity_id: str) -> None:
-    """Entity (slope/road/lift) 3D toggle: the shared toggle with the entity's own centre as the 2D reframe."""
+    """Entity 3D toggle: shared toggle with the entity's own centre + adaptive zoom (same length source
+    as the finish/click-to-view path) as the 2D reframe.
+    """
 
-    def entity_center() -> tuple[float, float]:
+    def entity_view() -> tuple[tuple[float, float], float]:
         # EntityKind is a StrEnum, so `==` is reload-safe.
         if kind in (EntityKind.SLOPE, EntityKind.ROAD):
             owner = graph.slopes[entity_id] if kind == EntityKind.SLOPE else graph.roads[entity_id]
-            return owner.center(segments=graph.segments)
+            return owner.center(segments=graph.segments), MapConfig.zoom_for_span_m(
+                span_m=owner.get_total_length(segments=graph.segments)
+            )
         if kind == EntityKind.LIFT:
-            return graph.lifts[entity_id].center(nodes=graph.nodes)
+            lift = graph.lifts[entity_id]
+            return lift.center(nodes=graph.nodes), MapConfig.zoom_for_span_m(
+                span_m=lift.get_length_m(nodes=graph.nodes)
+            )
         raise ValueError(f"Unknown {kind=}")
 
-    _render_3d_toggle(ctx, key_noun=kind.value, noun=kind.value, compute_2d_center=entity_center)
+    _render_3d_toggle(ctx, key_noun=kind.value, noun=kind.value, compute_2d_view=entity_view)
 
 
 def _render_entity_actions(
@@ -733,17 +747,21 @@ class RouteViewingControlPanel(ControlPanel):
             self.sm.close_panel()  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
     def _render_3d_toggle(self) -> None:
-        """Route 3D toggle: the shared viewing toggle with the route's start/end midpoint as the 2D
-        reframe (the 3D camera fit itself lives in _IdleViewingRouteState.view_state).
+        """Route 3D toggle: the shared viewing toggle with the route's start/end midpoint + adaptive zoom
+        (from the SELECTED route's length, matching the plan-time frame) as the 2D reframe.
         """
 
-        def route_midpoint() -> tuple[float, float]:
+        def route_view() -> tuple[tuple[float, float], float]:
             rp = self.ctx.route_plan
             assert rp.start_node_id is not None and rp.end_node_id is not None, "route view without endpoints"
             a, b = self.graph.nodes[rp.start_node_id], self.graph.nodes[rp.end_node_id]
-            return ((a.lon + b.lon) / 2, (a.lat + b.lat) / 2)
+            routes = route_plan_shown_routes()
+            route = routes[rp.clamped_index(len(routes))]
+            return ((a.lon + b.lon) / 2, (a.lat + b.lat) / 2), MapConfig.zoom_for_span_m(
+                span_m=route.total_slope_length_m
+            )
 
-        _render_3d_toggle(self.ctx, key_noun="route", noun="route", compute_2d_center=route_midpoint)
+        _render_3d_toggle(self.ctx, key_noun="route", noun="route", compute_2d_view=route_view)
 
     def _render_cap_selector(self) -> None:
         """Max-difficulty selector — picks which precomputed cap's routes to show (green→black). Each
@@ -762,6 +780,7 @@ class RouteViewingControlPanel(ControlPanel):
             rp.selected_cap = choice
             rp.selected_index = 0
             self.ctx.viewing.stop_flythrough()  # changing which route is shown must stop an active flythrough
+            recenter_on_selected_route()  # reframe on the newly-shown route (adaptive zoom)
             trigger_rerun()
 
     def _render_route_browser(self, routes: "list[Route]") -> None:
@@ -774,6 +793,7 @@ class RouteViewingControlPanel(ControlPanel):
             if st.button("◀", key="route_prev", width="stretch"):
                 self.ctx.route_plan.selected_index = (idx - 1) % len(routes)
                 self.ctx.viewing.stop_flythrough()  # browsing to another route must stop an active flythrough
+                recenter_on_selected_route()  # reframe on the newly-shown route (adaptive zoom)
                 trigger_rerun()
         with col_label:
             st.markdown(f"**Route {idx + 1} / {len(routes)}**")
@@ -781,6 +801,7 @@ class RouteViewingControlPanel(ControlPanel):
             if st.button("▶", key="route_next", width="stretch"):
                 self.ctx.route_plan.selected_index = (idx + 1) % len(routes)
                 self.ctx.viewing.stop_flythrough()  # browsing to another route must stop an active flythrough
+                recenter_on_selected_route()  # reframe on the newly-shown route (adaptive zoom)
                 trigger_rerun()
 
     def _render_route_stats(self, routes: "list[Route]") -> None:

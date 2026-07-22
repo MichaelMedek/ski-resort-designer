@@ -91,7 +91,7 @@ def bump_dedup_epoch() -> None:
     logger.debug(f"[MAP] Bumped dedup_epoch: {old} -> {old + 1}")
 
 
-def reload_map(*, center: tuple[float, float], zoom: int, pitch: float = MapConfig.VIEWING_PITCH) -> None:
+def reload_map(*, center: tuple[float, float], zoom: float, pitch: float = MapConfig.VIEWING_PITCH) -> None:
     """Recenter on an explicit (lon,lat) frame IN PLACE, then rerun — no camera_epoch bump.
 
     The new view flows via ctx.map → the deck's initialViewState, which deck.gl applies to the mounted
