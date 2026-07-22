@@ -414,6 +414,9 @@ class LiftConfig:
     # Cable sampling is curvature-adaptive: each span is a parabola with max sag sag_factor*span, so an
     # n-segment chord errs ~sag/n². Pick n=ceil(sqrt(sag/tol)) — short spans get few points, long spans more.
     CABLE_SAG_TOLERANCE_M = 6.0
+    # A buildable lift must be at least this many min_spacing_m long, so a pylon has comfortable room to
+    # each station. Below it the lift is refused at placement.
+    MIN_LENGTH_SPACING_FACTOR = 3
 
     PYLON_CONFIG = {
         LiftType.SURFACE_LIFT: {

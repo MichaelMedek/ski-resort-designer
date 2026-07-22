@@ -35,20 +35,24 @@ class TestLiftStations:
         assert isinstance(result, SameNodeLiftMessage)
 
     def test_too_short_lift_rejected(self) -> None:
-        # A gondola pylon needs min_spacing_m (75m) to EACH station → lift must be >= 150m; ~100m is refused.
+        # A gondola needs FACTOR*min_spacing_m; just under that must be refused.
+        min_spacing = LiftConfig.PYLON_CONFIG[LiftType("gondola")]["min_spacing_m"]
+        min_length = LiftConfig.MIN_LENGTH_SPACING_FACTOR * min_spacing
         result = validate_lift_stations(
             first_lon=0.0,
             first_lat=0.0,
             second_lon=0.0,
-            second_lat=100.0 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            second_lat=(min_length - 10.0) / MapConfig.METERS_PER_DEGREE_EQUATOR,
             lift_type="gondola",
         )
         assert isinstance(result, LiftTooShortMessage)
-        assert result.min_length_m == 2 * LiftConfig.PYLON_CONFIG[LiftType("gondola")]["min_spacing_m"]
+        assert result.min_length_m == min_length
 
     def test_at_min_length_boundary_valid(self) -> None:
-        # Exactly 2*min_spacing_m apart is allowed (reject is length < 2*min) — room for one pylon.
-        min_len = 2 * float(LiftConfig.PYLON_CONFIG[LiftType("surface_lift")]["min_spacing_m"])
+        # Exactly FACTOR*min_spacing_m apart is allowed (reject is length < min).
+        min_len = LiftConfig.MIN_LENGTH_SPACING_FACTOR * float(
+            LiftConfig.PYLON_CONFIG[LiftType("surface_lift")]["min_spacing_m"]
+        )
         assert (
             validate_lift_stations(
                 first_lon=0.0,
