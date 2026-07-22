@@ -75,6 +75,10 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data)
 
+# Platform-correct icon: Windows EXE wants .ico, macOS .app wants .icns.
+_ico = "icon.ico" if os.path.exists("icon.ico") else None
+_icns = "icon.icns" if os.path.exists("icon.icns") else None
+
 exe = EXE(
     pyz,
     a.scripts,
@@ -82,7 +86,7 @@ exe = EXE(
     exclude_binaries=True,
     name="AlpinArchitect",
     console=False,  # set True to see server logs while debugging
-    icon="icon.icns" if os.path.exists("icon.icns") else None,
+    icon=_ico,
 )
 
 coll = COLLECT(
@@ -95,7 +99,7 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name="AlpinArchitect.app",
-    icon="icon.icns" if os.path.exists("icon.icns") else None,
+    icon=_icns,
     bundle_identifier="com.alpinarchitect.desktop",
     info_plist={"NSHighResolutionCapable": True, "LSMinimumSystemVersion": "12.0"},
 )
