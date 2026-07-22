@@ -421,6 +421,8 @@ def _advance_flythrough_if_playing() -> None:
     """
     ctx: PlannerContext = st.session_state.context
     viewing = ctx.viewing
+    if not viewing.flythrough_active:
+        return  # not playing (e.g. the user just pressed Stop) — nothing to advance
     keyframes = MapRenderer.flythrough_keyframes(groups=active_flythrough_groups())
     if not keyframes:
         return
