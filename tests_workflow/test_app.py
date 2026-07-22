@@ -353,6 +353,26 @@ class TestMapHeight:
         monkeypatch.setattr(infra, "streamlit_js_eval", lambda *a, **k: 300)
         assert infra.viewport_map_height() == ChartConfig.MAP_MIN_HEIGHT_PX
 
+    def test_js_eval_key_changes_when_window_size_epoch_bumped(self, fake_st, monkeypatch) -> None:
+        # The js-eval probe re-measures only when its key changes; bumping the epoch must change it
+        # (regression: a static key reads the browser window once per session and caches it forever).
+        keys: list[object] = []
+        monkeypatch.setattr(infra, "streamlit_js_eval", lambda *a, **k: keys.append(k["key"]))
+        infra.viewport_map_height()
+        infra.bump_window_size_epoch()
+        infra.viewport_map_height()
+        assert keys[0] != keys[1], "bumping window_size_epoch must remount the js-eval probe"
+
+    def test_all_bumps_increment_their_key_from_tolerant_default(self, fake_st) -> None:
+        # The three public bumps share _bump_epoch; each increments its own key from the tolerant
+        # default (nothing seeded), keeping the counters independent.
+        infra.bump_camera_epoch()
+        infra.bump_dedup_epoch()
+        infra.bump_window_size_epoch()
+        assert fake_st.session_state["camera_epoch"] == 1
+        assert fake_st.session_state["dedup_epoch"] == 1
+        assert fake_st.session_state["window_size_epoch"] == 1
+
     def test_first_render_shows_message_and_skips_map(self, fake_st, monkeypatch, mock_dem_blue_slope) -> None:
         # window height None and nothing cached → return early, never call st_deckgl.
         _stub_deckgl(monkeypatch)

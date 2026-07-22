@@ -44,6 +44,7 @@ from skiresort_planner.ui.context import PlannerContext
 from skiresort_planner.ui.infra import (
     bump_camera_epoch,
     bump_dedup_epoch,
+    bump_window_size_epoch,
     reload_map,
     trigger_rerun,
     viewport_map_height,
@@ -78,6 +79,7 @@ __all__ = [
     "render_control_panel",
     "bump_camera_epoch",
     "bump_dedup_epoch",
+    "bump_window_size_epoch",
     "active_flythrough_groups",
     "cancel_custom_path",
     "cancel_current_road",
