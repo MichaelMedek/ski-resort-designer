@@ -889,8 +889,8 @@ class PathSelectionPanel:
     def render(self) -> None:
         """Render the path selection panel."""
         noun = KIND_SPECS[self.kind].display_noun  # "Slope" / "Road"
-        # Committed-segment warnings surface here regardless of proposal state.
-        self._render_committed_warnings()
+        # Committed-segment warnings are NOT surfaced here: while building they only stack up and eat
+        # panel space. They remain available per-segment in the finished entity's Segment Details.
         if not self.ctx.proposals.paths:
             # No proposals (e.g. a too-steep custom target). Show the message, but if we are
             # routing a custom target (force_mode) still offer the escape back to the fan.
@@ -961,13 +961,6 @@ class PathSelectionPanel:
             # Fan-out mode: the panel showed auto-generated proposals, but the user can
             # also aim anywhere. Make that discoverable now that there is no button.
             st.caption("🎯 Or click any point or node on the map to route a path there.")
-
-    def _render_committed_warnings(self) -> None:
-        """Surface any warnings on already-committed segments as ⚠️ messages (not on the plot)."""
-        for seg_id in self.ctx.build(self.kind).segments:
-            seg = self.graph.segments[seg_id]  # a committed build segment must exist — let it crash if not
-            for warning in seg.warnings:
-                SegmentWarningMessage(warning_text=str(warning)).display()
 
     def _render_cancel_connection(self, *, is_connector: bool) -> None:
         """The escape back to fan-out during custom-connect. Label adapts: a connector routes to a

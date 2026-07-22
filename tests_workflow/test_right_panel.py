@@ -556,11 +556,11 @@ class TestControlPanelDispatch:
         assert sm.is_slope_starting
         _dispatch(sm, ctx, empty_graph)
 
-    def test_building_panel_surfaces_committed_segment_warning(
+    def test_building_panel_hides_committed_segment_warnings(
         self, fake_st, empty_graph, path_points_blue, monkeypatch
     ) -> None:
-        """A committed segment's warning must surface as a ⚠️ warning MESSAGE in the building panel
-        (not as a plot annotation) — regression for moving warnings off the elevation chart.
+        """While BUILDING, committed-segment warnings must NOT surface in the panel — they only stack
+        up and eat space. They remain available afterwards in the finished entity's Segment Details.
         """
         import streamlit as real_st
 
@@ -585,8 +585,8 @@ class TestControlPanelDispatch:
 
         _dispatch(sm, ctx, empty_graph)
 
-        assert any("Too Flat" in w for w in warnings), (
-            f"building panel must show the ⚠️ too-flat warning; got {warnings}"
+        assert not any("Too Flat" in w for w in warnings), (
+            f"building panel must NOT stack committed-segment warnings; got {warnings}"
         )
 
     def test_lift_placing_panel_runs(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:

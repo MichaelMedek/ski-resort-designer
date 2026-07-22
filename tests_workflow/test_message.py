@@ -110,9 +110,8 @@ class TestDisconnectedEntityMessage:
         from skiresort_planner.model.message import DisconnectedEntityMessage
 
         msg = DisconnectedEntityMessage(entity_noun="slope", core_lift_name="5 (Summit Express)").message
-        assert "This slope is disconnected from the core area" in msg
+        assert "This slope can't be reached from the core area" in msg
         assert "5 (Summit Express)" in msg
-        assert "can't be reached" in msg
 
 
 class TestNoReturnEntityMessage:

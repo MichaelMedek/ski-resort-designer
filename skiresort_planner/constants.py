@@ -604,15 +604,15 @@ class StyleConfig:
     PARKING_ICON = "🅿️"
     PARKING_COLOR_RGBA = [96, 165, 250, 180]  # soft blue, gently shown
 
-    # Human-friendly lift display names (includes "slope" for unified build type selector)
+    # Human-friendly lift-type display names. Non-lift build modes (Slope, Road, …) get their names
+    # from BuildMode.display_name — this dict is lift types ONLY (asserted below).
     LIFT_DISPLAY_NAMES = {
-        "slope": "Slope",
         "surface_lift": "Surface Lift",
         "chairlift": "Chairlift",
         "gondola": "Gondola",
         "aerial_tram": "Aerial Tram",
     }
-    assert set(LIFT_DISPLAY_NAMES.keys()) == set(LiftConfig.TYPES) | {"slope"}
+    assert set(LIFT_DISPLAY_NAMES.keys()) == set(LiftConfig.TYPES)
 
     # How far a connectivity-defect color is pulled toward mid-gray (0 = unchanged, 1 = full gray).
     DEFECT_GRAY_BLEND = 0.75

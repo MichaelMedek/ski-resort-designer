@@ -672,7 +672,7 @@ class DisconnectedEntityMessage(WarningMessage):
 
     @property
     def message(self) -> str:
-        return f"⚠️ This {self.entity_noun} is disconnected from the core area with {self.core_lift_name}."
+        return f"⚠️ This {self.entity_noun} can't be reached from the core area ({self.core_lift_name})."
 
 
 @dataclass(frozen=True)
@@ -683,7 +683,7 @@ class NoReturnEntityMessage(WarningMessage):
 
     @property
     def message(self) -> str:
-        return f"⚠️ This {self.entity_noun} is a one-way trip and can not be reached again."
+        return f"⚠️ This {self.entity_noun} is a one-way trip — no way back to ride it again."
 
 
 # =============================================================================
