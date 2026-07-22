@@ -807,6 +807,7 @@ def _undo_add_segments(undone: AddSegmentsAction) -> None:
         sm.force_building(kind)
     else:
         build.endpoints = []
+        build.start_node_id = None  # origin node cleaned as isolated; fall back to start_location
         logger.debug(f"[ACTION] {kind.value} undo leaves 0 segments, forcing starting")
         sm.force_starting(kind)
     bump_dedup_epoch()
