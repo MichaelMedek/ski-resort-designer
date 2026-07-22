@@ -1105,6 +1105,24 @@ class TestImportOSMBatch:
         slopes, _lifts, duplicates = graph.import_osm(result, dem=dem)
         assert (slopes, duplicates) == (0, 1), "same source+name is recognised, not re-added"
 
+    def test_same_name_source_blocks_lift_reimport_even_if_moved(self, empty_graph, mock_dem_blue_slope) -> None:
+        """The LIFT analogue: a named lift already imported is skipped on re-import even at clearly
+        different endpoints — dedup keys on same source + non-empty lift name (the name-only OR arm).
+        """
+        graph, dem = empty_graph, mock_dem_blue_slope
+        graph.import_osm(self._result(dem, lifts=[self._lift(dem)]), dem=dem)  # imports 'Gipfelbahn'
+        assert len(graph.lifts) == 1
+
+        # Re-import a lift with the SAME name at far-away endpoints (beyond OSM_DEDUP_TOL_M).
+        from skiresort_planner.generators.osm_importer import ImportResult
+
+        moved_bottom = PathPoint(lon=0.6, lat=0.4, elevation=dem.get_elevation_or_raise(lon=0.6, lat=0.4))
+        moved_top = PathPoint(lon=0.6, lat=0.5, elevation=dem.get_elevation_or_raise(lon=0.6, lat=0.5))
+        result = ImportResult(lifts=[(moved_bottom, moved_top, "chairlift", "Gipfelbahn")])
+        _slopes, lifts_added, duplicates = graph.import_osm(result, dem=dem)
+        assert (lifts_added, duplicates) == (0, 1), "same source+name lift is recognised, not re-added"
+        assert len(graph.lifts) == 1
+
     def test_hand_built_slope_blocks_matching_import(self, empty_graph, mock_dem_blue_slope) -> None:
         """Dedup is source-agnostic: a run the user built by hand skips the matching OSM import."""
         graph, dem = empty_graph, mock_dem_blue_slope
@@ -1647,6 +1665,26 @@ class TestMergeNodes:
         graph.undo_last()
         assert graph.slopes[slope.id].segment_ids == original_chain, "undo restores the original chain"
 
+    def test_merge_median_off_dem_raises(self, empty_graph) -> None:
+        """If the median point lands on a nodata/out-of-coverage DEM cell (get_elevation → None), merge
+        raises a distinct ValueError — a user-valid outcome, not an internal-invariant crash.
+        """
+
+        class _HoleDEM(MockDEMService):
+            """Valid everywhere except a hole around the median of A,B (so node setup still works)."""
+
+            def get_elevation(self, lon: float, lat: float) -> float | None:
+                if abs(lat - 5 / MapConfig.METERS_PER_DEGREE_EQUATOR) < 1e-9 and abs(lon) < 1e-9:
+                    return None  # the exact median of A(0,0) and B(0,10m)
+                return super().get_elevation(lon=lon, lat=lat)
+
+        dem = _HoleDEM(base_elevation=2500.0, slope_ns_pct=20.0, slope_ew_pct=0.0)
+        self._node(empty_graph, dem, "A", 0.0, 0.0)
+        self._node(empty_graph, dem, "B", 0.0, 10 / MapConfig.METERS_PER_DEGREE_EQUATOR)
+        with pytest.raises(ValueError, match="no DEM elevation"):
+            empty_graph.merge_nodes(node_ids=["A", "B"], dem=dem)
+        assert "A" in empty_graph.nodes and "B" in empty_graph.nodes, "no partial mutation on failure"
+
 
 # =============================================================================
 # Node delete / insert (merge-mode editing tools)
@@ -1920,6 +1958,37 @@ class TestDeleteNodes:
         with pytest.raises(ValueError, match="delete the path instead"):
             empty_graph.delete_nodes(node_ids=[start, interior], dem=mock_dem_blue_slope)
 
+    def test_delete_emptying_a_fused_multi_path_group_refused(self, empty_graph) -> None:
+        """Two 2-segment slopes A(a0→ai→J) and B(J→bi→b0) fuse at degree-2 node J. Selecting
+        {a0, ai, J, bi} would leave the FUSED union with <2 nodes → refused, with BOTH path names joined
+        by ' + '. Built directly (a head-to-tail chain across two paths is awkward via the planar DEM).
+        """
+        graph = empty_graph
+        # Descending chain a0 → ai → J → bi → b0 (elevation strictly decreasing).
+        coords = {"a0": 0.004, "ai": 0.003, "J": 0.002, "bi": 0.001, "b0": 0.0}
+        for nid, lat in coords.items():
+            graph.nodes[nid] = Node(id=nid, location=PathPoint(lon=0.0, lat=lat, elevation=2000.0 + lat * 1e5))
+
+        def _seg(sid: str, a: str, b: str) -> None:
+            graph.segments[sid] = PathSegment(
+                id=sid, points=[graph.nodes[a].location, graph.nodes[b].location], start_node_id=a, end_node_id=b
+            )
+
+        _seg("S1", "a0", "ai")
+        _seg("S2", "ai", "J")
+        _seg("S3", "J", "bi")
+        _seg("S4", "bi", "b0")
+        graph.slopes["SL1"] = Slope(
+            id="SL1", name="Alpha", segment_ids=["S1", "S2"], start_node_id="a0", end_node_id="J"
+        )
+        graph.slopes["SL2"] = Slope(
+            id="SL2", name="Bravo", segment_ids=["S3", "S4"], start_node_id="J", end_node_id="b0"
+        )
+
+        rejection = graph.delete_nodes_rejection(["a0", "ai", "J", "bi"])
+        assert rejection is not None
+        assert "Alpha + Bravo" in rejection or "Bravo + Alpha" in rejection, "names of BOTH fused paths, ' + '-joined"
+
     def test_delete_never_orphans_a_segment_after_cross_path_merge(self, empty_graph, mock_dem_blue_slope) -> None:
         """Regression: a merge can make a node a junction shared by a second path. Deleting a node on
         one path must never remove a node the other path's segment still references (the KeyError
@@ -2006,6 +2075,44 @@ class TestDeleteNodeFusesTwoPaths:
         assert list(graph.slopes[long_slope.id].segment_ids) == long_segs, "longer chain restored verbatim"
         assert list(graph.slopes[short_slope.id].segment_ids) == short_segs, "shorter chain restored verbatim"
         assert shared in graph.nodes, "the shared node is back"
+
+    def test_fuse_shorter_upstream_longer_downstream_repoints_survivor_start(
+        self, empty_graph, mock_dem_blue_slope
+    ) -> None:
+        """The other orientation: the SHORTER slope ends at the shared node (upstream) and the LONGER
+        starts there (downstream). The survivor is the longer path, but its start must be RE-POINTED to
+        the shorter (upstream) path's start — the branch the same-orientation test never exercises.
+        """
+        dem = mock_dem_blue_slope
+        graph = empty_graph
+        # SHORT slope (1 segment) descends south to the shared node.
+        short_leg = _leg(0.0, 0.0, 0.0, -20.0, 25, dem)
+        graph.commit_paths(paths=[ProposedPathSegment(points=short_leg, target_difficulty="blue")])
+        short_slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        shared = short_slope.end_node_id  # short ENDS here (upstream)
+        short_start = short_slope.start_node_id
+        # LONG slope (3 segments) descends FROM the shared node further south (downstream).
+        j = graph.nodes[shared]
+        lat = j.lat
+        long_seg_ids: list[str] = []
+        for _ in range(3):
+            leg = _leg(j.lon, lat, 0.0, -20.0, 25, dem)
+            seg_before = set(graph.segments)
+            graph.commit_paths(paths=[ProposedPathSegment(points=leg, target_difficulty="blue")])
+            long_seg_ids.append((set(graph.segments) - seg_before).pop())
+            lat = leg[-1].lat
+        long_slope = graph.finish_slope(segment_ids=long_seg_ids)
+        long_id, long_name, long_end = long_slope.id, long_slope.name, long_slope.end_node_id
+
+        graph.delete_nodes(node_ids=[shared], dem=dem)
+
+        assert short_slope.id not in graph.slopes, "the shorter (upstream) slope was absorbed"
+        survivor = graph.slopes[long_id]
+        assert survivor.name == long_name, "survivor keeps the LONGER path's name"
+        assert survivor.start_node_id == short_start, "survivor start RE-POINTED to the upstream (short) start"
+        assert survivor.end_node_id == long_end, "survivor end stays the longer path's end"
+        for seg in graph.segments.values():
+            assert seg.start_node_id in graph.nodes and seg.end_node_id in graph.nodes, "no orphan refs"
 
 
 class TestDirectOneSegmentConnections:
@@ -2114,6 +2221,28 @@ class TestInsertNodeOnPath:
         assert seg_id in empty_graph.segments, "undo restores the original segment"
         assert empty_graph.slopes[slope.id].segment_ids == chain_before, "undo restores the chain verbatim"
 
+    def test_insert_split_point_off_dem_raises(self, empty_graph, mock_dem_blue_slope) -> None:
+        """If the projected split point lands on a nodata DEM cell (get_elevation → None), insert raises a
+        distinct ValueError — a user-valid outcome (external DEM data), not an internal-invariant crash.
+        """
+        slope = _commit_straight_slope(empty_graph, mock_dem_blue_slope, n_segments=1)
+        seg = empty_graph.segments[slope.segment_ids[0]]
+        mid_lon = (seg.points[0].lon + seg.points[-1].lon) / 2
+        mid_lat = (seg.points[0].lat + seg.points[-1].lat) / 2
+
+        class _HoleDEM(MockDEMService):
+            """Valid everywhere except the projected split midpoint (so the slope was still buildable)."""
+
+            def get_elevation(self, lon: float, lat: float) -> float | None:
+                if abs(lat - mid_lat) < 1e-9 and abs(lon - mid_lon) < 1e-9:
+                    return None
+                return super().get_elevation(lon=lon, lat=lat)
+
+        hole = _HoleDEM(base_elevation=2500.0, slope_ns_pct=20.0, slope_ew_pct=0.0)
+        with pytest.raises(ValueError, match="no DEM elevation"):
+            empty_graph.insert_node_on_path(segment_id=seg.id, lon=mid_lon, lat=mid_lat, dem=hole)
+        assert seg.id in empty_graph.segments, "no partial split on failure"
+
 
 class TestNodeEditHelpers:
     """Direct unit tests for the fragile private chain-surgery helpers, isolated from the graph ops
@@ -2148,6 +2277,41 @@ class TestNodeEditHelpers:
 
     def test_segments_touching_empty_for_unknown_node(self, empty_graph) -> None:
         assert empty_graph._segments_touching("GHOST") == []
+
+    # -- find_nearest_node: proximity snap (threshold boundary + closest-of-many) ------------------
+
+    def test_find_nearest_node_none_just_outside_threshold(self, empty_graph) -> None:
+        # A caller-supplied threshold decides snap-vs-fresh-endpoint (e.g. LIFT_END_NODE_THRESHOLD_M).
+        empty_graph.nodes["N1"] = Node(id="N1", location=PathPoint(lon=0.0, lat=0.0, elevation=2000.0))
+        just_out = 51 / MapConfig.METERS_PER_DEGREE_EQUATOR  # ~51m north of N1
+        assert empty_graph.find_nearest_node(lon=0.0, lat=just_out, threshold_m=50.0) is None
+        assert empty_graph.find_nearest_node(lon=0.0, lat=just_out, threshold_m=60.0).id == "N1"
+
+    def test_find_nearest_node_returns_closest_of_two_in_range(self, empty_graph) -> None:
+        # Two nodes both within threshold → the NEARER one must win (correct snap target).
+        empty_graph.nodes["FAR"] = Node(
+            id="FAR", location=PathPoint(lon=0.0, lat=25 / MapConfig.METERS_PER_DEGREE_EQUATOR, elevation=2000.0)
+        )
+        empty_graph.nodes["NEAR"] = Node(
+            id="NEAR", location=PathPoint(lon=0.0, lat=5 / MapConfig.METERS_PER_DEGREE_EQUATOR, elevation=2000.0)
+        )
+        assert empty_graph.find_nearest_node(lon=0.0, lat=0.0, threshold_m=30.0).id == "NEAR"
+
+    # -- get_connection_count: counts segments AND lifts -------------------------------------------
+
+    def test_get_connection_count_includes_lifts(self, empty_graph, mock_dem_blue_slope) -> None:
+        dem = mock_dem_blue_slope
+        bottom, _ = empty_graph.get_or_create_node(
+            lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)
+        )
+        top, _ = empty_graph.get_or_create_node(
+            lon=0.0,
+            lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        )
+        empty_graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
+        # The station node is connected only via the lift → count reflects the lift term (no segments).
+        assert empty_graph.get_connection_count(node_id=bottom.id) == 1
 
     # -- _project_onto_path: Shapely projection onto the centerline (density-independent) ----------
 

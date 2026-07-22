@@ -320,17 +320,33 @@ class TestNodeEditMessages:
         assert "3 node" in msg
         assert "89m" in msg
 
-    def test_action_under_two_asks_for_more(self) -> None:
+    def test_action_lists_all_three_actions_every_count(self) -> None:
         from skiresort_planner.model.message import NodeEditActionMessage
 
-        msg = NodeEditActionMessage(selected_count=1).message
-        assert "Delete" in msg and "Merge" in msg, "the <2 prompt covers both merge and delete"
+        # The three actions are written once and shown at EVERY count (marked ✅/⬜ by availability).
+        for n in (0, 1, 2, 3):
+            msg = NodeEditActionMessage(selected_count=n).message
+            assert "Merge" in msg and "Delete Direct Connection" in msg and "Delete" in msg, f"n={n}"
 
-    def test_action_two_or_more_offers_confirm(self) -> None:
+    def test_action_availability_markers_match_button_rules(self) -> None:
         from skiresort_planner.model.message import NodeEditActionMessage
 
-        msg = NodeEditActionMessage(selected_count=2).message
-        assert "Confirm Merge" in msg
+        def marker(msg: str, action: str) -> str:
+            line = next(ln for ln in msg.splitlines() if action in ln)
+            return "✅" if "✅" in line else "⬜"
+
+        # Distinguishing substrings: Merge, "Direct Connection" (the cut), "**Delete** —" (plain delete).
+        one = NodeEditActionMessage(selected_count=1).message
+        assert marker(one, "**Delete** —") == "✅", "1 selected enables plain Delete"
+        assert marker(one, "**Merge**") == "⬜" and marker(one, "Direct Connection") == "⬜"
+
+        two = NodeEditActionMessage(selected_count=2).message
+        assert marker(two, "**Merge**") == "✅" and marker(two, "Direct Connection") == "✅"
+        assert marker(two, "**Delete** —") == "✅"
+
+        three = NodeEditActionMessage(selected_count=3).message
+        assert marker(three, "**Merge**") == "✅", "3 still merges"
+        assert marker(three, "Direct Connection") == "⬜", "cut needs EXACTLY 2"
 
     def test_unable_to_delete_names_the_reason(self) -> None:
         from skiresort_planner.model.message import UnableToDeleteMessage, WarningToast
