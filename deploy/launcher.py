@@ -54,6 +54,7 @@ def _run_server() -> None:
         "global.developmentMode": False,
         "browser.gatherUsageStats": False,
         "server.fileWatcherType": "none",
+        "client.toolbarMode": "minimal",
     }
     bootstrap.load_config_options(flag_options=flags)
     bootstrap.run(_script_path(), is_hello=False, args=[], flag_options=flags)
