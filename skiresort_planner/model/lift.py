@@ -564,6 +564,13 @@ class Lift(NodeConnected):
                 )
             )
 
+        # Guard the min-spacing invariant: consecutive PYLONS never sit closer than min_spacing (the grid
+        # step floors it). Station↔station on a lift shorter than min_spacing is fine — that's no pylons.
+        pylon_dists = [dists[i] for i in pylon_indices]
+        adjacent_gaps = [pylon_dists[i + 1] - pylon_dists[i] for i in range(len(pylon_dists) - 1)]
+        assert all(g >= min(min_spacing_m, LiftConfig.TERRAIN_SAMPLE_STEP_M) - 1e-6 for g in adjacent_gaps), (
+            f"adjacent pylons closer than min_spacing {min_spacing_m}m ({lift_type}): gaps {adjacent_gaps}"
+        )
         return pylons
 
     @staticmethod

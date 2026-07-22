@@ -419,7 +419,7 @@ class LiftConfig:
         LiftType.SURFACE_LIFT: {
             "pylon_height_m": 15,
             "station_height_m": 5,
-            "min_spacing_m": 10,
+            "min_spacing_m": 30,
             "max_spacing_m": 100,
             "min_clearance_m": 10,
             "sag_factor": 0.05,
@@ -427,7 +427,7 @@ class LiftConfig:
         LiftType.CHAIRLIFT: {
             "pylon_height_m": 25,
             "station_height_m": 6,
-            "min_spacing_m": 15,
+            "min_spacing_m": 50,
             "max_spacing_m": 200,
             "min_clearance_m": 15,
             "sag_factor": 0.06,
@@ -435,7 +435,7 @@ class LiftConfig:
         LiftType.GONDOLA: {
             "pylon_height_m": 35,
             "station_height_m": 6,
-            "min_spacing_m": 20,
+            "min_spacing_m": 75,
             "max_spacing_m": 300,
             "min_clearance_m": 20,
             "sag_factor": 0.06,
@@ -443,7 +443,7 @@ class LiftConfig:
         LiftType.AERIAL_TRAM: {
             "pylon_height_m": 60,
             "station_height_m": 10,
-            "min_spacing_m": 30,
+            "min_spacing_m": 100,
             "max_spacing_m": 1e6,  # Can span very long distances
             "min_clearance_m": 30,
             "sag_factor": 0.06,

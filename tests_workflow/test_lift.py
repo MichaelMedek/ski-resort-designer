@@ -289,3 +289,46 @@ class TestNearestIndexToDistance:
     def test_no_interior_index_returns_minus_one(self) -> None:
         dists = [0.0, 10.0]
         assert Lift._nearest_index_to_distance(dists=dists, target_m=5.0, lo=0, hi=1) == -1
+
+
+class TestPylonMinSpacing:
+    """Pylons must never sit closer than the type's min_spacing_m (floored by the sim-grid step). This
+    guards the distance-space rewrite that made min_spacing_m actually bind (the old index math ignored it).
+    """
+
+    @staticmethod
+    def _rough_terrain(n: int, span_m: float, amp: float, freq: float) -> list[PathPoint]:
+        import math
+
+        return [
+            PathPoint(
+                lon=10.0,
+                lat=46.0 + (span_m * i / (n - 1)) / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                elevation=2000.0 + 400.0 * (i / (n - 1)) + amp * math.sin(i / (n - 1) * freq),
+            )
+            for i in range(n)
+        ]
+
+    @pytest.mark.parametrize("lift_type", ["surface_lift", "chairlift", "gondola", "aerial_tram"])
+    def test_no_gap_below_min_spacing(self, lift_type: str) -> None:
+        from skiresort_planner.constants import LiftConfig, LiftType
+
+        terrain = self._rough_terrain(n=60, span_m=1500.0, amp=60.0, freq=9.0)  # wavy → many clearance pylons
+        total_m = PathPoint.total_length_m(terrain)
+        pylons = Lift.calculate_pylons(terrain_points=terrain, lift_type=lift_type, total_distance_m=total_m)
+        assert len(pylons) >= 2, "this rough 1500m terrain must place multiple pylons"
+        min_spacing = LiftConfig.PYLON_CONFIG[LiftType(lift_type)]["min_spacing_m"]
+        floor = min(min_spacing, LiftConfig.TERRAIN_SAMPLE_STEP_M)  # grid step is the practical floor
+        # Only consecutive PYLON gaps are bound by min_spacing (station↔pylon short spans are allowed).
+        d = [p.distance_m for p in pylons]
+        gaps = [d[i + 1] - d[i] for i in range(len(d) - 1)]
+        assert min(gaps) >= floor - 1e-6, f"{lift_type}: pylon gap {min(gaps):.1f}m < floor {floor}m"
+
+    def test_larger_min_spacing_yields_wider_gaps(self) -> None:
+        # A gondola (min_spacing 75) must place pylons no denser than a surface_lift (min_spacing 30) on
+        # the same rough terrain — the config value genuinely binds now.
+        terrain = self._rough_terrain(n=60, span_m=1500.0, amp=60.0, freq=9.0)
+        total_m = PathPoint.total_length_m(terrain)
+        surface = Lift.calculate_pylons(terrain_points=terrain, lift_type="surface_lift", total_distance_m=total_m)
+        gondola = Lift.calculate_pylons(terrain_points=terrain, lift_type="gondola", total_distance_m=total_m)
+        assert len(gondola) <= len(surface), "wider min_spacing must not produce MORE pylons"
