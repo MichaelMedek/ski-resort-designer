@@ -76,11 +76,11 @@ class TestIdleClickRouting:
         from skiresort_planner.ui.click_handlers import handle_idle_click
 
         dem = mock_dem_red_slope_diagonal
-        sm, ctx = _session(fake_st, ResortGraph(), path_factory, dem)
+        sm, ctx = _session(fake_st=fake_st, graph=ResortGraph(), factory=path_factory, dem=dem)
         ctx.build_mode.mode = BuildMode.SLOPE
 
         handle_idle_click(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
+            click_info=ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
             elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0),
         )
         assert sm.is_slope_starting
@@ -89,11 +89,11 @@ class TestIdleClickRouting:
         from skiresort_planner.ui.click_handlers import handle_idle_click
 
         dem = mock_dem_red_slope_diagonal
-        sm, ctx = _session(fake_st, ResortGraph(), path_factory, dem)
+        sm, ctx = _session(fake_st=fake_st, graph=ResortGraph(), factory=path_factory, dem=dem)
         ctx.build_mode.mode = BuildMode.CHAIRLIFT
 
         handle_idle_click(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
+            click_info=ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
             elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0),
         )
         assert sm.is_lift_placing
@@ -103,24 +103,25 @@ class TestIdleClickRouting:
 
         graph = ResortGraph()
         node, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=2000.0)
-        sm, ctx = _session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=path_factory, dem=mock_dem_red_slope_diagonal)
         ctx.build_mode.mode = BuildMode.ROAD
 
         handle_idle_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id), elevation=None
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id),
+            elevation=None,
         )
         assert sm.is_road_starting
-        assert ctx.build(SegmentKind.ROAD).start_node_id == node.id
+        assert ctx.build(kind=SegmentKind.ROAD).start_node_id == node.id
 
     def test_import_mode_terrain_click_places_box(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         from skiresort_planner.ui.click_handlers import handle_idle_click
 
         dem = mock_dem_red_slope_diagonal
-        sm, ctx = _session(fake_st, ResortGraph(), path_factory, dem)
+        sm, ctx = _session(fake_st=fake_st, graph=ResortGraph(), factory=path_factory, dem=dem)
         ctx.build_mode.mode = BuildMode.IMPORT
 
         handle_idle_click(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.01, lon=0.02),
+            click_info=ClickInfo(click_type=MapClickType.TERRAIN, lat=0.01, lon=0.02),
             elevation=dem.get_elevation_or_raise(lon=0.02, lat=0.01),
         )
         assert sm.is_import_selecting
@@ -133,11 +134,12 @@ class TestIdleClickRouting:
 
         graph = ResortGraph()
         node, _ = graph.get_or_create_node(lon=0.03, lat=0.04, elevation=2000.0)
-        sm, ctx = _session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=path_factory, dem=mock_dem_red_slope_diagonal)
         ctx.build_mode.mode = BuildMode.IMPORT
 
         handle_idle_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id), elevation=None
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id),
+            elevation=None,
         )
         assert sm.is_import_selecting
         assert ctx.pending.osm_import_center_lon == 0.03 and ctx.pending.osm_import_center_lat == 0.04
@@ -149,11 +151,12 @@ class TestIdleClickRouting:
 
         graph = ResortGraph()
         node, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=2000.0)
-        sm, ctx = _session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=path_factory, dem=mock_dem_red_slope_diagonal)
         ctx.build_mode.mode = BuildMode.NODE_EDIT
 
         handle_idle_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id), elevation=None
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id),
+            elevation=None,
         )
         assert sm.is_node_edit_selecting, "first node click starts node edit (like other modes' first click)"
         assert ctx.node_edit.node_ids == [node.id], "the clicked node is the first merge selection"
@@ -164,11 +167,11 @@ class TestIdleClickRouting:
         from skiresort_planner.ui.click_handlers import handle_idle_click
 
         dem = mock_dem_red_slope_diagonal
-        sm, ctx = _session(fake_st, ResortGraph(), path_factory, dem)
+        sm, ctx = _session(fake_st=fake_st, graph=ResortGraph(), factory=path_factory, dem=dem)
         ctx.build_mode.mode = BuildMode.NODE_EDIT
 
         handle_idle_click(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.01, lon=0.02),
+            click_info=ClickInfo(click_type=MapClickType.TERRAIN, lat=0.01, lon=0.02),
             elevation=dem.get_elevation_or_raise(lon=0.02, lat=0.01),
         )
         assert sm.is_idle_ready, "terrain is not a merge target — stay idle"
@@ -191,12 +194,12 @@ class TestIdleClickRouting:
             lat=(graph.segments[seg_id].points[0].lat + graph.segments[seg_id].points[-1].lat) / 2,
             elevation=0.0,
         )  # geometric midpoint (interior) — projects onto the leg after finish-simplification
-        sm, ctx = _session(fake_st, graph, path_factory, mock_dem_blue_slope)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=path_factory, dem=mock_dem_blue_slope)
         ctx.build_mode.mode = BuildMode.NODE_EDIT
         nodes_before = len(graph.nodes)
 
         handle_idle_click(
-            ClickInfo(
+            click_info=ClickInfo(
                 click_type=MapClickType.MARKER,
                 marker_type=MarkerType.SEGMENT,
                 segment_id=seg_id,
@@ -222,7 +225,7 @@ class TestIdleClickRouting:
         slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
         seg_id = slope.segment_ids[0]
         near_end = graph.segments[seg_id].points[0]  # within STEP_SIZE_M of the endpoint node
-        sm, ctx = _session(fake_st, graph, path_factory, mock_dem_blue_slope)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=path_factory, dem=mock_dem_blue_slope)
         ctx.build_mode.mode = BuildMode.NODE_EDIT
         nodes_before = len(graph.nodes)
 
@@ -232,7 +235,7 @@ class TestIdleClickRouting:
         monkeypatch.setattr(streamlit, "toast", lambda text, *a, **k: toasts.append(text))
 
         handle_idle_click(
-            ClickInfo(
+            click_info=ClickInfo(
                 click_type=MapClickType.MARKER,
                 marker_type=MarkerType.SEGMENT,
                 segment_id=seg_id,
@@ -250,11 +253,12 @@ class TestIdleClickRouting:
 
         graph = ResortGraph()
         node, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=2000.0)
-        sm, ctx = _session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=path_factory, dem=mock_dem_red_slope_diagonal)
         ctx.build_mode.mode = BuildMode.SLOPE
 
         handle_idle_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id), elevation=None
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id),
+            elevation=None,
         )
         assert sm.is_slope_starting
 
@@ -263,11 +267,12 @@ class TestIdleClickRouting:
 
         graph = ResortGraph()
         node, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=2000.0)
-        sm, ctx = _session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=path_factory, dem=mock_dem_red_slope_diagonal)
         ctx.build_mode.mode = BuildMode.CHAIRLIFT
 
         handle_idle_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id), elevation=None
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id),
+            elevation=None,
         )
         assert sm.is_lift_placing
         assert ctx.lift.first_node_id == node.id
@@ -284,10 +289,12 @@ class TestIdleClickRouting:
         )
         top, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
         lift = graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
-        sm, ctx = _session(fake_st, graph, path_factory, dem)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=path_factory, dem=dem)
 
         handle_idle_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PYLON, lift_id=lift.id, pylon_index=0),
+            click_info=ClickInfo(
+                click_type=MapClickType.MARKER, marker_type=MarkerType.PYLON, lift_id=lift.id, pylon_index=0
+            ),
             elevation=None,
         )
         assert sm.is_idle_viewing_lift
@@ -302,10 +309,11 @@ class TestIdleClickRouting:
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
         assert slope is not None
-        sm, ctx = _session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=path_factory, dem=mock_dem_red_slope_diagonal)
 
         handle_idle_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SLOPE, slope_id=slope.id), elevation=None
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SLOPE, slope_id=slope.id),
+            elevation=None,
         )
         assert sm.is_idle_viewing_slope
         assert ctx.viewing.slope_id == slope.id
@@ -314,11 +322,12 @@ class TestIdleClickRouting:
         from skiresort_planner.ui.click_handlers import handle_idle_click
 
         graph = ResortGraph()
-        road = _commit_road(graph)
-        sm, ctx = _session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
+        road = _commit_road(graph=graph)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=path_factory, dem=mock_dem_red_slope_diagonal)
 
         handle_idle_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.ROAD, road_id=road.id), elevation=None
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.ROAD, road_id=road.id),
+            elevation=None,
         )
         assert sm.is_idle_viewing_road
         assert ctx.viewing.road_id == road.id
@@ -333,10 +342,11 @@ class TestIdleClickRouting:
         slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
         assert slope is not None
         seg_id = slope.segment_ids[0]
-        sm, ctx = _session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=path_factory, dem=mock_dem_red_slope_diagonal)
 
         handle_idle_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SEGMENT, segment_id=seg_id), elevation=None
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SEGMENT, segment_id=seg_id),
+            elevation=None,
         )
         assert sm.is_idle_viewing_slope
         assert ctx.viewing.slope_id == slope.id
@@ -348,13 +358,14 @@ class TestIdleClickRouting:
         from skiresort_planner.ui.click_handlers import handle_idle_click
 
         graph = ResortGraph()
-        road = _commit_road(graph)
+        road = _commit_road(graph=graph)
         assert road is not None
         seg_id = road.segment_ids[0]
-        sm, ctx = _session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=path_factory, dem=mock_dem_red_slope_diagonal)
 
         handle_idle_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SEGMENT, segment_id=seg_id), elevation=None
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SEGMENT, segment_id=seg_id),
+            elevation=None,
         )
         assert sm.is_idle_viewing_road, "a road segment resolves to the ROAD panel (not slope)"
         assert ctx.viewing.road_id == road.id
@@ -362,13 +373,10 @@ class TestIdleClickRouting:
     def test_click_segment_on_reloaded_slope_class_does_not_crash(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal, path_points_blue
     ) -> None:
-        """Regression for the `unhandled parent entity Slope` crash.
-
-        A Streamlit module reload redefines both the Slope class AND the SegmentKind enum, so the old
-        `isinstance(parent, Slope)` dispatch failed for a slope built under the pre-reload class and
-        raised. The fix branches on the reload-safe `.kind` StrEnum (value-compared). Simulate the
-        reload with a fresh SegmentKind class (same values) as the entity's kind; dispatch must still
-        open the slope panel — identity differs, value matches.
+        """Dispatch branches on the reload-safe `.kind` StrEnum (value-compared), so a slope built
+        under a pre-reload SegmentKind class still opens the slope panel. Simulate the reload with a
+        fresh SegmentKind class (same values) as the entity's kind; dispatch must still open the slope
+        panel — identity differs, value matches.
         """
         from enum import StrEnum
         from typing import Any
@@ -390,9 +398,10 @@ class TestIdleClickRouting:
         assert reloaded_slope_kind is not SegmentKind.SLOPE, "must be a different class instance (reload)"
         assert reloaded_slope_kind == SegmentKind.SLOPE, "StrEnum compares equal by value across the reload"
 
-        sm, ctx = _session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=path_factory, dem=mock_dem_red_slope_diagonal)
         handle_idle_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SEGMENT, segment_id=seg_id), elevation=None
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SEGMENT, segment_id=seg_id),
+            elevation=None,
         )
         assert sm.is_idle_viewing_slope, "reload-safe .kind dispatch opens the slope panel without crashing"
         assert ctx.viewing.slope_id == slope.id
@@ -409,10 +418,11 @@ class TestIdleClickRouting:
         )
         top, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
         lift = graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="gondola", dem=dem)
-        sm, ctx = _session(fake_st, graph, path_factory, dem)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=path_factory, dem=dem)
 
         handle_idle_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.LIFT, lift_id=lift.id), elevation=None
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.LIFT, lift_id=lift.id),
+            elevation=None,
         )
         assert sm.is_idle_viewing_lift
         assert ctx.viewing.lift_id == lift.id
@@ -439,11 +449,13 @@ class TestIdleClickEdgeCases:
         slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
         assert slope is not None
         orphan_seg_id = slope.segment_ids[0]
-        assert graph.delete_slope(slope.id), "parent slope removed, segment id now orphaned"
-        sm, ctx = _session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
+        graph.delete_slope(slope_id=slope.id)  # parent slope removed, segment id now orphaned
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=path_factory, dem=mock_dem_red_slope_diagonal)
 
         handle_idle_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SEGMENT, segment_id=orphan_seg_id),
+            click_info=ClickInfo(
+                click_type=MapClickType.MARKER, marker_type=MarkerType.SEGMENT, segment_id=orphan_seg_id
+            ),
             elevation=None,
         )
         assert sm.is_idle_ready, "orphan segment click stays idle"
@@ -452,20 +464,21 @@ class TestIdleClickEdgeCases:
     def test_missing_node_raises(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         from skiresort_planner.ui.click_handlers import handle_idle_click
 
-        sm, _ctx = _session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
+        sm, _ctx = _session(fake_st=fake_st, graph=ResortGraph(), factory=path_factory, dem=mock_dem_red_slope_diagonal)
         with pytest.raises(RuntimeError, match="Node GHOST not found in graph"):
             handle_idle_click(
-                ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id="GHOST"), elevation=None
+                click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id="GHOST"),
+                elevation=None,
             )
         assert sm.is_idle_ready, "a graph-desync error must not have moved state before raising"
 
     def test_missing_slope_raises(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         from skiresort_planner.ui.click_handlers import handle_idle_click
 
-        sm, _ctx = _session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
+        sm, _ctx = _session(fake_st=fake_st, graph=ResortGraph(), factory=path_factory, dem=mock_dem_red_slope_diagonal)
         with pytest.raises(RuntimeError, match="Slope GHOST not found in graph"):
             handle_idle_click(
-                ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SLOPE, slope_id="GHOST"),
+                click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SLOPE, slope_id="GHOST"),
                 elevation=None,
             )
         assert sm.is_idle_ready, "a graph-desync error must not open a panel before raising"
@@ -473,31 +486,37 @@ class TestIdleClickEdgeCases:
     def test_missing_lift_raises_before_syncing_mode(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         from skiresort_planner.ui.click_handlers import handle_idle_click
 
-        _sm, ctx = _session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
+        _sm, ctx = _session(fake_st=fake_st, graph=ResortGraph(), factory=path_factory, dem=mock_dem_red_slope_diagonal)
         mode_before = ctx.build_mode.mode
         with pytest.raises(RuntimeError, match="Lift GHOST not found in graph"):
             handle_idle_click(
-                ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.LIFT, lift_id="GHOST"), elevation=None
+                click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.LIFT, lift_id="GHOST"),
+                elevation=None,
             )
         assert ctx.build_mode.mode == mode_before, "must raise before syncing build_mode to a missing lift"
 
     def test_missing_pylon_parent_lift_raises(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         from skiresort_planner.ui.click_handlers import handle_idle_click
 
-        _sm, _ctx = _session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
+        _sm, _ctx = _session(
+            fake_st=fake_st, graph=ResortGraph(), factory=path_factory, dem=mock_dem_red_slope_diagonal
+        )
         with pytest.raises(RuntimeError, match="Lift GHOST not found in graph"):
             handle_idle_click(
-                ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PYLON, lift_id="GHOST", pylon_index=0),
+                click_info=ClickInfo(
+                    click_type=MapClickType.MARKER, marker_type=MarkerType.PYLON, lift_id="GHOST", pylon_index=0
+                ),
                 elevation=None,
             )
 
     def test_missing_road_raises(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         from skiresort_planner.ui.click_handlers import handle_idle_click
 
-        sm, _ctx = _session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
+        sm, _ctx = _session(fake_st=fake_st, graph=ResortGraph(), factory=path_factory, dem=mock_dem_red_slope_diagonal)
         with pytest.raises(RuntimeError, match="Road GHOST not found in graph"):
             handle_idle_click(
-                ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.ROAD, road_id="GHOST"), elevation=None
+                click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.ROAD, road_id="GHOST"),
+                elevation=None,
             )
         assert sm.is_idle_ready, "a graph-desync error must not open a panel before raising"
 
@@ -508,10 +527,11 @@ class TestIdleClickEdgeCases:
         # catch-all so a newly-added marker type can never be silently swallowed here.
         from skiresort_planner.ui.click_handlers import handle_idle_click
 
-        sm, _ctx = _session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
+        sm, _ctx = _session(fake_st=fake_st, graph=ResortGraph(), factory=path_factory, dem=mock_dem_red_slope_diagonal)
         with pytest.raises(RuntimeError, match="Unhandled marker type import_center"):
             handle_idle_click(
-                ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.IMPORT_CENTER), elevation=None
+                click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.IMPORT_CENTER),
+                elevation=None,
             )
         assert sm.is_idle_ready
 
@@ -519,10 +539,14 @@ class TestIdleClickEdgeCases:
         # Proposal markers only exist while building; one in idle means a stale-overlay bug → raise.
         from skiresort_planner.ui.click_handlers import handle_idle_click
 
-        _sm, _ctx = _session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
+        _sm, _ctx = _session(
+            fake_st=fake_st, graph=ResortGraph(), factory=path_factory, dem=mock_dem_red_slope_diagonal
+        )
         with pytest.raises(RuntimeError, match=r"\[IDLE\] Proposal click detected"):
             handle_idle_click(
-                ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_BODY, proposal_index=0),
+                click_info=ClickInfo(
+                    click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_BODY, proposal_index=0
+                ),
                 elevation=None,
             )
 
@@ -545,13 +569,14 @@ class TestIdleClickEdgeCases:
         )
         top, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
         lift = graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="gondola", dem=dem)
-        sm, ctx = _session(fake_st, graph, path_factory, dem)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=path_factory, dem=dem)
 
         # Open the slope panel first, then click the lift marker while viewing it.
         sm.view_slope(slope_id=slope.id)
         assert sm.is_idle_viewing_slope
         handle_idle_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.LIFT, lift_id=lift.id), elevation=None
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.LIFT, lift_id=lift.id),
+            elevation=None,
         )
         assert sm.is_idle_viewing_lift, "clicking a lift while viewing a slope switches the panel"
         assert ctx.viewing.lift_id == lift.id
@@ -568,12 +593,14 @@ class TestCustomConnectClick:
 
         dem = mock_dem_blue_slope  # drops going south
         graph = ResortGraph()
-        sm, ctx = _session(fake_st, graph, path_factory, dem)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=path_factory, dem=dem)
         sm.start_slope(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
 
         # Click downhill terrain 400m south → valid custom target, auto-enters custom path.
         handle_path_building_click(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR, lon=0.0),
+            click_info=ClickInfo(
+                click_type=MapClickType.TERRAIN, lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR, lon=0.0
+            ),
             elevation=dem.get_elevation_or_raise(lon=0.0, lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         )
         assert sm.is_slope_custom_path, "valid target auto-transitions to custom-path state"
@@ -584,7 +611,7 @@ class TestCustomConnectClick:
 
         dem = mock_dem_blue_slope
         graph = ResortGraph()
-        sm, ctx = _session(fake_st, graph, path_factory, dem)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=path_factory, dem=dem)
         # Start low so an uphill target is invalid.
         sm.start_slope(
             lon=0.0,
@@ -593,7 +620,7 @@ class TestCustomConnectClick:
         )
 
         handle_path_building_click(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),  # uphill (summit)
+            click_info=ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),  # uphill (summit)
             elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0),
         )
         assert not sm.is_slope_custom_path, "invalid (uphill) target does NOT enter custom mode"
@@ -608,7 +635,7 @@ class TestCustomConnectClick:
 class TestSlopeBuildingClick:
     def _building(self, fake_st, dem, factory):
         graph = ResortGraph()
-        sm, ctx = _session(fake_st, graph, factory, dem)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
         sm.start_slope(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
         return sm, ctx, graph
 
@@ -617,7 +644,7 @@ class TestSlopeBuildingClick:
     ) -> None:
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
-        _sm, ctx, _graph = self._building(fake_st, mock_dem_red_slope_diagonal, path_factory)
+        _sm, ctx, _graph = self._building(fake_st=fake_st, dem=mock_dem_red_slope_diagonal, factory=path_factory)
         ctx.proposals.paths = [
             ProposedPathSegment(points=path_points_blue, target_difficulty="blue"),
             ProposedPathSegment(points=path_points_blue, target_difficulty="blue"),
@@ -625,7 +652,9 @@ class TestSlopeBuildingClick:
         ctx.proposals.selected_idx = 0
 
         handle_path_building_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_BODY, proposal_index=1),
+            click_info=ClickInfo(
+                click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_BODY, proposal_index=1
+            ),
             elevation=None,
         )
         assert ctx.proposals.selected_idx == 1
@@ -639,7 +668,7 @@ class TestSlopeBuildingClick:
         """
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
-        _sm, ctx, _graph = self._building(fake_st, mock_dem_red_slope_diagonal, path_factory)
+        _sm, ctx, _graph = self._building(fake_st=fake_st, dem=mock_dem_red_slope_diagonal, factory=path_factory)
         ctx.proposals.paths = [
             ProposedPathSegment(points=path_points_blue, target_difficulty="blue"),
             ProposedPathSegment(points=path_points_blue, target_difficulty="blue"),
@@ -648,7 +677,9 @@ class TestSlopeBuildingClick:
         epoch_before = fake_st.session_state["dedup_epoch"]
 
         handle_path_building_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_BODY, proposal_index=1),
+            click_info=ClickInfo(
+                click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_BODY, proposal_index=1
+            ),
             elevation=None,
         )
         assert fake_st.session_state["dedup_epoch"] > epoch_before, "select must bump the epoch for the re-click"
@@ -659,12 +690,14 @@ class TestSlopeBuildingClick:
         """Re-clicking the already-selected slope proposal body commits it (panel-free)."""
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
-        _sm, ctx, graph = self._building(fake_st, mock_dem_red_slope_diagonal, path_factory)
+        _sm, ctx, graph = self._building(fake_st=fake_st, dem=mock_dem_red_slope_diagonal, factory=path_factory)
         ctx.proposals.paths = [ProposedPathSegment(points=path_points_blue, target_difficulty="blue")]
         ctx.proposals.selected_idx = 0  # already selected
 
         handle_path_building_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_BODY, proposal_index=0),
+            click_info=ClickInfo(
+                click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_BODY, proposal_index=0
+            ),
             elevation=None,
         )
         assert len(graph.segments) == 1, "body click on the selected proposal commits it"
@@ -674,13 +707,15 @@ class TestSlopeBuildingClick:
     ) -> None:
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
-        _sm, ctx, graph = self._building(fake_st, mock_dem_red_slope_diagonal, path_factory)
+        _sm, ctx, graph = self._building(fake_st=fake_st, dem=mock_dem_red_slope_diagonal, factory=path_factory)
         # A non-connector proposal committed via its endpoint marker becomes a segment.
         ctx.proposals.paths = [ProposedPathSegment(points=path_points_blue, target_difficulty="blue")]
         ctx.proposals.selected_idx = 0
 
         handle_path_building_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_ENDPOINT, proposal_index=0),
+            click_info=ClickInfo(
+                click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_ENDPOINT, proposal_index=0
+            ),
             elevation=None,
         )
         assert len(graph.segments) == 1, "endpoint click on a non-connector commits the path"
@@ -688,22 +723,25 @@ class TestSlopeBuildingClick:
     def test_node_click_routes_custom_connect(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
-        sm, _ctx, graph = self._building(fake_st, mock_dem_red_slope_diagonal, path_factory)
+        sm, _ctx, graph = self._building(fake_st=fake_st, dem=mock_dem_red_slope_diagonal, factory=path_factory)
         # A downhill node south of the origin → clicking it auto-routes a connector.
         node, _ = graph.get_or_create_node(lon=0.0, lat=-0.001, elevation=1990.0)
         handle_path_building_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id), elevation=None
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id),
+            elevation=None,
         )
         assert sm.is_slope_custom_path, "node click auto-enters custom path"
 
     def test_terrain_click_routes_custom_connect(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
-        sm, _ctx, _graph = self._building(fake_st, mock_dem_red_slope_diagonal, path_factory)
+        sm, _ctx, _graph = self._building(fake_st=fake_st, dem=mock_dem_red_slope_diagonal, factory=path_factory)
         dem = mock_dem_red_slope_diagonal
         # A downhill terrain point (south of origin) auto-routes a custom-connect path.
         handle_path_building_click(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=-300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lon=0.0),
+            click_info=ClickInfo(
+                click_type=MapClickType.TERRAIN, lat=-300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lon=0.0
+            ),
             elevation=dem.get_elevation_or_raise(lon=0.0, lat=-300 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         )
         assert sm.is_slope_custom_path, "terrain click auto-enters custom path"
@@ -713,9 +751,10 @@ class TestSlopeBuildingClick:
     ) -> None:
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
-        sm, _ctx, _graph = self._building(fake_st, mock_dem_red_slope_diagonal, path_factory)
+        sm, _ctx, _graph = self._building(fake_st=fake_st, dem=mock_dem_red_slope_diagonal, factory=path_factory)
         handle_path_building_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.LIFT, lift_id="L1"), elevation=None
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.LIFT, lift_id="L1"),
+            elevation=None,
         )
         # Still in a slope state — the stray click did not navigate away.
         assert sm.is_any_slope_state
@@ -731,7 +770,7 @@ class TestSlopeBuildingEdgeCases:
 
     def _building(self, fake_st, dem, factory):
         graph = ResortGraph()
-        sm, ctx = _session(fake_st, graph, factory, dem)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
         sm.start_slope(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
         return sm, ctx, graph
 
@@ -743,10 +782,11 @@ class TestSlopeBuildingEdgeCases:
         from skiresort_planner.ui.actions import commit_selected_path, process_custom_connect_pending
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
-        sm, ctx, graph = self._building(fake_st, mock_dem_red_slope_diagonal, path_factory)
+        sm, ctx, graph = self._building(fake_st=fake_st, dem=mock_dem_red_slope_diagonal, factory=path_factory)
         node, _ = graph.get_or_create_node(lon=0.0, lat=-300 / MapConfig.METERS_PER_DEGREE_EQUATOR, elevation=2400.0)
         handle_path_building_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id), elevation=None
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id),
+            elevation=None,
         )
         assert sm.is_slope_custom_path, "node click auto-enters custom path"
         process_custom_connect_pending()  # generate the connector proposal(s)
@@ -762,16 +802,17 @@ class TestSlopeBuildingEdgeCases:
     ) -> None:
         """A SLOPE custom-connect offers the straight line on TOP of the planner routes (last,
         not pre-selected), when both the planner routes and the straight line are within cap.
-        Slopes previously had no straight-line option at all — this is the new capability.
         """
         from skiresort_planner.ui.actions import process_custom_connect_pending
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
         dem = mock_dem_red_slope_diagonal
-        sm, ctx, _graph = self._building(fake_st, dem, path_factory)
+        sm, ctx, _graph = self._building(fake_st=fake_st, dem=dem, factory=path_factory)
         # A gentle downhill target the planner can reach AND a straight line can reach in-cap.
         handle_path_building_click(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=-300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lon=0.0),
+            click_info=ClickInfo(
+                click_type=MapClickType.TERRAIN, lat=-300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lon=0.0
+            ),
             elevation=dem.get_elevation_or_raise(lon=0.0, lat=-300 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         )
         process_custom_connect_pending()
@@ -792,7 +833,7 @@ class TestSlopeBuildingEdgeCases:
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
         dem = mock_dem_red_slope_diagonal
-        sm, ctx, graph = self._building(fake_st, dem, path_factory)
+        sm, ctx, graph = self._building(fake_st=fake_st, dem=dem, factory=path_factory)
         # A reachable downhill node target so we enter custom-path. Force the planner to return one
         # in-cap route and the straight line to be over the slope cap → only the planner route shows.
         node, _ = graph.get_or_create_node(lon=0.0, lat=-300 / MapConfig.METERS_PER_DEGREE_EQUATOR, elevation=2400.0)
@@ -815,7 +856,8 @@ class TestSlopeBuildingEdgeCases:
         mp.setattr(path_factory, "generate_manual_paths", lambda **kwargs: iter([in_cap]))
         mp.setattr(path_factory, "straight_line", lambda **kwargs: over_cap_straight)
         handle_path_building_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id), elevation=None
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id),
+            elevation=None,
         )
         process_custom_connect_pending()
         mp.undo()
@@ -831,12 +873,14 @@ class TestSlopeBuildingEdgeCases:
         # silent no-op through the shared _select_or_commit_proposal bounds guard, never an IndexError.
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
-        _sm, ctx, graph = self._building(fake_st, mock_dem_red_slope_diagonal, path_factory)
+        _sm, ctx, graph = self._building(fake_st=fake_st, dem=mock_dem_red_slope_diagonal, factory=path_factory)
         ctx.proposals.paths = [ProposedPathSegment(points=path_points_blue, target_difficulty="blue")]
         ctx.proposals.selected_idx = 0
 
         handle_path_building_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_BODY, proposal_index=99),
+            click_info=ClickInfo(
+                click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_BODY, proposal_index=99
+            ),
             elevation=None,
         )
         assert len(graph.segments) == 0, "out-of-range proposal commits nothing"
@@ -849,12 +893,14 @@ class TestSlopeBuildingEdgeCases:
         # out-of-range endpoint click must also be a silent no-op, not an IndexError.
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
-        _sm, ctx, graph = self._building(fake_st, mock_dem_red_slope_diagonal, path_factory)
+        _sm, ctx, graph = self._building(fake_st=fake_st, dem=mock_dem_red_slope_diagonal, factory=path_factory)
         ctx.proposals.paths = [ProposedPathSegment(points=path_points_blue, target_difficulty="blue")]
         ctx.proposals.selected_idx = 0
 
         handle_path_building_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_ENDPOINT, proposal_index=99),
+            click_info=ClickInfo(
+                click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_ENDPOINT, proposal_index=99
+            ),
             elevation=None,
         )
         assert len(graph.segments) == 0, "out-of-range endpoint commits nothing"
@@ -866,13 +912,13 @@ class TestSlopeBuildingEdgeCases:
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
         dem = mock_dem_blue_slope  # drops going south, so a far-south target is downhill AND too far
-        sm, ctx, _graph = self._building(fake_st, dem, path_factory)
+        sm, ctx, _graph = self._building(fake_st=fake_st, dem=dem, factory=path_factory)
         far_lat = (
             -(PathConfig.SEGMENT_LENGTH_MAX_M + 500) / MapConfig.METERS_PER_DEGREE_EQUATOR
         )  # 1500 m south of the origin
 
         handle_path_building_click(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=far_lat, lon=0.0),
+            click_info=ClickInfo(click_type=MapClickType.TERRAIN, lat=far_lat, lon=0.0),
             elevation=dem.get_elevation_or_raise(lon=0.0, lat=far_lat),
         )
         assert not sm.is_slope_custom_path, "a too-far target does not enter custom path"
@@ -884,26 +930,30 @@ class TestSlopeBuildingEdgeCases:
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
         dem = mock_dem_blue_slope
-        sm, ctx, _graph = self._building(fake_st, dem, path_factory)
+        sm, ctx, _graph = self._building(fake_st=fake_st, dem=dem, factory=path_factory)
         # First downhill click enters custom-path and records the origin.
         handle_path_building_click(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=-300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lon=0.0),
+            click_info=ClickInfo(
+                click_type=MapClickType.TERRAIN, lat=-300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lon=0.0
+            ),
             elevation=dem.get_elevation_or_raise(lon=0.0, lat=-300 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         )
         assert sm.is_slope_custom_path
         origin_before = ctx.custom_connect.start_node
         assert origin_before is None, "a fresh terrain origin is a pending location, not a node id"
-        loc_before = ctx.build(SegmentKind.SLOPE).start_location
+        loc_before = ctx.build(kind=SegmentKind.SLOPE).start_location
         assert loc_before is not None, "the routing origin is carried as a location"
 
         # Second downhill click (further south) re-targets; the origin must be preserved.
         handle_path_building_click(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=-600 / MapConfig.METERS_PER_DEGREE_EQUATOR, lon=0.0),
+            click_info=ClickInfo(
+                click_type=MapClickType.TERRAIN, lat=-600 / MapConfig.METERS_PER_DEGREE_EQUATOR, lon=0.0
+            ),
             elevation=dem.get_elevation_or_raise(lon=0.0, lat=-600 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         )
         assert sm.is_slope_custom_path, "re-target stays in custom path"
         assert ctx.custom_connect.start_node == origin_before, "re-target keeps the original origin (still None)"
-        assert ctx.build(SegmentKind.SLOPE).start_location == loc_before, "re-target keeps the origin location"
+        assert ctx.build(kind=SegmentKind.SLOPE).start_location == loc_before, "re-target keeps the origin location"
 
     def test_import_center_marker_while_building_raises_unhandled(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
@@ -912,10 +962,11 @@ class TestSlopeBuildingEdgeCases:
         # MarkerType can never be silently ignored mid-build.
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
-        _sm, _ctx, _graph = self._building(fake_st, mock_dem_red_slope_diagonal, path_factory)
+        _sm, _ctx, _graph = self._building(fake_st=fake_st, dem=mock_dem_red_slope_diagonal, factory=path_factory)
         with pytest.raises(RuntimeError, match="Unhandled marker type import_center"):
             handle_path_building_click(
-                ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.IMPORT_CENTER), elevation=None
+                click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.IMPORT_CENTER),
+                elevation=None,
             )
 
 
@@ -927,7 +978,7 @@ class TestSlopeBuildingEdgeCases:
 class TestLiftPlacingClick:
     def _placing(self, fake_st, dem, factory):
         graph = ResortGraph()
-        sm, ctx = _session(fake_st, graph, factory, dem)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
         ctx.build_mode.mode = BuildMode.CHAIRLIFT  # lift type is selected before entering LIFT_PLACING
         loc = PathPoint(
             lon=0.0,
@@ -941,26 +992,26 @@ class TestLiftPlacingClick:
         from skiresort_planner.ui.click_handlers import handle_lift_placing_click
 
         dem = mock_dem_blue_slope  # drops going south → lat=0 is uphill of lat=-1000
-        sm, _ctx, graph = self._placing(fake_st, dem, path_factory)
+        sm, _ctx, graph = self._placing(fake_st=fake_st, dem=dem, factory=path_factory)
 
         handle_lift_placing_click(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
+            click_info=ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
             elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0),
         )
         assert len(graph.lifts) == 1
         assert sm.is_idle_viewing_lift
 
     def test_low_second_click_auto_orients_bottom_to_top(self, fake_st, path_factory, mock_dem_blue_slope) -> None:
-        # Click order is free: a LOWER second click no longer fails — it becomes the bottom station,
-        # the higher first point becomes the top, so the lift still goes up.
+        # Click order is free: a LOWER second click becomes the bottom station,
+        # the higher first point becomes the top, so the lift goes up.
         from skiresort_planner.ui.click_handlers import handle_lift_placing_click
 
         dem = mock_dem_blue_slope  # drops going south → lat=-2000 is BELOW the lat=-1000 first point
-        sm, _ctx, graph = self._placing(fake_st, dem, path_factory)
+        sm, _ctx, graph = self._placing(fake_st=fake_st, dem=dem, factory=path_factory)
 
         low_lat = -2000 / MapConfig.METERS_PER_DEGREE_EQUATOR
         handle_lift_placing_click(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=low_lat, lon=0.0),
+            click_info=ClickInfo(click_type=MapClickType.TERRAIN, lat=low_lat, lon=0.0),
             elevation=dem.get_elevation_or_raise(lon=0.0, lat=low_lat),
         )
         assert len(graph.lifts) == 1
@@ -973,19 +1024,19 @@ class TestLiftPlacingClick:
 
     def test_high_then_low_builds_bottom_to_top(self, fake_st, path_factory, mock_dem_blue_slope) -> None:
         # Mirror of the uphill case: start from a HIGH first point, click a LOWER second point →
-        # the lift auto-orients so start = the lower node (regression for order-agnostic clicking).
+        # the lift auto-orients so start = the lower node (order-agnostic clicking).
         from skiresort_planner.ui.click_handlers import handle_lift_placing_click
 
         dem = mock_dem_blue_slope
         graph = ResortGraph()
-        sm, ctx = _session(fake_st, graph, path_factory, dem)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=path_factory, dem=dem)
         ctx.build_mode.mode = BuildMode.CHAIRLIFT
         high = PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
         sm.start_lift(node_id=None, location=high)  # first click is the HIGH point
 
         low_lat = -1000 / MapConfig.METERS_PER_DEGREE_EQUATOR
         handle_lift_placing_click(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=low_lat, lon=0.0),
+            click_info=ClickInfo(click_type=MapClickType.TERRAIN, lat=low_lat, lon=0.0),
             elevation=dem.get_elevation_or_raise(lon=0.0, lat=low_lat),
         )
         assert len(graph.lifts) == 1
@@ -1000,13 +1051,13 @@ class TestLiftPlacingClick:
 
         dem = MockDEMService(base_elevation=2500.0, slope_ns_pct=0.0, slope_ew_pct=0.0)
         graph = ResortGraph()
-        sm, ctx = _session(fake_st, graph, path_factory, dem)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=path_factory, dem=dem)
         ctx.build_mode.mode = BuildMode.CHAIRLIFT
         first = PathPoint(lon=0.0, lat=0.01, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.01))
         sm.start_lift(node_id=None, location=first)  # higher lat → should become the TOP
 
         handle_lift_placing_click(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
+            click_info=ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
             elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0),
         )
         assert len(graph.lifts) == 1
@@ -1016,9 +1067,10 @@ class TestLiftPlacingClick:
     def test_slope_marker_click_while_placing_is_rejected(self, fake_st, path_factory, mock_dem_blue_slope) -> None:
         from skiresort_planner.ui.click_handlers import handle_lift_placing_click
 
-        sm, _ctx, graph = self._placing(fake_st, mock_dem_blue_slope, path_factory)
+        sm, _ctx, graph = self._placing(fake_st=fake_st, dem=mock_dem_blue_slope, factory=path_factory)
         handle_lift_placing_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SLOPE, slope_id="SL1"), elevation=None
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SLOPE, slope_id="SL1"),
+            elevation=None,
         )
         assert len(graph.lifts) == 0
         assert sm.is_lift_placing
@@ -1027,25 +1079,24 @@ class TestLiftPlacingClick:
         from skiresort_planner.ui.click_handlers import handle_lift_placing_click
 
         dem = mock_dem_blue_slope
-        sm, _ctx, graph = self._placing(fake_st, dem, path_factory)
+        sm, _ctx, graph = self._placing(fake_st=fake_st, dem=dem, factory=path_factory)
         # Existing uphill node as the end station.
         top, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
 
         handle_lift_placing_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=top.id), elevation=None
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=top.id),
+            elevation=None,
         )
         assert len(graph.lifts) == 1
         assert sm.is_idle_viewing_lift
 
     def test_built_lift_type_matches_selected_button(self, fake_st, path_factory, mock_dem_blue_slope) -> None:
-        # Regression: the built lift's type MUST equal the selected build mode, not a stale default.
-        # Bug was a duplicated ctx.lift.type that reset to GONDOLA on exit while build_mode kept the
-        # selected type — so a freshly-selected chairlift silently built a gondola.
+        # The built lift's type equals the selected build mode (not a stale default).
         from skiresort_planner.ui.click_handlers import handle_lift_placing_click
 
         dem = mock_dem_blue_slope
         graph = ResortGraph()
-        sm, ctx = _session(fake_st, graph, path_factory, dem)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=path_factory, dem=dem)
         ctx.build_mode.mode = BuildMode.CHAIRLIFT  # user clicked the Chairlift button
         loc = PathPoint(
             lon=0.0,
@@ -1055,7 +1106,7 @@ class TestLiftPlacingClick:
         sm.start_lift(node_id=None, location=loc)
 
         handle_lift_placing_click(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
+            click_info=ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
             elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0),
         )
         assert len(graph.lifts) == 1
@@ -1074,7 +1125,7 @@ class TestLiftPlacingEdgeCases:
     def _placing_from_node(self, fake_st, dem, factory):
         """Enter lift_placing with the first station being an EXISTING node (first_node_id set)."""
         graph = ResortGraph()
-        sm, ctx = _session(fake_st, graph, factory, dem)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
         ctx.build_mode.mode = BuildMode.CHAIRLIFT  # lift type is selected before entering LIFT_PLACING
         bottom, _ = graph.get_or_create_node(
             lon=0.0,
@@ -1090,11 +1141,12 @@ class TestLiftPlacingEdgeCases:
         from skiresort_planner.ui.click_handlers import handle_lift_placing_click
 
         dem = mock_dem_blue_slope
-        sm, _ctx, graph, bottom = self._placing_from_node(fake_st, dem, path_factory)
-        toasts = _capture_toasts(monkeypatch)
+        sm, _ctx, graph, bottom = self._placing_from_node(fake_st=fake_st, dem=dem, factory=path_factory)
+        toasts = _capture_toasts(monkeypatch=monkeypatch)
 
         handle_lift_placing_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=bottom.id), elevation=None
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=bottom.id),
+            elevation=None,
         )
         assert len(graph.lifts) == 0, "a same-node lift is not built"
         assert sm.is_lift_placing, "rejection keeps us placing"
@@ -1108,12 +1160,13 @@ class TestLiftPlacingEdgeCases:
         from skiresort_planner.ui.click_handlers import handle_lift_placing_click
 
         dem = mock_dem_blue_slope
-        sm, ctx, graph, bottom = self._placing_from_node(fake_st, dem, path_factory)
+        sm, ctx, graph, bottom = self._placing_from_node(fake_st=fake_st, dem=dem, factory=path_factory)
         top, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0))
         nodes_before = len(graph.nodes)
 
         handle_lift_placing_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=top.id), elevation=None
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=top.id),
+            elevation=None,
         )
         assert len(graph.lifts) == 1
         assert len(graph.nodes) == nodes_before, "both stations already existed — no node is duplicated"
@@ -1130,7 +1183,7 @@ class TestLiftPlacingEdgeCases:
 
         dem = mock_dem_blue_slope
         graph = ResortGraph()
-        sm, ctx = _session(fake_st, graph, path_factory, dem)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=path_factory, dem=dem)
         ctx.build_mode.mode = BuildMode.CHAIRLIFT  # lift type selected before entering LIFT_PLACING
         loc = PathPoint(
             lon=0.0,
@@ -1140,7 +1193,7 @@ class TestLiftPlacingEdgeCases:
         sm.start_lift(node_id=None, location=loc)  # pending-location start: no node materialised yet
 
         handle_lift_placing_click(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
+            click_info=ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
             elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0),
         )
         assert len(graph.lifts) == 1
@@ -1155,16 +1208,16 @@ class TestLiftPlacingEdgeCases:
     def test_road_marker_click_while_placing_is_rejected_with_view_road_verb(
         self, fake_st, monkeypatch, path_factory, mock_dem_blue_slope
     ) -> None:
-        # A ROAD marker mid-lift is rejected with the ROAD-specific verb (regression for the
-        # marker-dispatch-completeness bug where a ROAD click in lift mode used to crash).
+        # A ROAD marker mid-lift is rejected with the ROAD-specific verb (handled, not crashed).
         from skiresort_planner.ui.click_handlers import handle_lift_placing_click
 
         dem = mock_dem_blue_slope
-        sm, _ctx, graph, _bottom = self._placing_from_node(fake_st, dem, path_factory)
-        toasts = _capture_toasts(monkeypatch)
+        sm, _ctx, graph, _bottom = self._placing_from_node(fake_st=fake_st, dem=dem, factory=path_factory)
+        toasts = _capture_toasts(monkeypatch=monkeypatch)
 
         handle_lift_placing_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.ROAD, road_id="R1"), elevation=None
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.ROAD, road_id="R1"),
+            elevation=None,
         )
         assert len(graph.lifts) == 0
         assert sm.is_lift_placing, "a stray road marker does not abandon the lift"
@@ -1175,10 +1228,11 @@ class TestLiftPlacingEdgeCases:
         from skiresort_planner.ui.click_handlers import handle_lift_placing_click
 
         dem = mock_dem_blue_slope
-        _sm, _ctx, _graph, _bottom = self._placing_from_node(fake_st, dem, path_factory)
+        _sm, _ctx, _graph, _bottom = self._placing_from_node(fake_st=fake_st, dem=dem, factory=path_factory)
         with pytest.raises(KeyError, match="GHOST"):
             handle_lift_placing_click(
-                ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id="GHOST"), elevation=None
+                click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id="GHOST"),
+                elevation=None,
             )
 
 
@@ -1190,12 +1244,12 @@ class TestLiftPlacingEdgeCases:
 class TestRoadBuildingClick:
     def _building(self, fake_st, factory, dem):
         """Start a road at the origin so the handler is in road_starting."""
-        sm, ctx = _session(fake_st, ResortGraph(), factory, dem)
+        sm, ctx = _session(fake_st=fake_st, graph=ResortGraph(), factory=factory, dem=dem)
         ctx.build_mode.mode = BuildMode.ROAD
         from skiresort_planner.ui.click_handlers import handle_idle_click
 
         handle_idle_click(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
+            click_info=ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
             elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0),
         )
         assert sm.is_road_starting
@@ -1215,21 +1269,21 @@ class TestRoadBuildingClick:
     def _target(self, click_info: ClickInfo, elevation: float | None = None) -> None:
         """Click a road target, then run the deferred custom-connect generation.
 
-        A target click now routes into ROAD_CUSTOM_PATH and ARMS deferred generation
-        (mirrors slope custom-connect); the proposals appear when the deferred pass runs.
+        A target click routes into ROAD_CUSTOM_PATH and arms deferred generation
+        (like slope custom-connect); proposals appear when the deferred pass runs.
         This helper does both so tests can assert on the resulting proposals.
         """
         from skiresort_planner.ui.actions import process_custom_connect_pending
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
-        handle_path_building_click(click_info, elevation=elevation)
+        handle_path_building_click(click_info=click_info, elevation=elevation)
         process_custom_connect_pending()
 
     def test_terrain_click_generates_proposals_without_committing(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
     ) -> None:
         dem = mock_dem_red_slope_diagonal
-        sm, ctx, graph = self._building(fake_st, path_factory, dem)
+        sm, ctx, graph = self._building(fake_st=fake_st, factory=path_factory, dem=dem)
         dedup_before = fake_st.session_state["dedup_epoch"]
         camera_before = fake_st.session_state["camera_epoch"]
 
@@ -1237,16 +1291,18 @@ class TestRoadBuildingClick:
         # deferred pass produces the proposal(s) to browse. It commits NOTHING until a
         # proposal is clicked/committed.
         self._target(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            click_info=ClickInfo(
+                click_type=MapClickType.TERRAIN, lat=0.0, lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR
+            ),
             elevation=dem.get_elevation_or_raise(lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0),
         )
         assert len(ctx.proposals.paths) >= 1, "a reachable target proposes at least one gentle route"
         assert all(p.max_slope_pct <= float(PathConfig.ROAD_MAX_GRADIENT_PCT) for p in ctx.proposals.paths)
         assert ctx.proposals.selected_idx == 0
-        assert ctx.build(SegmentKind.ROAD).segments == [], "a target click proposes, it does not commit"
+        assert ctx.build(kind=SegmentKind.ROAD).segments == [], "a target click proposes, it does not commit"
         assert sm.is_road_custom_path, "still targeting until a proposal is committed"
         # The deferred pass bumps dedup_epoch so the new proposals are clickable — but must NOT
-        # recenter (camera_epoch unchanged). Regression for invisible road proposals + no-jump.
+        # recenter (camera_epoch unchanged).
         assert fake_st.session_state["dedup_epoch"] > dedup_before, (
             "generating road proposals must bump dedup_epoch so they are clickable"
         )
@@ -1264,19 +1320,23 @@ class TestRoadBuildingClick:
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
         dem = mock_dem_red_slope_diagonal
-        sm, ctx, _graph = self._building(fake_st, path_factory, dem)
+        sm, ctx, _graph = self._building(fake_st=fake_st, factory=path_factory, dem=dem)
         self._target(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            click_info=ClickInfo(
+                click_type=MapClickType.TERRAIN, lat=0.0, lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR
+            ),
             elevation=dem.get_elevation_or_raise(lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0),
         )
         assert ctx.proposals.selected_idx == 0, "the sole proposal is auto-selected"
 
         # Click the already-selected proposal body → commits (no panel button).
         handle_path_building_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_BODY, proposal_index=0),
+            click_info=ClickInfo(
+                click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_BODY, proposal_index=0
+            ),
             elevation=None,
         )
-        assert len(ctx.build(SegmentKind.ROAD).segments) == 1, "clicking the selected proposal commits it"
+        assert len(ctx.build(kind=SegmentKind.ROAD).segments) == 1, "clicking the selected proposal commits it"
         assert sm.is_road_building_only, "committed segment keeps building"
 
     def test_clicking_unselected_proposal_only_selects(
@@ -1290,9 +1350,11 @@ class TestRoadBuildingClick:
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
         dem = mock_dem_red_slope_diagonal
-        sm, ctx, _graph = self._building(fake_st, path_factory, dem)
+        sm, ctx, _graph = self._building(fake_st=fake_st, factory=path_factory, dem=dem)
         self._target(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            click_info=ClickInfo(
+                click_type=MapClickType.TERRAIN, lat=0.0, lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR
+            ),
             elevation=dem.get_elevation_or_raise(lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0),
         )
         # Simulate a multi-proposal browse state with a different one selected.
@@ -1300,49 +1362,57 @@ class TestRoadBuildingClick:
         ctx.proposals.selected_idx = 1
 
         handle_path_building_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_BODY, proposal_index=0),
+            click_info=ClickInfo(
+                click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_BODY, proposal_index=0
+            ),
             elevation=None,
         )
         assert ctx.proposals.selected_idx == 0, "clicking an unselected proposal selects it"
-        assert ctx.build(SegmentKind.ROAD).segments == [], "selecting an unselected proposal must NOT commit"
+        assert ctx.build(kind=SegmentKind.ROAD).segments == [], "selecting an unselected proposal must NOT commit"
         assert sm.is_road_custom_path
 
     def test_proposal_commit_via_button_stays_building(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
     ) -> None:
         dem = mock_dem_red_slope_diagonal
-        sm, ctx, graph = self._building(fake_st, path_factory, dem)
+        sm, ctx, graph = self._building(fake_st=fake_st, factory=path_factory, dem=dem)
 
         self._target(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            click_info=ClickInfo(
+                click_type=MapClickType.TERRAIN, lat=0.0, lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR
+            ),
             elevation=dem.get_elevation_or_raise(lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0),
         )
         self._commit_proposal()  # button path → commit_selected_path
         assert sm.is_road_building_only, "a committed segment keeps building (no auto-finish)"
-        assert len(ctx.build(SegmentKind.ROAD).segments) == 1
+        assert len(ctx.build(kind=SegmentKind.ROAD).segments) == 1
         assert len(graph.roads) == 0, "no Road entity until Finish Road"
         # The committed segment's kind IS road — identity lives on the segment, not a UI list.
-        assert graph.segments[ctx.build(SegmentKind.ROAD).segments[-1]].kind == SegmentKind.ROAD
+        assert graph.segments[ctx.build(kind=SegmentKind.ROAD).segments[-1]].kind == SegmentKind.ROAD
         # Per-segment undo: the commit pushed an AddSegmentsAction.
         assert graph.undo_stack, "committing a road segment records an undo entry"
         assert graph.undo_stack[-1].action_type.name == "ADD_SEGMENTS"
 
     def test_second_click_extends_the_road(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         dem = mock_dem_red_slope_diagonal
-        sm, ctx, _graph = self._building(fake_st, path_factory, dem)
+        sm, ctx, _graph = self._building(fake_st=fake_st, factory=path_factory, dem=dem)
 
         self._target(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            click_info=ClickInfo(
+                click_type=MapClickType.TERRAIN, lat=0.0, lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR
+            ),
             elevation=dem.get_elevation_or_raise(lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0),
         )
         self._commit_proposal()
         self._target(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=600 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            click_info=ClickInfo(
+                click_type=MapClickType.TERRAIN, lat=0.0, lon=600 / MapConfig.METERS_PER_DEGREE_EQUATOR
+            ),
             elevation=dem.get_elevation_or_raise(lon=600 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0),
         )
         self._commit_proposal()
         assert sm.is_road_building_only
-        assert len(ctx.build(SegmentKind.ROAD).segments) == 2, "each committed proposal adds one segment"
+        assert len(ctx.build(kind=SegmentKind.ROAD).segments) == 2, "each committed proposal adds one segment"
 
     def test_too_steep_target_is_refused(self, fake_st, monkeypatch, mock_dem_black_slope) -> None:
         from skiresort_planner.core.path_tracer import PathTracer
@@ -1357,15 +1427,17 @@ class TestRoadBuildingClick:
         factory = PathFactory(
             dem_service=dem, path_tracer=PathTracer(dem=dem, analyzer=analyzer), terrain_analyzer=analyzer
         )
-        sm, ctx, graph = self._building(fake_st, factory, dem)
-        toasts = _capture_toasts(monkeypatch)
+        sm, ctx, graph = self._building(fake_st=fake_st, factory=factory, dem=dem)
+        toasts = _capture_toasts(monkeypatch=monkeypatch)
 
         self._target(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=-300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lon=0.0),
+            click_info=ClickInfo(
+                click_type=MapClickType.TERRAIN, lat=-300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lon=0.0
+            ),
             elevation=dem.get_elevation_or_raise(lon=0.0, lat=-300 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         )
         assert ctx.proposals.paths == [], "steep target proposes nothing (even the straight line is over cap)"
-        assert ctx.build(SegmentKind.ROAD).segments == [], "steep target commits nothing"
+        assert ctx.build(kind=SegmentKind.ROAD).segments == [], "steep target commits nothing"
         # The target click transitions into ROAD_CUSTOM_PATH; the deferred pass then finds no
         # in-band route and refuses (the user cancels or retargets from there).
         assert sm.is_road_custom_path, "stays in the custom-path flow, no segment added"
@@ -1380,18 +1452,19 @@ class TestRoadBuildingClick:
     def test_stray_marker_click_is_rejected(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
-        sm, ctx, graph = self._building(fake_st, path_factory, mock_dem_red_slope_diagonal)
+        sm, ctx, graph = self._building(fake_st=fake_st, factory=path_factory, dem=mock_dem_red_slope_diagonal)
         handle_path_building_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SLOPE, slope_id="SL1"), elevation=None
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SLOPE, slope_id="SL1"),
+            elevation=None,
         )
-        assert ctx.build(SegmentKind.ROAD).segments == []
+        assert ctx.build(kind=SegmentKind.ROAD).segments == []
         assert len(graph.segments) == 0
 
     def test_node_target_is_connector_and_auto_finishes(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
     ) -> None:
         dem = mock_dem_red_slope_diagonal
-        sm, ctx, graph = self._building(fake_st, path_factory, dem)
+        sm, ctx, graph = self._building(fake_st=fake_st, factory=path_factory, dem=dem)
         end, _ = graph.get_or_create_node(
             lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR,
             lat=0.0,
@@ -1399,7 +1472,8 @@ class TestRoadBuildingClick:
         )
 
         self._target(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=end.id), elevation=None
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=end.id),
+            elevation=None,
         )
         assert len(ctx.proposals.paths) >= 1, "a node target proposes a route to browse"
         assert all(p.is_connector and p.target_node_id == end.id for p in ctx.proposals.paths), (
@@ -1415,12 +1489,12 @@ class TestRoadBuildingEdgeCases:
     """Distance guard, proposal-endpoint parity, and node-reuse branches of the road handler."""
 
     def _building(self, fake_st, factory, dem):
-        sm, ctx = _session(fake_st, ResortGraph(), factory, dem)
+        sm, ctx = _session(fake_st=fake_st, graph=ResortGraph(), factory=factory, dem=dem)
         ctx.build_mode.mode = BuildMode.ROAD
         from skiresort_planner.ui.click_handlers import handle_idle_click
 
         handle_idle_click(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
+            click_info=ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
             elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0),
         )
         assert sm.is_road_starting
@@ -1431,7 +1505,7 @@ class TestRoadBuildingEdgeCases:
         from skiresort_planner.ui.actions import process_custom_connect_pending
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
-        handle_path_building_click(click_info, elevation=elevation)
+        handle_path_building_click(click_info=click_info, elevation=elevation)
         process_custom_connect_pending()
 
     def test_target_too_far_is_refused_via_handler(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
@@ -1441,17 +1515,17 @@ class TestRoadBuildingEdgeCases:
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
         dem = mock_dem_red_slope_diagonal
-        sm, ctx, graph = self._building(fake_st, path_factory, dem)
+        sm, ctx, graph = self._building(fake_st=fake_st, factory=path_factory, dem=dem)
         far_lon = (
             PathConfig.SEGMENT_LENGTH_MAX_M + 500
         ) / MapConfig.METERS_PER_DEGREE_EQUATOR  # 1500 m east of the origin
 
         handle_path_building_click(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=far_lon),
+            click_info=ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=far_lon),
             elevation=dem.get_elevation_or_raise(lon=far_lon, lat=0.0),
         )
         assert ctx.proposals.paths == [], "a too-far target proposes nothing"
-        assert ctx.build(SegmentKind.ROAD).segments == [] and len(graph.segments) == 0, (
+        assert ctx.build(kind=SegmentKind.ROAD).segments == [] and len(graph.segments) == 0, (
             "a too-far target commits nothing"
         )
         assert sm.is_road_starting, "a too-far target does not leave the building flow"
@@ -1465,9 +1539,11 @@ class TestRoadBuildingEdgeCases:
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
         dem = mock_dem_red_slope_diagonal
-        sm, ctx, _graph = self._building(fake_st, path_factory, dem)
+        sm, ctx, _graph = self._building(fake_st=fake_st, factory=path_factory, dem=dem)
         self._target(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            click_info=ClickInfo(
+                click_type=MapClickType.TERRAIN, lat=0.0, lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR
+            ),
             elevation=dem.get_elevation_or_raise(lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0),
         )
         # Two-proposal browse state with a DIFFERENT one selected (idx 1); an endpoint click on
@@ -1475,10 +1551,12 @@ class TestRoadBuildingEdgeCases:
         ctx.proposals.paths = ctx.proposals.paths + ctx.proposals.paths[:1]
         ctx.proposals.selected_idx = 1
         handle_path_building_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_ENDPOINT, proposal_index=0),
+            click_info=ClickInfo(
+                click_type=MapClickType.MARKER, marker_type=MarkerType.PROPOSAL_ENDPOINT, proposal_index=0
+            ),
             elevation=None,
         )
-        assert len(ctx.build(SegmentKind.ROAD).segments) == 1, "an endpoint click commits immediately"
+        assert len(ctx.build(kind=SegmentKind.ROAD).segments) == 1, "an endpoint click commits immediately"
         assert sm.is_road_building_only
 
     def test_brand_new_terrain_start_proposals_have_no_node_ids(
@@ -1490,10 +1568,12 @@ class TestRoadBuildingEdgeCases:
         from skiresort_planner.ui.actions import commit_selected_path
 
         dem = mock_dem_red_slope_diagonal
-        _sm, ctx, graph = self._building(fake_st, path_factory, dem)
+        _sm, ctx, graph = self._building(fake_st=fake_st, factory=path_factory, dem=dem)
         nodes_at_start = len(graph.nodes)
         self._target(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            click_info=ClickInfo(
+                click_type=MapClickType.TERRAIN, lat=0.0, lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR
+            ),
             elevation=dem.get_elevation_or_raise(lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0),
         )
         assert ctx.proposals.paths, "a reachable target proposes at least one route"
@@ -1513,17 +1593,21 @@ class TestRoadBuildingEdgeCases:
         from skiresort_planner.ui.actions import commit_selected_path
 
         dem = mock_dem_red_slope_diagonal
-        _sm, ctx, graph = self._building(fake_st, path_factory, dem)
+        _sm, ctx, graph = self._building(fake_st=fake_st, factory=path_factory, dem=dem)
         self._target(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            click_info=ClickInfo(
+                click_type=MapClickType.TERRAIN, lat=0.0, lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR
+            ),
             elevation=dem.get_elevation_or_raise(lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0),
         )
         commit_selected_path(path_idx=0)
-        assert ctx.build(SegmentKind.ROAD).endpoints, "a committed segment records an endpoint"
-        last_endpoint_id = ctx.build(SegmentKind.ROAD).endpoints[-1]
+        assert ctx.build(kind=SegmentKind.ROAD).endpoints, "a committed segment records an endpoint"
+        last_endpoint_id = ctx.build(kind=SegmentKind.ROAD).endpoints[-1]
 
         self._target(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=600 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            click_info=ClickInfo(
+                click_type=MapClickType.TERRAIN, lat=0.0, lon=600 / MapConfig.METERS_PER_DEGREE_EQUATOR
+            ),
             elevation=dem.get_elevation_or_raise(lon=600 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0),
         )
         assert ctx.proposals.paths, "extending proposes at least one route"
@@ -1544,8 +1628,8 @@ class TestRoadBuildingEdgeCases:
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
         dem = mock_dem_red_slope_diagonal
-        sm, ctx, _graph = self._building(fake_st, path_factory, dem)
-        toasts = _capture_toasts(pytest.MonkeyPatch())
+        sm, ctx, _graph = self._building(fake_st=fake_st, factory=path_factory, dem=dem)
+        toasts = _capture_toasts(monkeypatch=pytest.MonkeyPatch())
 
         # Force the grid planner to emit only an OVER-cap candidate so only the straight line
         # (to the gently reachable target) survives the cap.
@@ -1563,7 +1647,9 @@ class TestRoadBuildingEdgeCases:
         # Target ~15m east, ~1m drop → a straight line well under 15%. Generation lives in
         # the deferred pass, so keep the mock active across it (do NOT use self._target here).
         handle_path_building_click(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=15 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            click_info=ClickInfo(
+                click_type=MapClickType.TERRAIN, lat=0.0, lon=15 / MapConfig.METERS_PER_DEGREE_EQUATOR
+            ),
             elevation=dem.get_elevation_or_raise(lon=15 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0),
         )
         process_custom_connect_pending()
@@ -1592,15 +1678,17 @@ class TestRoadBuildingEdgeCases:
         factory = PathFactory(
             dem_service=dem, path_tracer=PathTracer(dem=dem, analyzer=analyzer), terrain_analyzer=analyzer
         )
-        sm, ctx, graph = self._building(fake_st, factory, dem)
-        toasts = _capture_toasts(pytest.MonkeyPatch())
+        sm, ctx, graph = self._building(fake_st=fake_st, factory=factory, dem=dem)
+        toasts = _capture_toasts(monkeypatch=pytest.MonkeyPatch())
 
         self._target(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=-300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lon=0.0),
+            click_info=ClickInfo(
+                click_type=MapClickType.TERRAIN, lat=-300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lon=0.0
+            ),
             elevation=dem.get_elevation_or_raise(lon=0.0, lat=-300 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         )
         assert ctx.proposals.paths == [], "no serpentine and no in-band straight line → nothing proposed"
-        assert ctx.build(SegmentKind.ROAD).segments == [], "nothing committed"
+        assert ctx.build(kind=SegmentKind.ROAD).segments == [], "nothing committed"
         assert sm.is_road_custom_path
         assert len(graph.segments) == 0
         assert toasts == [], "no transient too-steep toast for roads"
@@ -1622,7 +1710,7 @@ class TestRoadBuildingEdgeCases:
         dem = mock_dem_red_slope_diagonal
         # Start the road AT an existing node so start_node_id must propagate.
         graph = ResortGraph()
-        sm, ctx = _session(fake_st, graph, path_factory, dem)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=path_factory, dem=dem)
         from skiresort_planner.model.node import Node
 
         start = Node(id="N_start", location=PathPoint(lon=0.0, lat=0.0, elevation=2500.0))
@@ -1646,7 +1734,7 @@ class TestRoadBuildingEdgeCases:
         mp.setattr(path_factory, "generate_manual_paths", lambda **kwargs: iter([over_cap]))
         # The fallback runs in the deferred pass, so keep the mock active across it.
         handle_path_building_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=target.id),
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=target.id),
             elevation=None,
         )
         process_custom_connect_pending()
@@ -1669,7 +1757,7 @@ class TestRoadBuildingEdgeCases:
         from skiresort_planner.ui.actions import process_path_generation_pending
 
         dem = mock_dem_red_slope_diagonal
-        sm, ctx, _graph = self._building(fake_st, path_factory, dem)
+        sm, ctx, _graph = self._building(fake_st=fake_st, factory=path_factory, dem=dem)
         assert SegmentKind.ROAD in ctx.pending.fan_generation, "entering road build queues the road fan"
 
         process_path_generation_pending()
@@ -1696,7 +1784,7 @@ class TestRoadBuildingEdgeCases:
         factory = PathFactory(
             dem_service=dem, path_tracer=PathTracer(dem=dem, analyzer=analyzer), terrain_analyzer=analyzer
         )
-        sm, ctx, _graph = self._building(fake_st, factory, dem)
+        sm, ctx, _graph = self._building(fake_st=fake_st, factory=factory, dem=dem)
 
         raw = list(
             factory.generate_fan(
@@ -1722,11 +1810,11 @@ class TestDispatchClick:
         from skiresort_planner.ui.mode_registry import dispatch_click
 
         dem = mock_dem_red_slope_diagonal
-        sm, ctx = _session(fake_st, ResortGraph(), path_factory, dem)
+        sm, ctx = _session(fake_st=fake_st, graph=ResortGraph(), factory=path_factory, dem=dem)
         ctx.build_mode.mode = BuildMode.SLOPE
 
         # dispatch_click looks up elevation for terrain clicks, then routes to the idle handler.
-        dispatch_click(ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0))
+        dispatch_click(click_info=ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0))
         assert sm.is_slope_starting
 
     def test_marker_click_routes_without_elevation_lookup(
@@ -1738,10 +1826,12 @@ class TestDispatchClick:
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
         assert slope is not None
-        sm, ctx = _session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=path_factory, dem=mock_dem_red_slope_diagonal)
 
         # A marker click carries no lat/lon; dispatch must route it straight to the handler.
-        dispatch_click(ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SLOPE, slope_id=slope.id))
+        dispatch_click(
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SLOPE, slope_id=slope.id)
+        )
         assert sm.is_idle_viewing_slope and ctx.viewing.slope_id == slope.id
 
 
@@ -1755,9 +1845,10 @@ class TestBuildStateMarkerCompleteness:
     state, so a user can click any of them mid-build. Each build-state handler must handle those
     entity markers WITHOUT raising — it should politely reject them (InvalidClickMessage), never crash.
 
-    This guards the class of bug where a handler forgot an entity-marker type: a ROAD marker clicked
-    while building a slope or placing a lift used to hit `raise RuntimeError`. (NODE and PROPOSAL_*
-    are functional interaction paths needing live state — covered by the routing tests above.)
+    This guards the class of bug where a handler forgot an entity-marker type: a handler that forgot
+    an entity-marker type would raise RuntimeError; each handler must politely reject entity markers
+    instead. (NODE and PROPOSAL_* are functional interaction paths needing live state — covered by the
+    routing tests above.)
     """
 
     # Entity markers the map emits for FINISHED entities — all must be politely rejected mid-build.
@@ -1780,7 +1871,9 @@ class TestBuildStateMarkerCompleteness:
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
         for _marker_type, ci in self._entity_marker_clicks():
-            sm, ctx = _session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
+            sm, ctx = _session(
+                fake_st=fake_st, graph=ResortGraph(), factory=path_factory, dem=mock_dem_red_slope_diagonal
+            )
             sm.start_slope(lon=0.0, lat=0.0, elevation=2500.0, node_id=None)
             # Must not raise for any entity marker (shows an InvalidClickMessage instead).
             handle_path_building_click(click_info=ci, elevation=2000.0)
@@ -1791,7 +1884,7 @@ class TestBuildStateMarkerCompleteness:
 
         for marker_type, ci in self._entity_marker_clicks():
             graph = ResortGraph()
-            sm, ctx = _session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
+            sm, ctx = _session(fake_st=fake_st, graph=graph, factory=path_factory, dem=mock_dem_red_slope_diagonal)
             ctx.lift.first_location = PathPoint(lon=0.0, lat=-0.01, elevation=2400.0)
             sm.start_lift(location=ctx.lift.first_location)
             handle_lift_placing_click(click_info=ci, elevation=2000.0)
@@ -1806,13 +1899,15 @@ class TestBuildStateMarkerCompleteness:
         from skiresort_planner.ui.click_handlers import handle_path_building_click
 
         for marker_type, ci in self._entity_marker_clicks():
-            sm, ctx = _session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
+            sm, ctx = _session(
+                fake_st=fake_st, graph=ResortGraph(), factory=path_factory, dem=mock_dem_red_slope_diagonal
+            )
             ctx.build_mode.mode = BuildMode.ROAD
             sm.start_road(location=PathPoint(lon=0.0, lat=0.0, elevation=2500.0))
             graph = fake_st.session_state["graph"]
             handle_path_building_click(click_info=ci, elevation=2000.0)
             # Politely rejected: no segment committed, no proposal generated, still starting the road.
-            assert ctx.build(SegmentKind.ROAD).segments == [], f"{marker_type.name} must not commit a segment"
+            assert ctx.build(kind=SegmentKind.ROAD).segments == [], f"{marker_type.name} must not commit a segment"
             assert ctx.proposals.paths == [], f"{marker_type.name} must not generate proposals"
             assert len(graph.segments) == 0, f"{marker_type.name} must not add graph segments"
             assert sm.is_road_starting, f"{marker_type.name} must not leave road building"
@@ -1821,7 +1916,9 @@ class TestBuildStateMarkerCompleteness:
         from skiresort_planner.ui.click_handlers import handle_node_edit_selecting_click
 
         for _marker_type, ci in self._entity_marker_clicks():
-            sm, ctx = _session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
+            sm, ctx = _session(
+                fake_st=fake_st, graph=ResortGraph(), factory=path_factory, dem=mock_dem_red_slope_diagonal
+            )
             sm.start_node_edit()
             handle_node_edit_selecting_click(click_info=ci, elevation=None)
             assert ctx.node_edit.node_ids == [], "no entity marker adds to the merge selection"
@@ -1830,13 +1927,14 @@ class TestBuildStateMarkerCompleteness:
     def test_import_selecting_rejects_every_entity_marker(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal
     ) -> None:
-        # The import handler was the one build-state handler missing from this completeness suite.
         # An entity marker clicked while placing an import box must be inert: no confirm, no move,
         # no crash, still placing.
         from skiresort_planner.ui.click_handlers import handle_import_selecting_click
 
         for marker_type, ci in self._entity_marker_clicks():
-            sm, ctx = _session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
+            sm, ctx = _session(
+                fake_st=fake_st, graph=ResortGraph(), factory=path_factory, dem=mock_dem_red_slope_diagonal
+            )
             ctx.build_mode.mode = BuildMode.IMPORT
             sm.start_import(lon=0.02, lat=0.03)  # a distinctive placed center, so a stray re-place shows
             handle_import_selecting_click(click_info=ci, elevation=None)
@@ -1855,18 +1953,18 @@ class TestBuildStateMarkerCompleteness:
 class TestImportSelectingClick:
     def _placing(self, fake_st, factory, dem):
         """Enter import_selecting with a box center already placed."""
-        sm, ctx = _session(fake_st, ResortGraph(), factory, dem)
+        sm, ctx = _session(fake_st=fake_st, graph=ResortGraph(), factory=factory, dem=dem)
         ctx.build_mode.mode = BuildMode.IMPORT
         sm.start_import(lon=0.0, lat=0.0)
         return sm, ctx
 
     def test_center_dot_click_is_inert(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
-        # The center dot no longer confirms — it can't say WHICH import. Only the buttons confirm.
+        # The center dot does not confirm — it can't say WHICH import. Only the buttons confirm.
         from skiresort_planner.ui.click_handlers import handle_import_selecting_click
 
-        sm, ctx = self._placing(fake_st, path_factory, mock_dem_red_slope_diagonal)
+        sm, ctx = self._placing(fake_st=fake_st, dem=path_factory, factory=mock_dem_red_slope_diagonal)
         handle_import_selecting_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.IMPORT_CENTER), elevation=None
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.IMPORT_CENTER), elevation=None
         )
         assert ctx.pending.osm_import_mode is None, "a center-dot click must NOT confirm any import"
         assert sm.is_import_selecting, "still placing — confirm is done by the panel buttons"
@@ -1876,8 +1974,10 @@ class TestImportSelectingClick:
     ) -> None:
         from skiresort_planner.ui.click_handlers import handle_import_selecting_click
 
-        sm, ctx = self._placing(fake_st, path_factory, mock_dem_red_slope_diagonal)
-        handle_import_selecting_click(ClickInfo(click_type=MapClickType.TERRAIN, lat=0.05, lon=0.06), elevation=2000.0)
+        sm, ctx = self._placing(fake_st=fake_st, dem=path_factory, factory=mock_dem_red_slope_diagonal)
+        handle_import_selecting_click(
+            click_info=ClickInfo(click_type=MapClickType.TERRAIN, lat=0.05, lon=0.06), elevation=2000.0
+        )
         assert sm.is_import_selecting, "re-placing keeps us in import mode"
         assert ctx.pending.osm_import_center_lon == 0.06 and ctx.pending.osm_import_center_lat == 0.05
         assert ctx.pending.osm_import_mode is None, "re-placing does not confirm"
@@ -1888,9 +1988,13 @@ class TestImportSelectingClick:
         # Nudging the box must leave the LAST-placed center staged for whichever button confirms it.
         from skiresort_planner.ui.click_handlers import handle_import_selecting_click
 
-        sm, ctx = self._placing(fake_st, path_factory, mock_dem_red_slope_diagonal)
-        handle_import_selecting_click(ClickInfo(click_type=MapClickType.TERRAIN, lat=0.01, lon=0.02), elevation=2000.0)
-        handle_import_selecting_click(ClickInfo(click_type=MapClickType.TERRAIN, lat=0.05, lon=0.06), elevation=2000.0)
+        sm, ctx = self._placing(fake_st=fake_st, dem=path_factory, factory=mock_dem_red_slope_diagonal)
+        handle_import_selecting_click(
+            click_info=ClickInfo(click_type=MapClickType.TERRAIN, lat=0.01, lon=0.02), elevation=2000.0
+        )
+        handle_import_selecting_click(
+            click_info=ClickInfo(click_type=MapClickType.TERRAIN, lat=0.05, lon=0.06), elevation=2000.0
+        )
         assert sm.is_import_selecting
         assert ctx.pending.osm_import_center_lon == 0.06 and ctx.pending.osm_import_center_lat == 0.05, (
             "the last-placed center wins"
@@ -1904,7 +2008,7 @@ class TestImportSelectingClick:
 
 class TestNodeEditingClick:
     def _merge_session(self, fake_st, graph, factory, dem):
-        sm, ctx = _session(fake_st, graph, factory, dem)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
         sm.start_node_edit()
         return sm, ctx
 
@@ -1913,10 +2017,13 @@ class TestNodeEditingClick:
 
         graph = ResortGraph()
         node, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=2000.0)
-        sm, ctx = self._merge_session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
+        sm, ctx = self._merge_session(
+            fake_st=fake_st, graph=graph, factory=path_factory, dem=mock_dem_red_slope_diagonal
+        )
 
         handle_node_edit_selecting_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id), elevation=None
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id),
+            elevation=None,
         )
         assert ctx.node_edit.node_ids == [node.id]
         assert sm.is_node_edit_selecting, "selecting a node keeps us in node editing"
@@ -1926,11 +2033,13 @@ class TestNodeEditingClick:
 
         graph = ResortGraph()
         node, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=2000.0)
-        sm, ctx = self._merge_session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
+        sm, ctx = self._merge_session(
+            fake_st=fake_st, graph=graph, factory=path_factory, dem=mock_dem_red_slope_diagonal
+        )
         click = ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id)
 
-        handle_node_edit_selecting_click(click, elevation=None)
-        handle_node_edit_selecting_click(click, elevation=None)
+        handle_node_edit_selecting_click(click_info=click, elevation=None)
+        handle_node_edit_selecting_click(click_info=click, elevation=None)
         assert ctx.node_edit.node_ids == [], "re-clicking a selected node deselects it"
 
     def test_segment_body_click_inserts_a_node(
@@ -1947,11 +2056,11 @@ class TestNodeEditingClick:
             lat=(graph.segments[seg_id].points[0].lat + graph.segments[seg_id].points[-1].lat) / 2,
             elevation=0.0,
         )  # geometric midpoint (interior) — projects onto the leg after finish-simplification
-        sm, ctx = self._merge_session(fake_st, graph, path_factory, mock_dem_blue_slope)
+        sm, ctx = self._merge_session(fake_st=fake_st, graph=graph, factory=path_factory, dem=mock_dem_blue_slope)
         nodes_before = len(graph.nodes)
 
         handle_node_edit_selecting_click(
-            ClickInfo(
+            click_info=ClickInfo(
                 click_type=MapClickType.MARKER,
                 marker_type=MarkerType.SEGMENT,
                 segment_id=seg_id,
@@ -1972,13 +2081,13 @@ class TestNodeEditingClick:
         graph = ResortGraph()
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
-        sm, ctx = self._merge_session(fake_st, graph, path_factory, mock_dem_blue_slope)
-        toasts = _capture_toasts(monkeypatch)
+        sm, ctx = self._merge_session(fake_st=fake_st, graph=graph, factory=path_factory, dem=mock_dem_blue_slope)
+        toasts = _capture_toasts(monkeypatch=monkeypatch)
         nodes_before = len(graph.nodes)
 
         # The slope ICON marker is position-less (only the SEGMENT belt inserts nodes) → rejected.
         handle_node_edit_selecting_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SLOPE, slope_id=slope.id),
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SLOPE, slope_id=slope.id),
             elevation=None,
         )
         assert len(graph.nodes) == nodes_before, "a slope-icon click adds no node"
@@ -1995,12 +2104,12 @@ class TestNodeEditingClick:
         slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
         seg_id = slope.segment_ids[0]
         start = graph.segments[seg_id].points[0]
-        sm, ctx = self._merge_session(fake_st, graph, path_factory, mock_dem_blue_slope)
-        toasts = _capture_toasts(monkeypatch)
+        sm, ctx = self._merge_session(fake_st=fake_st, graph=graph, factory=path_factory, dem=mock_dem_blue_slope)
+        toasts = _capture_toasts(monkeypatch=monkeypatch)
         nodes_before = len(graph.nodes)
 
         handle_node_edit_selecting_click(
-            ClickInfo(
+            click_info=ClickInfo(
                 click_type=MapClickType.MARKER,
                 marker_type=MarkerType.SEGMENT,
                 segment_id=seg_id,
@@ -2019,10 +2128,12 @@ class TestNodeEditingClick:
         from skiresort_planner.ui.click_handlers import handle_node_edit_selecting_click
 
         graph = ResortGraph()
-        _sm, ctx = self._merge_session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
+        _sm, ctx = self._merge_session(
+            fake_st=fake_st, graph=graph, factory=path_factory, dem=mock_dem_red_slope_diagonal
+        )
 
         handle_node_edit_selecting_click(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
+            click_info=ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
             elevation=mock_dem_red_slope_diagonal.get_elevation_or_raise(lon=0.0, lat=0.0),
         )
         assert ctx.node_edit.node_ids == [], "terrain clicks never add to the merge selection"
@@ -2034,11 +2145,12 @@ class TestNodeEditingClick:
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
         assert slope is not None
-        _sm, ctx = self._merge_session(fake_st, graph, path_factory, mock_dem_blue_slope)
+        _sm, ctx = self._merge_session(fake_st=fake_st, graph=graph, factory=path_factory, dem=mock_dem_blue_slope)
 
         # A non-node marker must be rejected (InvalidClickMessage), never crash, never select.
         handle_node_edit_selecting_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SLOPE, slope_id=slope.id), elevation=None
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SLOPE, slope_id=slope.id),
+            elevation=None,
         )
         assert ctx.node_edit.node_ids == []
 
@@ -2050,13 +2162,17 @@ class TestNodeEditingClick:
         graph = ResortGraph()
         first, _ = graph.get_or_create_node(lon=0.02, lat=0.03, elevation=2000.0)
         second, _ = graph.get_or_create_node(lon=0.05, lat=0.07, elevation=1950.0)
-        sm, ctx = self._merge_session(fake_st, graph, path_factory, mock_dem_red_slope_diagonal)
+        sm, ctx = self._merge_session(
+            fake_st=fake_st, graph=graph, factory=path_factory, dem=mock_dem_red_slope_diagonal
+        )
 
         handle_node_edit_selecting_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=first.id), elevation=None
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=first.id),
+            elevation=None,
         )
         handle_node_edit_selecting_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=second.id), elevation=None
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=second.id),
+            elevation=None,
         )
         assert ctx.node_edit.node_ids == [first.id, second.id], "a second distinct node joins the selection"
         assert sm.is_node_edit_selecting, "selecting nodes keeps us in node editing"
@@ -2068,10 +2184,13 @@ class TestNodeEditingClick:
         # toggle without raising — the selection is a pure id set, robust to a one-frame desync.
         from skiresort_planner.ui.click_handlers import handle_node_edit_selecting_click
 
-        sm, ctx = self._merge_session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
+        sm, ctx = self._merge_session(
+            fake_st=fake_st, graph=ResortGraph(), factory=path_factory, dem=mock_dem_red_slope_diagonal
+        )
 
         handle_node_edit_selecting_click(
-            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id="GHOST"), elevation=None
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id="GHOST"),
+            elevation=None,
         )
         assert ctx.node_edit.node_ids == ["GHOST"], "the toggle records the id even when the node is gone"
         assert sm.is_node_edit_selecting, "a stale node id does not crash or leave node editing"
@@ -2082,9 +2201,11 @@ class TestNodeEditingClick:
         # past an assertion that only checks node_ids).
         from skiresort_planner.ui.click_handlers import handle_node_edit_selecting_click
 
-        sm, ctx = self._merge_session(fake_st, ResortGraph(), path_factory, mock_dem_red_slope_diagonal)
+        sm, ctx = self._merge_session(
+            fake_st=fake_st, graph=ResortGraph(), factory=path_factory, dem=mock_dem_red_slope_diagonal
+        )
         handle_node_edit_selecting_click(
-            ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
+            click_info=ClickInfo(click_type=MapClickType.TERRAIN, lat=0.0, lon=0.0),
             elevation=mock_dem_red_slope_diagonal.get_elevation_or_raise(lon=0.0, lat=0.0),
         )
         assert ctx.node_edit.node_ids == []

@@ -157,7 +157,7 @@ def route_plan_shown_routes() -> list[Route]:
     """
     ctx: PlannerContext = st.session_state.context
     rp = ctx.route_plan
-    return routes_for_cap(rp.routes, max_difficulty=rp.selected_cap)
+    return routes_for_cap(routes=rp.routes, max_difficulty=rp.selected_cap)
 
 
 def selected_route() -> Route | None:
@@ -168,7 +168,7 @@ def selected_route() -> Route | None:
     routes = route_plan_shown_routes()
     if not routes:
         return None
-    return routes[ctx.route_plan.clamped_index(len(routes))]
+    return routes[ctx.route_plan.clamped_index(count=len(routes))]
 
 
 def flythrough_viewing_groups() -> list[ViewingGroup]:
@@ -243,7 +243,7 @@ def confirm_merge_action() -> None:
         # The Confirm button is disabled below 2, so this is a defensive guard, not a user path.
         raise RuntimeError("confirm_merge_action called with fewer than 2 selected nodes")
 
-    span = graph.max_node_span_m(node_ids)
+    span = graph.max_node_span_m(node_ids=node_ids)
     if span > MergeConfig.MAX_SPAN_M:
         logger.info(f"Merge refused: span {span:.0f}m > {MergeConfig.MAX_SPAN_M:.0f}m")
         MergeTooFarMessage(span_m=span, max_span_m=MergeConfig.MAX_SPAN_M).display()
@@ -272,7 +272,7 @@ def delete_nodes_action() -> None:
         # The Delete button is disabled at 0 selected, so this is a defensive guard, not a user path.
         raise RuntimeError("delete_nodes_action called with no selected nodes")
 
-    rejection = graph.delete_nodes_rejection(node_ids)
+    rejection = graph.delete_nodes_rejection(node_ids=node_ids)
     if rejection is not None:
         logger.info(f"Delete refused: {rejection}")
         UnableToDeleteMessage(reason=rejection).display()
@@ -367,7 +367,7 @@ def process_osm_import_pending(report: ProgressFn) -> bool:
     # failure propagates to run_pending_load, which shows its pre-given warning toast (no reframe).
     result = importer_cls(dem=dem, bbox=bbox).run(on_progress=sub_progress(report, 0.0, 0.95), dump_dir=OUTPUT_DIR)
     report(0.97, "Adding to the resort…")
-    graph.import_osm(result, dem=dem)
+    graph.import_osm(result=result, dem=dem)
     logger.info(
         f"OSM import ({mode}): {len(result.slope_chains)} slope chains + {len(result.lifts)} lifts "
         f"in {(time.perf_counter() - t0) * 1000:.0f}ms"
@@ -412,7 +412,7 @@ def _generate_fan_for_building_state(kind: SegmentKind) -> None:
     factory: PathFactory = st.session_state.path_factory
     spec = KIND_SPECS[kind]
 
-    lon, lat, elevation, start_node_id = resolve_build_origin(build=ctx.build(kind), graph=graph)
+    lon, lat, elevation, start_node_id = resolve_build_origin(build=ctx.build(kind=kind), graph=graph)
 
     t0 = time.perf_counter()
     fan = list(
@@ -491,7 +491,7 @@ def _generate_custom_connect_paths() -> None:
         raise RuntimeError(f"custom target ({target_lat:.6f}, {target_lon:.6f}) has no elevation")
     kind = sm.active_build_kind
     spec = KIND_SPECS[kind]
-    build = ctx.build(kind)
+    build = ctx.build(kind=kind)
 
     # Resolve the origin (shared resolver): a committed endpoint, the re-target origin, the starting
     # node, or the pending terrain location. start_node_id is None for a fresh terrain origin →
@@ -627,7 +627,7 @@ def _finalize_entity(kind: SegmentKind) -> "SegmentPath":
     """
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
-    build = ctx.build(kind)
+    build = ctx.build(kind=kind)
 
     entity = KIND_SPECS[kind].finish(graph, build.segments)
     logger.info(f"{kind.value.capitalize()} {entity.name} (id={entity.id}) finalized")
@@ -643,7 +643,7 @@ def _finish_current_entity(kind: SegmentKind) -> None:
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
 
-    build = ctx.build(kind)
+    build = ctx.build(kind=kind)
     if not build.segments:
         raise RuntimeError(f"finish called with no {kind.value} segments")
 
@@ -660,7 +660,7 @@ def _finish_connector(*, segment_id: str, kind: SegmentKind) -> None:
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
 
-    ctx.build(kind).segments.append(segment_id)
+    ctx.build(kind=kind).segments.append(segment_id)
     entity = _finalize_entity(kind)
     sm.send(KIND_SPECS[kind].connector_finish_event, segment_id=segment_id, entity_id=entity.id)
 
@@ -789,7 +789,7 @@ def cancel_current_build(kind: SegmentKind) -> None:
     """
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
-    _discard_build(build_ctx=ctx.build(kind))
+    _discard_build(build_ctx=ctx.build(kind=kind))
     sm.send(KIND_SPECS[kind].cancel_event)
 
 
@@ -809,97 +809,68 @@ def cancel_current_road() -> None:
 
 
 def _undo_add_segments(undone: AddSegmentsAction) -> None:
-    """Handle undo of ADD_SEGMENTS action.
+    """Handle undo of ADD_SEGMENTS: peel the undone segments off the active build, stay in place.
 
-    Uses force_idle/force_building instead of state machine transitions.
-    This follows the expert recommendation to treat undo as history management,
-    not core workflow state transitions.
+    If segments remain we stay in the current build state (building or custom-path) and re-arm
+    proposal generation from the moved-back endpoint. If none remain the whole build is cancelled to
+    idle_ready (force_idle). Staying in custom-path is deliberate (explicit over implicit): the user
+    closes the connection to return to the fan.
     """
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
 
-    # Kind-generic: peel the undone segments off the active build, then force the kind's
-    # BUILDING state (segments remain) or STARTING state (origin remains, no segments).
-    # force_* re-triggers the kind's fan from the restored endpoint.
     kind = sm.active_build_kind
-    build = ctx.build(kind)
+    build = ctx.build(kind=kind)
     remaining = [s for s in build.segments if s not in undone.segment_ids]
     build.segments = remaining
     ctx.clear_proposals()
-    if remaining:
-        build.endpoints = [graph.segments[remaining[-1]].end_node_id]
-        logger.debug(f"[ACTION] {kind.value} undo leaves {len(remaining)} segments, forcing building")
-        sm.force_building(kind)
+
+    if not remaining:
+        # Nothing left to build → cancel the build to idle_ready.
+        logger.debug(f"[ACTION] {kind.value} undo leaves 0 segments, cancelling build to idle")
+        sm.force_idle()
+        bump_dedup_epoch()
+        trigger_rerun()
+        return
+
+    # Segments remain: stay in the current state, re-arm generation from the new endpoint.
+    new_endpoint = graph.segments[remaining[-1]].end_node_id
+    build.endpoints = [new_endpoint]
+    current = sm.get_current_state_id()
+    spec = KIND_SPECS[kind]
+    if current == spec.custom_path_state:
+        # Stay in custom-path (explicit): re-anchor the target's origin to the moved endpoint so the
+        # overlay + planner don't read a now-cleaned old endpoint, and regenerate the custom routes.
+        ctx.custom_connect.start_node = new_endpoint
+        ctx.pending.custom_connect = True
+        logger.debug(f"[ACTION] {kind.value} undo leaves {len(remaining)} segments, staying in custom-path")
+    elif current == spec.building_state:
+        ctx.pending.fan_generation.add(kind)  # re-arm the fan from the new endpoint
+        logger.debug(f"[ACTION] {kind.value} undo leaves {len(remaining)} segments, re-arming fan")
     else:
-        build.endpoints = []
-        build.start_node_id = None  # origin node cleaned as isolated; fall back to start_location
-        logger.debug(f"[ACTION] {kind.value} undo leaves 0 segments, forcing starting")
-        sm.force_starting(kind)
+        raise RuntimeError(f"_undo_add_segments with {len(remaining)} segments in unexpected state {current}")
     bump_dedup_epoch()
     trigger_rerun()
 
 
-def _restore_build_context(
-    build_ctx: "SegmentBuildContext",
-    segment_ids: tuple[str, ...],
-    name: str | None,
-    start_node_id: str | None,
-) -> str:
-    """Restore a build context from a finish-undo action; return the last endpoint node id.
+def _undo_finish(kind: SegmentKind) -> None:
+    """Handle undo of a FINISH action (slope or road): the graph already deleted the whole entity.
 
-    A finish action always references ≥1 committed segment (finish_slope/finish_road
-    return None otherwise) and those segments are kept on undo — so the context is always re-enterable.
+    Undoing a finish deletes the just-created slope/road (see undo_handlers._delete_finished_entity),
+    so the UI drops any open panel and returns to idle_ready. force_idle is safe from a viewing state
+    or from idle_ready alike; it never forces a build state, so build_mode can't desync.
     """
-    graph: ResortGraph = st.session_state.graph
-    logger.info(f"Undone finish, restoring {len(segment_ids)} segments")
-
-    build_ctx.segments = list(segment_ids)
-    build_ctx.name = name
-    build_ctx.start_node_id = start_node_id
-
-    assert build_ctx.segments, "finish-undo must have ≥1 segment (finish_* never records an empty finish)"
-    first_seg = graph.segments[build_ctx.segments[0]]
-    last_seg = graph.segments[build_ctx.segments[-1]]
-    assert first_seg.points, f"restored segment {build_ctx.segments[0]} must have points"
-    assert last_seg.points, f"restored segment {build_ctx.segments[-1]} must have points"
-
-    # Carry the origin as a LOCATION too, not only as start_node_id: undoing the segments one by one
-    # eventually cleans the origin node. The origin node still exists now, so snapshot the first segment's start point.
-    build_ctx.start_location = first_seg.points[0]
-    build_ctx.endpoints = [last_seg.end_node_id]
-    return last_seg.end_node_id
-
-
-def _undo_finish(kind: SegmentKind, segment_ids: tuple[str, ...], name: str, start_node_id: str | None) -> None:
-    """Handle undo of a FINISH action (slope or road): restore building + re-arm the fan.
-
-    The graph already ungrouped the entity (segments kept). Restore the kind's build
-    context and force its BUILDING state; force_building re-triggers the fan.
-    """
-    ctx: PlannerContext = st.session_state.context
     sm: PlannerStateMachine = st.session_state.state_machine
-
-    _restore_build_context(
-        build_ctx=ctx.build(kind),
-        segment_ids=segment_ids,
-        name=name,
-        start_node_id=start_node_id,
-    )
-    ctx.clear_proposals()  # force_building re-triggers the kind's fan from the endpoint
-    sm.force_building(kind)
+    logger.info(f"Undone finish: {kind.value} deleted, returning to idle")
+    sm.force_idle()
     bump_dedup_epoch()
     trigger_rerun()
 
 
 def _undo_finish_slope(undone: FinishSlopeAction) -> None:
     """Handle undo of FINISH_SLOPE."""
-    _undo_finish(
-        kind=SegmentKind.SLOPE,
-        segment_ids=undone.segment_ids,
-        name=undone.slope_name,
-        start_node_id=undone.start_node_id,
-    )
+    _undo_finish(kind=SegmentKind.SLOPE)
 
 
 def _undo_add_lift(undone: AddLiftAction) -> None:
@@ -932,12 +903,7 @@ def _undo_delete_entity(undone: DeleteSlopeAction | DeleteLiftAction | DeleteRoa
 
 def _undo_finish_road(undone: FinishRoadAction) -> None:
     """Handle undo of FINISH_ROAD (mirrors _undo_finish_slope)."""
-    _undo_finish(
-        kind=SegmentKind.ROAD,
-        segment_ids=undone.segment_ids,
-        name=undone.road_name,
-        start_node_id=undone.start_node_id,
-    )
+    _undo_finish(kind=SegmentKind.ROAD)
 
 
 def _undo_import_osm(undone: ImportOSMAction) -> None:
@@ -998,7 +964,7 @@ def undo_cancels_current_build(sm: PlannerStateMachine, ctx: PlannerContext) -> 
     Single source of truth shared by undo_last_action (the branch) and the undo dialog (its label),
     so the confirmation text can never drift from what undo actually does.
     """
-    return sm.is_any_path_state and not ctx.build(sm.active_build_kind).segments
+    return sm.is_any_path_state and not ctx.build(kind=sm.active_build_kind).segments
 
 
 def undo_last_action() -> None:
@@ -1082,29 +1048,21 @@ def apply_lift_retype_action(lift_id: str, lift_type: str) -> None:
     logger.info(f"UI: Changed viewed lift {lift.id} type to {lift_type}")
 
 
-def _close_panel_and_refresh(*, deleted: bool, is_viewing_deleted: bool) -> bool:
-    """Shared delete tail: close the panel if the deleted entity was being viewed, refresh.
-
-    `deleted` is the graph.delete_* result; returns it unchanged.
-    """
-    if not deleted:
-        return False
+def _close_panel_and_refresh(*, is_viewing_deleted: bool) -> None:
+    """Shared delete tail: close the panel if the deleted entity was being viewed, then refresh."""
     sm: PlannerStateMachine = st.session_state.state_machine
     if is_viewing_deleted:
         sm.close_panel()  # type: ignore[attr-defined]  # dynamic python-statemachine event
     bump_dedup_epoch()
-    return True
 
 
-def delete_slope_action(slope_id: str) -> bool:
+def delete_slope_action(slope_id: str) -> None:
     """Delete a slope and trigger UI updates."""
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
-    deleted = graph.delete_slope(slope_id=slope_id)
-    return _close_panel_and_refresh(
-        deleted=deleted, is_viewing_deleted=sm.is_idle_viewing_slope and ctx.viewing.slope_id == slope_id
-    )
+    graph.delete_slope(slope_id=slope_id)
+    _close_panel_and_refresh(is_viewing_deleted=sm.is_idle_viewing_slope and ctx.viewing.slope_id == slope_id)
 
 
 def rename_entity_action(entity_id: str, new_name: str) -> None:
@@ -1121,23 +1079,19 @@ def rename_entity_action(entity_id: str, new_name: str) -> None:
     bump_dedup_epoch()
 
 
-def delete_lift_action(lift_id: str) -> bool:
+def delete_lift_action(lift_id: str) -> None:
     """Delete a lift and trigger UI updates."""
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
-    deleted = graph.delete_lift(lift_id=lift_id)
-    return _close_panel_and_refresh(
-        deleted=deleted, is_viewing_deleted=sm.is_idle_viewing_lift and ctx.viewing.lift_id == lift_id
-    )
+    graph.delete_lift(lift_id=lift_id)
+    _close_panel_and_refresh(is_viewing_deleted=sm.is_idle_viewing_lift and ctx.viewing.lift_id == lift_id)
 
 
-def delete_road_action(road_id: str) -> bool:
+def delete_road_action(road_id: str) -> None:
     """Delete a road and trigger UI updates."""
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
     graph: ResortGraph = st.session_state.graph
-    deleted = graph.delete_road(road_id=road_id)
-    return _close_panel_and_refresh(
-        deleted=deleted, is_viewing_deleted=sm.is_idle_viewing_road and ctx.viewing.road_id == road_id
-    )
+    graph.delete_road(road_id=road_id)
+    _close_panel_and_refresh(is_viewing_deleted=sm.is_idle_viewing_road and ctx.viewing.road_id == road_id)

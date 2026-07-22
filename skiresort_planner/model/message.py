@@ -22,6 +22,7 @@ from enum import StrEnum
 
 from skiresort_planner.constants import LiftType, OSMImportMode, StyleConfig
 from skiresort_planner.model.path_segment import SegmentKind
+from skiresort_planner.model.segment_profile import SegmentProfile
 
 
 class MessageLevel(StrEnum):
@@ -664,6 +665,28 @@ class SegmentWarningMessage(WarningMessage):
 
 
 @dataclass(frozen=True)
+class SegmentStructureMessage(InfoMessage):
+    """Info in the stats panel for a bridge/tunnel segment — shown INSTEAD of the earthwork warning.
+
+    Reports the worst deviation from terrain: how high the deck floats (bridge) or how deep it cuts
+    (tunnel). Only built for BRIDGE/TUNNEL; GROUND is unreachable (fail loud).
+    """
+
+    profile: SegmentProfile
+    max_above_m: float
+    max_below_m: float
+
+    @property
+    def message(self) -> str:
+        if self.profile == SegmentProfile.BRIDGE:
+            return f"🌉 Bridge — max {self.max_above_m:.0f}m above ground"
+        elif self.profile == SegmentProfile.TUNNEL:
+            return f"🚇 Tunnel — max {self.max_below_m:.0f}m below ground"
+        else:
+            raise ValueError(f"SegmentStructureMessage built for non-structure profile: {self.profile!r}")
+
+
+@dataclass(frozen=True)
 class DisconnectedEntityMessage(WarningMessage):
     """Warning that the viewed slope/lift can't be reached from the core resort."""
 
@@ -672,10 +695,7 @@ class DisconnectedEntityMessage(WarningMessage):
 
     @property
     def message(self) -> str:
-        return (
-            f"⚠️ This {self.entity_noun} is disconnected from the core area (with {self.core_lift_name}) — "
-            "it can't be reached by skiing slopes or taking lifts."
-        )
+        return f"⚠️ This {self.entity_noun} can't be reached from the core area ({self.core_lift_name})."
 
 
 @dataclass(frozen=True)
@@ -686,10 +706,7 @@ class NoReturnEntityMessage(WarningMessage):
 
     @property
     def message(self) -> str:
-        return (
-            f"⚠️ This {self.entity_noun} is a one-way trip — once you take it, no sequence of slopes "
-            "and lifts brings you back to ride it again."
-        )
+        return f"⚠️ This {self.entity_noun} is a one-way trip — no way back to ride it again."
 
 
 # =============================================================================

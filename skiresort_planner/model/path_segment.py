@@ -192,10 +192,14 @@ class PathSegment(Path):
             redraped.append(PathPoint(lon=lon, lat=lat, elevation=elevation))
         self.points = redraped
 
-    def get_belt_polygon(self) -> list[tuple[float, float]]:
+    def get_belt_polygon(self, *, width_override_m: float | None = None) -> list[tuple[float, float]]:
         """Get belt polygon coordinates (buffered ribbon in meters).
 
         Uses adaptive width per side slope, UTM projection for meter accuracy, round joins.
+
+        Args:
+            width_override_m: Buffer width to use instead of the segment's own width_m (e.g. a widened
+                bridge/tunnel ribbon). None uses width_m.
 
         Returns:
             List of (lon, lat) tuples for polygon boundary.
@@ -204,7 +208,8 @@ class PathSegment(Path):
         if line.is_empty or len(line.coords) < 2:
             return []
 
-        belt_width = self.width_m
+        # Default to the segment's own width; a caller may widen it (e.g. a bridge/tunnel ribbon).
+        belt_width = self.width_m if width_override_m is None else width_override_m
 
         # Get center point for UTM zone
         center_lon = (line.bounds[0] + line.bounds[2]) / 2

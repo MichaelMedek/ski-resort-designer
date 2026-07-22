@@ -27,6 +27,7 @@ import pydeck as pdk
 
 from skiresort_planner.constants import (
     ClickConfig,
+    EarthworkConfig,
     MapConfig,
     MarkerConfig,
     RoutePlannerConfig,
@@ -38,8 +39,10 @@ from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
+from skiresort_planner.model.segment_profile import SegmentProfile, classify_segment_profile
 
 if TYPE_CHECKING:
+    from skiresort_planner.core.dem_service import DEMService
     from skiresort_planner.core.terrain_analyzer import TerrainOrientation
     from skiresort_planner.model.lift import Lift
     from skiresort_planner.model.road import Road
@@ -104,6 +107,7 @@ class MapRenderer:
     def __init__(
         self,
         graph: ResortGraph | None = None,
+        dem: "DEMService | None" = None,
         center_lat: float = MapConfig.START_CENTER_LAT,
         center_lon: float = MapConfig.START_CENTER_LON,
         zoom: float = MapConfig.VIEWING_ZOOM,
@@ -114,6 +118,7 @@ class MapRenderer:
 
         Args:
             graph: Resort graph to render (can set later)
+            dem: Elevation source for bridge/tunnel segment classification (can set later, like graph)
             center_lat: Initial map center latitude
             center_lon: Initial map center longitude
             zoom: Initial zoom level
@@ -121,6 +126,8 @@ class MapRenderer:
             bearing: Map rotation (0=north up)
         """
         self.graph = graph
+        # Elevation source for bridge/tunnel classification; re-linked each rerun like graph (app.py).
+        self.dem = dem
         self.center_lat = center_lat
         self.center_lon = center_lon
         self.zoom = zoom
@@ -515,7 +522,16 @@ class MapRenderer:
         road_records: list[dict[str, object]] = []
 
         for seg_id, segment in self.graph.segments.items():
-            polygon_coords = segment.get_belt_polygon()
+            # Classify vs terrain: a bridge/tunnel renders wider + tinted (2D belt AND 3D ribbon). DEM is
+            # always loaded before any render, so strict-access it. GROUND uses the segment's own width.
+            assert self.dem is not None, "MapRenderer.dem must be assigned before rendering segments"
+            profile = classify_segment_profile(
+                segment=segment, dem=self.dem, threshold_m=EarthworkConfig.BRIDGE_TUNNEL_THRESHOLD_M
+            ).profile
+            is_structure = profile != SegmentProfile.GROUND
+            width_m = segment.width_m * StyleConfig.BRIDGE_TUNNEL_WIDTH_MULT if is_structure else segment.width_m
+
+            polygon_coords = segment.get_belt_polygon(width_override_m=width_m if is_structure else None)
             if not polygon_coords:
                 # A committed segment always has ≥2 points, so its belt polygon is never empty.
                 raise RuntimeError(f"Segment {seg_id} produced an empty belt polygon")
@@ -545,14 +561,18 @@ class MapRenderer:
                 # Road segment: flat brown. A finished road opens its panel on click;
                 # an in-build road segment (no Road entity yet) stays segment-typed.
                 road = road_of.get(seg_id)
+                # Bridge/tunnel → tint the belt/centerline (icon keeps full hue as a clickable marker).
+                road_color = list(StyleConfig.ROAD_COLOR_RGBA)
+                if is_structure:
+                    road_color = StyleConfig.structure_tint(road_color, profile)
                 road_records.append(
                     {
                         "type": ClickConfig.TYPE_ROAD if road is not None else ClickConfig.TYPE_SEGMENT,
                         "id": road.id if road is not None else seg_id,
                         "polygon": list(polygon_coords),
                         "center_line": center_line,
-                        "width": segment.width_m,  # real belt width → 3D renders a terrain-draped ribbon
-                        "color": list(StyleConfig.ROAD_COLOR_RGBA),
+                        "width": width_m,  # real belt width (×mult for bridge/tunnel) → 3D ribbon
+                        "color": road_color,
                         "name": f"{StyleConfig.ROAD_ICON} {road.name}"
                         if road is not None
                         else f"Building road: {seg_id}",
@@ -590,6 +610,11 @@ class MapRenderer:
             else:
                 color[3] = 100  # Semi-transparent
 
+            # Bridge/tunnel tint LAST so it composes over gray_out + the opacity just set (alpha kept).
+            # The center-circle icon keeps its full difficulty hue as a clear clickable marker.
+            if is_structure:
+                color = StyleConfig.structure_tint(color, profile)
+
             # Finished slope → icon opens slope panel; orphan → segment-typed (in build).
             slope_records.append(
                 {
@@ -597,7 +622,7 @@ class MapRenderer:
                     "id": seg_id,
                     "polygon": list(polygon_coords),
                     "center_line": center_line,
-                    "width": segment.width_m,  # real belt width → 3D renders a terrain-draped ribbon
+                    "width": width_m,  # real belt width (×mult for bridge/tunnel) → 3D ribbon
                     "color": color,
                     "name": f"{StyleConfig.SLOPE_ICON} {slope.name}" if slope is not None else f"Segment {seg_id}",
                     "icon_type": ClickConfig.TYPE_SLOPE if slope is not None else ClickConfig.TYPE_SEGMENT,

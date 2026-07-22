@@ -306,13 +306,13 @@ class SidebarRenderer:
             st.markdown("\n".join(f"- {b}" for b in block.bullets))
 
         def render_op_button(op: BuilderOperation) -> None:
-            """Render one registry operation as a full-width button (selected = primary + bold)."""
+            """Render one registry operation as a full-width button (selected = primary color)."""
             enabled = op.enabled(self.sm)
             selected = self._op_selected(op.mode, current_mode)
             icon = BuildMode.icon(op.mode)
             label = BuildMode.display_name(op.mode)
             btn_type: Literal["primary", "secondary"] = "primary" if selected else "secondary"
-            btn_label = f"{icon} **{label}**" if selected else f"{icon} {label}"
+            btn_label = f"{icon} {label}"
             help_text = self._get_button_help(
                 mode=op.mode,
                 label=label,

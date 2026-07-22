@@ -244,8 +244,8 @@ def create_command_executor() -> None:
 
         # -------------------------------------------------------------------------
         # Custom connect (actions.py) - THE ENDBOSS LOGIC!
-        # Targeting is map-only now: a click fires select_custom_target directly
-        # (no enter button, no picking state). Cancel Connection returns to fan-out.
+        # Targeting is map-only: a click fires select_custom_target directly.
+        # Cancel Connection returns to fan-out.
         # -------------------------------------------------------------------------
         elif cmd_type == "cancel_custom":
             cancel_custom_path()
@@ -442,7 +442,7 @@ class TestGrandResortTour:
         sm = at.session_state["state_machine"]
         assert sm.is_any_slope_state, f"Should be in slope state, got {sm.get_state_name()}"
 
-        # TRUE E2E: Use execute_deferred_actions() instead of manual generation!
+        # TRUE E2E: execute_deferred_actions() drives real path generation.
         at.session_state["command_queue"] = [("handle_deferred",)]
         at.run()
 
@@ -531,7 +531,7 @@ class TestGrandResortTour:
             at.run()
 
         ctx = at.session_state["context"]
-        segments_before_undo = len(ctx.build(SegmentKind.SLOPE).segments)
+        segments_before_undo = len(ctx.build(kind=SegmentKind.SLOPE).segments)
         assert segments_before_undo == 2, f"Should have 2 segments, got {segments_before_undo}"
 
         # UNDO last segment
@@ -539,7 +539,7 @@ class TestGrandResortTour:
         at.run()
 
         ctx = at.session_state["context"]
-        segments_after_undo = len(ctx.build(SegmentKind.SLOPE).segments)
+        segments_after_undo = len(ctx.build(kind=SegmentKind.SLOPE).segments)
         assert segments_after_undo == segments_before_undo - 1, (
             f"After undo: expected {segments_before_undo - 1} segments, got {segments_after_undo}"
         )
@@ -806,12 +806,13 @@ class TestButtonInteractions:
         graph = at.session_state["graph"]
         assert len(graph.slopes) == 1, "Should have 1 slope before undo"
 
-        # Click undo button - this undoes the finish_slope
+        # Click undo button - this undoes the finish_slope, deleting the whole slope.
         at.button(key="btn_undo").click().run()
 
-        # We should be back in building state
+        # Undoing a finish deletes the slope and returns to idle_ready.
         sm = at.session_state["state_machine"]
-        assert sm.is_any_slope_state, f"Should be in slope state after undo, got {sm.get_state_name()}"
+        assert sm.is_idle_ready, f"Should be idle after undoing the finish, got {sm.get_state_name()}"
+        assert len(graph.slopes) == 0, "undo of finish deletes the slope"
 
     def test_radio_build_mode(
         self,

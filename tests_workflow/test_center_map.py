@@ -135,7 +135,7 @@ class TestMapRendering:
         assert deck is not None, "Should produce a Deck object"
         assert hasattr(deck, "layers"), "Deck should have layers"
 
-    def test_map_renderer_renders_graph_with_slope(self, empty_graph, path_points_blue) -> None:
+    def test_map_renderer_renders_graph_with_slope(self, empty_graph, path_points_blue, mock_dem_blue_slope) -> None:
         """MapRenderer renders graph with committed slope."""
         from skiresort_planner.model.proposed_path import ProposedPathSegment
         from skiresort_planner.ui.center_map import MapRenderer
@@ -152,7 +152,7 @@ class TestMapRendering:
 
         from skiresort_planner.constants import StyleConfig
 
-        renderer = MapRenderer(graph=graph)
+        renderer = MapRenderer(graph=graph, dem=mock_dem_blue_slope)  # draped on this DEM → GROUND (no tint)
         deck = renderer.render()
 
         assert deck is not None, "Should produce a Deck object"
@@ -163,7 +163,9 @@ class TestMapRendering:
         expected_color[3] = 100
         assert belt.data[0]["color"] == expected_color
 
-    def test_defective_slope_grays_belt_but_keeps_icon_hue(self, empty_graph, path_points_blue) -> None:
+    def test_defective_slope_grays_belt_but_keeps_icon_hue(
+        self, empty_graph, path_points_blue, mock_dem_blue_slope
+    ) -> None:
         """A slope in defect_ids mutes its belt/centerline toward gray, but the center-circle icon
         keeps its full difficulty hue so it stays a clear clickable marker. A non-defect slope keeps
         the belt hue too.
@@ -175,7 +177,7 @@ class TestMapRendering:
         graph = empty_graph
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
-        renderer = MapRenderer(graph=graph)
+        renderer = MapRenderer(graph=graph, dem=mock_dem_blue_slope)  # GROUND → gray_out is the only modifier
 
         base = list(StyleConfig.SLOPE_COLORS_RGBA["blue"])
         # Non-defect control: belt keeps base color (alpha dropped to 100 for the belt).
@@ -189,6 +191,60 @@ class TestMapRendering:
         grayed_icons = next(layer for layer in grayed["slopes"] if layer.id == "segments_icons")
         assert grayed_belt.data[0]["color"][:3] == StyleConfig.gray_out(base)[:3]
         assert grayed_icons.data[0]["color"] == list(StyleConfig.SLOPE_COLORS_RGBA["blue"])
+
+    def test_bridge_segment_renders_wider_and_tinted(self, empty_graph, path_points_blue) -> None:
+        """A segment floating far above terrain renders the belt/centerline at ×BRIDGE_TUNNEL_WIDTH_MULT
+        and tinted toward the bridge tone (lighter). The icon keeps its full difficulty hue.
+        """
+        from skiresort_planner.constants import StyleConfig
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
+        from skiresort_planner.model.segment_profile import SegmentProfile
+        from skiresort_planner.ui.center_map import MapRenderer
+        from tests_workflow.conftest import MockDEMService
+
+        graph = empty_graph
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        seg = next(iter(graph.segments.values()))
+        base_width = seg.width_m
+
+        # Classify against a flat DEM far BELOW the ~2500m path → whole deck floats above ground → BRIDGE.
+        far_below = MockDEMService(base_elevation=0.0, slope_ns_pct=0.0, slope_ew_pct=0.0)
+        layers = MapRenderer(graph=graph, dem=far_below)._create_segment_layers(use_3d=True)
+        centerline = next(layer for layer in layers["slopes"] if layer.id == "segments_centerline")
+        record = centerline.data[0]
+
+        assert record["width"] == base_width * StyleConfig.BRIDGE_TUNNEL_WIDTH_MULT, "bridge ribbon must widen"
+        base = list(StyleConfig.SLOPE_COLORS_RGBA["blue"])
+        base[3] = 100  # belt/centerline opacity applied before the tint
+        assert record["color"] == StyleConfig.structure_tint(base, SegmentProfile.BRIDGE), "bridge tint applied"
+
+    def test_tunnel_segment_renders_wider_and_tinted(self, empty_graph, path_points_blue) -> None:
+        """A segment cutting far below terrain renders the belt/centerline at ×BRIDGE_TUNNEL_WIDTH_MULT
+        and tinted toward the tunnel tone (darker).
+        """
+        from skiresort_planner.constants import StyleConfig
+        from skiresort_planner.model.proposed_path import ProposedPathSegment
+        from skiresort_planner.model.segment_profile import SegmentProfile
+        from skiresort_planner.ui.center_map import MapRenderer
+        from tests_workflow.conftest import MockDEMService
+
+        graph = empty_graph
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        seg = next(iter(graph.segments.values()))
+        base_width = seg.width_m
+
+        # Classify against a flat DEM far ABOVE the ~2500m path → whole deck cuts below ground → TUNNEL.
+        far_above = MockDEMService(base_elevation=9000.0, slope_ns_pct=0.0, slope_ew_pct=0.0)
+        layers = MapRenderer(graph=graph, dem=far_above)._create_segment_layers(use_3d=True)
+        centerline = next(layer for layer in layers["slopes"] if layer.id == "segments_centerline")
+        record = centerline.data[0]
+
+        assert record["width"] == base_width * StyleConfig.BRIDGE_TUNNEL_WIDTH_MULT, "tunnel ribbon must widen"
+        base = list(StyleConfig.SLOPE_COLORS_RGBA["blue"])
+        base[3] = 100  # belt/centerline opacity applied before the tint
+        assert record["color"] == StyleConfig.structure_tint(base, SegmentProfile.TUNNEL), "tunnel tint applied"
 
     def test_defective_lift_grays_cable_but_keeps_icon_hue(self, empty_graph, mock_dem_blue_slope) -> None:
         """A lift in defect_ids mutes its cable toward gray, but the center icon keeps its per-type
@@ -279,7 +335,9 @@ class TestMapRendering:
         fan = renderer._create_proposal_layers(proposals=[proposal], selected_idx=0, is_custom_path=False, use_3d=False)
         assert any(layer.id == "proposal_endpoints" for layer in fan), "fan-out proposals keep endpoint markers"
 
-    def test_segment_layers_split_slope_and_road_buckets(self, empty_graph, path_points_blue) -> None:
+    def test_segment_layers_split_slope_and_road_buckets(
+        self, empty_graph, path_points_blue, mock_dem_blue_slope
+    ) -> None:
         """_create_segment_layers routes a road's segments to the 'roads' bucket
         (brown, road-typed) and a slope's to 'slopes' (difficulty-colored).
         """
@@ -291,10 +349,13 @@ class TestMapRendering:
         # Slope from the blue points.
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         graph.finish_slope(segment_ids=list(graph.segments.keys()))
-        # Road as a separate short segment.
+        # Road as a separate short segment, draped on the same DEM so it classifies as GROUND (brown, no tint).
+        road_lons = [500 / MapConfig.METERS_PER_DEGREE_EQUATOR, 800 / MapConfig.METERS_PER_DEGREE_EQUATOR]
         road_pts = [
-            type(path_points_blue[0])(lon=500 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=2000.0),
-            type(path_points_blue[0])(lon=800 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=1990.0),
+            type(path_points_blue[0])(
+                lon=lon, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=lon, lat=0.0)
+            )
+            for lon in road_lons
         ]
         graph.commit_paths(
             paths=[ProposedPathSegment(points=road_pts, is_connector=True, kind=SegmentKind.ROAD)], record_undo=False
@@ -302,7 +363,7 @@ class TestMapRendering:
         road_seg = list(graph.segments.keys())[-1]
         road = graph.finish_road(segment_ids=[road_seg])
 
-        renderer = MapRenderer(graph=graph)
+        renderer = MapRenderer(graph=graph, dem=mock_dem_blue_slope)  # both draped on this DEM → GROUND (untinted)
         layers = renderer._create_segment_layers(use_3d=False)
 
         assert layers["slopes"], "slope segments should produce slope layers"
@@ -486,7 +547,7 @@ class TestFullResortRendering:
         from skiresort_planner.ui.center_map import MapRenderer
 
         _populate_full_resort(empty_graph, mock_dem_blue_slope)
-        deck = MapRenderer(graph=empty_graph).render(use_3d=False)
+        deck = MapRenderer(graph=empty_graph, dem=mock_dem_blue_slope).render(use_3d=False)
         assert len(deck.layers) > 0
         # 2D: slopes render a belt polygon, and center lines sit at the flat 2D slope z-offset.
         assert any(layer.id == "segments_belt" for layer in deck.layers), "2D must build a belt polygon"
@@ -498,7 +559,7 @@ class TestFullResortRendering:
         from skiresort_planner.ui.center_map import MapRenderer
 
         _populate_full_resort(empty_graph, mock_dem_blue_slope)
-        deck = MapRenderer(graph=empty_graph).render(use_3d=True)
+        deck = MapRenderer(graph=empty_graph, dem=mock_dem_blue_slope).render(use_3d=True)
         assert len(deck.layers) > 0
         # 3D: PolygonLayer belts are dropped (no z support); center lines carry real terrain
         # elevation lifted by PATH_Z_OFFSET_M for visibility.
@@ -510,7 +571,7 @@ class TestFullResortRendering:
             == mock_dem_blue_slope.get_elevation_or_raise(lon=first[0], lat=first[1]) + MarkerConfig.PATH_Z_OFFSET_M
         )
 
-    def test_3d_slope_renders_at_real_belt_width(self, empty_graph, path_points_blue) -> None:
+    def test_3d_slope_renders_at_real_belt_width(self, empty_graph, path_points_blue, mock_dem_blue_slope) -> None:
         """In 3D the center-line PathLayer IS the belt: rendered at each segment's real width_m (a
         terrain-draped ribbon; deck.gl widths are metres by default). 2D keeps the thin belt+line.
         """
@@ -521,7 +582,7 @@ class TestFullResortRendering:
         graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
         graph.finish_slope(segment_ids=list(graph.segments.keys()))
         seg_width = next(iter(graph.segments.values())).width_m
-        renderer = MapRenderer(graph=graph)
+        renderer = MapRenderer(graph=graph, dem=mock_dem_blue_slope)  # draped → GROUND → un-multiplied width
 
         layers_3d = renderer._create_segment_layers(use_3d=True)
         centerline_3d = next(layer for layer in layers_3d["slopes"] if layer.id == "segments_centerline")
@@ -598,7 +659,9 @@ class TestFullResortRendering:
             ProposedPathSegment(points=path_points_blue, target_difficulty="blue"),
             ProposedPathSegment(points=path_points_blue, target_difficulty="blue"),
         ]
-        deck = MapRenderer(graph=empty_graph).render(proposals=proposals, selected_proposal_idx=1)
+        deck = MapRenderer(graph=empty_graph, dem=mock_dem_blue_slope).render(
+            proposals=proposals, selected_proposal_idx=1
+        )
         assert len(deck.layers) > 0
 
     def test_lift_layers_have_pylons_and_cables(self, empty_graph, mock_dem_blue_slope) -> None:

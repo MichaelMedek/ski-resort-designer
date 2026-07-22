@@ -54,6 +54,7 @@ def _make(cls: type):
 
     from skiresort_planner.constants import OSMImportMode
     from skiresort_planner.model.path_segment import SegmentKind
+    from skiresort_planner.model.segment_profile import SegmentProfile
 
     dummies: dict[type, object] = {
         str: "x",
@@ -62,6 +63,7 @@ def _make(cls: type):
         bool: True,
         SegmentKind: SegmentKind.SLOPE,
         OSMImportMode: OSMImportMode.LIFTS_ONLY,
+        SegmentProfile: SegmentProfile.BRIDGE,
     }
     hints = typing.get_type_hints(cls)  # resolves string annotations to real types
     kwargs = {}
@@ -105,14 +107,39 @@ class TestTooSteepDetail:
         assert "no route" in msg and "under 70%" in msg and "±" not in msg
 
 
+class TestSegmentStructureMessage:
+    def test_bridge_reads_height_above_ground(self) -> None:
+        from skiresort_planner.model.message import SegmentStructureMessage
+        from skiresort_planner.model.segment_profile import SegmentProfile
+
+        msg = SegmentStructureMessage(profile=SegmentProfile.BRIDGE, max_above_m=32.0, max_below_m=0.0).message
+        assert "🌉" in msg and "Bridge" in msg and "32m above ground" in msg
+
+    def test_tunnel_reads_depth_below_ground(self) -> None:
+        from skiresort_planner.model.message import SegmentStructureMessage
+        from skiresort_planner.model.segment_profile import SegmentProfile
+
+        msg = SegmentStructureMessage(profile=SegmentProfile.TUNNEL, max_above_m=0.0, max_below_m=48.0).message
+        assert "🚇" in msg and "Tunnel" in msg and "48m below ground" in msg
+
+    def test_ground_profile_is_unreachable_and_raises(self) -> None:
+        # This message is only built for structures; GROUND must fail loud, never render.
+        import pytest
+
+        from skiresort_planner.model.message import SegmentStructureMessage
+        from skiresort_planner.model.segment_profile import SegmentProfile
+
+        with pytest.raises(ValueError):
+            _ = SegmentStructureMessage(profile=SegmentProfile.GROUND, max_above_m=0.0, max_below_m=0.0).message
+
+
 class TestDisconnectedEntityMessage:
     def test_names_entity_kind_and_core_lift(self) -> None:
         from skiresort_planner.model.message import DisconnectedEntityMessage
 
         msg = DisconnectedEntityMessage(entity_noun="slope", core_lift_name="5 (Summit Express)").message
-        assert "This slope is disconnected from the core area" in msg
+        assert "This slope can't be reached from the core area" in msg
         assert "5 (Summit Express)" in msg
-        assert "can't be reached" in msg
 
 
 class TestNoReturnEntityMessage:

@@ -59,9 +59,9 @@ class TestSidebarRuns:
 
     def test_sidebar_runs_with_content(self, fake_st, empty_graph, path_points_blue, mock_dem_blue_slope) -> None:
         # A resort with a slope + lift + road exercises every summary section.
-        _build_slope(empty_graph, path_points_blue)
-        _build_lift(empty_graph, mock_dem_blue_slope)
-        _build_road(empty_graph, path_points_blue)
+        _build_slope(graph=empty_graph, path_points=path_points_blue)
+        _build_lift(graph=empty_graph, dem=mock_dem_blue_slope)
+        _build_road(graph=empty_graph, path_points=path_points_blue)
 
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
@@ -123,18 +123,18 @@ class TestSidebarRuns:
         self, fake_st, empty_graph, path_points_blue, mock_dem_blue_slope, kind: str
     ) -> None:
         # Every viewed kind gets its OWN header + body — no kind falls through to the
-        # generic idle text (the drift that once left the road body wrong).
+        # generic idle text (each kind must render its own body).
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         if kind == "slope":
-            sm.view_slope(slope_id=_build_slope(empty_graph, path_points_blue))
+            sm.view_slope(slope_id=_build_slope(graph=empty_graph, path_points=path_points_blue))
         elif kind == "road":
-            sm.view_road(road_id=_build_road(empty_graph, path_points_blue))
+            sm.view_road(road_id=_build_road(graph=empty_graph, path_points=path_points_blue))
         elif kind == "lift":
-            sm.view_lift(lift_id=_build_lift(empty_graph, mock_dem_blue_slope))
+            sm.view_lift(lift_id=_build_lift(graph=empty_graph, dem=mock_dem_blue_slope))
         else:
             raise ValueError
 
-        # The header (icon + label) is now the expander title; the bullets are its markdown body.
+        # The header (icon + label) is the expander title; the bullets are its markdown body.
         # Capture both so the kind-specific header + body are visible to the assertions.
         captured: list[str] = []
 
@@ -155,7 +155,7 @@ class TestSidebarRuns:
 
     def test_sidebar_building_state_renders_consolidated_block(self, fake_st, empty_graph) -> None:
         # Building/placing states render the SAME collapsed info block as idle/viewing (header label
-        # + the "buttons locked" bullet), not the old plain markdown/caption pair.
+        # + the "buttons locked" bullet).
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         sm.start_import(lon=0.0, lat=0.0)
         assert sm.is_import_selecting
@@ -237,7 +237,7 @@ class TestPathSettingsVisibility:
     def test_path_settings_shown_in_fan_out(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         sm.start_slope(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
-        seen = self._capture_markdown(fake_st)
+        seen = self._capture_markdown(fake_st=fake_st)
         SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
         assert any("Path Settings" in m for m in seen), "fan-out mode shows the Path Settings block"
 
@@ -245,7 +245,7 @@ class TestPathSettingsVisibility:
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         sm.start_slope(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
         ctx.custom_connect.target_location = (0.0, 0.0, 2000.0)  # showing custom-connect proposals (force_mode)
-        seen = self._capture_markdown(fake_st)
+        seen = self._capture_markdown(fake_st=fake_st)
         SidebarRenderer(state_machine=sm, context=ctx, graph=empty_graph).render()
         assert not any("Path Settings" in m for m in seen), "custom mode hides the Path Settings block"
 
@@ -268,36 +268,36 @@ class TestDescribeUndoAction:
     def test_add_segments_has_no_describe_text(self, empty_graph, path_points_blue) -> None:
         # AddSegments is skip_confirm (peeling a segment shows no dialog), so its describe is empty.
         empty_graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
-        assert self._describe_top(empty_graph) == ""
+        assert self._describe_top(graph=empty_graph) == ""
 
     def test_finish_slope_label(self, empty_graph, path_points_blue) -> None:
-        slope_id = _build_slope(empty_graph, path_points_blue)
-        assert empty_graph.slopes[slope_id].name in self._describe_top(empty_graph)
+        slope_id = _build_slope(graph=empty_graph, path_points=path_points_blue)
+        assert empty_graph.slopes[slope_id].name in self._describe_top(graph=empty_graph)
 
     def test_add_lift_label(self, empty_graph, mock_dem_blue_slope) -> None:
-        lift_id = _build_lift(empty_graph, mock_dem_blue_slope)
-        label = self._describe_top(empty_graph)
+        lift_id = _build_lift(graph=empty_graph, dem=mock_dem_blue_slope)
+        label = self._describe_top(graph=empty_graph)
         assert "Delete lift" in label and empty_graph.lifts[lift_id].name in label
 
     def test_finish_road_label(self, empty_graph, path_points_blue) -> None:
-        road_id = _build_road(empty_graph, path_points_blue)  # finish_road records FINISH_ROAD on top
-        label = self._describe_top(empty_graph)
-        assert "Restore road" in label and empty_graph.roads[road_id].name in label
+        road_id = _build_road(graph=empty_graph, path_points=path_points_blue)  # finish_road records FINISH_ROAD on top
+        label = self._describe_top(graph=empty_graph)
+        assert "Delete road" in label and empty_graph.roads[road_id].name in label
 
     def test_delete_slope_label(self, empty_graph, path_points_blue) -> None:
-        slope_id = _build_slope(empty_graph, path_points_blue)
+        slope_id = _build_slope(graph=empty_graph, path_points=path_points_blue)
         empty_graph.delete_slope(slope_id=slope_id)
-        assert "Restore deleted slope" in self._describe_top(empty_graph)
+        assert "Restore deleted slope" in self._describe_top(graph=empty_graph)
 
     def test_delete_lift_label(self, empty_graph, mock_dem_blue_slope) -> None:
-        lift_id = _build_lift(empty_graph, mock_dem_blue_slope)
+        lift_id = _build_lift(graph=empty_graph, dem=mock_dem_blue_slope)
         empty_graph.delete_lift(lift_id=lift_id)
-        assert "Restore deleted lift" in self._describe_top(empty_graph)
+        assert "Restore deleted lift" in self._describe_top(graph=empty_graph)
 
     def test_delete_road_label(self, empty_graph, path_points_blue) -> None:
-        road_id = _build_road(empty_graph, path_points_blue)
+        road_id = _build_road(graph=empty_graph, path_points=path_points_blue)
         empty_graph.delete_road(road_id=road_id)
-        assert "Restore deleted road" in self._describe_top(empty_graph)
+        assert "Restore deleted road" in self._describe_top(graph=empty_graph)
 
     def test_import_osm_label(self, empty_graph, mock_dem_blue_slope) -> None:
         from skiresort_planner.generators.osm_importer import ImportResult
@@ -312,7 +312,7 @@ class TestDescribeUndoAction:
             ),
         ]
         empty_graph.import_osm(ImportResult(slope_chains=[([slope_points], "Run")]), dem=dem)
-        assert "OSM import" in self._describe_top(empty_graph)
+        assert "OSM import" in self._describe_top(graph=empty_graph)
 
     def test_merge_nodes_label(self, empty_graph, mock_dem_blue_slope) -> None:
         # The 9th ActionType. Two nodes ~200m apart merge (< MergeConfig.MAX_SPAN_M=500m,
@@ -337,8 +337,8 @@ class TestDescribeUndoAction:
         """
         from skiresort_planner.ui.left_panel import _next_undo_skips_confirm
 
-        # A prior committed slope sits on the undo stack (the stale entry the old code would describe).
-        _build_slope(empty_graph, path_points_blue)
+        # A prior committed slope sits on the undo stack.
+        _build_slope(graph=empty_graph, path_points=path_points_blue)
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         # Now START a new slope build with no committed segments yet.
         sm.start_slope(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
@@ -364,14 +364,14 @@ class TestNextUndoSkipsConfirm:
     def test_finish_slope_requires_confirm(self, empty_graph, path_points_blue) -> None:
         from skiresort_planner.ui.left_panel import _next_undo_skips_confirm
 
-        _build_slope(empty_graph, path_points_blue)  # top of stack is now FinishSlopeAction
+        _build_slope(graph=empty_graph, path_points=path_points_blue)  # top of stack is now FinishSlopeAction
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         assert not _next_undo_skips_confirm(sm=sm, ctx=ctx, graph=empty_graph), "finishing a slope must confirm"
 
     def test_build_cancel_skips_confirm(self, empty_graph, path_points_blue, mock_dem_blue_slope) -> None:
         from skiresort_planner.ui.left_panel import _next_undo_skips_confirm
 
-        _build_slope(empty_graph, path_points_blue)  # a stale FinishSlopeAction sits on the stack
+        _build_slope(graph=empty_graph, path_points=path_points_blue)  # a stale FinishSlopeAction sits on the stack
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         sm.start_slope(lon=0.0, lat=0.0, elevation=mock_dem_blue_slope.get_elevation_or_raise(lon=0.0, lat=0.0))
         # No committed segments yet → undo cancels the build, a routine one-tap step.
@@ -449,10 +449,12 @@ class TestLoadFromFileGuard:
     def test_upload_rejected_when_resort_has_content(self, fake_st, monkeypatch, empty_graph, path_points_blue) -> None:
         # Regression: a non-empty resort must NOT be overwritten by an upload. It stays intact and
         # the user is told to clear first.
-        _build_slope(empty_graph, path_points_blue)
+        _build_slope(graph=empty_graph, path_points=path_points_blue)
         payload = ResortGraph().to_dict()  # a valid but empty file — still refused
 
-        toasts = self._render(fake_st, monkeypatch, empty_graph, _FakeUpload(payload))
+        toasts = self._render(
+            fake_st=fake_st, monkeypatch=monkeypatch, graph=empty_graph, upload=_FakeUpload(payload=payload)
+        )
 
         assert fake_st.session_state["graph"] is empty_graph, "current resort must be untouched"
         assert empty_graph.slopes, "the existing slope must survive"
@@ -461,10 +463,12 @@ class TestLoadFromFileGuard:
     def test_upload_loads_into_empty_resort(self, fake_st, monkeypatch, empty_graph, path_points_blue) -> None:
         # Happy path: an empty resort accepts the upload and is replaced by the file's content.
         source = ResortGraph()
-        _build_slope(source, path_points_blue)
+        _build_slope(graph=source, path_points=path_points_blue)
         payload = source.to_dict()
 
-        toasts = self._render(fake_st, monkeypatch, empty_graph, _FakeUpload(payload))
+        toasts = self._render(
+            fake_st=fake_st, monkeypatch=monkeypatch, graph=empty_graph, upload=_FakeUpload(payload=payload)
+        )
 
         loaded = fake_st.session_state["graph"]
         assert loaded is not empty_graph, "the empty graph is replaced by the loaded one"

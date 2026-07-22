@@ -35,7 +35,7 @@ class TestSlopeBuildingWorkflow:
         sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
 
         assert sm.current_state_value == "slope_starting", "After start_slope: slope_starting"
-        assert ctx.build(SegmentKind.SLOPE).name is not None, "Building context should have slope name"
+        assert ctx.build(kind=SegmentKind.SLOPE).name is not None, "Building context should have slope name"
 
         # === Phase 2: Generate proposals and commit first (SlopeStarting → SlopeBuilding) ===
         proposals = list(factory.generate_fan(kind=SegmentKind.SLOPE, lon=0.0, lat=0.0, elevation=start_elev))
@@ -48,10 +48,10 @@ class TestSlopeBuildingWorkflow:
         sm.commit_path(segment_id=seg_id, endpoint_node_id=endpoint_ids[0])  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
         assert sm.current_state_value == "slope_building", "After commit_path: slope_building"
-        assert seg_id in ctx.build(SegmentKind.SLOPE).segments, "Segment should be in building context"
+        assert seg_id in ctx.build(kind=SegmentKind.SLOPE).segments, "Segment should be in building context"
 
         # === Phase 3: Finish Slope (SlopeBuilding → IdleViewingSlope) ===
-        slope = graph.finish_slope(segment_ids=ctx.build(SegmentKind.SLOPE).segments)
+        slope = graph.finish_slope(segment_ids=ctx.build(kind=SegmentKind.SLOPE).segments)
         assert slope is not None, "finish_slope should return Slope"
 
         sm.finish_slope(entity_id=slope.id)
@@ -87,7 +87,7 @@ class TestSelfLoopBehavior:
         seg1_id = list(graph.segments.keys())[0]
 
         sm.commit_path(segment_id=seg1_id, endpoint_node_id=endpoint_ids[0])  # type: ignore[attr-defined]  # dynamic python-statemachine event
-        slope1 = graph.finish_slope(segment_ids=ctx.build(SegmentKind.SLOPE).segments)
+        slope1 = graph.finish_slope(segment_ids=ctx.build(kind=SegmentKind.SLOPE).segments)
         assert slope1 is not None
         sm.finish_slope(entity_id=slope1.id)
 
@@ -100,7 +100,7 @@ class TestSelfLoopBehavior:
         seg2_id = [s for s in graph.segments if s != seg1_id][0]
 
         sm.commit_path(segment_id=seg2_id, endpoint_node_id=endpoint_ids2[0])  # type: ignore[attr-defined]  # dynamic python-statemachine event
-        slope2 = graph.finish_slope(segment_ids=ctx.build(SegmentKind.SLOPE).segments)
+        slope2 = graph.finish_slope(segment_ids=ctx.build(kind=SegmentKind.SLOPE).segments)
         assert slope2 is not None
         sm.finish_slope(entity_id=slope2.id)
 
@@ -113,10 +113,10 @@ class TestSelfLoopBehavior:
 
 
 class TestForceStateMethods:
-    """Tests for force_idle() and force_building(SegmentKind.SLOPE) methods used by action-layer undo.
-
-    These methods bypass the normal state machine transitions to reset state after graph undo
-    operations. They are undo-only: force_* raises unless called inside `with sm.undo_running():`.
+    """Tests for force_idle() — the undo state-force helper. It bypasses the normal transitions to
+    reset to idle_ready after an undo that leaves no build (segment-undo to zero, or undo-of-finish
+    which deletes the entity). It is undo-only: force_idle raises unless called inside
+    `with sm.undo_running():`.
     """
 
     def test_force_idle_outside_undo_raises(self, workflow_setup: WorkflowSetup) -> None:
@@ -141,17 +141,17 @@ class TestForceStateMethods:
         sm.commit_path(segment_id=seg1_id, endpoint_node_id=endpoint_ids[0])  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
         assert sm.current_state_value == "slope_building"
-        assert len(ctx.build(SegmentKind.SLOPE).segments) == 1
+        assert len(ctx.build(kind=SegmentKind.SLOPE).segments) == 1
 
         # Force to idle (simulates undo removing all segments)
         with sm.undo_running():
             sm.force_idle()
 
         assert sm.current_state_value == "idle_ready"
-        assert len(ctx.build(SegmentKind.SLOPE).segments) == 0, "Building context should be cleared"
+        assert len(ctx.build(kind=SegmentKind.SLOPE).segments) == 0, "Building context should be cleared"
 
-    def test_force_building_from_custom_path(self, workflow_setup: WorkflowSetup) -> None:
-        """force_building(SegmentKind.SLOPE) from SlopeCustomPath goes to SlopeBuilding."""
+    def test_force_idle_from_custom_path_clears_custom(self, workflow_setup: WorkflowSetup) -> None:
+        """force_idle() from SlopeCustomPath clears custom-connect and goes to IdleReady."""
         sm, ctx, graph, factory, dem = workflow_setup
 
         start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
@@ -173,13 +173,13 @@ class TestForceStateMethods:
 
         assert sm.current_state_value == "slope_custom_path"
 
-        # Force back to building (simulates undo while in custom path)
+        # Force to idle (simulates undoing the last segment while in custom path).
         with sm.undo_running():
-            sm.force_building(SegmentKind.SLOPE)
+            sm.force_idle()
 
-        assert sm.current_state_value == "slope_building"
+        assert sm.current_state_value == "idle_ready"
         assert ctx.custom_connect.force_mode is False, "Custom connect should be cleared"
-        assert len(ctx.build(SegmentKind.SLOPE).segments) == 1, "Committed segment must survive force_building"
+        assert len(ctx.build(kind=SegmentKind.SLOPE).segments) == 0, "Building context should be cleared"
 
     def test_force_idle_from_lift_placing_clears_lift_context(self, workflow_setup: WorkflowSetup) -> None:
         """force_idle() from LiftPlacing calls exit_lift_placing which clears lift context."""
@@ -263,7 +263,7 @@ class TestCustomPathBranch:
         # A fresh terrain origin is NOT materialised as a node here — carried as a pending location,
         # minted only at commit, so no isolated node can be swept out from under a stored id.
         assert ctx.custom_connect.start_node is None, "fresh terrain origin carries no node id yet"
-        assert ctx.build(SegmentKind.SLOPE).start_location is not None, "origin carried as a location"
+        assert ctx.build(kind=SegmentKind.SLOPE).start_location is not None, "origin carried as a location"
 
     def test_cancel_custom_with_no_segments_returns_to_starting(self, workflow_setup: WorkflowSetup) -> None:
         """cancel_custom with 0 committed segments takes the has_no_segments guard to SlopeStarting."""
@@ -280,7 +280,7 @@ class TestCustomPathBranch:
             )
         )
         assert sm.current_state_value == "slope_custom_path"
-        assert len(ctx.build(SegmentKind.SLOPE).segments) == 0
+        assert len(ctx.build(kind=SegmentKind.SLOPE).segments) == 0
 
         sm.cancel_custom()  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
@@ -308,12 +308,12 @@ class TestCustomPathBranch:
             )
         )
         assert sm.current_state_value == "slope_custom_path"
-        assert len(ctx.build(SegmentKind.SLOPE).segments) == 1
+        assert len(ctx.build(kind=SegmentKind.SLOPE).segments) == 1
 
         sm.cancel_custom()  # type: ignore[attr-defined]  # dynamic python-statemachine event
 
         assert sm.current_state_value == "slope_building", "one segment routes back to building, not starting"
-        assert len(ctx.build(SegmentKind.SLOPE).segments) == 1, "committed segment survives cancel_custom"
+        assert len(ctx.build(kind=SegmentKind.SLOPE).segments) == 1, "committed segment survives cancel_custom"
 
 
 class TestInvalidTransitions:

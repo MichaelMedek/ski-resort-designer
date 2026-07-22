@@ -9,6 +9,7 @@ delete actions for slope/lift/road uniformly.
 import pytest
 
 from skiresort_planner.constants import MapConfig
+from skiresort_planner.model.actions import ActionType
 from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint
 from skiresort_planner.model.path_segment import SegmentKind
@@ -87,6 +88,38 @@ def _make_road(graph):
     return graph.finish_road(segment_ids=[list(graph.segments.keys())[-1]])
 
 
+def _straight_points(dem: MockDEMService) -> list[PathPoint]:
+    """A 2-point straight south slope polyline sampled from the DEM (for _make_slope in the matrix)."""
+    return [
+        PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
+        PathPoint(
+            lon=0.0,
+            lat=-300 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-300 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+        ),
+    ]
+
+
+def _build_finish_slope(fake_st, factory, dem):
+    """Build+finish a 1-segment slope on a fresh session; leave the SM in idle_viewing_slope.
+
+    Returns (sm, ctx, graph, slope, seg_id).
+    """
+    graph = ResortGraph()
+    sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+    pts = [
+        PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
+        PathPoint(lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=1990.0),
+    ]
+    endpoint_ids = graph.commit_paths(paths=[ProposedPathSegment(points=pts, target_difficulty="blue")])
+    seg_id = list(graph.segments.keys())[-1]
+    sm.start_slope(lon=0.0, lat=0.0, elevation=2000.0, node_id=None)
+    sm.commit_path(segment_id=seg_id, endpoint_node_id=endpoint_ids[0])
+    slope = graph.finish_slope(segment_ids=ctx.build(kind=SegmentKind.SLOPE).segments)
+    sm.finish_slope(entity_id=slope.id)
+    return sm, ctx, graph, slope, seg_id
+
+
 def _commit_straight_slope_len(graph, dem, n_segments: int, start_lat: float = 0.0):
     """Commit n straight ~480m south segments into one finished slope; longer n = longer slope."""
     before = set(graph.segments)
@@ -105,23 +138,26 @@ class TestDeleteSlopeAction:
     def test_removes_slope(self, fake_st, empty_graph, path_points_blue) -> None:
         from skiresort_planner.ui.actions import delete_slope_action
 
-        slope = _make_slope(empty_graph, path_points_blue)
-        _session(fake_st, empty_graph)
+        slope = _make_slope(graph=empty_graph, path_points=path_points_blue)
+        _session(fake_st=fake_st, graph=empty_graph)
 
-        assert delete_slope_action(slope_id=slope.id) is True
+        delete_slope_action(slope_id=slope.id)
         assert slope.id not in empty_graph.slopes
 
-    def test_missing_slope_returns_false(self, fake_st, empty_graph) -> None:
+    def test_missing_slope_raises(self, fake_st, empty_graph) -> None:
+        # Delete only reaches the graph with a live viewed id (the panel asserts liveness first), so a
+        # missing id is an internal-invariant violation and fails loud rather than silently no-op'ing.
         from skiresort_planner.ui.actions import delete_slope_action
 
-        _session(fake_st, empty_graph)
-        assert delete_slope_action(slope_id="SL999") is False
+        _session(fake_st=fake_st, graph=empty_graph)
+        with pytest.raises(KeyError):
+            delete_slope_action(slope_id="SL999")
 
     def test_closes_panel_when_viewing_deleted_slope(self, fake_st, empty_graph, path_points_blue) -> None:
         from skiresort_planner.ui.actions import delete_slope_action
 
-        slope = _make_slope(empty_graph, path_points_blue)
-        sm, _ctx = _session(fake_st, empty_graph)
+        slope = _make_slope(graph=empty_graph, path_points=path_points_blue)
+        sm, _ctx = _session(fake_st=fake_st, graph=empty_graph)
         sm.view_slope(slope_id=slope.id)
 
         delete_slope_action(slope_id=slope.id)
@@ -132,8 +168,8 @@ class TestRenameEntityAction:
     def test_sets_name_and_bumps_map(self, fake_st, empty_graph, path_points_blue) -> None:
         from skiresort_planner.ui.actions import rename_entity_action
 
-        slope = _make_slope(empty_graph, path_points_blue)
-        _session(fake_st, empty_graph)
+        slope = _make_slope(graph=empty_graph, path_points=path_points_blue)
+        _session(fake_st=fake_st, graph=empty_graph)
         epoch_before = fake_st.session_state["dedup_epoch"]
         camera_before = fake_st.session_state["camera_epoch"]
 
@@ -146,9 +182,9 @@ class TestRenameEntityAction:
     def test_empty_name_is_noop(self, fake_st, empty_graph, path_points_blue) -> None:
         from skiresort_planner.ui.actions import rename_entity_action
 
-        slope = _make_slope(empty_graph, path_points_blue)
+        slope = _make_slope(graph=empty_graph, path_points=path_points_blue)
         original = slope.name
-        _session(fake_st, empty_graph)
+        _session(fake_st=fake_st, graph=empty_graph)
 
         rename_entity_action(entity_id=slope.id, new_name="   ")
 
@@ -159,23 +195,25 @@ class TestDeleteRoadAction:
     def test_removes_road(self, fake_st, empty_graph) -> None:
         from skiresort_planner.ui.actions import delete_road_action
 
-        road = _make_road(empty_graph)
-        _session(fake_st, empty_graph)
+        road = _make_road(graph=empty_graph)
+        _session(fake_st=fake_st, graph=empty_graph)
 
-        assert delete_road_action(road_id=road.id) is True
+        delete_road_action(road_id=road.id)
         assert road.id not in empty_graph.roads
 
-    def test_missing_road_returns_false(self, fake_st, empty_graph) -> None:
+    def test_missing_road_raises(self, fake_st, empty_graph) -> None:
+        # A missing id is an internal-invariant violation (see test_missing_slope_raises) — fail loud.
         from skiresort_planner.ui.actions import delete_road_action
 
-        _session(fake_st, empty_graph)
-        assert delete_road_action(road_id="R999") is False
+        _session(fake_st=fake_st, graph=empty_graph)
+        with pytest.raises(KeyError):
+            delete_road_action(road_id="R999")
 
     def test_closes_panel_when_viewing_deleted_road(self, fake_st, empty_graph) -> None:
         from skiresort_planner.ui.actions import delete_road_action
 
-        road = _make_road(empty_graph)
-        sm, _ctx = _session(fake_st, empty_graph)
+        road = _make_road(graph=empty_graph)
+        sm, _ctx = _session(fake_st=fake_st, graph=empty_graph)
         sm.view_road(road_id=road.id)
 
         delete_road_action(road_id=road.id)
@@ -196,9 +234,9 @@ class TestDeleteLiftAction:
             lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)
         )
         lift = empty_graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
-        _session(fake_st, empty_graph)
+        _session(fake_st=fake_st, graph=empty_graph)
 
-        assert delete_lift_action(lift_id=lift.id) is True
+        delete_lift_action(lift_id=lift.id)
         assert lift.id not in empty_graph.lifts
 
 
@@ -230,10 +268,10 @@ class TestConfirmMergeAction:
         from skiresort_planner.ui.actions import confirm_merge_action
 
         dem = mock_dem_blue_slope
-        _two_segment_slope(empty_graph, dem)
+        _two_segment_slope(graph=empty_graph, dem=dem)
         by_lat = sorted(empty_graph.nodes.values(), key=lambda n: n.lat, reverse=True)
         top, mid = by_lat[0], by_lat[1]  # 300m apart, within MergeConfig.MAX_SPAN_M
-        sm, ctx = _session(fake_st, empty_graph, dem=dem)
+        sm, ctx = _session(fake_st=fake_st, graph=empty_graph, dem=dem)
         count_before = len(empty_graph.nodes)
         sm.start_node_edit()
         sm.toggle_node_edit_node(node_id=top.id)
@@ -250,10 +288,10 @@ class TestConfirmMergeAction:
         from skiresort_planner.ui.actions import confirm_merge_action
 
         dem = mock_dem_blue_slope
-        _two_segment_slope(empty_graph, dem)
+        _two_segment_slope(graph=empty_graph, dem=dem)
         by_lat = sorted(empty_graph.nodes.values(), key=lambda n: n.lat, reverse=True)
         top, bottom = by_lat[0], by_lat[-1]  # 600m apart, exceeds MergeConfig.MAX_SPAN_M
-        sm, ctx = _session(fake_st, empty_graph, dem=dem)
+        sm, ctx = _session(fake_st=fake_st, graph=empty_graph, dem=dem)
         count_before = len(empty_graph.nodes)
         stack_before = len(empty_graph.undo_stack)
         sm.start_node_edit()
@@ -278,15 +316,17 @@ class TestConfirmMergeAction:
     def test_fewer_than_two_nodes_raises(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         from skiresort_planner.ui.actions import confirm_merge_action
 
-        _session(fake_st, empty_graph, dem=mock_dem_blue_slope)
+        _session(fake_st=fake_st, graph=empty_graph, dem=mock_dem_blue_slope)
         with pytest.raises(RuntimeError, match="fewer than 2"):
             confirm_merge_action()
 
-    def test_missing_lift_returns_false(self, fake_st, empty_graph) -> None:
+    def test_missing_lift_raises(self, fake_st, empty_graph) -> None:
+        # A missing id is an internal-invariant violation (see test_missing_slope_raises) — fail loud.
         from skiresort_planner.ui.actions import delete_lift_action
 
-        _session(fake_st, empty_graph)
-        assert delete_lift_action(lift_id="L999") is False
+        _session(fake_st=fake_st, graph=empty_graph)
+        with pytest.raises(KeyError):
+            delete_lift_action(lift_id="L999")
 
 
 class TestDeleteNodesAction:
@@ -296,10 +336,10 @@ class TestDeleteNodesAction:
         from skiresort_planner.ui.actions import delete_nodes_action
 
         dem = mock_dem_blue_slope
-        _two_segment_slope(empty_graph, dem)
+        _two_segment_slope(graph=empty_graph, dem=dem)
         slope = empty_graph.finish_slope(segment_ids=list(empty_graph.segments.keys()))
         interior = empty_graph.segments[slope.segment_ids[0]].end_node_id
-        sm, ctx = _session(fake_st, empty_graph, dem=dem)
+        sm, ctx = _session(fake_st=fake_st, graph=empty_graph, dem=dem)
         sm.start_node_edit()
         sm.toggle_node_edit_node(node_id=interior)
 
@@ -314,10 +354,12 @@ class TestDeleteNodesAction:
         from skiresort_planner.ui.actions import delete_nodes_action
 
         dem = mock_dem_blue_slope
-        empty_graph.nodes["A"] = _node_at(dem, "A", 0.0, 0.0)
-        empty_graph.nodes["T"] = _node_at(dem, "T", 0.0, -1000 / MapConfig.METERS_PER_DEGREE_EQUATOR)
+        empty_graph.nodes["A"] = _node_at(dem=dem, node_id="A", lon=0.0, lat=0.0)
+        empty_graph.nodes["T"] = _node_at(
+            dem=dem, node_id="T", lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR
+        )
         empty_graph.add_lift(start_node_id="A", end_node_id="T", lift_type="chairlift", dem=dem)
-        sm, ctx = _session(fake_st, empty_graph, dem=dem)
+        sm, ctx = _session(fake_st=fake_st, graph=empty_graph, dem=dem)
         stack_before = len(empty_graph.undo_stack)
         sm.start_node_edit()
         sm.toggle_node_edit_node(node_id="A")
@@ -337,7 +379,7 @@ class TestDeleteNodesAction:
     def test_no_nodes_raises(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         from skiresort_planner.ui.actions import delete_nodes_action
 
-        _session(fake_st, empty_graph, dem=mock_dem_blue_slope)
+        _session(fake_st=fake_st, graph=empty_graph, dem=mock_dem_blue_slope)
         with pytest.raises(RuntimeError, match="no selected nodes"):
             delete_nodes_action()
 
@@ -348,11 +390,11 @@ class TestDeleteNodesAction:
         from skiresort_planner.ui.actions import delete_nodes_action
 
         dem = mock_dem_blue_slope
-        _two_segment_slope(empty_graph, dem)
+        _two_segment_slope(graph=empty_graph, dem=dem)
         slope = empty_graph.finish_slope(segment_ids=list(empty_graph.segments.keys()))
         end = slope.start_node_id
         interior = empty_graph.segments[slope.segment_ids[0]].end_node_id
-        sm, ctx = _session(fake_st, empty_graph, dem=dem)
+        sm, ctx = _session(fake_st=fake_st, graph=empty_graph, dem=dem)
         stack_before = len(empty_graph.undo_stack)
         sm.start_node_edit()
         sm.toggle_node_edit_node(node_id=end)
@@ -371,8 +413,8 @@ class TestDeleteNodesAction:
         assert any("whole path" in t.lower() for t in toasts), "the user is told the delete was refused"
 
     def test_degree2_junction_of_two_slopes_fuses(self, fake_st, empty_graph, mock_dem_blue_slope, monkeypatch) -> None:
-        """A degree-2 node where two slopes meet end-to-end fuses them into one on delete (was refused
-        before). The node is removed and one slope absorbs the other.
+        """A degree-2 node where two slopes meet end-to-end fuses them into one on delete: the node is
+        removed and one slope absorbs the other.
         """
         from skiresort_planner.ui.actions import delete_nodes_action
 
@@ -403,7 +445,7 @@ class TestDeleteNodesAction:
         before = set(empty_graph.segments)
         empty_graph.commit_paths(paths=[ProposedPathSegment(points=leg2, target_difficulty="blue")])
         empty_graph.finish_slope(segment_ids=list(set(empty_graph.segments) - before))
-        sm, ctx = _session(fake_st, empty_graph, dem=dem)
+        sm, ctx = _session(fake_st=fake_st, graph=empty_graph, dem=dem)
         sm.start_node_edit()
         sm.toggle_node_edit_node(node_id=junction)
 
@@ -447,7 +489,7 @@ class TestDeleteNodesAction:
             before = set(empty_graph.segments)
             empty_graph.commit_paths(paths=[ProposedPathSegment(points=leg, target_difficulty="blue")])
             empty_graph.finish_slope(segment_ids=list(set(empty_graph.segments) - before))
-        sm, ctx = _session(fake_st, empty_graph, dem=dem)
+        sm, ctx = _session(fake_st=fake_st, graph=empty_graph, dem=dem)
         stack_before = len(empty_graph.undo_stack)
         sm.start_node_edit()
         sm.toggle_node_edit_node(node_id=junction)
@@ -500,8 +542,8 @@ class TestDeleteDirectConnectionAction:
         from skiresort_planner.ui.actions import delete_direct_connection_action
 
         dem = mock_dem_blue_slope
-        slope = self._one_seg_slope(empty_graph, dem)
-        sm, ctx = _session(fake_st, empty_graph, dem=dem)
+        slope = self._one_seg_slope(graph=empty_graph, dem=dem)
+        sm, ctx = _session(fake_st=fake_st, graph=empty_graph, dem=dem)
         sm.start_node_edit()
         sm.toggle_node_edit_node(node_id=slope.start_node_id)
         sm.toggle_node_edit_node(node_id=slope.end_node_id)
@@ -518,12 +560,12 @@ class TestDeleteDirectConnectionAction:
         from skiresort_planner.ui.actions import delete_direct_connection_action
 
         dem = mock_dem_blue_slope
-        slope = self._three_seg_slope(empty_graph, dem)
+        slope = self._three_seg_slope(graph=empty_graph, dem=dem)
         # The two ADJACENT interior nodes flanking the middle segment.
         mid_seg = slope.segment_ids[1]
         a = empty_graph.segments[slope.segment_ids[0]].end_node_id
         b = empty_graph.segments[mid_seg].end_node_id
-        sm, ctx = _session(fake_st, empty_graph, dem=dem)
+        sm, ctx = _session(fake_st=fake_st, graph=empty_graph, dem=dem)
         sm.start_node_edit()
         sm.toggle_node_edit_node(node_id=a)
         sm.toggle_node_edit_node(node_id=b)
@@ -542,8 +584,8 @@ class TestDeleteDirectConnectionAction:
 
         dem = mock_dem_blue_slope
         # The two ENDPOINTS of a 3-seg slope span a multi-segment gap → not adjacent.
-        slope = self._three_seg_slope(empty_graph, dem)
-        sm, ctx = _session(fake_st, empty_graph, dem=dem)
+        slope = self._three_seg_slope(graph=empty_graph, dem=dem)
+        sm, ctx = _session(fake_st=fake_st, graph=empty_graph, dem=dem)
         sm.start_node_edit()
         sm.toggle_node_edit_node(node_id=slope.start_node_id)
         sm.toggle_node_edit_node(node_id=slope.end_node_id)
@@ -565,9 +607,9 @@ class TestDeleteDirectConnectionAction:
         from skiresort_planner.ui.actions import delete_direct_connection_action
 
         dem = mock_dem_blue_slope
-        slope = self._one_seg_slope(empty_graph, dem)
+        slope = self._one_seg_slope(graph=empty_graph, dem=dem)
         empty_graph.nodes["N_FAR"] = Node(id="N_FAR", location=PathPoint(lon=5.0, lat=5.0, elevation=2000.0))
-        sm, ctx = _session(fake_st, empty_graph, dem=dem)
+        sm, ctx = _session(fake_st=fake_st, graph=empty_graph, dem=dem)
         sm.start_node_edit()
         sm.toggle_node_edit_node(node_id=slope.start_node_id)
         sm.toggle_node_edit_node(node_id="N_FAR")
@@ -594,14 +636,14 @@ class TestAddNodeOnPathAction:
     ) -> None:
         from skiresort_planner.ui.actions import add_node_on_path_action
 
-        slope = _make_slope(empty_graph, path_points_blue)
+        slope = _make_slope(graph=empty_graph, path_points=path_points_blue)
         seg_id = slope.segment_ids[0]
         # Click the geometric midpoint of the segment (interior). After finish-simplification a straight
         # run is just its two endpoints, so this projects onto the single leg — not onto an existing vertex.
         pts = empty_graph.segments[seg_id].points
         mid_lon = (pts[0].lon + pts[-1].lon) / 2
         mid_lat = (pts[0].lat + pts[-1].lat) / 2
-        _session(fake_st, empty_graph, dem=mock_dem_blue_slope)
+        _session(fake_st=fake_st, graph=empty_graph, dem=mock_dem_blue_slope)
         nodes_before = len(empty_graph.nodes)
         epoch_before = fake_st.session_state["dedup_epoch"]
 
@@ -617,10 +659,10 @@ class TestAddNodeOnPathAction:
     ) -> None:
         from skiresort_planner.ui.actions import add_node_on_path_action
 
-        slope = _make_slope(empty_graph, path_points_blue)
+        slope = _make_slope(graph=empty_graph, path_points=path_points_blue)
         seg_id = slope.segment_ids[0]
         near_end = empty_graph.segments[seg_id].points[0]  # within STEP_SIZE_M of the endpoint node
-        _session(fake_st, empty_graph, dem=mock_dem_blue_slope)
+        _session(fake_st=fake_st, graph=empty_graph, dem=mock_dem_blue_slope)
         nodes_before = len(empty_graph.nodes)
 
         import streamlit
@@ -646,8 +688,8 @@ class TestUndoLastActionDispatch:
         """A committed road leaves an undo entry; undo_last_action consumes it."""
         from skiresort_planner.ui.actions import undo_last_action
 
-        _make_road(empty_graph)
-        _session(fake_st, empty_graph)
+        _make_road(graph=empty_graph)
+        _session(fake_st=fake_st, graph=empty_graph)
         assert len(empty_graph.undo_stack) == 1
 
         undo_last_action()
@@ -659,8 +701,8 @@ class TestUndoLastActionDispatch:
         """FINISH_SLOPE routes to the slope handler (which reads path_factory)."""
         from skiresort_planner.ui.actions import undo_last_action
 
-        slope = _make_slope(empty_graph, path_points_blue)  # ADD_SEGMENTS + FINISH_SLOPE
-        _session(fake_st, empty_graph, factory=path_factory, dem=mock_dem_red_slope_diagonal)
+        slope = _make_slope(graph=empty_graph, path_points=path_points_blue)  # ADD_SEGMENTS + FINISH_SLOPE
+        _session(fake_st=fake_st, graph=empty_graph, factory=path_factory, dem=mock_dem_red_slope_diagonal)
 
         undo_last_action()  # undo FINISH_SLOPE via the dispatch
         assert slope.id not in empty_graph.slopes, "routed to the finish-slope undo handler"
@@ -669,7 +711,7 @@ class TestUndoLastActionDispatch:
         """Guard: undo_last_action on an empty stack does nothing and never raises."""
         from skiresort_planner.ui.actions import undo_last_action
 
-        _session(fake_st, empty_graph)
+        _session(fake_st=fake_st, graph=empty_graph)
         undo_last_action()
         assert empty_graph.undo_stack == []
 
@@ -677,8 +719,8 @@ class TestUndoLastActionDispatch:
         """In slope_starting (0 segments) Undo cancels the slope, NOT an unrelated stack entry."""
         from skiresort_planner.ui.actions import undo_last_action
 
-        _make_road(empty_graph)  # an unrelated FINISH_ROAD entry sits on the stack
-        sm, _ctx = _session(fake_st, empty_graph)
+        _make_road(graph=empty_graph)  # an unrelated FINISH_ROAD entry sits on the stack
+        sm, _ctx = _session(fake_st=fake_st, graph=empty_graph)
         sm.start_slope(lon=0.0, lat=0.0, elevation=2500.0, node_id=None)
         assert sm.is_slope_starting
 
@@ -693,9 +735,9 @@ class TestUndoLastActionDispatch:
         """
         from skiresort_planner.ui.actions import undo_last_action
 
-        _make_slope(empty_graph, path_points_blue)  # unrelated ADD_SEGMENTS + FINISH_SLOPE
+        _make_slope(graph=empty_graph, path_points=path_points_blue)  # unrelated ADD_SEGMENTS + FINISH_SLOPE
         stack_before = len(empty_graph.undo_stack)
-        sm, _ctx = _session(fake_st, empty_graph)
+        sm, _ctx = _session(fake_st=fake_st, graph=empty_graph)
         sm.start_road(node_id=None, location=path_points_blue[0])
         assert sm.is_road_starting
 
@@ -710,7 +752,7 @@ class TestCenterHelpers:
     def test_center_on_segment_path_slope_sets_map(self, empty_graph, path_points_blue) -> None:
         from skiresort_planner.ui.actions import center_on_segment_path
 
-        slope = _make_slope(empty_graph, path_points_blue)
+        slope = _make_slope(graph=empty_graph, path_points=path_points_blue)
         _sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         center_on_segment_path(ctx=ctx, graph=empty_graph, path=slope)
 
@@ -724,7 +766,7 @@ class TestCenterHelpers:
     def test_center_on_segment_path_road_sets_map(self, empty_graph) -> None:
         from skiresort_planner.ui.actions import center_on_segment_path
 
-        road = _make_road(empty_graph)
+        road = _make_road(graph=empty_graph)
         _sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         center_on_segment_path(ctx=ctx, graph=empty_graph, path=road)
 
@@ -737,8 +779,8 @@ class TestCenterHelpers:
 
     def test_shorter_slope_zooms_in_more_than_a_longer_one(self, empty_graph, mock_dem_blue_slope) -> None:
         # The adaptive law: a shorter build frames at a HIGHER (more-in) zoom than a longer one.
-        short = _commit_straight_slope_len(empty_graph, mock_dem_blue_slope, n_segments=2)
-        long = _commit_straight_slope_len(empty_graph, mock_dem_blue_slope, n_segments=8, start_lat=-1.0)
+        short = _commit_straight_slope_len(graph=empty_graph, dem=mock_dem_blue_slope, n_segments=2)
+        long = _commit_straight_slope_len(graph=empty_graph, dem=mock_dem_blue_slope, n_segments=8, start_lat=-1.0)
         _sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         from skiresort_planner.ui.actions import center_on_segment_path
 
@@ -778,7 +820,7 @@ class TestSelectLiftTypeAction:
     def test_sets_build_mode_when_not_viewing_a_lift(self, fake_st, empty_graph) -> None:
         from skiresort_planner.ui.actions import select_lift_type_action
 
-        _sm, ctx = _session(fake_st, empty_graph)
+        _sm, ctx = _session(fake_st=fake_st, graph=empty_graph)
         select_lift_type_action(lift_type="gondola")
 
         assert ctx.build_mode.mode == "gondola", "the next lift will be built as a gondola"
@@ -796,7 +838,7 @@ class TestSelectLiftTypeAction:
             lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)
         )
         lift = empty_graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
-        sm, ctx = _session(fake_st, empty_graph, dem=dem)
+        sm, ctx = _session(fake_st=fake_st, graph=empty_graph, dem=dem)
         sm.view_lift(lift_id=lift.id)
 
         select_lift_type_action(lift_type="gondola")
@@ -818,13 +860,13 @@ class TestApplyLiftRetypeAction:
             lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)
         )
         lift = empty_graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
-        _session(fake_st, empty_graph, dem=dem)
+        _session(fake_st=fake_st, graph=empty_graph, dem=dem)
         return lift
 
     def test_retypes_the_lift(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         from skiresort_planner.ui.actions import apply_lift_retype_action
 
-        lift = self._viewed_lift(fake_st, empty_graph, mock_dem_blue_slope)
+        lift = self._viewed_lift(fake_st=fake_st, empty_graph=empty_graph, dem=mock_dem_blue_slope)
         apply_lift_retype_action(lift_id=lift.id, lift_type="gondola")
 
         assert empty_graph.lifts[lift.id].lift_type == "gondola", "update_type re-typed the lift"
@@ -832,7 +874,7 @@ class TestApplyLiftRetypeAction:
     def test_same_type_is_a_noop(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         from skiresort_planner.ui.actions import apply_lift_retype_action
 
-        lift = self._viewed_lift(fake_st, empty_graph, mock_dem_blue_slope)
+        lift = self._viewed_lift(fake_st=fake_st, empty_graph=empty_graph, dem=mock_dem_blue_slope)
         pylons_before = lift.pylons
         apply_lift_retype_action(lift_id=lift.id, lift_type="chairlift")
 
@@ -848,7 +890,7 @@ class TestSlopeBuildingActionFlow:
 
     def _start_building(self, fake_st, factory, dem):
         graph = ResortGraph()
-        sm, ctx = _session(fake_st, graph, factory=factory, dem=dem)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
         start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
         sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
         ctx.selection.set(lon=0.0, lat=0.0, elevation=start_elev)
@@ -858,13 +900,13 @@ class TestSlopeBuildingActionFlow:
         from skiresort_planner.ui.actions import commit_selected_path, finish_current_slope, recompute_paths
 
         dem = mock_dem_red_slope_diagonal
-        sm, ctx, graph = self._start_building(fake_st, path_factory, dem)
+        sm, ctx, graph = self._start_building(fake_st=fake_st, factory=path_factory, dem=dem)
 
         recompute_paths()
         assert ctx.proposals.paths, "recompute must generate fan proposals"
 
         commit_selected_path(path_idx=0)
-        assert ctx.build(SegmentKind.SLOPE).segments, "commit must add a segment to the building context"
+        assert ctx.build(kind=SegmentKind.SLOPE).segments, "commit must add a segment to the building context"
 
         finish_current_slope()
         assert sm.is_idle_viewing_slope
@@ -874,7 +916,7 @@ class TestSlopeBuildingActionFlow:
         from skiresort_planner.ui.actions import cancel_current_slope, commit_selected_path, recompute_paths
 
         dem = mock_dem_red_slope_diagonal
-        sm, ctx, graph = self._start_building(fake_st, path_factory, dem)
+        sm, ctx, graph = self._start_building(fake_st=fake_st, factory=path_factory, dem=dem)
         recompute_paths()
         commit_selected_path(path_idx=0)
 
@@ -882,30 +924,29 @@ class TestSlopeBuildingActionFlow:
         assert sm.is_idle
         assert len(graph.slopes) == 0, "canceling discards the in-progress slope"
 
-    def test_finish_then_undo_restores_slope_building(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
-        # Finishing then undoing the finish must return to slope_building with segments + a regenerated fan.
+    def test_finish_then_undo_deletes_slope_to_idle(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
+        # Undoing a finish DELETES the whole slope and returns to idle_ready, so build_mode always
+        # matches the idle state.
         from skiresort_planner.ui.actions import (
             commit_selected_path,
             finish_current_slope,
-            process_path_generation_pending,
             recompute_paths,
             undo_last_action,
         )
 
         dem = mock_dem_red_slope_diagonal
-        sm, ctx, graph = self._start_building(fake_st, path_factory, dem)
+        sm, ctx, graph = self._start_building(fake_st=fake_st, factory=path_factory, dem=dem)
         recompute_paths()
         commit_selected_path(path_idx=0)
-        seg_id = ctx.build(SegmentKind.SLOPE).segments[-1]
         finish_current_slope()
         assert sm.is_idle_viewing_slope
+        assert len(graph.slopes) == 1
 
         undo_last_action()  # undo FINISH_SLOPE
-        assert sm.is_slope_building_only, "undo of finish returns to slope building"
-        assert ctx.build(SegmentKind.SLOPE).segments == [seg_id], "segments are restored"
-        # force_building arms the fan on the deferred pass (unified with the live flow).
-        process_path_generation_pending()
-        assert ctx.proposals.paths, "the fan is regenerated from the restored endpoint"
+        assert sm.is_idle_ready, "undo of finish returns to idle_ready"
+        assert len(graph.slopes) == 0, "the whole slope is deleted"
+        assert len(ctx.build(kind=SegmentKind.SLOPE).segments) == 0, "build context is cleared"
+        assert not graph.undo_stack, "the per-segment ADD_SEGMENTS entry is scrubbed with the segments"
 
 
 class TestRoadBuildingActionFlow:
@@ -922,7 +963,7 @@ class TestRoadBuildingActionFlow:
 
         dem = mock_dem_red_slope_diagonal
         graph = ResortGraph()
-        sm, ctx = _session(fake_st, graph, factory=path_factory, dem=dem)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=path_factory, dem=dem)
         sm.start_road(node_id=None, location=path_points_blue[0])
 
         # Seed a road proposal (as handle_path_building_click would) and commit it.
@@ -931,33 +972,33 @@ class TestRoadBuildingActionFlow:
         commit_selected_path(path_idx=0)
 
         assert sm.is_road_building_only, "road commit stays in road_building"
-        assert len(ctx.build(SegmentKind.ROAD).segments) == 1
+        assert len(ctx.build(kind=SegmentKind.ROAD).segments) == 1
         assert len(graph.roads) == 0, "no Road entity until Finish Road"
-        assert graph.segments[ctx.build(SegmentKind.ROAD).segments[-1]].kind == SegmentKind.ROAD
+        assert graph.segments[ctx.build(kind=SegmentKind.ROAD).segments[-1]].kind == SegmentKind.ROAD
         assert graph.undo_stack[-1].action_type.name == "ADD_SEGMENTS", "per-segment undo recorded"
 
-    def test_finish_then_undo_restores_road_building(
+    def test_finish_then_undo_deletes_road_to_idle(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal, path_points_blue
     ) -> None:
-        # Finishing then undoing the finish must return to road_building with segments (no fan).
+        # Undoing a road finish DELETES the whole road and returns to idle_ready (mirrors slope).
         from skiresort_planner.model.path_segment import SegmentKind
         from skiresort_planner.ui.actions import commit_selected_path, finish_current_road, undo_last_action
 
         dem = mock_dem_red_slope_diagonal
         graph = ResortGraph()
-        sm, ctx = _session(fake_st, graph, factory=path_factory, dem=dem)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=path_factory, dem=dem)
         sm.start_road(node_id=None, location=path_points_blue[0])
         ctx.proposals.paths = [ProposedPathSegment(points=path_points_blue, is_connector=True, kind=SegmentKind.ROAD)]
         ctx.proposals.selected_idx = 0
         commit_selected_path(path_idx=0)
-        seg_id = ctx.build(SegmentKind.ROAD).segments[-1]
         finish_current_road()
         assert sm.is_idle_viewing_road
+        assert len(graph.roads) == 1
 
         undo_last_action()  # undo FINISH_ROAD
-        assert sm.is_road_building_only, "undo of finish returns to road building"
-        assert ctx.build(SegmentKind.ROAD).segments == [seg_id], "segments are restored"
-        assert ctx.proposals.paths == [], "roads have no fan to regenerate"
+        assert sm.is_idle_ready, "undo of finish returns to idle_ready"
+        assert len(graph.roads) == 0, "the whole road is deleted"
+        assert len(ctx.build(kind=SegmentKind.ROAD).segments) == 0, "build context is cleared"
 
     def test_connector_proposal_auto_finishes_to_viewing(
         self, fake_st, path_factory, mock_dem_red_slope_diagonal, path_points_blue
@@ -971,7 +1012,7 @@ class TestRoadBuildingActionFlow:
 
         dem = mock_dem_red_slope_diagonal
         graph = ResortGraph()
-        sm, ctx = _session(fake_st, graph, factory=path_factory, dem=dem)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=path_factory, dem=dem)
         sm.start_road(node_id=None, location=path_points_blue[0])
 
         # Commit one real fan segment so we're in road_building with a target node to connect to.
@@ -1008,7 +1049,7 @@ class TestDeferredProcessing:
     ) -> None:
         from skiresort_planner.ui.actions import process_path_generation_pending
 
-        _sm, ctx = _session(fake_st, ResortGraph(), factory=path_factory, dem=mock_dem_red_slope_diagonal)
+        _sm, ctx = _session(fake_st=fake_st, graph=ResortGraph(), factory=path_factory, dem=mock_dem_red_slope_diagonal)
         ctx.pending.fan_generation.discard(SegmentKind.SLOPE)
         assert process_path_generation_pending() is False
 
@@ -1019,7 +1060,7 @@ class TestDeferredProcessing:
 
         dem = mock_dem_red_slope_diagonal
         graph = ResortGraph()
-        sm, ctx = _session(fake_st, graph, factory=path_factory, dem=dem)
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=path_factory, dem=dem)
         start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
         sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
         ctx.selection.set(lon=0.0, lat=0.0, elevation=start_elev)
@@ -1034,7 +1075,7 @@ class TestDeferredProcessing:
     ) -> None:
         from skiresort_planner.ui.actions import process_custom_connect_pending
 
-        _sm, ctx = _session(fake_st, ResortGraph(), factory=path_factory, dem=mock_dem_red_slope_diagonal)
+        _sm, ctx = _session(fake_st=fake_st, graph=ResortGraph(), factory=path_factory, dem=mock_dem_red_slope_diagonal)
         ctx.pending.custom_connect = False
         assert process_custom_connect_pending() is False
 
@@ -1046,7 +1087,7 @@ class TestDeferredProcessing:
         from skiresort_planner.ui import actions
 
         dem = mock_dem_red_slope_diagonal
-        sm, ctx = _session(fake_st, ResortGraph(), factory=path_factory, dem=dem)
+        sm, ctx = _session(fake_st=fake_st, graph=ResortGraph(), factory=path_factory, dem=dem)
         start_elev = dem.get_elevation_or_raise(lon=0.0, lat=0.0)
         sm.start_slope(lon=0.0, lat=0.0, elevation=start_elev, node_id=None)
         ctx.selection.set(lon=0.0, lat=0.0, elevation=start_elev)
@@ -1103,25 +1144,25 @@ class TestGradientPreselection:
     def test_gradient_rule_preselects_closest_and_consumes_target(self, fake_st, mock_dem_blue_slope) -> None:
         from skiresort_planner.ui.actions import _closest_gradient_rule, _preselect_by_rule
 
-        _sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
+        _sm, ctx = _session(fake_st=fake_st, graph=ResortGraph(), dem=mock_dem_blue_slope)
         paths = self._paths(5.0, 18.0, 30.0)
         ctx.pending.gradient_target = 17.0  # closest to the 18% path (index 1)
-        _preselect_by_rule(ctx=ctx, paths=paths, rule=_closest_gradient_rule(ctx))
+        _preselect_by_rule(ctx=ctx, paths=paths, rule=_closest_gradient_rule(ctx=ctx))
         assert ctx.proposals.selected_idx == 1, "pre-selects the proposal nearest the last committed grade"
         assert ctx.pending.gradient_target is None, "one-shot: the target is consumed"
 
     def test_gradient_rule_defaults_to_first_without_target(self, fake_st, mock_dem_blue_slope) -> None:
         from skiresort_planner.ui.actions import _closest_gradient_rule, _preselect_by_rule
 
-        _sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
+        _sm, ctx = _session(fake_st=fake_st, graph=ResortGraph(), dem=mock_dem_blue_slope)
         ctx.pending.gradient_target = None
-        _preselect_by_rule(ctx=ctx, paths=self._paths(5.0, 18.0), rule=_closest_gradient_rule(ctx))
+        _preselect_by_rule(ctx=ctx, paths=self._paths(5.0, 18.0), rule=_closest_gradient_rule(ctx=ctx))
         assert ctx.proposals.selected_idx == 0, "no target → first proposal"
 
     def test_shortest_rule_selects_index_zero(self, fake_st, mock_dem_blue_slope) -> None:
         from skiresort_planner.ui.actions import _preselect_by_rule, _shortest_rule
 
-        _sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
+        _sm, ctx = _session(fake_st=fake_st, graph=ResortGraph(), dem=mock_dem_blue_slope)
         ctx.pending.gradient_target = 17.0  # a stale fan target must still be consumed
         _preselect_by_rule(ctx=ctx, paths=self._paths(5.0, 18.0), rule=_shortest_rule)
         assert ctx.proposals.selected_idx == 0, "custom-connect shortest-first → index 0"
@@ -1130,9 +1171,9 @@ class TestGradientPreselection:
     def test_none_when_no_paths(self, fake_st, mock_dem_blue_slope) -> None:
         from skiresort_planner.ui.actions import _closest_gradient_rule, _preselect_by_rule
 
-        _sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
+        _sm, ctx = _session(fake_st=fake_st, graph=ResortGraph(), dem=mock_dem_blue_slope)
         ctx.pending.gradient_target = 17.0
-        _preselect_by_rule(ctx=ctx, paths=[], rule=_closest_gradient_rule(ctx))
+        _preselect_by_rule(ctx=ctx, paths=[], rule=_closest_gradient_rule(ctx=ctx))
         assert ctx.proposals.selected_idx is None, "empty proposals → no selection"
 
 
@@ -1146,12 +1187,12 @@ class TestOSMImport:
         from skiresort_planner.constants import OSMImportMode
         from skiresort_planner.ui.actions import confirm_import_action
 
-        sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
+        sm, ctx = _session(fake_st=fake_st, graph=ResortGraph(), dem=mock_dem_blue_slope)
         sm.start_import(lon=0.1, lat=0.3)  # first map click places the box center
         assert sm.is_import_selecting
         assert ctx.pending.osm_import_center_lon == 0.1 and ctx.pending.osm_import_center_lat == 0.3
 
-        confirm_import_action(OSMImportMode.LIFTS_AND_SLOPES)  # center-dot click / import button
+        confirm_import_action(mode=OSMImportMode.LIFTS_AND_SLOPES)  # center-dot click / import button
         assert ctx.pending.osm_import_mode == OSMImportMode.LIFTS_AND_SLOPES
         assert sm.is_idle_ready, "confirm returns to idle so the deferred fetch runs under the spinner"
 
@@ -1163,7 +1204,7 @@ class TestOSMImport:
         from skiresort_planner.ui import actions
         from skiresort_planner.ui.actions import confirm_import_action
 
-        sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
+        sm, ctx = _session(fake_st=fake_st, graph=ResortGraph(), dem=mock_dem_blue_slope)
         ctx.map.lat, ctx.map.lon = 0.9, 0.9  # deliberately NOT the placed center — must be ignored
 
         seen: dict[str, tuple[float, float, float, float]] = {}
@@ -1180,7 +1221,7 @@ class TestOSMImport:
 
         sm.start_import(lon=0.1, lat=0.3)  # placed center
         ctx.pending.osm_import_half_width_km = 3.5
-        confirm_import_action(OSMImportMode.LIFTS_ONLY)
+        confirm_import_action(mode=OSMImportMode.LIFTS_ONLY)
         actions.process_osm_import_pending(report=_noop_report)
 
         min_lon, min_lat, max_lon, max_lat = seen["bbox"]
@@ -1192,7 +1233,7 @@ class TestOSMImport:
         from skiresort_planner.constants import OSMImportMode
         from skiresort_planner.ui import actions
 
-        _sm, ctx = _session(fake_st, ResortGraph(), dem=mock_dem_blue_slope)
+        _sm, ctx = _session(fake_st=fake_st, graph=ResortGraph(), dem=mock_dem_blue_slope)
         ctx.pending.osm_import_mode = OSMImportMode.LIFTS_AND_SLOPES  # flagged, but no center placed
         with pytest.raises(RuntimeError, match="no placed center"):
             actions.process_osm_import_pending(report=_noop_report)
@@ -1203,7 +1244,7 @@ class TestOSMImport:
 
         dem = mock_dem_blue_slope
         graph = ResortGraph()
-        _sm, ctx = _session(fake_st, graph, dem=dem)
+        _sm, ctx = _session(fake_st=fake_st, graph=graph, dem=dem)
         ctx.pending.osm_import_mode = OSMImportMode.LIFTS_AND_SLOPES
         ctx.pending.osm_import_center_lon = 0.0  # inside MockDEM bounds (-1..1)
         ctx.pending.osm_import_center_lat = 0.0
@@ -1230,15 +1271,15 @@ class TestOSMImport:
     def test_process_import_network_error_propagates_and_imports_nothing(
         self, fake_st, mock_dem_blue_slope, monkeypatch
     ) -> None:
-        # The processor no longer swallows failures — the exception propagates to run_pending_load,
-        # which shows its pre-given warning toast. Here we assert it raises and imports nothing.
+        # The processor lets failures propagate to run_pending_load, which shows its warning toast.
+        # Here we assert it raises and imports nothing.
         import pytest
 
         from skiresort_planner.constants import OSMImportMode
         from skiresort_planner.ui import actions
 
         graph = ResortGraph()
-        _sm, ctx = _session(fake_st, graph, dem=mock_dem_blue_slope)
+        _sm, ctx = _session(fake_st=fake_st, graph=graph, dem=mock_dem_blue_slope)
         ctx.pending.osm_import_mode = OSMImportMode.LIFTS_AND_SLOPES
         ctx.pending.osm_import_center_lon = 0.0
         ctx.pending.osm_import_center_lat = 0.0
@@ -1265,7 +1306,7 @@ class TestOSMImport:
 
         dem = mock_dem_blue_slope
         graph = ResortGraph()
-        _sm, ctx = _session(fake_st, graph, dem=dem)
+        _sm, ctx = _session(fake_st=fake_st, graph=graph, dem=dem)
         ctx.pending.osm_import_mode = OSMImportMode.LIFTS_AND_SLOPES
         ctx.pending.osm_import_center_lon = 0.0
         ctx.pending.osm_import_center_lat = 0.0
@@ -1293,7 +1334,7 @@ class TestOSMImport:
 
         dem = mock_dem_blue_slope
         graph = ResortGraph()
-        _sm, ctx = _session(fake_st, graph, dem=dem)
+        _sm, ctx = _session(fake_st=fake_st, graph=graph, dem=dem)
 
         result = _fake_import_result(dem)
         # Mock run() so no network/plot happens: the importer just returns our prepared result.
@@ -1339,8 +1380,8 @@ class TestSegmentOrigin:
         from skiresort_planner.ui.actions import resolve_build_origin
         from skiresort_planner.ui.context import SegmentBuildContext
 
-        # The origin node was cleaned when the last segment was undone, but start_location survives
-        # (restored by _restore_build_context). The dangling id is ignored; the location is used.
+        # The origin node was cleaned when the last segment was undone, but start_location survives.
+        # The dangling id is ignored; the location is used.
         build = SegmentBuildContext(
             start_node_id="N999",  # cleaned as isolated
             start_location=PathPoint(lon=8.019, lat=46.584, elevation=3065.0),
@@ -1384,23 +1425,19 @@ class TestSegmentOrigin:
 
 
 class TestUndoToZeroAfterFinish:
-    """Regression: build a road, finish, undo the finish, then undo each segment back to zero.
-
-    The final undo cleans the origin node (now isolated); the build must stay resolvable — the fan
-    regenerates from the origin location, not a dangling start_node_id (was 'KeyError: N###').
+    """Undo semantics: undoing a finish deletes the whole entity in one step; undoing segments during
+    a build stays in place (re-arming) until the last one, which cancels the build to idle_ready.
     """
 
-    def test_undo_all_segments_after_finish_regenerates_without_crash(
+    def test_undo_finish_deletes_everything_cleanly(
         self, fake_st, empty_graph, path_factory, mock_dem_red_slope_diagonal
     ) -> None:
-        from skiresort_planner.ui.actions import (
-            process_path_generation_pending,
-            resolve_build_origin,
-            undo_last_action,
-        )
+        # Build a 2-segment road, finish, undo the finish → the whole road + its per-segment undo
+        # entries are gone in one step, landing idle_ready.
+        from skiresort_planner.ui.actions import undo_last_action
 
         dem = mock_dem_red_slope_diagonal
-        sm, ctx = _session(fake_st, empty_graph, path_factory, dem)
+        sm, ctx = _session(fake_st=fake_st, graph=empty_graph, factory=path_factory, dem=dem)
         ctx.build_mode.mode = SegmentKind.ROAD.value
 
         # Start a road from fresh terrain and commit two segments (undo actions recorded).
@@ -1416,34 +1453,25 @@ class TestUndoToZeroAfterFinish:
             seg = list(empty_graph.segments.keys())[-1]
             sm.commit_road(segment_id=seg, endpoint_node_id=endpoint_ids[0])
 
-        road = empty_graph.finish_road(segment_ids=ctx.build(SegmentKind.ROAD).segments)
+        road = empty_graph.finish_road(segment_ids=ctx.build(kind=SegmentKind.ROAD).segments)
         sm.finish_road(entity_id=road.id)
         assert sm.is_idle_viewing_road
 
-        # Undo everything: finish, then each segment. The last undo cleans the origin node.
-        while empty_graph.undo_stack:
-            undo_last_action()
+        undo_last_action()  # undo FINISH_ROAD → deletes the whole road
+        assert sm.is_idle_ready
+        assert len(empty_graph.roads) == 0
+        assert len(ctx.build(kind=SegmentKind.ROAD).segments) == 0
+        assert not empty_graph.undo_stack, "the finish-undo scrubs the per-segment ADD_SEGMENTS entries too"
 
-        # The build must still resolve its origin without a dangling id (the crash was here).
-        build = ctx.build(SegmentKind.ROAD)
-        if build.segments or build.start_location or build.start_node_id:
-            resolve_build_origin(build=build, graph=empty_graph)  # must not raise
-        process_path_generation_pending()  # the deferred fan pass must not raise either
-
-    def test_undo_all_then_custom_connect_overlay_no_keyerror(
+    def test_undo_segments_stays_building_then_cancels_to_idle(
         self, fake_st, empty_graph, path_factory, mock_dem_red_slope_diagonal
     ) -> None:
-        """Regression (KeyError: 'N#' @ overlay_layers): finish a slope, undo the finish, then undo
-        every segment back to zero, then click a custom-connect target. Undoing the finish restores
-        start_node_id to the origin node; undoing all segments then cleans that node as isolated — so
-        start_node_id must NOT survive dangling into custom_connect.start_node, else the overlay crashes.
-        """
-        from skiresort_planner.ui.actions import undo_last_action
-        from skiresort_planner.ui.center_map import MapRenderer
-        from skiresort_planner.ui.mode_registry import BUILD_STATES
+        # Undoing a committed segment (no finish) stays in slope_building and re-arms the fan; undoing
+        # the last remaining segment cancels the build to idle_ready.
+        from skiresort_planner.ui.actions import process_path_generation_pending, undo_last_action
 
         dem = mock_dem_red_slope_diagonal
-        sm, ctx = _session(fake_st, empty_graph, path_factory, dem)
+        sm, ctx = _session(fake_st=fake_st, graph=empty_graph, factory=path_factory, dem=dem)
         ctx.build_mode.mode = SegmentKind.SLOPE.value
 
         # Build a slope from fresh terrain, committing two segments (ADD_SEGMENTS undo actions).
@@ -1458,32 +1486,18 @@ class TestUndoToZeroAfterFinish:
             endpoint_ids = empty_graph.commit_paths(paths=[ProposedPathSegment(points=pts, target_difficulty="blue")])
             seg = list(empty_graph.segments.keys())[-1]
             sm.commit_path(segment_id=seg, endpoint_node_id=endpoint_ids[0])
+        assert sm.is_slope_building_only and len(ctx.build(kind=SegmentKind.SLOPE).segments) == 2
 
-        # Finish → the finish-undo restores start_node_id to the origin (the node the undos then clean).
-        slope = empty_graph.finish_slope(segment_ids=ctx.build(SegmentKind.SLOPE).segments)
-        sm.finish_slope(entity_id=slope.id)
+        undo_last_action()  # peel one segment → stay building, fan re-armed
+        assert sm.is_slope_building_only, "one segment remains → stay in slope_building"
+        assert len(ctx.build(kind=SegmentKind.SLOPE).segments) == 1
+        assert SegmentKind.SLOPE in ctx.pending.fan_generation, "the fan is re-armed from the moved endpoint"
+        process_path_generation_pending()  # the deferred fan pass must not raise
+        assert ctx.proposals.paths, "the fan regenerates from the new endpoint"
 
-        # Undo finish, then each segment → back to slope_starting; the last undo cleans the origin node.
-        while empty_graph.undo_stack:
-            undo_last_action()
-        assert sm.is_slope_starting
-        build = ctx.build(SegmentKind.SLOPE)
-        assert build.start_node_id is None, "undo-to-zero must not leave a dangling origin id"
-
-        # Click a custom-connect target from starting: start_node is copied from build.start_node_id.
-        sm.select_custom_target(target_location=(300 / MapConfig.METERS_PER_DEGREE_EQUATOR, 0.0, 1990.0))
-        assert ctx.custom_connect.start_node is None, "no live origin node → no dangling custom_connect.start_node"
-
-        # The overlay render that crashed with KeyError must succeed (the origin arrow simply isn't drawn).
-        renderer = MapRenderer(center_lon=0.0, center_lat=0.0, zoom=13, pitch=0, bearing=0)
-        BUILD_STATES[sm.get_current_state_id()].overlay_layers(
-            ctx=ctx,
-            graph=empty_graph,
-            renderer=renderer,
-            terrain_analyzer=path_factory.terrain_analyzer,
-            dem=dem,
-            use_3d=False,
-        )  # must not raise
+        undo_last_action()  # peel the last segment → cancel to idle
+        assert sm.is_idle_ready, "undoing the last segment cancels the build to idle_ready"
+        assert len(ctx.build(kind=SegmentKind.SLOPE).segments) == 0
 
 
 class TestMapEpochs:
@@ -1492,7 +1506,7 @@ class TestMapEpochs:
     """
 
     def _road_building(self, fake_st, empty_graph, path_factory, dem):
-        sm, ctx = _session(fake_st, empty_graph, path_factory, dem)
+        sm, ctx = _session(fake_st=fake_st, graph=empty_graph, factory=path_factory, dem=dem)
         ctx.build_mode.mode = SegmentKind.ROAD.value
         sm.start_road(node_id=None, location=PathPoint(lon=0.0, lat=0.0, elevation=2000.0))
         return sm, ctx
@@ -1552,3 +1566,304 @@ class TestMapEpochs:
         cancel_current_build(kind=SegmentKind.ROAD)
 
         assert fake_st.session_state["camera_epoch"] == camera_before, "cancel must NOT recenter"
+
+
+class TestUndoDispatchMatrix:
+    """Exhaustive undo dispatch: every ActionType, driven through the real undo_last_action() (which
+    runs graph.undo_last() plus the _UNDO_SIDE_EFFECTS state-machine side-effect inside
+    `with sm.undo_running()`), asserting the resulting SM state and graph effect — never a
+    TransitionNotAllowed. A completeness guard asserts every ActionType has a scenario, so a new
+    action type fails this suite until it is covered here.
+    """
+
+    def _lift_id(self, graph: ResortGraph, dem: MockDEMService) -> str:
+        """Add a bottom→top lift on the graph; return its id (records ADD_LIFT)."""
+        bottom = _node_at(dem=dem, node_id="LB", lon=0.0, lat=-1000 / MapConfig.METERS_PER_DEGREE_EQUATOR)
+        top = _node_at(dem=dem, node_id="LT", lon=0.0, lat=-500 / MapConfig.METERS_PER_DEGREE_EQUATOR)
+        graph.nodes[bottom.id] = bottom
+        graph.nodes[top.id] = top
+        return graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem).id
+
+    def _two_seg_building(self, fake_st, factory, dem):
+        """Drive the SM to slope_building with 2 committed segments; return (sm, ctx, graph)."""
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+        ctx.build_mode.mode = SegmentKind.SLOPE.value
+        sm.start_slope(lon=0.0, lat=0.0, elevation=2000.0, node_id=None)
+        for i in range(1, 3):
+            pts = [
+                PathPoint(
+                    lon=(i - 1) * 300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=2000.0 - (i - 1) * 10
+                ),
+                PathPoint(lon=i * 300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=2000.0 - i * 10),
+            ]
+            endpoint_ids = graph.commit_paths(paths=[ProposedPathSegment(points=pts, target_difficulty="blue")])
+            sm.commit_path(segment_id=list(graph.segments.keys())[-1], endpoint_node_id=endpoint_ids[0])
+        return sm, ctx, graph
+
+    # One scenario builder per case; each seeds pre-undo state and returns (sm, ctx, graph, check).
+
+    def _scn_add_segments_two_remain(self, fake_st, factory, dem):
+        sm, ctx, graph = self._two_seg_building(fake_st=fake_st, factory=factory, dem=dem)
+
+        def check() -> None:
+            assert sm.is_slope_building_only, "one segment remains → stay in slope_building"
+            assert len(ctx.build(kind=SegmentKind.SLOPE).segments) == 1
+            assert SegmentKind.SLOPE in ctx.pending.fan_generation, "fan re-armed from the moved endpoint"
+
+        return sm, ctx, graph, check
+
+    def _scn_add_segments_last_seg(self, fake_st, factory, dem):
+        sm, ctx, graph = self._two_seg_building(fake_st=fake_st, factory=factory, dem=dem)
+        from skiresort_planner.ui.actions import undo_last_action
+
+        undo_last_action()  # peel one → still building with 1 segment
+
+        def check() -> None:
+            assert sm.is_idle_ready, "undoing the last segment cancels the build to idle_ready"
+            assert len(ctx.build(kind=SegmentKind.SLOPE).segments) == 0
+
+        return sm, ctx, graph, check
+
+    def _scn_add_segments_in_custom_path(self, fake_st, factory, dem):
+        sm, ctx, graph = self._two_seg_building(fake_st=fake_st, factory=factory, dem=dem)
+        target = (300 / MapConfig.METERS_PER_DEGREE_EQUATOR, -300 / MapConfig.METERS_PER_DEGREE_EQUATOR, 1980.0)
+        sm.select_custom_target(target_location=target)
+        assert sm.is_slope_custom_path
+
+        def check() -> None:
+            assert sm.is_slope_custom_path, "undo of a committed segment while targeting stays in custom-path"
+            assert ctx.pending.custom_connect is True, "custom routes regenerate from the re-anchored origin"
+
+        return sm, ctx, graph, check
+
+    def _scn_finish_slope(self, fake_st, factory, dem):
+        sm, ctx, graph, slope, _seg = _build_finish_slope(fake_st=fake_st, factory=factory, dem=dem)
+
+        def check() -> None:
+            assert sm.is_idle_ready, "undo of finish → idle_ready"
+            assert slope.id not in graph.slopes, "the whole slope is deleted"
+            assert graph.undo_stack == [], "the per-segment ADD_SEGMENTS entry is scrubbed with the segments"
+
+        return sm, ctx, graph, check
+
+    def _scn_finish_road(self, fake_st, factory, dem):
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+        sm.start_road(node_id=None, location=PathPoint(lon=0.0, lat=0.0, elevation=2000.0))
+        pts = [
+            PathPoint(lon=0.0, lat=0.0, elevation=2000.0),
+            PathPoint(lon=300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lat=0.0, elevation=1990.0),
+        ]
+        endpoint_ids = graph.commit_paths(paths=[ProposedPathSegment(points=pts, kind=SegmentKind.ROAD)])
+        sm.commit_road(segment_id=list(graph.segments.keys())[-1], endpoint_node_id=endpoint_ids[0])
+        road = graph.finish_road(segment_ids=ctx.build(kind=SegmentKind.ROAD).segments)
+        sm.finish_road(entity_id=road.id)
+
+        def check() -> None:
+            assert sm.is_idle_ready, "undo of finish → idle_ready"
+            assert road.id not in graph.roads, "the whole road is deleted"
+
+        return sm, ctx, graph, check
+
+    def _scn_add_lift_while_placing(self, fake_st, factory, dem):
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+        lift_id = self._lift_id(graph=graph, dem=dem)
+        sm.start_lift(node_id=None, location=None)  # in lift_placing when the lift-add is undone
+
+        def check() -> None:
+            assert sm.is_idle_ready, "undoing the lift while placing forces idle"
+            assert lift_id not in graph.lifts
+
+        return sm, ctx, graph, check
+
+    def _scn_add_lift_while_viewing(self, fake_st, factory, dem):
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+        lift_id = self._lift_id(graph=graph, dem=dem)
+        sm.view_lift(lift_id=lift_id)
+
+        def check() -> None:
+            assert sm.is_idle_ready, "undoing the viewed lift forces idle"
+            assert lift_id not in graph.lifts
+
+        return sm, ctx, graph, check
+
+    def _scn_add_lift_elsewhere(self, fake_st, factory, dem):
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+        lift_id = self._lift_id(graph=graph, dem=dem)  # stay in idle_ready
+
+        def check() -> None:
+            assert sm.is_idle_ready, "undo from idle stays idle (redraw only)"
+            assert lift_id not in graph.lifts
+
+        return sm, ctx, graph, check
+
+    def _scn_delete_slope(self, fake_st, factory, dem):
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+        slope = _make_slope(graph=graph, path_points=_straight_points(dem=dem))
+        graph.delete_slope(slope_id=slope.id)  # top of stack = DELETE_SLOPE
+
+        def check() -> None:
+            assert sm.is_idle_ready
+            assert slope.id in graph.slopes, "undo of delete restores the slope"
+
+        return sm, ctx, graph, check
+
+    def _scn_delete_road(self, fake_st, factory, dem):
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+        road = _make_road(graph=graph)
+        graph.delete_road(road_id=road.id)
+
+        def check() -> None:
+            assert sm.is_idle_ready
+            assert road.id in graph.roads, "undo of delete restores the road"
+
+        return sm, ctx, graph, check
+
+    def _scn_delete_lift(self, fake_st, factory, dem):
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+        lift_id = self._lift_id(graph=graph, dem=dem)
+        graph.undo_stack.clear()  # drop the ADD_LIFT so DELETE_LIFT is the top of the stack
+        graph.delete_lift(lift_id=lift_id)
+
+        def check() -> None:
+            assert sm.is_idle_ready
+            assert lift_id in graph.lifts, "undo of delete restores the lift"
+
+        return sm, ctx, graph, check
+
+    def _scn_import_osm_viewing_removed(self, fake_st, factory, dem):
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+        graph.import_osm(result=_fake_import_result(dem=dem), dem=dem)
+        slope_id = next(iter(graph.slopes))  # the batch created exactly one slope
+        sm.view_slope(slope_id=slope_id)  # viewing an imported entity when the batch is undone
+
+        def check() -> None:
+            assert sm.is_idle_ready, "undoing the import while viewing a removed entity forces idle"
+            assert slope_id not in graph.slopes
+
+        return sm, ctx, graph, check
+
+    def _scn_import_osm_elsewhere(self, fake_st, factory, dem):
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+        graph.import_osm(result=_fake_import_result(dem=dem), dem=dem)
+        slope_id = next(iter(graph.slopes))  # stay in idle_ready
+
+        def check() -> None:
+            assert sm.is_idle_ready, "undo from idle stays idle (redraw only)"
+            assert slope_id not in graph.slopes
+
+        return sm, ctx, graph, check
+
+    def _scn_merge_nodes(self, fake_st, factory, dem):
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+        slope = _commit_straight_slope_len(graph=graph, dem=dem, n_segments=2)
+        junction_id = graph.segments[slope.segment_ids[0]].end_node_id  # shared node between the 2 segments
+        jn = graph.nodes[junction_id]
+        near_lat = jn.lat - 8 / MapConfig.METERS_PER_DEGREE_EQUATOR
+        graph.nodes["X"] = _node_at(dem=dem, node_id="X", lon=jn.lon, lat=near_lat)
+        graph.merge_nodes(node_ids=[junction_id, "X"], dem=dem)
+
+        def check() -> None:
+            assert sm.is_idle_ready, "node-edit undo is redraw-only (no state change)"
+            assert "X" in graph.nodes, "undo of merge restores the merged-away node"
+
+        return sm, ctx, graph, check
+
+    def _scn_delete_nodes(self, fake_st, factory, dem):
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+        slope = _commit_straight_slope_len(graph=graph, dem=dem, n_segments=2)
+        junction_id = graph.segments[slope.segment_ids[0]].end_node_id  # interior node: deletable
+        graph.delete_nodes(node_ids=[junction_id], dem=dem)
+
+        def check() -> None:
+            assert sm.is_idle_ready, "node-edit undo is redraw-only (no state change)"
+            assert junction_id in graph.nodes, "undo of delete-nodes restores the node"
+
+        return sm, ctx, graph, check
+
+    def _scn_insert_node(self, fake_st, factory, dem):
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+        slope = _commit_straight_slope_len(graph=graph, dem=dem, n_segments=1)
+        seg_id = slope.segment_ids[0]
+        seg = graph.segments[seg_id]
+        # A finished straight run simplifies to its two endpoints, so use the geometric midpoint of
+        # the leg (far from both vertices) rather than a stored interior point.
+        mid_lon = (seg.points[0].lon + seg.points[-1].lon) / 2
+        mid_lat = (seg.points[0].lat + seg.points[-1].lat) / 2
+        graph.insert_node_on_path(segment_id=seg_id, lon=mid_lon, lat=mid_lat, dem=dem)
+
+        def check() -> None:
+            assert sm.is_idle_ready, "node-edit undo is redraw-only (no state change)"
+            assert seg_id in graph.segments, "undo of insert restores the original segment"
+
+        return sm, ctx, graph, check
+
+    def _scn_cut_segment(self, fake_st, factory, dem):
+        graph = ResortGraph()
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+        slope = _commit_straight_slope_len(graph=graph, dem=dem, n_segments=1)
+        seg = slope.segment_ids[0]
+        a = graph.segments[seg].start_node_id
+        b = graph.segments[seg].end_node_id
+        graph.cut_segments_between(node_a_id=a, node_b_id=b)
+
+        def check() -> None:
+            assert sm.is_idle_ready, "node-edit undo is redraw-only (no state change)"
+            assert seg in graph.segments, "undo of cut restores the segment"
+
+        return sm, ctx, graph, check
+
+    def _scenarios(self):
+        """(ActionType exercised, scenario builder) rows. Several ActionTypes have more than one row
+        (e.g. ADD_SEGMENTS: segments-remain / last-segment / in-custom-path); each row is tagged with
+        the ActionType it exercises, and the guard below unions the tags to prove full coverage.
+        """
+        A = ActionType
+        return [
+            (A.ADD_SEGMENTS, self._scn_add_segments_two_remain),
+            (A.ADD_SEGMENTS, self._scn_add_segments_last_seg),
+            (A.ADD_SEGMENTS, self._scn_add_segments_in_custom_path),
+            (A.FINISH_SLOPE, self._scn_finish_slope),
+            (A.FINISH_ROAD, self._scn_finish_road),
+            (A.ADD_LIFT, self._scn_add_lift_while_placing),
+            (A.ADD_LIFT, self._scn_add_lift_while_viewing),
+            (A.ADD_LIFT, self._scn_add_lift_elsewhere),
+            (A.DELETE_SLOPE, self._scn_delete_slope),
+            (A.DELETE_ROAD, self._scn_delete_road),
+            (A.DELETE_LIFT, self._scn_delete_lift),
+            (A.IMPORT_OSM, self._scn_import_osm_viewing_removed),
+            (A.IMPORT_OSM, self._scn_import_osm_elsewhere),
+            (A.MERGE_NODES, self._scn_merge_nodes),
+            (A.DELETE_NODES, self._scn_delete_nodes),
+            (A.INSERT_NODE, self._scn_insert_node),
+            (A.CUT_SEGMENT, self._scn_cut_segment),
+        ]
+
+    def test_every_action_type_has_a_scenario(self) -> None:
+        covered = {action_type for action_type, _ in self._scenarios()}
+        assert covered == set(ActionType), (
+            f"undo dispatch matrix must cover every ActionType. "
+            f"Missing: {set(ActionType) - covered}; extra: {covered - set(ActionType)}"
+        )
+
+    @pytest.mark.parametrize("idx", range(17))
+    def test_undo_dispatch(self, fake_st, path_factory, mock_dem_blue_slope, idx) -> None:
+        from skiresort_planner.ui.actions import undo_last_action
+
+        action_type, builder = self._scenarios()[idx]
+        _sm, _ctx, _graph, check = builder(fake_st=fake_st, factory=path_factory, dem=mock_dem_blue_slope)
+        undo_last_action()  # must never raise TransitionNotAllowed
+        assert action_type in set(ActionType)  # the row's tag is a real ActionType
+        check()

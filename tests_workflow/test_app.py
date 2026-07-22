@@ -35,7 +35,7 @@ def _seed_full_session(fake_st, dem):
     ss["context"] = ctx
     ss["dem_service"] = dem
     ss["path_factory"] = PathFactory(dem_service=dem)
-    ss["map_renderer"] = MapRenderer(graph=graph)
+    ss["map_renderer"] = MapRenderer(graph=graph, dem=dem)
     ss["camera_epoch"] = 0
     ss["dedup_epoch"] = 0
     ss["_upload_counter"] = 0

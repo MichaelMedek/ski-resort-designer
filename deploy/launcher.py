@@ -77,7 +77,7 @@ def main() -> None:
         _wait_ready(port)
         import webview
 
-        webview.create_window("Alpin Architect", f"http://127.0.0.1:{port}", width=1400, height=900)
+        webview.create_window("Alpin Architect", f"http://127.0.0.1:{port}", width=1400, height=900, zoomable=True)
         webview.start()  # blocks until the window is closed
     finally:
         proc.terminate()

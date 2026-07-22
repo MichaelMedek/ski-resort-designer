@@ -15,6 +15,7 @@ Reference: DETAILS.md
 import copy
 import logging
 import statistics
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, NamedTuple, TypedDict, cast
@@ -217,6 +218,12 @@ class ResortGraph:
 
         self.undo_stack = [action for action in self.undo_stack if keep(action)]
 
+    def _orphaned_nodes(self) -> list[Node]:
+        """Nodes with no remaining connections (connection_count == 0) — the delete-time snapshot the
+        delete_slope/road/lift undo actions carry so undo can restore them. One computation, three callers.
+        """
+        return [self.nodes[nid] for nid in self.nodes if self.get_connection_count(node_id=nid) == 0]
+
     # =========================================================================
     # Node Operations
     # =========================================================================
@@ -292,7 +299,7 @@ class ResortGraph:
     def _side_slope_for_points(self, points: list[PathPoint]) -> tuple[float, SideDirection]:
         """Side slope (pct, direction) for a segment from its first two points — the single call site.
 
-        Extracted from commit_paths so delete/insert can't drift from how the builder computes it.
+        The one side-slope computation shared by commit, delete and insert so they can't drift.
         """
         info = TerrainAnalyzer.compute_side_slope(
             start_lon=points[0].lon, start_lat=points[0].lat, end_lon=points[1].lon, end_lat=points[1].lat
@@ -305,7 +312,10 @@ class ResortGraph:
         """Create + register a PathSegment between two nodes (id/name from the counter, side slope
         computed from points). The single PathSegment assembly site — shared by commit and insert.
         """
-        side_slope_pct, side_slope_dir = self._side_slope_for_points(points)
+        side_slope_pct, side_slope_dir = self._side_slope_for_points(points=points)
+        assert start_node_id in self.nodes and end_node_id in self.nodes, (
+            f"_build_segment: endpoint node not in graph ({start_node_id}, {end_node_id})"
+        )
         segment = PathSegment(
             id=self._next_segment_id(),
             name=f"Segment {self._segment_counter}",
@@ -364,7 +374,7 @@ class ResortGraph:
         # Check 1 (per node): every selected node must be individually deletable on its own shape.
         # The first one that isn't (lift station, branch junction, sole segment, …) names the reason.
         for nid in node_ids:
-            reason = self.node_deletability(nid)
+            reason = self.node_deletability(node_id=nid)
             if reason not in DELETABLE_MEMBERS:
                 return deletability_reason(node_id=nid, reason=reason)
 
@@ -388,7 +398,7 @@ class ResortGraph:
         A+B and N2 joining B+C fuses A+B+C). Build an undirected graph (paths=vertices, fusing nodes=edges)
         and return its connected components via networkx — the survivor check then counts over each whole.
         """
-        by_id = {p.id: p for p in self._paths_owning_nodes(node_ids)}
+        by_id = {p.id: p for p in self._paths_owning_nodes(node_ids=node_ids)}
         graph = nx.Graph()
         graph.add_nodes_from(by_id)
         for nid in node_ids:
@@ -488,7 +498,7 @@ class ResortGraph:
         has_before, has_after = bool(before_ids), bool(after_ids)
         if not has_before and not has_after:
             # Sole segment WAS the whole path → delete the entity outright.
-            del self.entity_dict_for_kind(owner.kind)[owner.id]
+            del self.entity_dict_for_kind(kind=owner.kind)[owner.id]
         elif has_before and not has_after:
             # Cut the LAST segment → owner keeps the 'before' side (trim).
             self._set_path_chain(path=owner, segment_ids=list(before_ids))
@@ -578,7 +588,8 @@ class ResortGraph:
             )
         else:
             raise ValueError(f"unexpected kind {kind} for a path entity")
-        self.entity_dict_for_kind(kind)[entity.id] = entity
+        assert entity.id not in self.entity_dict_for_kind(kind=kind), f"fresh {kind} id {entity.id} already registered"
+        self.entity_dict_for_kind(kind=kind)[entity.id] = entity
         for sid in segment_ids:
             self.segments[sid].name = name
         return entity
@@ -621,9 +632,8 @@ class ResortGraph:
                 continue
 
             # Get start node.
-            # If the proposal extends from an existing node, reuse it EXACTLY.
-            # Spline smoothing could drift the traced start point.
-            # Same fix the end uses via target_node_id.
+            # Reuse the existing start node exactly (mirrors the end via target_node_id) so spline
+            # smoothing can't drift the start point.
             start_pt = path.start
             assert start_pt is not None  # Guaranteed by `if not path.points: continue` check
             if path.start_node_id and path.start_node_id in self.nodes:
@@ -690,6 +700,7 @@ class ResortGraph:
                 )
             )
 
+        assert all(nid in self.nodes for nid in end_node_ids), "commit_paths returned a dangling end node id"
         return end_node_ids
 
     def _resolve_finish_endpoints(self, segment_ids: list[str]) -> tuple[PathSegment, PathSegment, Node, Node]:
@@ -731,7 +742,7 @@ class ResortGraph:
         segments = [self.segments[sid] for sid in segment_ids]
         assert len(segments) > 0, f"_smooth_finished_path: segment_ids={segment_ids} resolved to empty segments list"
         # Boundary nodes: start of the first segment, then each segment's end node.
-        boundary_node_ids = _chain_node_sequence(segments)
+        boundary_node_ids = _chain_node_sequence(segments=segments)
 
         before = max(seg.max_slope_pct for seg in segments)
         smoothed = smooth_joined_path(
@@ -883,38 +894,52 @@ class ResortGraph:
         )
         return road
 
-    def delete_road(self, road_id: str) -> bool:
+    def _delete_segment_path(
+        self,
+        *,
+        kind: SegmentKind,
+        entity_id: str,
+        make_action: "Callable[[SegmentPath, tuple[PathSegment, ...], tuple[Node, ...]], UndoAction]",
+        record_undo: bool,
+    ) -> None:
+        """Delete a slope/road (+ its segments) — the shared body for delete_slope/delete_road.
+
+        Kind-generic: resolves the entity via entity_dict_for_kind, drops its segments, snapshots the
+        orphaned nodes, and (when record_undo) pushes the per-kind Delete*Action built by make_action.
+        The entity id is an internal invariant (the panel asserts the entity is live before offering
+        Delete), so a missing id is a bug and raises via strict access.
+        """
+        entity = self.entity_dict_for_kind(kind=kind)[entity_id]
+        assert entity.kind == kind, f"{entity_id} is a {entity.kind} but was deleted as a {kind}"
+
+        deleted_segments = tuple(self.segments[seg_id] for seg_id in entity.segment_ids)
+        for seg_id in entity.segment_ids:
+            del self.segments[seg_id]
+        del self.entity_dict_for_kind(kind=kind)[entity_id]
+
+        orphaned_nodes = tuple(self._orphaned_nodes())
+        if record_undo:
+            self._push_undo(make_action(entity, deleted_segments, orphaned_nodes))
+        self.cleanup_isolated_nodes()
+        self.drop_undo_actions_for_removed_segments()
+        logger.info(f"Deleted {kind.value} {entity.name} with {len(entity.segment_ids)} segments")
+
+    def delete_road(self, road_id: str, *, record_undo: bool = True) -> None:
         """Delete a road and its segments.
 
         Args:
             road_id: ID of road to delete.
-
-        Returns:
-            True if deleted, False if not found.
+            record_undo: Push a DeleteRoadAction. False when undo-of-finish deletes the road (the
+                finish undo is already the history step; a new delete entry would double-count).
         """
-        road = self.roads.get(road_id)
-        if not road:
-            return False
-
-        deleted_segments = [self.segments[seg_id] for seg_id in road.segment_ids]
-        for seg_id in road.segment_ids:
-            self.segments.pop(seg_id, None)
-        del self.roads[road_id]
-
-        # Nodes orphaned by segment removal (connection_count == 0).
-        orphaned_nodes = [self.nodes[nid] for nid in self.nodes if self.get_connection_count(node_id=nid) == 0]
-        self._push_undo(
-            DeleteRoadAction(
-                road_id=road_id,
-                deleted_road=road,
-                deleted_segments=tuple(deleted_segments),
-                deleted_nodes=tuple(orphaned_nodes),
-            )
+        self._delete_segment_path(
+            kind=SegmentKind.ROAD,
+            entity_id=road_id,
+            make_action=lambda road, segs, nodes: DeleteRoadAction(
+                road_id=road_id, deleted_road=cast(Road, road), deleted_segments=segs, deleted_nodes=nodes
+            ),
+            record_undo=record_undo,
         )
-        self.cleanup_isolated_nodes()
-        self.drop_undo_actions_for_removed_segments()
-        logger.info(f"Deleted road {road.name} with {len(road.segment_ids)} segments")
-        return True
 
     # =========================================================================
     # Lift Operations
@@ -961,6 +986,7 @@ class ResortGraph:
         if name is not None:
             lift.name = name
 
+        assert lift_id not in self.lifts, f"fresh lift id {lift_id} already registered"
         self.lifts[lift_id] = lift
         if record_undo:
             self._push_undo(AddLiftAction(lift_id=lift_id))
@@ -1108,6 +1134,7 @@ class ResortGraph:
         survivor.location = PathPoint(lon=med_lon, lat=med_lat, elevation=med_elev)
         for nid in merged_ids:
             del self.nodes[nid]
+        assert survivor_id in self.nodes, f"merge survivor {survivor_id} must remain after dropping merged nodes"
         self.cleanup_isolated_nodes()
 
         self._remove_collapsed_and_restitch(
@@ -1143,7 +1170,7 @@ class ResortGraph:
             p.id: p for p in self.segment_path_entities if p.start_node_id in touched or p.end_node_id in touched
         }
         for seg in affected_segments:
-            owner = self.get_entity_by_segment_id(seg.id)
+            owner = self.get_entity_by_segment_id(segment_id=seg.id)
             if owner is not None:
                 affected_paths_by_id[owner.id] = owner
         return affected_segments, affected_lifts, list(affected_paths_by_id.values())
@@ -1153,6 +1180,7 @@ class ResortGraph:
 
         One uniform rule for every id-holder — the same convention the whole model uses.
         """
+        assert survivor_id in self.nodes, f"repoint target (survivor {survivor_id}) must be a live node"
         for seg in self.segments.values():
             if seg.start_node_id in merged:
                 seg.start_node_id = survivor_id
@@ -1187,13 +1215,13 @@ class ResortGraph:
         collapsed_ids = {p.id for p in affected_paths if p.start_node_id == p.end_node_id}
         for path in affected_paths:
             if path.id in collapsed_ids:
-                removed_segment_ids.update(self._remove_collapsed_path(path))
+                removed_segment_ids.update(self._remove_collapsed_path(path=path))
 
         # A surviving multi-segment path can still hold a MIDDLE segment whose own endpoints both
         # became the survivor (a zero-length "curl") — splice it out so the path stays continuous.
         for path in affected_paths:
             if path.id not in collapsed_ids:
-                removed_segment_ids.update(self._drop_collapsed_segments_in_chain(path))
+                removed_segment_ids.update(self._drop_collapsed_segments_in_chain(path=path))
 
         # Re-stitch every surviving affected builder fresh from the moved endpoints (each model owns
         # its recompute; a road is just segments with kind=ROAD, so no per-kind branch is needed).
@@ -1204,7 +1232,7 @@ class ResortGraph:
             seg.restitch(start_node=self.nodes[seg.start_node_id], end_node=self.nodes[seg.end_node_id], dem=dem)
         for lift in affected_lifts:
             if lift.start_node_id == lift.end_node_id:
-                self._remove_collapsed_lift(lift)
+                self._remove_collapsed_lift(lift=lift)
                 continue
             lift.rebuild(start_node=self.nodes[lift.start_node_id], end_node=self.nodes[lift.end_node_id], dem=dem)
 
@@ -1215,8 +1243,8 @@ class ResortGraph:
         its snapshot already carries this entity and its segments for restore.
         """
         for seg_id in path.segment_ids:
-            self.segments.pop(seg_id, None)
-        self.entity_dict_for_kind(path.kind).pop(path.id, None)
+            del self.segments[seg_id]
+        del self.entity_dict_for_kind(kind=path.kind)[path.id]
         logger.info(f"Merge collapsed {path.name} to zero length — deleted it and its {len(path.segment_ids)} segments")
         return path.segment_ids
 
@@ -1226,7 +1254,7 @@ class ResortGraph:
         No own undo action / no cleanup: the enclosing merge owns the single MergeNodesAction and
         its snapshot already carries this lift for restore.
         """
-        self.lifts.pop(lift.id, None)
+        del self.lifts[lift.id]
         logger.info(f"Merge collapsed lift {lift.name} to zero length — deleted it")
 
     def _drop_collapsed_segments_in_chain(self, path: "SegmentPath") -> list[str]:
@@ -1261,7 +1289,7 @@ class ResortGraph:
         absorbed into longer, longer's name kept). A clean endpoint trims its lone boundary segment. The
         caller pre-checks delete_nodes_rejection; this re-checks as a fail-fast backstop. ONE undo action.
         """
-        rejection = self.delete_nodes_rejection(node_ids)
+        rejection = self.delete_nodes_rejection(node_ids=node_ids)
         if rejection is not None:
             raise ValueError(f"delete_nodes: {rejection}")
         assert node_ids, "delete_nodes called with no node_ids"
@@ -1270,7 +1298,7 @@ class ResortGraph:
         to_delete = set(node_ids)
         # Snapshot BEFORE any mutation: every path touching a deleted node (both sides of a cross-path
         # node) + all their segments, so undo restores an absorbed path verbatim.
-        affected_paths = self._paths_owning_nodes(node_ids)
+        affected_paths = self._paths_owning_nodes(node_ids=node_ids)
         deleted_nodes = tuple(self.nodes[nid] for nid in node_ids)
         paths_before = tuple(copy.deepcopy(p) for p in affected_paths)
         segments_before = tuple(copy.deepcopy(self.segments[sid]) for p in affected_paths for sid in p.segment_ids)
@@ -1283,7 +1311,7 @@ class ResortGraph:
                 self._join_paths_at_node(node_id=nid, owners=owners)
 
         # Re-resolve after joins (an absorbed path is gone; its nodes now belong to the survivor).
-        for path in self._paths_owning_nodes(node_ids):
+        for path in self._paths_owning_nodes(node_ids=node_ids):
             self._rebuild_chain_without_nodes(path=path, drop_nodes=to_delete, dem=dem)
 
         # Only remove a selected node once nothing references it.
@@ -1326,7 +1354,8 @@ class ResortGraph:
         longer.segment_ids = list(upstream.segment_ids) + list(downstream.segment_ids)
         longer.start_node_id = upstream.start_node_id
         longer.end_node_id = downstream.end_node_id
-        del self.entity_dict_for_kind(shorter.kind)[shorter.id]
+        assert longer.segment_ids, f"_join_paths_at_node produced an empty chain for {longer.id}"
+        del self.entity_dict_for_kind(kind=shorter.kind)[shorter.id]
         logger.info(f"Joined {shorter.name} into {longer.name} at {node_id} (delete)")
 
     def _rebuild_chain_without_nodes(self, path: "SegmentPath", drop_nodes: set[str], dem: "DEMService") -> None:
@@ -1340,7 +1369,7 @@ class ResortGraph:
         """
         seg_ids = list(path.segment_ids)
         segs = [self.segments[sid] for sid in seg_ids]
-        node_seq = _chain_node_sequence(segs)
+        node_seq = _chain_node_sequence(segments=segs)
         kept_idx = [i for i, n in enumerate(node_seq) if n not in drop_nodes]
         assert len(kept_idx) >= 2, f"delete would leave <2 nodes on {path.id} (caller must pre-check)"
 
@@ -1365,12 +1394,15 @@ class ResortGraph:
         # on-terrain — mirrors merge/commit).
         for sid in new_ids:
             seg = self.segments[sid]
-            seg.side_slope_pct, seg.side_slope_dir = self._side_slope_for_points(seg.points)
+            seg.side_slope_pct, seg.side_slope_dir = self._side_slope_for_points(points=seg.points)
             seg.restitch(start_node=self.nodes[seg.start_node_id], end_node=self.nodes[seg.end_node_id], dem=dem)
 
         path.segment_ids = new_ids
         path.start_node_id = self.segments[new_ids[0]].start_node_id
         path.end_node_id = self.segments[new_ids[-1]].end_node_id
+        assert path.start_node_id in self.nodes and path.end_node_id in self.nodes, (
+            f"_rebuild_chain_without_nodes left {path.id} with a dangling boundary node"
+        )
 
     @staticmethod
     def _project_onto_path(seg: PathSegment, lon: float, lat: float) -> tuple[float, float, float]:
@@ -1393,10 +1425,10 @@ class ResortGraph:
         # segment_id is an external map-click id (may be stale after a rerun/delete) — a tolerated
         # fallback, surfaced as a reason rather than crashing.
         seg = self.segments.get(segment_id)
-        if seg is None or self.get_entity_by_segment_id(segment_id) is None:
+        if seg is None or self.get_entity_by_segment_id(segment_id=segment_id) is None:
             return INSERT_REJECT_NOT_FINISHED
         # Project onto the centerline (density-independent — segments may be sparse after simplification).
-        _, plon, plat = self._project_onto_path(seg, lon, lat)
+        _, plon, plat = self._project_onto_path(seg=seg, lon=lon, lat=lat)
         gap = GeometricTuningConfig.STEP_SIZE_M
         start_node, end_node = self.nodes[seg.start_node_id], self.nodes[seg.end_node_id]
         if start_node.distance_to(lon=plon, lat=plat) < gap or end_node.distance_to(lon=plon, lat=plat) < gap:
@@ -1414,7 +1446,7 @@ class ResortGraph:
         if rejection is not None:
             raise ValueError(f"insert_node_on_path: {rejection}")
         seg = self.segments[segment_id]
-        owner = self.get_entity_by_segment_id(segment_id)
+        owner = self.get_entity_by_segment_id(segment_id=segment_id)
         assert owner is not None  # guaranteed by insert_node_rejection
 
         path_before = copy.deepcopy(owner)
@@ -1423,7 +1455,7 @@ class ResortGraph:
         # Split the 3D centerline at the projected point (Shapely substring preserves/interpolates z); the
         # split point becomes a NEW node at DEM ground level, shared by both halves (like any junction).
         line = LineString([p.lon_lat_elev for p in seg.points])
-        fraction, plon, plat = self._project_onto_path(seg, lon, lat)
+        fraction, plon, plat = self._project_onto_path(seg=seg, lon=lon, lat=lat)
         elevation = dem.get_elevation(lon=plon, lat=plat)
         if elevation is None:
             raise ValueError(f"projected split point ({plat:.5f}, {plon:.5f}) has no DEM elevation")
@@ -1457,6 +1489,7 @@ class ResortGraph:
         idx = owner.segment_ids.index(segment_id)
         owner.segment_ids[idx : idx + 1] = new_ids  # boundary ids unchanged (interior insert)
         del self.segments[segment_id]
+        assert len(new_ids) == 2, f"interior insert must split one segment into two, got {len(new_ids)}"
 
         self._push_undo(
             InsertNodeAction(
@@ -1488,7 +1521,7 @@ class ResortGraph:
 
         action = self.undo_stack.pop()
         # Dispatch via the UNDO_HANDLERS registry keyed by ActionType.name.
-        UNDO_HANDLERS[action.action_type.name].apply_undo(self, action)
+        UNDO_HANDLERS[action.action_type.name].apply_undo(graph=self, action=action)
         return action
 
     def rename(self, entity_id: str, new_name: str) -> None:
@@ -1500,7 +1533,7 @@ class ResortGraph:
         # Find the segment-path entity by id across every SegmentKind.
         segment_path: SegmentPath | None = None
         for kind in SegmentKind:
-            found = self.entity_dict_for_kind(kind).get(entity_id)
+            found = self.entity_dict_for_kind(kind=kind).get(entity_id)
             if found is not None:
                 segment_path = found
                 break
@@ -1514,59 +1547,35 @@ class ResortGraph:
                 self.segments[seg_id].name = new_name
         logger.info(f"Renamed {entity_id} to '{new_name}'")
 
-    def delete_slope(self, slope_id: str) -> bool:
+    def delete_slope(self, slope_id: str, *, record_undo: bool = True) -> None:
         """Delete a slope and its segments.
 
         Args:
             slope_id: ID of slope to delete
-
-        Returns:
-            True if deleted, False if not found.
+            record_undo: Push a DeleteSlopeAction. False when undo-of-finish deletes the slope (the
+                finish undo is already the history step; a new delete entry would double-count).
         """
-        slope = self.slopes.get(slope_id)
-        if not slope:
-            logger.debug(f"delete_slope: slope {slope_id} not found, nothing to delete")
-            return False
-
-        deleted_segments = [self.segments[seg_id] for seg_id in slope.segment_ids]
-        for seg_id in slope.segment_ids:
-            self.segments.pop(seg_id, None)
-        del self.slopes[slope_id]
-
-        # Nodes orphaned by segment removal (connection_count == 0).
-        orphaned_nodes = [self.nodes[nid] for nid in self.nodes if self.get_connection_count(node_id=nid) == 0]
-        self._push_undo(
-            DeleteSlopeAction(
-                slope_id=slope_id,
-                deleted_slope=slope,
-                deleted_segments=tuple(deleted_segments),
-                deleted_nodes=tuple(orphaned_nodes),
-            )
+        self._delete_segment_path(
+            kind=SegmentKind.SLOPE,
+            entity_id=slope_id,
+            make_action=lambda s, segs, nodes: DeleteSlopeAction(
+                slope_id=slope_id, deleted_slope=cast(Slope, s), deleted_segments=segs, deleted_nodes=nodes
+            ),
+            record_undo=record_undo,
         )
-        self.cleanup_isolated_nodes()
-        self.drop_undo_actions_for_removed_segments()
-        logger.info(f"Deleted slope {slope.name} with {len(slope.segment_ids)} segments")
-        return True
 
-    def delete_lift(self, lift_id: str) -> bool:
+    def delete_lift(self, lift_id: str) -> None:
         """Delete a lift.
 
         Args:
             lift_id: ID of lift to delete
-
-        Returns:
-            True if deleted, False if not found.
         """
-        lift = self.lifts.get(lift_id)
-        if not lift:
-            logger.debug(f"delete_lift: lift {lift_id} not found, nothing to delete")
-            return False
+        lift = self.lifts[lift_id]  # internal invariant: the panel asserts the lift is live before Delete
 
         # Remove the lift
         del self.lifts[lift_id]
 
-        # Identify nodes that will be orphaned (connection_count == 0 after removal)
-        orphaned_nodes = [self.nodes[nid] for nid in self.nodes if self.get_connection_count(node_id=nid) == 0]
+        orphaned_nodes = self._orphaned_nodes()
 
         # Push to undo stack with full data for restore (including orphaned nodes)
         self._push_undo(
@@ -1580,7 +1589,6 @@ class ResortGraph:
         self.cleanup_isolated_nodes()  # Remove orphaned station nodes
 
         logger.info(f"Deleted lift {lift.name}")
-        return True
 
     # =========================================================================
     # Query Operations
@@ -1813,7 +1821,7 @@ class ResortGraph:
         fresh so it always tracks the current roads (appears/disappears as
         roads are added or removed).
         """
-        road_segment_ids = set(self.segment_owner_map(SegmentKind.ROAD))
+        road_segment_ids = set(self.segment_owner_map(kind=SegmentKind.ROAD))
         if not road_segment_ids:
             return []
 
@@ -1825,7 +1833,7 @@ class ResortGraph:
             road_nodes.add(seg.end_node_id)
 
         # Nodes touched by slopes (their segments) or lift stations.
-        slope_segment_ids = set(self.segment_owner_map(SegmentKind.SLOPE))
+        slope_segment_ids = set(self.segment_owner_map(kind=SegmentKind.SLOPE))
         ski_nodes: set[str] = set()
         for sid in slope_segment_ids:
             seg = self.segments[sid]
@@ -1998,8 +2006,7 @@ class ResortGraph:
         for lid, lift_data in lifts.items():
             graph.lifts[lid] = Lift.from_dict(data=lift_data)
 
-        # Roads were added after the first backups shipped, so a pre-roads
-        # backup has no "roads" key — default to empty
+        # A backup without a "roads" key predates roads — default to empty.
         roads = cast(dict[str, dict[str, object]], data.get("roads", {}))
         for rid, road_data in roads.items():
             graph.roads[rid] = Road.from_dict(data=road_data)
@@ -2015,8 +2022,8 @@ class ResortGraph:
 
         # Discard orphan segments: any segment owned by no slope or road.
         # Drop them (and any nodes they orphan) rather than keep undeletable data in the graph.
-        owned_segment_ids = set(graph.segment_owner_map(SegmentKind.SLOPE)) | set(
-            graph.segment_owner_map(SegmentKind.ROAD)
+        owned_segment_ids = set(graph.segment_owner_map(kind=SegmentKind.SLOPE)) | set(
+            graph.segment_owner_map(kind=SegmentKind.ROAD)
         )
         orphan_segment_ids = [sid for sid in graph.segments if sid not in owned_segment_ids]
         if orphan_segment_ids:
