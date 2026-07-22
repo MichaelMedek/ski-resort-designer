@@ -299,6 +299,7 @@ class TestInfoPanelButtonClicks:
         """Changing WHICH route is shown (◀▶ browser) mid-flythrough must stop it — otherwise the camera
         keeps riding the old route's keyframes over the new selection.
         """
+        from skiresort_planner.model.node import Node
         from skiresort_planner.model.routing import Route, RouteCriterion, RouteStep
         from skiresort_planner.ui.right_panel import RouteViewingControlPanel
 
@@ -320,6 +321,10 @@ class TestInfoPanelButtonClicks:
         sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
         cap = ctx.route_plan.selected_cap
         ctx.route_plan.routes = [_route(cap, RouteCriterion.FEWEST_LIFTS), _route(cap, RouteCriterion.SHORTEST_SLOPE)]
+        # The route recenters on its A→B endpoints, so both nodes must exist and be the plan endpoints.
+        empty_graph.nodes["A"] = Node(id="A", location=PathPoint(lon=0.0, lat=0.0, elevation=2000.0))
+        empty_graph.nodes["B"] = Node(id="B", location=PathPoint(lon=0.0, lat=-0.001, elevation=1900.0))
+        ctx.route_plan.start_node_id, ctx.route_plan.end_node_id = "A", "B"
         fake_st.session_state["graph"] = empty_graph
         fake_st.session_state["state_machine"] = sm
         fake_st.session_state["context"] = ctx
@@ -724,13 +729,19 @@ class TestMergeAndImportPanels:
 
         at_zero = _disabled_for([])
         assert at_zero["🔗 Confirm Merge"] and at_zero["🗑️ Delete Node(s)"], "both disabled at 0 selected"
+        assert at_zero["✂️ Delete Direct Connection"], "direct-connection disabled at 0 selected"
 
         at_one = _disabled_for(["A"])
         assert at_one["🔗 Confirm Merge"], "Confirm Merge still disabled at 1 selected"
         assert not at_one["🗑️ Delete Node(s)"], "one node enables Delete"
+        assert at_one["✂️ Delete Direct Connection"], "direct-connection disabled at 1 selected"
 
         at_two = _disabled_for(["A", "B"])
         assert not at_two["🔗 Confirm Merge"], "two selected nodes must enable Confirm Merge"
+        assert not at_two["✂️ Delete Direct Connection"], "exactly 2 selected enables direct-connection"
+
+        at_three = _disabled_for(["A", "B", "C"])
+        assert at_three["✂️ Delete Direct Connection"], "direct-connection disabled at 3 selected (needs exactly 2)"
 
     def test_confirm_merge_fires_action(self, fake_st, empty_graph, monkeypatch) -> None:
         from skiresort_planner.ui import right_panel

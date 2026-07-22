@@ -277,6 +277,18 @@ class UnableToDeleteMessage(WarningToast):
 
 
 @dataclass(frozen=True)
+class NotAdjacentNodesMessage(WarningToast):
+    """The two selected nodes aren't joined by a single segment, so there's no link to cut."""
+
+    node_a_id: str
+    node_b_id: str
+
+    @property
+    def message(self) -> str:
+        return f"Not Adjacent — {self.node_a_id} and {self.node_b_id} aren't joined by one segment to cut."
+
+
+@dataclass(frozen=True)
 class ClickingDisabledIn3DToast(WarningToast):
     """User clicked the map in 3D view, where deck.gl picking is unreliable (default ⚠️ icon)."""
 
@@ -605,17 +617,34 @@ class NodeEditActionMessage(WarningMessage):
 
     @property
     def message(self) -> str:
-        if self.selected_count < 2:
-            return (
-                "🔗 **Select Nodes** — merge, delete, or click a path\n\n"
-                "- 👆 Click **node markers** to select (again to deselect)\n"
-                "- 🗑️ **Delete** trims 1 node • 🔗 **Merge** needs 2 • or click a **path** to add a node"
-            )
-        return (
-            "🔗 **Merge or Delete the Selected Nodes**\n\n"
-            "- 👆 Click more **node markers** to add/remove\n"
-            "- ✅ **Confirm Merge** to collapse them • 🗑️ **Delete** to remove them"
+        n = self.selected_count
+        # One header per selection bucket (0 / 1 / 2 / 3+); the three action lines below are written ONCE
+        # and marked ✅ available / ⬜ needs-more by the count, so there is no per-count text duplication.
+        match n:
+            case 0:
+                header = "🔗 **Select Nodes** — click markers to start"
+            case 1:
+                header = "🔗 **1 Node Selected** — delete it, or select more"
+            case 2:
+                header = "🔗 **2 Nodes Selected** — merge, cut, or delete"
+            case _:
+                header = f"🔗 **{n} Nodes Selected** — merge or delete"
+
+        def line(text: str, *, available: bool) -> str:
+            return f"- {'✅' if available else '⬜'} {text}"
+
+        actions = "\n".join(
+            [
+                line("🔗 **Merge** — collapse ≥2 nodes to one (needs at least 2)", available=(n >= 2)),
+                line(
+                    "✂️ **Delete Direct Connection** — split the path at the segment (needs 2 adjacent)",
+                    available=(n == 2),
+                ),
+                line("🗑️ **Delete** — remove interior/end nodes (needs at least 1)", available=(n >= 1)),
+                "- 👆 Click **node markers** to (de)select, or a **path** to add a node",
+            ]
         )
+        return f"{header}\n\n{actions}"
 
 
 # =============================================================================

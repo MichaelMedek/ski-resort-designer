@@ -32,6 +32,7 @@ from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.message import (
     InvalidClickMessage,
     MergeTooFarMessage,
+    NotAdjacentNodesMessage,
     UnableToDeleteMessage,
 )
 from skiresort_planner.model.path_point import PathPoint
@@ -47,9 +48,7 @@ from skiresort_planner.ui.state_machine import PlannerStateMachine
 if TYPE_CHECKING:
     from skiresort_planner.model.node import Node
     from skiresort_planner.model.proposed_path import ProposedPathSegment
-    from skiresort_planner.model.road import Road
     from skiresort_planner.model.segment_path import SegmentPath
-    from skiresort_planner.model.slope import Slope
     from skiresort_planner.ui.context import SegmentBuildContext
 
 logger = logging.getLogger(__name__)
@@ -64,46 +63,36 @@ def center_on_segment_path(
     ctx: PlannerContext,
     graph: ResortGraph,
     path: "SegmentPath",
-    zoom: int,
     pitch: float = MapConfig.VIEWING_PITCH,
 ) -> None:
-    """Center map on a segment-group entity's midpoint (shared by slopes and roads)."""
+    """Center map on a segment-group entity's midpoint (shared by slopes and roads); zoom fits its length."""
     lon, lat = path.center(segments=graph.segments)
+    zoom = MapConfig.zoom_for_span_m(span_m=path.get_total_length(segments=graph.segments))
     ctx.map.set_view(lon=lon, lat=lat, zoom=zoom, pitch=pitch)
-
-
-def center_on_slope(
-    ctx: PlannerContext,
-    graph: ResortGraph,
-    slope: "Slope",
-    zoom: int,
-    pitch: float = MapConfig.VIEWING_PITCH,
-) -> None:
-    """Center map on slope midpoint with specified zoom and pitch."""
-    center_on_segment_path(ctx=ctx, graph=graph, path=slope, zoom=zoom, pitch=pitch)
-
-
-def center_on_road(
-    ctx: PlannerContext,
-    graph: ResortGraph,
-    road: "Road",
-    zoom: int,
-    pitch: float = MapConfig.VIEWING_PITCH,
-) -> None:
-    """Center map on road midpoint with specified zoom and pitch."""
-    center_on_segment_path(ctx=ctx, graph=graph, path=road, zoom=zoom, pitch=pitch)
 
 
 def center_on_lift(
     ctx: PlannerContext,
     graph: ResortGraph,
     lift: Lift,
-    zoom: int,
     pitch: float = MapConfig.VIEWING_PITCH,
 ) -> None:
-    """Center map on lift midpoint with specified zoom and pitch."""
+    """Center map on lift midpoint; zoom fits its length."""
     lon, lat = lift.center(nodes=graph.nodes)
+    zoom = MapConfig.zoom_for_span_m(span_m=lift.get_length_m(nodes=graph.nodes))
     ctx.map.set_view(lon=lon, lat=lat, zoom=zoom, pitch=pitch)
+
+
+def center_on_route(
+    ctx: PlannerContext,
+    graph: ResortGraph,
+    route: "Route",
+    pitch: float = MapConfig.VIEWING_PITCH,
+) -> None:
+    """Center map on a route's start→end midpoint; zoom fits the route's total slope length."""
+    start, end = graph.nodes[route.node_path[0]], graph.nodes[route.node_path[-1]]
+    zoom = MapConfig.zoom_for_span_m(span_m=route.total_slope_length_m)
+    ctx.map.set_view(lon=(start.lon + end.lon) / 2, lat=(start.lat + end.lat) / 2, zoom=zoom, pitch=pitch)
 
 
 # =============================================================================
@@ -148,6 +137,18 @@ def process_route_plan_pending() -> None:
     ctx.route_plan.routes = RoutePlanner(graph).best_routes(start_node_id=start, end_node_id=end)
     ctx.route_plan.selected_index = 0
     ctx.viewing.stop_flythrough()  # a fresh plan must not keep riding the previous route's playback
+    recenter_on_selected_route()  # frame the shown route (adaptive zoom to its length)
+
+
+def recenter_on_selected_route() -> None:
+    """Reframe the 2D map on the currently-shown route (called on plan + whenever the shown route
+    changes). No-op if no route is shown. Center is the shared start→end midpoint; zoom fits its length.
+    """
+    ctx: PlannerContext = st.session_state.context
+    graph: ResortGraph = st.session_state.graph
+    route = selected_route()
+    if route is not None:
+        center_on_route(ctx=ctx, graph=graph, route=route)
 
 
 def route_plan_shown_routes() -> list[Route]:
@@ -278,6 +279,31 @@ def delete_nodes_action() -> None:
         return  # no state change — the user can deselect the offending node and retry
 
     graph.delete_nodes(node_ids=node_ids, dem=dem)
+    bump_dedup_epoch()
+    sm.finish_node_edit()  # → idle_ready; the before-hook clears the selection
+
+
+def delete_direct_connection_action() -> None:
+    """Cut EVERY segment directly joining the two selected ADJACENT nodes, splitting each owner in two.
+
+    The button is enabled only at exactly 2 selected nodes; whether they are actually adjacent (joined by
+    at least one segment) is checked here (post-click) — if not, a NotAdjacentNodesMessage shows and
+    nothing changes. An interior cut splits the slope/road into two; a boundary cut trims one end.
+    """
+    ctx: PlannerContext = st.session_state.context
+    sm: PlannerStateMachine = st.session_state.state_machine
+    graph: ResortGraph = st.session_state.graph
+
+    node_ids = list(ctx.node_edit.node_ids)
+    # The button is disabled unless exactly 2 are selected, so any other count is a bug, not a user path.
+    assert len(node_ids) == 2, f"delete_direct_connection_action needs exactly 2 nodes, got {len(node_ids)}"
+
+    if not graph.segments_between(node_a_id=node_ids[0], node_b_id=node_ids[1]):
+        logger.info(f"No segment between {node_ids[0]} and {node_ids[1]} — nothing to cut")
+        NotAdjacentNodesMessage(node_a_id=node_ids[0], node_b_id=node_ids[1]).display()
+        return  # no state change — the user can adjust the selection
+
+    graph.cut_segments_between(node_a_id=node_ids[0], node_b_id=node_ids[1])
     bump_dedup_epoch()
     sm.finish_node_edit()  # → idle_ready; the before-hook clears the selection
 
@@ -608,7 +634,7 @@ def _finalize_entity(kind: SegmentKind) -> "SegmentPath":
     # Frame the finished entity IN PLACE (no remount); do NOT rerun here — the caller fires the finish event
     # whose state-machine listener reruns. The new view flows via ctx.map → initialViewState, which deck.gl
     # applies to the mounted component (no camera_epoch bump = no gray-out iframe remount).
-    center_on_segment_path(ctx=ctx, graph=graph, path=entity, zoom=MapConfig.VIEWING_ZOOM)
+    center_on_segment_path(ctx=ctx, graph=graph, path=entity)
     return entity
 
 
@@ -956,6 +982,7 @@ _UNDO_SIDE_EFFECTS: dict[str, "Callable[[UndoAction], None]"] = {
     ActionType.MERGE_NODES.name: _undo_redraw_only,
     ActionType.DELETE_NODES.name: _undo_redraw_only,
     ActionType.INSERT_NODE.name: _undo_redraw_only,
+    ActionType.CUT_SEGMENT.name: _undo_redraw_only,
 }
 _action_names = {t.name for t in ActionType}
 assert set(_UNDO_SIDE_EFFECTS) == _action_names, (

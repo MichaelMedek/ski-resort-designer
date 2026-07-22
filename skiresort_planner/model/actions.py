@@ -38,6 +38,7 @@ class ActionType(StrEnum):
     MERGE_NODES = "merge_nodes"
     DELETE_NODES = "delete_nodes"
     INSERT_NODE = "insert_node"
+    CUT_SEGMENT = "cut_segment"
 
 
 @dataclass(frozen=True)
@@ -184,6 +185,20 @@ class InsertNodeAction:
     segment_before: PathSegment  # the pre-split segment
 
 
+@dataclass(frozen=True)
+class CutSegmentAction:
+    """Undo a cut that split path(s) in two: restore every deleted segment + each owner's original chain
+    (re-putting paths_before covers trim, split, and sole-segment delete alike) and drop the fresh
+    'after' entities created by interior splits.
+    """
+
+    action_type: ClassVar[ActionType] = ActionType.CUT_SEGMENT
+    paths_before: tuple[SegmentPath, ...]  # each owner with its full pre-cut chain + name + boundaries
+    deleted_segments: tuple[PathSegment, ...]  # the segments cut out, restored verbatim
+    new_paths: tuple[SegmentPath, ...]  # 'after' entities created by interior splits (dropped on undo)
+    deleted_nodes: tuple[Node, ...]  # nodes orphaned by removing the cut segments
+
+
 UndoAction = (
     AddSegmentsAction
     | FinishSlopeAction
@@ -196,4 +211,5 @@ UndoAction = (
     | MergeNodesAction
     | DeleteNodesAction
     | InsertNodeAction
+    | CutSegmentAction
 )

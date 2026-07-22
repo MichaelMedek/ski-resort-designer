@@ -22,6 +22,7 @@ Classes:
     MergeConfig: Manual node-merge tool
 """
 
+import math
 from enum import StrEnum
 from pathlib import Path
 from typing import Literal
@@ -68,9 +69,14 @@ class MapConfig:
     START_CENTER_LON = 10.317  # Longitude
 
     # Zoom levels (higher = more zoomed in). Reduced to keep the camera above ground with 3D terrain.
-    VIEWING_ZOOM = 13  # Overview after finishing slope/lift + program start
+    VIEWING_ZOOM = 13  # Base 2D overview: fits a ~4km build (see zoom_for_span_m) + program start
     VIEW_3D_ZOOM = 13.0  # 3D side view + flythrough — one tuned value, can also be float
-    IMPORT_OVERVIEW_ZOOM = 12  # Post-import overview: one step further out than building zoom
+    VIEW_3D_ROUTE_ZOOM_OUT = 0.5  # Static 3D route view sits this much further out than VIEW_3D_ZOOM
+
+    # 2D overview zoom adapts to build size around VIEWING_ZOOM; span anchors the ~4km-fits-at-13 base.
+    ZOOM_SPAN_ANCHOR_M = 4000.0  # a build this long fits at VIEWING_ZOOM
+    ZOOM_STEPS_IN = 2  # clamp: at most this many levels further IN (smaller builds)
+    ZOOM_STEPS_OUT = 1  # clamp: at most this many levels further OUT (bigger builds)
 
     # Pitch angles for different modes
     # Use 0 (top-down) for all modes to ensure accurate terrain clicks
@@ -116,6 +122,21 @@ class MapConfig:
         "slope": Z_OFFSET_2D_SLOPES,
         "road": Z_OFFSET_2D_ROADS,
     }
+
+    @staticmethod
+    def zoom_for_span_m(span_m: float) -> float:
+        """2D overview zoom for a build of the given characteristic length (rough size, in metres).
+
+        Logarithmic around the ~4km-fits-at-VIEWING_ZOOM anchor: each halving of span → +1 zoom.
+        Clamped to [VIEWING_ZOOM-STEPS_OUT, VIEWING_ZOOM+STEPS_IN]; both clamp joints meet the log
+        curve with no jump. `span_m>0` is an internal invariant (real builds have real length).
+        """
+        assert span_m > 0, f"zoom_for_span_m needs a positive span, got {span_m}"
+        raw = MapConfig.VIEWING_ZOOM + math.log2(MapConfig.ZOOM_SPAN_ANCHOR_M / span_m)
+        return max(
+            float(MapConfig.VIEWING_ZOOM - MapConfig.ZOOM_STEPS_OUT),
+            min(float(MapConfig.VIEWING_ZOOM + MapConfig.ZOOM_STEPS_IN), raw),
+        )
 
 
 class DEMConfig:

@@ -87,6 +87,20 @@ def _make_road(graph):
     return graph.finish_road(segment_ids=[list(graph.segments.keys())[-1]])
 
 
+def _commit_straight_slope_len(graph, dem, n_segments: int, start_lat: float = 0.0):
+    """Commit n straight ~480m south segments into one finished slope; longer n = longer slope."""
+    before = set(graph.segments)
+    lat = start_lat
+    for _ in range(n_segments):
+        pts = []
+        for i in range(25):
+            plat = lat - 20.0 * i / MapConfig.METERS_PER_DEGREE_EQUATOR
+            pts.append(PathPoint(lon=0.0, lat=plat, elevation=dem.get_elevation_or_raise(lon=0.0, lat=plat)))
+        graph.commit_paths(paths=[ProposedPathSegment(points=pts, target_difficulty="blue")])
+        lat = pts[-1].lat
+    return graph.finish_slope(segment_ids=[sid for sid in graph.segments if sid not in before])
+
+
 class TestDeleteSlopeAction:
     def test_removes_slope(self, fake_st, empty_graph, path_points_blue) -> None:
         from skiresort_planner.ui.actions import delete_slope_action
@@ -356,14 +370,14 @@ class TestDeleteNodesAction:
         assert sm.is_node_edit_selecting, "stays in node edit so the user can adjust the selection"
         assert any("whole path" in t.lower() for t in toasts), "the user is told the delete was refused"
 
-    def test_branch_junction_refused_no_change(self, fake_st, empty_graph, mock_dem_blue_slope, monkeypatch) -> None:
-        """A node shared by two slopes is a branch junction — deleting it is refused (delete a path
-        first), nothing changes.
+    def test_degree2_junction_of_two_slopes_fuses(self, fake_st, empty_graph, mock_dem_blue_slope, monkeypatch) -> None:
+        """A degree-2 node where two slopes meet end-to-end fuses them into one on delete (was refused
+        before). The node is removed and one slope absorbs the other.
         """
         from skiresort_planner.ui.actions import delete_nodes_action
 
         dem = mock_dem_blue_slope
-        # Slope 1 south to a junction; slope 2 branches south-east from that same node.
+        # Slope 1 south (2 points) to a junction; slope 2 continues south-east from that same node.
         leg1 = [
             PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
             PathPoint(
@@ -390,6 +404,50 @@ class TestDeleteNodesAction:
         empty_graph.commit_paths(paths=[ProposedPathSegment(points=leg2, target_difficulty="blue")])
         empty_graph.finish_slope(segment_ids=list(set(empty_graph.segments) - before))
         sm, ctx = _session(fake_st, empty_graph, dem=dem)
+        sm.start_node_edit()
+        sm.toggle_node_edit_node(node_id=junction)
+
+        delete_nodes_action()
+
+        assert junction not in empty_graph.nodes, "the degree-2 junction is deleted (slopes fuse)"
+        assert len(empty_graph.slopes) == 1, "the two slopes fused into one"
+
+    def test_three_way_branch_refused_no_change(self, fake_st, empty_graph, mock_dem_blue_slope, monkeypatch) -> None:
+        """A node where THREE slopes meet is a real branch — deleting it is refused (delete a path
+        first), nothing changes.
+        """
+        from skiresort_planner.ui.actions import delete_nodes_action
+
+        dem = mock_dem_blue_slope
+        leg1 = [
+            PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
+            PathPoint(
+                lon=0.0,
+                lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                elevation=dem.get_elevation_or_raise(lon=0.0, lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            ),
+        ]
+        empty_graph.commit_paths(paths=[ProposedPathSegment(points=leg1, target_difficulty="blue")])
+        slope1 = empty_graph.finish_slope(segment_ids=list(empty_graph.segments.keys()))
+        junction = slope1.end_node_id
+        j = empty_graph.nodes[junction]
+        # Two more slopes both start at the junction → 3 segments meet there.
+        for d_lon in (400, -400):
+            leg = [
+                PathPoint(lon=j.lon, lat=j.lat, elevation=j.elevation),
+                PathPoint(
+                    lon=d_lon / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                    lat=j.lat - 400 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                    elevation=dem.get_elevation_or_raise(
+                        lon=d_lon / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                        lat=j.lat - 400 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                    ),
+                ),
+            ]
+            before = set(empty_graph.segments)
+            empty_graph.commit_paths(paths=[ProposedPathSegment(points=leg, target_difficulty="blue")])
+            empty_graph.finish_slope(segment_ids=list(set(empty_graph.segments) - before))
+        sm, ctx = _session(fake_st, empty_graph, dem=dem)
         stack_before = len(empty_graph.undo_stack)
         sm.start_node_edit()
         sm.toggle_node_edit_node(node_id=junction)
@@ -401,10 +459,129 @@ class TestDeleteNodesAction:
 
         delete_nodes_action()
 
-        assert junction in empty_graph.nodes, "a branch junction is not deleted"
+        assert junction in empty_graph.nodes, "a 3-way branch junction is not deleted"
         assert len(empty_graph.undo_stack) == stack_before, "no undo action recorded on refusal"
         assert sm.is_node_edit_selecting, "stays in node edit so the user can adjust the selection"
-        assert any("delete that path" in t.lower() for t in toasts), "the user is told to delete a path first"
+        assert any("delete a path" in t.lower() for t in toasts), "the user is told to delete a path first"
+
+
+class TestDeleteDirectConnectionAction:
+    """delete_direct_connection_action cuts every segment joining the 2 selected ADJACENT nodes,
+    splitting each owner in two, and toasts NotAdjacentNodesMessage when the pair isn't adjacent.
+    """
+
+    def _one_seg_slope(self, graph, dem):
+        pts = [
+            PathPoint(lon=0.0, lat=0.0, elevation=dem.get_elevation_or_raise(lon=0.0, lat=0.0)),
+            PathPoint(
+                lon=0.0,
+                lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+                elevation=dem.get_elevation_or_raise(lon=0.0, lat=-400 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            ),
+        ]
+        graph.commit_paths(paths=[ProposedPathSegment(points=pts, target_difficulty="blue")])
+        return graph.finish_slope(segment_ids=list(graph.segments.keys()))
+
+    def _three_seg_slope(self, graph, dem):
+        lat = 0.0
+        for _ in range(3):
+            step = -400 / MapConfig.METERS_PER_DEGREE_EQUATOR
+            pts = [
+                PathPoint(lon=0.0, lat=lat, elevation=dem.get_elevation_or_raise(lon=0.0, lat=lat)),
+                PathPoint(lon=0.0, lat=lat + step, elevation=dem.get_elevation_or_raise(lon=0.0, lat=lat + step)),
+            ]
+            graph.commit_paths(paths=[ProposedPathSegment(points=pts, target_difficulty="blue")])
+            lat += step
+        return graph.finish_slope(segment_ids=list(graph.segments.keys()))
+
+    def test_cutting_sole_segment_deletes_it_and_returns_to_idle(
+        self, fake_st, empty_graph, mock_dem_blue_slope
+    ) -> None:
+        from skiresort_planner.ui.actions import delete_direct_connection_action
+
+        dem = mock_dem_blue_slope
+        slope = self._one_seg_slope(empty_graph, dem)
+        sm, ctx = _session(fake_st, empty_graph, dem=dem)
+        sm.start_node_edit()
+        sm.toggle_node_edit_node(node_id=slope.start_node_id)
+        sm.toggle_node_edit_node(node_id=slope.end_node_id)
+
+        delete_direct_connection_action()
+
+        assert slope.id not in empty_graph.slopes, "the sole-segment slope was deleted"
+        assert sm.is_idle_ready, "returns to idle after a successful cut"
+        assert ctx.node_edit.node_ids == [], "the selection is cleared by the before-hook"
+
+    def test_interior_cut_splits_slope_into_two_and_returns_to_idle(
+        self, fake_st, empty_graph, mock_dem_blue_slope
+    ) -> None:
+        from skiresort_planner.ui.actions import delete_direct_connection_action
+
+        dem = mock_dem_blue_slope
+        slope = self._three_seg_slope(empty_graph, dem)
+        # The two ADJACENT interior nodes flanking the middle segment.
+        mid_seg = slope.segment_ids[1]
+        a = empty_graph.segments[slope.segment_ids[0]].end_node_id
+        b = empty_graph.segments[mid_seg].end_node_id
+        sm, ctx = _session(fake_st, empty_graph, dem=dem)
+        sm.start_node_edit()
+        sm.toggle_node_edit_node(node_id=a)
+        sm.toggle_node_edit_node(node_id=b)
+
+        delete_direct_connection_action()
+
+        assert len(empty_graph.slopes) == 2, "the interior cut split the slope into two"
+        assert mid_seg not in empty_graph.segments, "the middle segment was cut"
+        assert sm.is_idle_ready, "returns to idle after a successful cut"
+        assert ctx.node_edit.node_ids == [], "the selection is cleared by the before-hook"
+
+    def test_non_adjacent_pair_toasts_and_no_change(
+        self, fake_st, empty_graph, mock_dem_blue_slope, monkeypatch
+    ) -> None:
+        from skiresort_planner.ui.actions import delete_direct_connection_action
+
+        dem = mock_dem_blue_slope
+        # The two ENDPOINTS of a 3-seg slope span a multi-segment gap → not adjacent.
+        slope = self._three_seg_slope(empty_graph, dem)
+        sm, ctx = _session(fake_st, empty_graph, dem=dem)
+        sm.start_node_edit()
+        sm.toggle_node_edit_node(node_id=slope.start_node_id)
+        sm.toggle_node_edit_node(node_id=slope.end_node_id)
+
+        import streamlit
+
+        toasts: list[str] = []
+        monkeypatch.setattr(streamlit, "toast", lambda text, *a, **k: toasts.append(text))
+
+        delete_direct_connection_action()
+
+        assert slope.id in empty_graph.slopes and len(empty_graph.slopes) == 1, "a non-adjacent pair is left alone"
+        assert sm.is_node_edit_selecting, "stays in node edit"
+        assert any("not adjacent" in t.lower() for t in toasts), "toast explains the pair isn't adjacent"
+
+    def test_unconnected_pair_toasts_and_no_change(
+        self, fake_st, empty_graph, mock_dem_blue_slope, monkeypatch
+    ) -> None:
+        from skiresort_planner.ui.actions import delete_direct_connection_action
+
+        dem = mock_dem_blue_slope
+        slope = self._one_seg_slope(empty_graph, dem)
+        empty_graph.nodes["N_FAR"] = Node(id="N_FAR", location=PathPoint(lon=5.0, lat=5.0, elevation=2000.0))
+        sm, ctx = _session(fake_st, empty_graph, dem=dem)
+        sm.start_node_edit()
+        sm.toggle_node_edit_node(node_id=slope.start_node_id)
+        sm.toggle_node_edit_node(node_id="N_FAR")
+
+        import streamlit
+
+        toasts: list[str] = []
+        monkeypatch.setattr(streamlit, "toast", lambda text, *a, **k: toasts.append(text))
+
+        delete_direct_connection_action()
+
+        assert slope.id in empty_graph.slopes, "nothing cut when the pair has no joining segment"
+        assert sm.is_node_edit_selecting, "stays in node edit"
+        assert any("not adjacent" in t.lower() for t in toasts)
 
 
 class TestAddNodeOnPathAction:
@@ -528,35 +705,48 @@ class TestUndoLastActionDispatch:
 
 
 class TestCenterHelpers:
-    """center_on_* set the map to the entity midpoint at the given zoom."""
+    """center_on_* set the map to the entity midpoint at a zoom that fits the entity's length."""
 
-    def test_center_on_slope_sets_map(self, empty_graph, path_points_blue) -> None:
-        from skiresort_planner.ui.actions import center_on_slope
+    def test_center_on_segment_path_slope_sets_map(self, empty_graph, path_points_blue) -> None:
+        from skiresort_planner.ui.actions import center_on_segment_path
 
         slope = _make_slope(empty_graph, path_points_blue)
         _sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        center_on_slope(ctx=ctx, graph=empty_graph, slope=slope, zoom=15)
+        center_on_segment_path(ctx=ctx, graph=empty_graph, path=slope)
 
         start_pt = empty_graph.segments[slope.segment_ids[0]].points[0]
         end_pt = empty_graph.segments[slope.segment_ids[-1]].points[-1]
-        assert ctx.map.zoom == 15
+        assert ctx.map.zoom == MapConfig.zoom_for_span_m(span_m=slope.get_total_length(segments=empty_graph.segments))
         assert ctx.map.lon == (start_pt.lon + end_pt.lon) / 2, "centered on the path midpoint"
         assert ctx.map.lat == (start_pt.lat + end_pt.lat) / 2
         assert ctx.map.pitch == MapConfig.VIEWING_PITCH
 
-    def test_center_on_road_sets_map(self, empty_graph) -> None:
-        from skiresort_planner.ui.actions import center_on_road
+    def test_center_on_segment_path_road_sets_map(self, empty_graph) -> None:
+        from skiresort_planner.ui.actions import center_on_segment_path
 
         road = _make_road(empty_graph)
         _sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
-        center_on_road(ctx=ctx, graph=empty_graph, road=road, zoom=16)
+        center_on_segment_path(ctx=ctx, graph=empty_graph, path=road)
 
         start_pt = empty_graph.segments[road.segment_ids[0]].points[0]
         end_pt = empty_graph.segments[road.segment_ids[-1]].points[-1]
-        assert ctx.map.zoom == 16
+        assert ctx.map.zoom == MapConfig.zoom_for_span_m(span_m=road.get_total_length(segments=empty_graph.segments))
         assert ctx.map.lon == (start_pt.lon + end_pt.lon) / 2, "centered on the road midpoint"
         assert ctx.map.lat == (start_pt.lat + end_pt.lat) / 2
         assert ctx.map.pitch == MapConfig.VIEWING_PITCH
+
+    def test_shorter_slope_zooms_in_more_than_a_longer_one(self, empty_graph, mock_dem_blue_slope) -> None:
+        # The adaptive law: a shorter build frames at a HIGHER (more-in) zoom than a longer one.
+        short = _commit_straight_slope_len(empty_graph, mock_dem_blue_slope, n_segments=2)
+        long = _commit_straight_slope_len(empty_graph, mock_dem_blue_slope, n_segments=8, start_lat=-1.0)
+        _sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
+        from skiresort_planner.ui.actions import center_on_segment_path
+
+        center_on_segment_path(ctx=ctx, graph=empty_graph, path=short)
+        short_zoom = ctx.map.zoom
+        center_on_segment_path(ctx=ctx, graph=empty_graph, path=long)
+        long_zoom = ctx.map.zoom
+        assert short_zoom > long_zoom, "the shorter slope frames tighter (higher zoom)"
 
     def test_center_on_lift_sets_map(self, empty_graph, mock_dem_blue_slope) -> None:
         from skiresort_planner.ui.actions import center_on_lift
@@ -573,8 +763,8 @@ class TestCenterHelpers:
         lift = empty_graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="chairlift", dem=dem)
         _sm, ctx = PlannerStateMachine.create(graph=empty_graph, add_ui_listener=False)
 
-        center_on_lift(ctx=ctx, graph=empty_graph, lift=lift, zoom=14)
-        assert ctx.map.zoom == 14
+        center_on_lift(ctx=ctx, graph=empty_graph, lift=lift)
+        assert ctx.map.zoom == MapConfig.zoom_for_span_m(span_m=lift.get_length_m(nodes=empty_graph.nodes))
         assert ctx.map.lon == (bottom.lon + top.lon) / 2, "centered on the lift-station midpoint"
         assert ctx.map.lat == (bottom.lat + top.lat) / 2
         assert ctx.map.pitch == MapConfig.VIEWING_PITCH

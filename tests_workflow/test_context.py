@@ -90,17 +90,16 @@ class TestViewingContextSetters:
 
 
 class TestMapContextViews:
-    def test_reset_and_clear_restore_defaults(self) -> None:
+    def test_clear_restores_defaults(self) -> None:
         from skiresort_planner.constants import MapConfig
 
         mc = MapContext()
         mc.set_center(lon=1.0, lat=2.0)
-        mc.pitch = 60.0  # non-default so reset_view is not vacuous
-        mc.reset_view()
-        assert mc.pitch == MapConfig.DEFAULT_PITCH and mc.bearing == MapConfig.DEFAULT_BEARING
+        mc.pitch = 60.0
 
         mc.clear()
         assert (mc.lon, mc.lat) == (MapConfig.START_CENTER_LON, MapConfig.START_CENTER_LAT)
+        assert mc.pitch == MapConfig.DEFAULT_PITCH and mc.bearing == MapConfig.DEFAULT_BEARING
 
 
 class TestClickDeduplicationContext:

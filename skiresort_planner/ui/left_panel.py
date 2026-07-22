@@ -262,20 +262,23 @@ class SidebarRenderer:
                 _UndoDialog(graph=self.graph).show()
 
     def _render_reset_view_button(self) -> None:
-        """Render the reset-view button (recenters camera to defaults, cleans orphan nodes)."""
+        """Reset the camera to the last SET view — the stored 2D frame in 2D, or the entity's 3D entry
+        fit in 3D (a flythrough is stopped first). Forces a remount so deck.gl re-reads that framing.
+        """
         if st.button(
             "📷 Reset View",
             width="stretch",
-            help="Reset camera to standard position and orientation",
+            help="Reset the camera to the last framed view",
         ):
-            self.ctx.map.reset_view()
+            self.ctx.viewing.stop_flythrough()  # a fly-away must snap back to the 3D entry fit
             # Manual cleanup fallback for any orphaned nodes
             removed = self.graph.cleanup_isolated_nodes()
             if removed > 0:
                 logger.warning(f"Reset View cleaned {removed} orphaned node(s)")
-            # Reset zoom/pitch/bearing (reset_view) but keep the user where they are: reframe on the
-            # current center at the default zoom.
-            reload_map(center=(self.ctx.map.lon, self.ctx.map.lat), zoom=MapConfig.VIEWING_ZOOM)
+            # The current state's view_state() already IS the target (stored 2D view, or the 3D entry fit):
+            # a remount makes deck.gl re-read it, discarding the user's live pan/tilt.
+            bump_camera_epoch()
+            trigger_rerun()
 
     def _render_mode_selector(self) -> None:
         """Render unified build type selector with 7 buttons.

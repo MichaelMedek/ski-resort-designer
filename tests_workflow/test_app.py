@@ -184,6 +184,7 @@ class TestPendingOSMImportGate:
         ctx.pending.osm_import_mode = OSMImportMode.LIFTS_AND_SLOPES
         ctx.pending.osm_import_center_lon = 10.5  # the placed box center — reframe target
         ctx.pending.osm_import_center_lat = 46.5
+        ctx.pending.osm_import_half_width_km = 2.0  # box side = 4km → fits at VIEWING_ZOOM
 
         # Stub the heavy import: no network; it must receive the progress reporter and drive it.
         reported: list[float] = []
@@ -203,7 +204,7 @@ class TestPendingOSMImportGate:
         assert reported == [0.5], "the import work was driven with the progress reporter"
         assert rendered == [], "returns before the normal UI renders (no frozen map)"
         assert (ctx.map.lon, ctx.map.lat) == (10.5, 46.5), "reframed on the placed import box center"
-        assert ctx.map.zoom == MapConfig.IMPORT_OVERVIEW_ZOOM, "one step further out than building zoom"
+        assert ctx.map.zoom == MapConfig.zoom_for_span_m(span_m=2 * 2.0 * 1000.0), "adaptive zoom for the box side"
         # In-place reframe (reload_map): view moves via ctx.map → initialViewState; no camera_epoch bump
         # (a bump would remount the deck.gl iframe → gray-out). See tests_workflow/test_map_reframe.py.
         assert fake_st.session_state["camera_epoch"] == 0, "in-place reframe: no remount bump"
