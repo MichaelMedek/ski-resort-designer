@@ -1014,14 +1014,10 @@ class PathSelectionPanel:
         """Condensed terrain tag for this proposal — the SAME classify+precedence as committed Segment
         Details (via `segment_annotations`), joined from each note's `short_message`.
         """
-        side = TerrainAnalyzer.compute_side_slope(
-            start_lon=path.points[0].lon,
-            start_lat=path.points[0].lat,
-            end_lon=path.points[1].lon,
-            end_lat=path.points[1].lat,
-        )
+        # Side slope via the graph's single computation site (shared with commit) so they can't drift.
+        side_slope_pct, side_slope_dir = self.graph.side_slope_for_points(points=path.points)
         seg = PathSegment(
-            points=path.points, side_slope_pct=side.slope_pct, side_slope_dir=side.direction, kind=path.kind
+            points=path.points, side_slope_pct=side_slope_pct, side_slope_dir=side_slope_dir, kind=path.kind
         )
         notes = segment_annotations(segment=seg, dem=st.session_state.dem_service)
         return " ".join(n.short_message for n in notes)
