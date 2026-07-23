@@ -134,6 +134,7 @@ module = [
     "gpxpy.*",
     "scipy.*",
     "networkx.*",
+    "matplotlib.*",
 ]
 ignore_missing_imports = true
 
