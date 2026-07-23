@@ -77,7 +77,10 @@ def main() -> None:
         _wait_ready(port)
         import webview
 
-        webview.create_window("Alpin Architect", f"http://127.0.0.1:{port}", width=1400, height=900, zoomable=True)
+        # Enable file downloads (default off) so Streamlit's Save/Export buttons trigger a native save
+        # dialog instead of rendering the JSON/GPX inline in the window. Must be set before start().
+        webview.settings["ALLOW_DOWNLOADS"] = True
+        webview.create_window("Alpin Architect", f"http://127.0.0.1:{port}", width=1400, height=900)
         webview.start()  # blocks until the window is closed
     finally:
         proc.terminate()
