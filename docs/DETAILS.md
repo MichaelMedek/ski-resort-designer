@@ -25,21 +25,19 @@ For user workflow, see [DETAILS_UI.md](DETAILS_UI.md).
 
 These functions read from the DEM (Digital Elevation Model) and are used throughout the path planning algorithm.
 
-### 1.1 `get_elevation(lon, lat)` → float
+### 1.1 Elevation lookup: $(lon, lat) \to z$
 
-Returns the elevation in meters at the given coordinates, or `None` if:
-- Position is outside DEM bounds
-- Position falls in a no-data area
+Returns the elevation in metres at the given coordinates, or **undefined** if the point is outside the DEM bounds or in a no-data area.
 
-**Implementation:** Direct single-cell lookup from the DEM array — no interpolation or multi-point sampling. The coordinate is transformed to the DEM's native CRS, converted to array indices, and the value at that cell is returned.
+**Method:** Direct single-cell lookup from the DEM grid — no interpolation or multi-point sampling. The coordinate is transformed to the DEM's native projection, converted to grid indices, and the value at that cell is returned.
 
-### 1.2 `get_terrain_gradient(lon, lat)` → $(S_{\text{terrain}}, \theta_{\text{fall}})$
+### 1.2 Terrain gradient: $(lon, lat) \to (S_{\text{terrain}}, \theta_{\text{fall}})$
 
 Returns:
 - $S_{\text{terrain}}$: Terrain steepness as percentage
 - $\theta_{\text{fall}}$: Fall line bearing (direction of steepest descent, 0°=North)
 
-**Implementation:** Uses **weighted multi-point sampling** (16 elevation lookups around the center point) to reduce DEM noise. See Section 2 below.
+**Method:** Uses **weighted multi-point sampling** (16 elevation lookups around the center point) to reduce DEM noise. See Section 2 below.
 
 ---
 
@@ -53,27 +51,23 @@ A 60m Digital Elevation Model (DEM) has inherent noise. A single elevation diffe
 
 ### 2.2 Weighted Gradient Calculation ("Magic 8")
 
-We sample elevations $z_i$ at 8 compass bearings on two concentric rings:
-- **Inner Ring ($r_1 = 0.5 \times$ `STEP_SIZE_M` $\approx 15\text{ m}$):** Weight $w_{\text{inner}} = 2$
-- **Outer Ring ($r_2 = 1.0 \times$ `STEP_SIZE_M` $\approx 30\text{ m}$):** Weight $w_{\text{outer}} = 1$
+We sample elevations $z_i$ at 8 compass bearings on two concentric rings (the step size is ≈ 30 m):
+- **Inner Ring ($r_1 = 0.5 \times$ step $\approx 15\text{ m}$):** Weight $w_{\text{inner}} = 2$
+- **Outer Ring ($r_2 = 1.0 \times$ step $\approx 30\text{ m}$):** Weight $w_{\text{outer}} = 1$
 
-For each sample point $i$ at bearing $\phi_i$, calculate the slope ratio (rise/run) from center:
-$$slope_i = \frac{z_{\text{center}} - z_i}{d_i}$$
+For each sample point $i$ at bearing $\phi_i$, calculate the slope from center **as a percentage**:
+$$slope_i = \frac{z_{\text{center}} - z_i}{d_i} \times 100$$
 
-This is a dimensionless ratio (positive = downhill from center, negative = uphill).
+Positive = downhill from center, negative = uphill.
 
-Decompose into East-West and North-South gradient components:
+Decompose into East-West and North-South gradient components (percentage-valued, since $slope_i$ is):
 $$\frac{\partial z}{\partial x} \approx \frac{1}{\sum w} \sum_{i=1}^{n} (slope_i \cdot \sin(\phi_i) \cdot w_i)$$
 $$\frac{\partial z}{\partial y} \approx \frac{1}{\sum w} \sum_{i=1}^{n} (slope_i \cdot \cos(\phi_i) \cdot w_i)$$
 
 ### 2.3 Output Values
 
-The **gradient magnitude** gives the slope ratio:
-$$r = \sqrt{\left(\frac{\partial z}{\partial x}\right)^2 + \left(\frac{\partial z}{\partial y}\right)^2}$$
-
-**Terrain Steepness** as percentage (consistent with ArcGIS):
-$$S_{\text{terrain}} = r \times 100$$
-
+The **gradient magnitude** is already the steepness percentage (its components are in percent):
+$$S_{\text{terrain}} = \sqrt{\left(\frac{\partial z}{\partial x}\right)^2 + \left(\frac{\partial z}{\partial y}\right)^2}$$
 **Fall Line Bearing** (direction of steepest descent, 0°=North):
 $$\theta_{\text{fall}} = \text{atan2}\left(\frac{\partial z}{\partial x}, \frac{\partial z}{\partial y}\right)$$
 
@@ -172,7 +166,7 @@ Belt width is calculated adaptively from side slope to keep excavation within li
 
 $$W = \frac{H_{\text{threshold}} \cdot 200}{S_{\text{side}}}$$
 
-Where $H_{\text{threshold}} = 2.5\text{m}$ is the maximum acceptable excavation depth.
+Where $H_{\text{threshold}} = 2.5\text{m}$ is the maximum acceptable excavation depth. $W$ is then **clamped to difficulty-specific minimum and maximum widths**; on nearly-flat terrain ($S_{\text{side}} < 1\%$) the maximum width is used to avoid division by near-zero.
 
 For steeper side slopes, the belt narrows to reduce excavation. For gentler side slopes, a wider belt can be used.
 
@@ -186,11 +180,11 @@ $$H_{\text{edge}} = \frac{S_{\text{side}}}{100} \cdot \frac{W}{2} = \frac{S_{\te
 
 ### 4.4 🚜 Side Cut Warning
 
-A warning is triggered when the side slope exceeds what even the minimum belt width can handle:
+A warning is triggered when the side slope exceeds what even the **minimum** belt width for that difficulty can handle:
 
-$$S_{\text{side}} > \frac{H_{\text{threshold}} \cdot 200}{W_{\text{min}}} = \frac{2.5 \cdot 200}{10} = 50\%$$
+$$S_{\text{side}} > \frac{H_{\text{threshold}} \cdot 200}{W_{\text{min}}}$$
 
-When side slope exceeds 50%, the excavation would exceed 2.5m even at minimum belt width.
+$W_{\text{min}}$ is difficulty-specific, so the trigger is too: green ($W_{\text{min}}=10$m) warns above **50%**, blue/black ($20$m) above **25%**, red ($25$m) above **20%**. Beyond it, excavation would exceed 2.5m even at the narrowest allowed belt.
 
 ### 4.5 📐 Too Flat Warning
 
@@ -198,7 +192,11 @@ When terrain is gentler than the minimum skiable slope:
 
 $$S_{\text{avg}} < 5\% \implies \text{Too Flat Warning}$$
 
-### 4.6 Key Insight: Any Terrain Can Be Skied
+### 4.6 🌉 Bridge / 🚇 Tunnel
+
+A finished deck floats off terrain past a threshold (**50 m**): above → bridge, below → tunnel (an exact above/below tie → bridge).
+
+### 4.7 Key Insight: Any Terrain Can Be Skied
 
 **Side slope can always be excavated away.** There is no terrain too steep for any difficulty level — the excavator simply does more work. However:
 - High side slope = massive cross-slope earthwork
@@ -266,9 +264,9 @@ $$\text{targetTotalDrop} = \frac{S_{\text{target}}}{100} \times L_{\text{target}
 2. $\text{remainingDistance} = L_{\text{target}} - d_{\text{total}}$
 3. $S_{\text{step}} = \frac{\text{remainingDrop}}{\text{remainingDistance}} \times 100$
 
-$S_{\text{step}}$ carries the **sign** of the target. It is clamped to a band that keeps the step running the target's way — a descent step never climbs, a climb step never descends, a contour stays near level: a descent to $[\,0, S_{\text{target}}\cdot$`CLAMP_FACTOR`$\,]$, a climb to $[\,S_{\text{target}}\cdot$`CLAMP_FACTOR`$, 0\,]$, a contour to $[-$`MIN_SKIABLE`$, +$`MIN_SKIABLE`$]$. The band is floored at **0** (not `MIN_SKIABLE`), so a run that has drifted too steep can ask for a gentle — even flat — step and pull its average back toward the target.
+$S_{\text{step}}$ carries the **sign** of the target. It is clamped to a band that keeps the step running the target's way — a descent step never climbs, a climb step never descends, a contour stays near level: a descent to $[\,0,\; 2.5 \cdot S_{\text{target}}\,]$, a climb to $[\,2.5 \cdot S_{\text{target}},\; 0\,]$, a contour to $[-5\%, +5\%]$ (the minimum-skiable band). The band is floored at **0** (not the 5% minimum), so a run that has drifted too steep can ask for a gentle — even flat — step and pull its average back toward the target.
 
-**Why this works:** The path self-corrects toward the target average without retries. Flooring at 0 (rather than `MIN_SKIABLE`) is what lets an over-steep run recover; a `MIN_SKIABLE` floor would trap every step at ≥ 5% and ratchet the average upward.
+**Why this works:** The path self-corrects toward the target average without retries. Flooring at 0 (rather than the 5% minimum-skiable) is what lets an over-steep run recover; a 5% floor would trap every step at ≥ 5% and ratchet the average upward.
 
 ### 5.6 Step-by-Step Tracing
 
@@ -329,12 +327,12 @@ This creates **natural curving**:
 
 ### 5.8 Whole-Path Smoothing on Finish
 
-Each segment is spline-smoothed independently at trace time, so two segments meet at a shared junction node with different tangents — a visible **kink**. When a slope or road is **finished**, the whole path is smoothed in one pass by a single cubic smoothing spline fitted over the full polyline (parametrised by cumulative distance, resampled every `RESAMPLE_STEP_M` ≈ 7 m), then re-sliced back to the original segments so the ribbon is continuous across junctions.
+Each segment is spline-smoothed independently at trace time, so two segments meet at a shared junction node with different tangents — a visible **kink**. When a slope or road is **finished**, the whole path is smoothed in one pass: a single cubic B-spline over the full polyline for the horizontal x/y (parametrised by cumulative distance), with elevation from a **monotone (shape-preserving) interpolator** over the same arc length. It is resampled every ≈ 7 m, then re-sliced back to the original segments so the ribbon is continuous across junctions. Finally a **Douglas–Peucker** pass (tolerance ≈ 3.5 m) thins the dense 7 m points on straight runs while keeping them dense through turns.
 
-- The fit is a **weighted least-squares spline**: the boundary **nodes** get a moderately higher weight (`NODE_WEIGHT`) than the raw planner **corridor points** (`CORRIDOR_WEIGHT`), with a smoothing budget scaled by the point count. The planner's grid path is a staircase; at a switchback it reverses across sub-metre jitter. A *smoothing* spline averages that jitter into a real turn **radius**. The node weight is deliberately **moderate** (≈10, not huge): an extreme node weight makes the fit near-singular at the pinned point and manufactures a cusp there.
-- **Roads and slopes smooth differently.** Roads use `ROAD_SMOOTHING_FACTOR` (≈50) — cars need broad, smooth curves and roads accept the earthwork. Slopes use the lower `SLOPE_SMOOTHING_FACTOR` (≈30) so the ribbon **hugs the terrain** more: skiers are flexible, and a slope should follow the ground rather than build up large cut/fill.
+- The fit is a **weighted least-squares spline**: the boundary **nodes** get a moderately higher weight than the raw planner **corridor points**, with a smoothing budget scaled by the point count. The planner's grid path is a staircase; at a switchback it reverses across sub-metre jitter. A *smoothing* spline averages that jitter into a real turn **radius**. The node weight is deliberately **moderate**: an extreme node weight makes the fit near-singular at the pinned point and manufactures a cusp there.
+- **Roads and slopes smooth differently.** Roads use a **higher** smoothing factor — cars need broad, smooth curves and roads accept the earthwork. Slopes use a **lower** one so the ribbon **hugs the terrain** more: skiers are flexible, and a slope should follow the ground rather than build up large cut/fill.
 - **Outer endpoints are pinned exactly** (the entity termini, shared with other slopes/lifts/roads). **Internal junctions** are left where the weighted spline places them — about half a metre from the node, shared by value between the two adjacent segments — so the node marker still sits on the ribbon and any node can be a branch point, without snapping a switchback back into a kink.
-- Elevation is **smoothed along the spline, not re-sampled from the DEM**. A finished deck may therefore float slightly off the ground between nodes — treat it as a bridge / cut / fill.
+- Elevation is **interpolated via monotone PCHIP over arc length, never re-queried from the DEM** — it passes through every input elevation without overshoot. A finished deck may therefore float slightly off the ground between nodes — treat it as a bridge / cut / fill.
 - Finish smoothing **never rejects** a path and does **not** re-apply the ±15% road cap (§7.3). Rounding a corner can nudge a road's steepest 300 m section; a finished road is allowed to exceed the build cap (bridge/cut/fill).
 
 ---
@@ -383,36 +381,33 @@ Each path variant uses **Dijkstra's algorithm** (via SciPy's C-optimized impleme
 
 **Algorithm Phases:**
 
-1. **Grid Construction:** Create a grid of candidate points (15m spacing) covering the area between start and target with a buffer zone.
+1. **Grid Construction:** A metre lattice sized from the **required grade-holding length** $L = 100 \cdot \text{drop} / g$, not the straight distance — a gentle grade on steep ground needs a long serpentine a chord-sized grid would clip. The *along* axis spans the chord (+margin), the *across* axis twice the serpentine's lateral bow $\sqrt{(L/2)^2 - (\text{chord}/2)^2}$. Cell size adapts to $L$ (≈ $L$ / 175, floored near 4 m), coarsening so neither axis exceeds a hard cell cap.
 
-2. **Graph Building:** Each grid cell connects to its 8 neighbors. Edge costs are computed based on terrain slope.
+2. **Graph Building:** State = **(node × lateral heading)**, heading ∈ {left, straight, right}. Each node connects to a **radius-9 coprime neighborhood**, not just 8: a planar edge's grade is $S \cdot \cos(\text{bearing-from-fall-line})$, so 8-connectivity offers grades only at 45° steps — too coarse. The wider fan exposes many bearings (e.g. (1,9) ≈ 6° off-contour) so any sub-fall-line target grade can be quantized.
 
-3. **Dijkstra Search:** SciPy's `shortest_path()` finds the minimum-cost path through the sparse graph.
+3. **Dijkstra Search:** Least-cost path over the sparse state-graph; the cheapest of the target's three heading sub-states wins.
 
-4. **Spline Smoothing:** The raw grid path has staircase artifacts (only 8 movement directions). A cubic smoothing spline is fitted through the points at the kind's finish factor (`SLOPE_SMOOTHING_FACTOR` / `ROAD_SMOOTHING_FACTOR`) — the SAME factor the whole-path finish (§5.8) uses, so the proposal previews the finished shape — resampled at 7m, with elevations re-queried from the DEM.
+4. **Smooth:** Cubic-spline smoothed at a **light** factor, resampled at 7 m with elevations re-queried from the DEM. A heavy factor over-rounds the switchback apexes (shortening the path off its grade) and overshoots vertically across gaps (dips below ground).
+
+5. **Quality gate:** A **self-intersecting** smoothed route (over-tight switchback) is rejected — the planner returns nothing and the caller falls back to a straighter alternative.
 
 **Cost Function:**
 
-$$\text{cost} = d \times \exp\left(\frac{|\text{slope}_{\text{actual}} - \text{slope}_{\text{target}}|}{\sigma}\right) \times P_{\text{uphill}}$$
+$$\text{cost} = d \times \exp\left(\frac{|\text{slope}_{\text{actual}} - \text{slope}_{\text{target}}|}{\sigma}\right) \times P_{\text{against}} \;\;(+\; P_{\text{reversal}})$$
 
 Where:
-- $d$ = horizontal distance between grid nodes (~15m cardinal, ~21m diagonal)
-- $\sigma$ = slope sensitivity parameter (default: 8)
-- $P_{\text{uphill}}$ = uphill penalty: 1.0 if downhill, $\exp(|\text{slope}|/\sigma)$ if uphill
+- $d$ = offset distance. The lattice is uniform, so this is the scalar $\text{res} \cdot \sqrt{dr^2 + dc^2}$ — no per-cell geodesy.
+- $\sigma$ = slope-deviation sensitivity (≈ 2; lower = stricter grade matching).
+- $P_{\text{against}}$ = 1.0 with the segment's direction, else $\exp(|\text{slope}|/\sigma)$ — a descending segment penalizes climbing, a climbing one penalizes descending. This one-way monotonicity stops looping.
+- $P_{\text{reversal}}$ = **lateral momentum**: a heading flip left↔right adds a fixed penalty × cell-size. Without it the search can't tell one clean switchback from a micro-sawtooth of equal cost, which finish-smoothing would flatten back to the too-steep fall line — so it buys **few, large switchbacks**.
 
-
-
-**Advantages:**
-- Fast: SciPy's C implementation provides 10-50x speedup over pure Python
-- Terrain-adaptive: naturally creates traverses on steep terrain
-- Smooth output: spline interpolation removes grid artifacts
-- Robust: soft uphill penalty handles DEM noise without hard cutoffs
+Fast (analytic geodesy-free distance + a vectorized graph build → sub-second), terrain-adaptive, and robust (soft penalties absorb DEM noise, no hard cutoffs).
 
 ### 7.3 Roads (for cars)
 
 A **Road** is a vehicle road built **segment-by-segment**. Like a slope, a road is routed two ways: a **fan** that radiates candidate routes from the current endpoint (§7.3.1), and **custom-connect** to a clicked target via grid-Dijkstra with a direct-line fallback (§7.3.2). The one road-specific rule is the **±15% hard cap** (§7.3.3).
 
-**Target grade.** A road reuses the **green** slope targets (7% gentle, 12% steep, from `SlopeConfig.DIFFICULTY_TARGETS["green"]`). Because a road may climb, descend, or run flat, the targets are **signed**: descend ($+$), climb ($-$), and a flat contour ($0$).
+**Target grade.** A road reuses the **green** slope targets (7% gentle, 12% steep). Because a road may climb, descend, or run flat, the targets are **signed**: descend ($+$), climb ($-$), and a flat contour ($0$).
 
 #### 7.3.1 Road fan
 
@@ -424,13 +419,13 @@ giving up to five spokes (each a left/right traverse, or a center path where the
 
 #### 7.3.2 Custom-connect + straight-line fallback
 
-Clicking a target routes to it by the same grid-Dijkstra algorithm and cost function as §7.2, against the signed green $g_{\text{target}}$. A road picks its `GradientMode` from the endpoints — `DOWNHILL` when it descends, `UPHILL` when it climbs — and the monotonicity penalty keeps the segment one-way (no looping), exactly as for a descent-only slope. On gentle ground both targets collapse to one straight route; on steep ground each serpentines, giving two proposals.
+Clicking a target routes to it by the same grid-Dijkstra algorithm and cost function as §7.2, against the signed green $g_{\text{target}}$. A road picks its gradient direction from the endpoints — descending when the target sits lower, climbing when higher — and the monotonicity penalty keeps the segment one-way (no looping), exactly as for a descent-only slope. On gentle ground both targets collapse to one straight route; on steep ground each serpentines, giving two proposals.
 
 If **no** serpentine fits within ±15%, the caller offers a **direct road** (a straight 2-point line, treated as a bridge/cut) — but **only if that direct line itself is within ±15%**. This is the key slope-vs-road difference: a slope's straight-line fallback is *always* offered (any grade is a valid, if steep, run), whereas a road is genuinely **refused** ("Too steep for a car road") when even the direct line is too steep.
 
 #### 7.3.3 ±15% is a HARD cap at build time
 
-The exponential cost term is only a *soft* preference; every road proposal — fan spoke, serpentine, or direct fallback — is additionally **hard-capped** at $g_{\max} = 15\%$ (`ROAD_MAX_GRADIENT_PCT`) by the caller. Since `max_slope_pct` is a magnitude, the cap catches steep climbs and descents alike. A committed road therefore never exceeds the cap. The green targets and $g_{\max}$ are single-sourced constants — no hardcoded percentages.
+The exponential cost term is only a *soft* preference; every road proposal — fan spoke, serpentine, or direct fallback — is additionally **hard-capped** at $g_{\max} = 15\%$ by the caller. Since the steepest-section grade is a magnitude, the cap catches steep climbs and descents alike. A committed road therefore never exceeds the cap.
 
 ---
 
@@ -452,14 +447,18 @@ $$z_{\text{cable}}(t) = (1-t) \cdot z_0 + t \cdot z_1 - 4 \cdot s \cdot t(1-t)$$
 
 ### 8.2 3-Phase Catenary Algorithm
 
+The physics runs in **distance-space** on a fine uniform internal grid, resampled from the stored terrain so pylon resolution is independent of how coarse that terrain is (uniform at build, thinned on load). Cable anchors sit a fixed **station height** above the terrain at each station.
+
 **Phase 1 — Clearance Violations:**
-Find where `cable_elev - terrain_elev < min_clearance` and place a pylon at the worst violation point.
+Recursively find where the cable-to-terrain clearance drops below the **minimum clearance** and place a pylon at the worst violation in each span (subject to a **minimum spacing** between pylons), re-checking the two sub-spans it creates.
 
 **Phase 2 — Max Spacing Enforcement:**
-If any span exceeds `max_spacing_m`, insert a midpoint pylon.
+If any span exceeds the **maximum spacing**, insert midpoint pylons until every span is within it.
 
 **Phase 3 — Re-check Clearance:**
-Spacing pylons may affect adjacent spans. Re-run Phase 1 to fix new violations.
+Phase-2 pylons reshape adjacent spans, so re-run the Phase-1 clearance check on the new configuration.
+
+(Minimum clearance, minimum/maximum spacing, station height, and sag factor are all per-lift-type parameters.)
 
 ---
 
@@ -471,16 +470,16 @@ Two **Import from OpenStreetMap** buttons (sidebar, idle only) fetch the real li
 
 ### 9.1 Region + single-query fetch
 
-A **square bounding box**: map center + a half-width slider (`HALF_WIDTH_MIN/MAX/DEFAULT_KM`). One lift/piste-only Overpass query is **light** — even a full box returns in seconds.
+A **square bounding box**: map center + a half-width slider (0.5–5 km). One lift/piste-only Overpass query is **light** — even a full box returns in seconds.
 
 ### 9.2 Mapping OSM → graph
 
 - **Lifts** — only `aerialway` types we map (drag/t-bar/j-bar/platter → surface_lift, chair_lift → chairlift, gondola/mixed_lift → gondola, cable_car → aerial_tram); others ignored. A way with interior `aerialway=station` nodes splits into per-section lifts.
-- **Pistes** (Lifts + slopes only) — standard groomed `downhill` + `connection`. The connected-graph builder planar-splits every crossing, merges endpoints/stations into shared hubs (lift-authoritative, no two nodes < `MIN_NODE_DIST_M`), DEM-drapes each run on the real OSM line, and groups segments into named slopes. Difficulty comes from the DEM `max_slope_pct`.
+- **Pistes** (Lifts + slopes only) — standard groomed `downhill` + `connection`. The connected-graph builder planar-splits every crossing, merges endpoints/stations into shared hubs (lift-authoritative, no two nodes closer than a minimum hub spacing), DEM-drapes each run on the real OSM line, and groups segments into named slopes. Difficulty comes from the DEM steepest-section grade.
 
 ### 9.3 Only full, non-trivial entities; one undoable batch
 
-A way with any vertex outside the box, or over a DEM nodata hole, is skipped whole (never half-imported); skips are logged. Lifts under `MIN_LIFT_LENGTH_M` and pistes under `MIN_PISTE_LENGTH_M` are dropped as trivial; **Lifts only** also drops unnamed lifts and coincident same-name duplicates. The whole import is one `ImportOSMAction` — one Undo removes it all.
+A way with any vertex outside the box, or over a DEM nodata hole, is skipped whole (never half-imported); skips are logged. Lifts and pistes below a minimum length are dropped as trivial; **Lifts only** also drops unnamed lifts and coincident same-name duplicates. The whole import is a single undoable action — one Undo removes it all.
 
 ### 9.4 Idempotent re-import
 
@@ -493,14 +492,14 @@ An incoming run is skipped if the graph already has a slope/lift with the **same
 A finished slope/road is a **chain**: a node sequence $[n_0, \dots, n_N]$ where segment $i$ spans
 $n_i \to n_{i+1}$ and adjacent segments share the junction node by value. The three merge-mode edits
 rewrite that chain while preserving one invariant — **every segment runs between two distinct existing
-nodes and the chain stays connected**. Segment metrics are pure functions of `points`, so reshaping
-`points` *is* the edit; each is one undoable action.
+nodes and the chain stays connected**. Segment metrics are pure functions of the point polyline, so
+reshaping the polyline *is* the edit; each is one undoable action.
 
 ### 10.1 Merge
 
-The **survivor** $s$ (first id) moves to the selection's component-wise **median** position (elevation
+The **survivor** $s$ (first selected) moves to the selection's component-wise **median** position (elevation
 re-sampled from the DEM); the others are deleted and every reference repointed to $s$. Refused if the
-selection's span (largest pairwise distance) exceeds `MergeConfig.MAX_SPAN_M` (500 m) — the median is
+selection's span (largest pairwise distance) exceeds **500 m** — the median is
 only sensible for a tight cluster. Repointing can leave a segment running $s \to s$ (zero-length
 "curl"): if the whole entity collapses ($n_0 = n_N$) it is deleted; if only one interior segment does,
 that link is dropped from the sequence ($\dots\!\to\!s\!\to\!s\!\to\!\dots$ becomes
@@ -522,9 +521,5 @@ trimmed end next to a fused interior never leaves a segment pointing at a delete
 
 ### 10.3 Insert
 
-Splitting a segment invents no geometry. Committed segments are dense (finish-smoothing resamples to
-`RESAMPLE_STEP_M` ≈ 7 m), so the click's nearest **existing vertex** already lies on the ribbon and
-*becomes* the new node — no projection, interpolation, or DEM lookup (the vertex carries its
-build-time elevation). The point list splits at that index into two segments sharing the new node.
-Refused if that vertex is within `GeometricTuningConfig.STEP_SIZE_M` (30 m) of an endpoint — that would
-stack the new node on an existing one instead of making a real interior split.
+The click is **projected onto the segment centerline** (nearest point on the polyline, density-agnostic — it lands anywhere on the leg, not on a stored vertex), and that projected point becomes the new node with its **elevation DEM-queried** at ground level. The 3D polyline splits at that position (elevation interpolated along the leg) into two segments sharing the new node.
+Refused if the projected point is within a step size (**30 m**) of an endpoint — that would stack the new node on an existing one instead of making a real interior split.
