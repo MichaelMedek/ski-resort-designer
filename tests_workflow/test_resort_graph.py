@@ -2926,3 +2926,30 @@ class TestResortStats:
         descent = graph.greatest_descent()
         assert descent.drop_m == pytest.approx(500.0), "drop is endpoint-determined, identical for both"
         assert descent.length_m == pytest.approx(graph.segments["Slong"].length_m), "reports the longer piste"
+
+
+class TestSideSlopeForPoints:
+    """ResortGraph.side_slope_for_points: the single (static) side-slope site shared by commit, delete,
+    insert, and the proposal preview. Its only logic is using the segment's first two points.
+    """
+
+    def test_matches_compute_side_slope_on_first_two_points(self) -> None:
+        # Delegates to TerrainAnalyzer.compute_side_slope over points[0] to points[1] verbatim.
+        pts = [
+            PathPoint(lon=10.0, lat=47.0, elevation=2000.0),
+            PathPoint(lon=10.001, lat=47.001, elevation=1990.0),
+            PathPoint(lon=10.5, lat=47.5, elevation=1500.0),  # ignored (only first two count)
+        ]
+        got_pct, got_dir = ResortGraph.side_slope_for_points(points=pts)
+        info = TerrainAnalyzer.compute_side_slope(
+            start_lon=pts[0].lon, start_lat=pts[0].lat, end_lon=pts[1].lon, end_lat=pts[1].lat
+        )
+        assert got_pct == pytest.approx(info.slope_pct)
+        assert got_dir == info.direction
+
+    def test_is_static_callable_without_instance(self) -> None:
+        # Stateless: callable off the class so outside callers (proposal preview) reuse it directly.
+        pts = [PathPoint(lon=0.0, lat=0.0, elevation=100.0), PathPoint(lon=0.001, lat=0.0, elevation=99.0)]
+        pct, direction = ResortGraph.side_slope_for_points(points=pts)
+        assert isinstance(pct, float)
+        assert direction is not None
