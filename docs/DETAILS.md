@@ -56,20 +56,30 @@ We sample elevations $z_i$ at 8 compass bearings on two concentric rings (the st
 - **Outer Ring ($r_2 = 1.0 \times$ step $\approx 30\text{ m}$):** Weight $w_{\text{outer}} = 1$
 
 For each sample point $i$ at bearing $\phi_i$, calculate the slope from center **as a percentage**:
-$$slope_i = \frac{z_{\text{center}} - z_i}{d_i} \times 100$$
+```math
+slope_i = \frac{z_{\text{center}} - z_i}{d_i} \times 100
+```
 
 Positive = downhill from center, negative = uphill.
 
 Decompose into East-West and North-South gradient components (percentage-valued, since $slope_i$ is):
-$$\frac{\partial z}{\partial x} \approx \frac{1}{\sum w} \sum_{i=1}^{n} (slope_i \cdot \sin(\phi_i) \cdot w_i)$$
-$$\frac{\partial z}{\partial y} \approx \frac{1}{\sum w} \sum_{i=1}^{n} (slope_i \cdot \cos(\phi_i) \cdot w_i)$$
+```math
+\frac{\partial z}{\partial x} \approx \frac{1}{\sum w} \sum_{i=1}^{n} (slope_i \cdot \sin(\phi_i) \cdot w_i)
+```
+```math
+\frac{\partial z}{\partial y} \approx \frac{1}{\sum w} \sum_{i=1}^{n} (slope_i \cdot \cos(\phi_i) \cdot w_i)
+```
 
 ### 2.3 Output Values
 
 The **gradient magnitude** is already the steepness percentage (its components are in percent):
-$$S_{\text{terrain}} = \sqrt{\left(\frac{\partial z}{\partial x}\right)^2 + \left(\frac{\partial z}{\partial y}\right)^2}$$
+```math
+S_{\text{terrain}} = \sqrt{\left(\frac{\partial z}{\partial x}\right)^2 + \left(\frac{\partial z}{\partial y}\right)^2}
+```
 **Fall Line Bearing** (direction of steepest descent, 0°=North):
-$$\theta_{\text{fall}} = \text{atan2}\left(\frac{\partial z}{\partial x}, \frac{\partial z}{\partial y}\right)$$
+```math
+\theta_{\text{fall}} = \text{atan2}\left(\frac{\partial z}{\partial x}, \frac{\partial z}{\partial y}\right)
+```
 
 > **Source:** Based on principles from **Zevenbergen & Thorne (1987)** and **Horn (1981)**. See [ArcGIS: How Slope Works](https://pro.arcgis.com/en/pro-app/latest/tool-reference/spatial-analyst/how-slope-works.htm)
 
@@ -92,13 +102,19 @@ When a skier traverses across a slope, three distinct gradients are involved:
 Given a **traverse angle** $\theta$ (offset from fall line):
 
 **Effective Slope** (component in ski direction):
-$$S_{\text{eff}} = S_{\text{terrain}} \cdot \cos(\theta)$$
+```math
+S_{\text{eff}} = S_{\text{terrain}} \cdot \cos(\theta)
+```
 
 **Side Slope** (component perpendicular to ski direction):
-$$S_{\text{side}} = S_{\text{terrain}} \cdot \sin(\theta)$$
+```math
+S_{\text{side}} = S_{\text{terrain}} \cdot \sin(\theta)
+```
 
 These satisfy the Pythagorean identity:
-$$S_{\text{eff}}^2 + S_{\text{side}}^2 = S_{\text{terrain}}^2$$
+```math
+S_{\text{eff}}^2 + S_{\text{side}}^2 = S_{\text{terrain}}^2
+```
 
 **Intuition:**
 - $\theta = 0°$: Skiing straight down the fall line → $S_{\text{eff}} = S_{\text{terrain}}$, $S_{\text{side}} = 0$
@@ -109,7 +125,9 @@ $$S_{\text{eff}}^2 + S_{\text{side}}^2 = S_{\text{terrain}}^2$$
 
 The designer sets a **signed target effective slope** ($S_{\text{target}}$) for each path. The algorithm calculates the required traverse angle from the **signed** ratio, so one formula spans descend/contour/climb:
 
-$$\theta = \arccos\left(\frac{S_{\text{target}}}{S_{\text{terrain}}}\right)$$
+```math
+\theta = \arccos\left(\frac{S_{\text{target}}}{S_{\text{terrain}}}\right)
+```
 
 Because $\arccos$ ranges over $[0°, 180°]$: a positive target gives $\theta < 90°$ (tilt toward the fall line, descend), zero gives $\theta = 90°$ (contour), and a negative target gives $\theta > 90°$ (tilt against the fall line, climb). The reference bearing is **always** the fall line — direction is carried entirely by $\theta$.
 
@@ -128,10 +146,14 @@ Because $\arccos$ ranges over $[0°, 180°]$: a positive target gives $\theta < 
 - Target: $S_{\text{target}} = 22\%$ (Blue difficulty)
 
 Calculate traverse angle:
-$$\theta = \arccos\left(\frac{22}{50}\right) = \arccos(0.44) \approx 64°$$
+```math
+\theta = \arccos\left(\frac{22}{50}\right) = \arccos(0.44) \approx 64°
+```
 
 The resulting side slope:
-$$S_{\text{side}} = 50 \cdot \sin(64°) \approx 45\%$$
+```math
+S_{\text{side}} = 50 \cdot \sin(64°) \approx 45\%
+```
 
 The skier experiences a comfortable 22% slope, but the cross-slope is 45% — requiring significant earthwork.
 
@@ -164,7 +186,9 @@ A ski piste has a physical width called the **Belt**. The path is planned along 
 
 Belt width is calculated adaptively from side slope to keep excavation within limits:
 
-$$W = \frac{H_{\text{threshold}} \cdot 200}{S_{\text{side}}}$$
+```math
+W = \frac{H_{\text{threshold}} \cdot 200}{S_{\text{side}}}
+```
 
 Where $H_{\text{threshold}} = 2.5\text{m}$ is the maximum acceptable excavation depth. $W$ is then **clamped to difficulty-specific minimum and maximum widths**; on nearly-flat terrain ($S_{\text{side}} < 1\%$) the maximum width is used to avoid division by near-zero.
 
@@ -173,7 +197,9 @@ For steeper side slopes, the belt narrows to reduce excavation. For gentler side
 ### 4.3 Vertical Cut/Fill Depth
 
 **Vertical displacement** at edge (cut or fill depth):
-$$H_{\text{edge}} = \frac{S_{\text{side}}}{100} \cdot \frac{W}{2} = \frac{S_{\text{side}} \cdot W}{200}$$
+```math
+H_{\text{edge}} = \frac{S_{\text{side}}}{100} \cdot \frac{W}{2} = \frac{S_{\text{side}} \cdot W}{200}
+```
 
 - **Inner edge:** Excavated $H_{\text{edge}}$ meters below original terrain
 - **Outer edge:** Filled $H_{\text{edge}}$ meters above original terrain
@@ -182,7 +208,9 @@ $$H_{\text{edge}} = \frac{S_{\text{side}}}{100} \cdot \frac{W}{2} = \frac{S_{\te
 
 A warning is triggered when the side slope exceeds what even the **minimum** belt width for that difficulty can handle:
 
-$$S_{\text{side}} > \frac{H_{\text{threshold}} \cdot 200}{W_{\text{min}}}$$
+```math
+S_{\text{side}} > \frac{H_{\text{threshold}} \cdot 200}{W_{\text{min}}}
+```
 
 $W_{\text{min}}$ is difficulty-specific, so the trigger is too: green ($W_{\text{min}}=10$m) warns above **50%**, blue/black ($20$m) above **25%**, red ($25$m) above **20%**. Beyond it, excavation would exceed 2.5m even at the narrowest allowed belt.
 
@@ -190,7 +218,9 @@ $W_{\text{min}}$ is difficulty-specific, so the trigger is too: green ($W_{\text
 
 When terrain is gentler than the minimum skiable slope:
 
-$$S_{\text{avg}} < 5\% \implies \text{Too Flat Warning}$$
+```math
+S_{\text{avg}} < 5\% \implies \text{Too Flat Warning}
+```
 
 ### 4.6 🌉 Bridge / 🚇 Tunnel
 
@@ -257,7 +287,9 @@ Generate paths in order from easiest to hardest target, stopping after **4 cente
 **Solution:** Track cumulative elevation drop and dynamically adjust each step's target.
 
 **Pre-calculate at initialization:**
-$$\text{targetTotalDrop} = \frac{S_{\text{target}}}{100} \times L_{\text{target}}$$
+```math
+\text{targetTotalDrop} = \frac{S_{\text{target}}}{100} \times L_{\text{target}}
+```
 
 **At each step:**
 1. $\text{remainingDrop} = \text{targetTotalDrop} - \text{accumulatedDrop}$ (signed)
@@ -273,11 +305,15 @@ $S_{\text{step}}$ carries the **sign** of the target. It is clamped to a band th
 **Step 1: Sample Local Terrain**
 
 Sample the gradient at the **current point** (the step's start); the cumulative-drop feedback (§5.5) corrects any per-step lag, so no midpoint sampling is needed:
-$$S_{\text{terrain}}, \theta_{\text{fall}} = \textrm{getTerrainGradient}(\text{current point})$$
+```math
+S_{\text{terrain}}, \theta_{\text{fall}} = \textrm{getTerrainGradient}(\text{current point})
+```
 
 **Step 2: Calculate Traverse Angle** (from the **signed** grade ratio)
 
-$$\theta_{\text{traverse}} = \arccos\left(\frac{S_{\text{step}}}{S_{\text{terrain}}}\right)$$
+```math
+\theta_{\text{traverse}} = \arccos\left(\frac{S_{\text{step}}}{S_{\text{terrain}}}\right)
+```
 
 Cases (with $S_{\text{step}}$ **signed**, §3.3):
 - $S_{\text{step}} \geq S_{\text{terrain}}$: $\theta = 0°$ (straight down the fall line — a descent at/above terrain steepness)
@@ -288,7 +324,9 @@ Cases (with $S_{\text{step}}$ **signed**, §3.3):
 
 **Step 3: Calculate Step Bearing**
 
-$$\theta_{\text{step}} = \theta_{\text{fall}} + \text{sign} \cdot \theta_{\text{traverse}} + \epsilon$$
+```math
+\theta_{\text{step}} = \theta_{\text{fall}} + \text{sign} \cdot \theta_{\text{traverse}} + \epsilon
+```
 
 Where:
 - $\theta_{\text{fall}}$ is the fall line — **always** the reference; direction (descend/climb) is carried by $\theta_{\text{traverse}}$ crossing 90°, never by flipping the reference
@@ -297,17 +335,23 @@ Where:
 
 **Adaptive Noise:** Scale noise inversely with traverse angle to prevent Green paths on steep terrain from drifting to Blue (floored at 0, so a climbing step $\theta > 90°$ gets no noise):
 
-$$\sigma_{\text{adaptive}} = \sigma_{\text{base}} \cdot \max\left(0, \frac{90° - \theta_{\text{traverse}}}{90°}\right)$$
+```math
+\sigma_{\text{adaptive}} = \sigma_{\text{base}} \cdot \max\left(0, \frac{90° - \theta_{\text{traverse}}}{90°}\right)
+```
 
 **Step 4: Take Step**
 
-$$(\text{lon}_{\text{new}}, \text{lat}_{\text{new}}) = \textrm{destinationPoint}(\text{lon}, \text{lat}, \theta_{\text{step}}, \Delta d)$$
+```math
+(\text{lon}_{\text{new}}, \text{lat}_{\text{new}}) = \textrm{destinationPoint}(\text{lon}, \text{lat}, \theta_{\text{step}}, \Delta d)
+```
 
 Where $\Delta d$ is the step size (default 30m).
 
 **Step 5: Update State**
 
-$$\text{accumulatedDrop} += z_{\text{current}} - z_{\text{new}}$$
+```math
+\text{accumulatedDrop} += z_{\text{current}} - z_{\text{new}}
+```
 
 The step drop is **signed**: positive when the step descended, negative when it climbed.
 
@@ -343,7 +387,9 @@ Each segment is spline-smoothed independently at trace time, so two segments mee
 
 When a path is committed, it becomes a segment classified by the **steepest 300m section** (rolling window):
 
-$$S_{\text{max}} = \max_{\text{window}} \left( \frac{\Delta h_{\text{window}}}{L_{\text{window}}} \right) \times 100\%$$
+```math
+S_{\text{max}} = \max_{\text{window}} \left( \frac{\Delta h_{\text{window}}}{L_{\text{window}}} \right) \times 100\%
+```
 
 | Steepest Section | Classification |
 |------------------|----------------|
@@ -393,7 +439,9 @@ Each path variant uses **Dijkstra's algorithm** (via SciPy's C-optimized impleme
 
 **Cost Function:**
 
-$$\text{cost} = d \times \exp\left(\frac{|\text{slope}_{\text{actual}} - \text{slope}_{\text{target}}|}{\sigma}\right) \times P_{\text{against}} \;\;(+\; P_{\text{reversal}})$$
+```math
+\text{cost} = d \times \exp\left(\frac{|\text{slope}_{\text{actual}} - \text{slope}_{\text{target}}|}{\sigma}\right) \times P_{\text{against}} \;\;(+\; P_{\text{reversal}})
+```
 
 Where:
 - $d$ = offset distance. The lattice is uniform, so this is the scalar $\text{res} \cdot \sqrt{dr^2 + dc^2}$ — no per-cell geodesy.
@@ -413,7 +461,9 @@ A **Road** is a vehicle road built **segment-by-segment**. Like a slope, a road 
 
 Like the slope fan, the road fan is traced by the gradient-agnostic tracer (§5) from the current endpoint. Its target set is the signed green grades plus a contour:
 
-$$g_{\text{target}} \in \{+7, +12, -7, -12, 0\}$$
+```math
+g_{\text{target}} \in \{+7, +12, -7, -12, 0\}
+```
 
 giving up to five spokes (each a left/right traverse, or a center path where the target magnitude meets the terrain steepness). There is no center-stop rule (only five targets). Every spoke is hard-capped at ±15% (§7.3.3); on steep ground the steep-green spokes are filtered out while the gentle and contour spokes survive, so the fan degrades gracefully rather than emptying.
 
@@ -435,7 +485,9 @@ The exponential cost term is only a *soft* preference; every road proposal — f
 
 Using normalized position $t = x/L$ where $t \in [0, 1]$:
 
-$$z_{\text{cable}}(t) = (1-t) \cdot z_0 + t \cdot z_1 - 4 \cdot s \cdot t(1-t)$$
+```math
+z_{\text{cable}}(t) = (1-t) \cdot z_0 + t \cdot z_1 - 4 \cdot s \cdot t(1-t)
+```
 
 | Variable | Description |
 |----------|-------------|
