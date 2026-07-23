@@ -29,6 +29,7 @@ from skiresort_planner.ui.actions import (
     commit_selected_path,
     resolve_build_origin,
 )
+from skiresort_planner.ui.context import BuildMode
 from skiresort_planner.ui.infra import bump_dedup_epoch, trigger_rerun
 from skiresort_planner.ui.kind_spec import KIND_SPECS
 from skiresort_planner.ui.validators import (
@@ -212,6 +213,8 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
             if not slope:
                 raise RuntimeError(f"Slope {click_info.slope_id} not found in graph")
             logger.debug(f"[IDLE] Slope click: showing panel for {slope.name}")
+            # Sync build mode to the viewed kind, so the next click builds the same kind.
+            ctx.build_mode.mode = BuildMode.SLOPE
             center_on_segment_path(ctx=ctx, graph=graph, path=slope)
             sm.view_slope(slope_id=slope.id)  # Triggers st.rerun() via listener
             return
@@ -236,8 +239,12 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
             # parent is a SegmentPath; branch on its reload-safe .kind (never isinstance).
             center_on_segment_path(ctx=ctx, graph=graph, path=parent)
             if parent.kind == SegmentKind.SLOPE:
+                # Sync build mode to the viewed kind, so the next click builds the same kind.
+                ctx.build_mode.mode = BuildMode.SLOPE
                 sm.view_slope(slope_id=parent.id)
             elif parent.kind == SegmentKind.ROAD:
+                # Sync build mode to the viewed kind, so the next click builds the same kind.
+                ctx.build_mode.mode = BuildMode.ROAD
                 sm.view_road(road_id=parent.id)
             else:
                 raise RuntimeError(f"[IDLE] Segment click: unhandled parent kind {parent.kind}.")
@@ -263,6 +270,7 @@ def handle_idle_click(click_info: ClickInfo, elevation: float | None) -> None:
             if not road:
                 raise RuntimeError(f"Road {click_info.road_id} not found in graph")
             logger.debug(f"[IDLE] Road click: showing panel for {road.name}")
+            ctx.build_mode.mode = BuildMode.ROAD  # sync mode to viewed kind (see slope branch)
             center_on_segment_path(ctx=ctx, graph=graph, path=road)
             sm.view_road(road_id=road.id)  # Triggers st.rerun() via listener
             return

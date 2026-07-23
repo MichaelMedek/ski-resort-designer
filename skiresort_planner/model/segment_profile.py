@@ -2,7 +2,7 @@
 
 A finished slope/road is smoothed (not re-draped), so its deck may float above terrain (bridge) or
 cut below it (tunnel). This classifies the WHOLE segment by its worst deviation. Derived on demand
-(never stored — points + DEM change on finish/restitch/load).
+(never stored — points/DEM change on finish/load; structural edits keep points, only endpoints move).
 """
 
 from dataclasses import dataclass

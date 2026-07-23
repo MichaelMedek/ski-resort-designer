@@ -1432,7 +1432,7 @@ class TestMergeNodes:
         span = empty_graph.max_node_span_m(["A", "B"])
         assert span == pytest.approx(100.0, abs=1.0)
 
-    # -- geometry re-stitch after merge (segment polyline + lift cable follow the survivor) --
+    # -- geometry re-anchor after merge (segment polyline + lift cable follow the survivor) --
 
     def test_merge_resyncs_slope_boundary_ids_so_endpoints_do_not_dangle(
         self, empty_graph, mock_dem_blue_slope
@@ -1462,7 +1462,7 @@ class TestMergeNodes:
         assert start_pt is not None and end_pt is not None
         assert slope.start_node_id in graph.nodes and slope.end_node_id in graph.nodes
 
-    def test_merge_restitches_segment_polyline_endpoint_to_survivor(self, empty_graph, mock_dem_blue_slope) -> None:
+    def test_merge_reanchors_segment_polyline_endpoint_to_survivor(self, empty_graph, mock_dem_blue_slope) -> None:
         """After merge, an affected segment's drawn polyline endpoint sits exactly on the survivor
         (not the pre-merge coordinate), so the slope actually reaches the merged node.
         """
@@ -2020,7 +2020,7 @@ class TestDeleteNodes:
         interior = empty_graph.segments[slope.segment_ids[0]].end_node_id
         length_before = slope.get_total_length(empty_graph.segments)
 
-        empty_graph.delete_nodes(node_ids=[interior], dem=mock_dem_blue_slope)
+        empty_graph.delete_nodes(node_ids=[interior])
 
         assert interior not in empty_graph.nodes, "the interior node is gone"
         assert len(empty_graph.slopes[slope.id].segment_ids) == 2, "3 segments fused to 2"
@@ -2032,7 +2032,7 @@ class TestDeleteNodes:
         n0 = empty_graph.segments[slope.segment_ids[0]].end_node_id
         n1 = empty_graph.segments[slope.segment_ids[1]].end_node_id
 
-        empty_graph.delete_nodes(node_ids=[n0, n1], dem=mock_dem_blue_slope)
+        empty_graph.delete_nodes(node_ids=[n0, n1])
 
         assert len(empty_graph.slopes[slope.id].segment_ids) == 1, "both interior nodes fused → 1 segment"
         assert n0 not in empty_graph.nodes and n1 not in empty_graph.nodes
@@ -2042,7 +2042,7 @@ class TestDeleteNodes:
         old_start = slope.start_node_id
         new_start_expected = empty_graph.segments[slope.segment_ids[1]].start_node_id
 
-        empty_graph.delete_nodes(node_ids=[old_start], dem=mock_dem_blue_slope)
+        empty_graph.delete_nodes(node_ids=[old_start])
 
         assert old_start not in empty_graph.nodes, "the trimmed end node is freed"
         assert len(empty_graph.slopes[slope.id].segment_ids) == 2, "the boundary segment is trimmed"
@@ -2058,7 +2058,7 @@ class TestDeleteNodes:
         end = slope.start_node_id
         adjacent = empty_graph.segments[slope.segment_ids[0]].end_node_id  # neighbour of the end node
 
-        empty_graph.delete_nodes(node_ids=[end, adjacent], dem=mock_dem_blue_slope)
+        empty_graph.delete_nodes(node_ids=[end, adjacent])
 
         surviving = graph_slope = empty_graph.slopes[slope.id]
         assert end not in empty_graph.nodes and adjacent not in empty_graph.nodes, "both nodes freed"
@@ -2075,7 +2075,7 @@ class TestDeleteNodes:
         interior = empty_graph.segments[slope.segment_ids[0]].end_node_id
         chain_before = list(slope.segment_ids)
 
-        empty_graph.delete_nodes(node_ids=[interior], dem=mock_dem_blue_slope)
+        empty_graph.delete_nodes(node_ids=[interior])
         assert empty_graph.undo_stack[-1].action_type.name == "DELETE_NODES", "delete pushes one DELETE_NODES entry"
 
         empty_graph.undo_last()
@@ -2086,7 +2086,7 @@ class TestDeleteNodes:
         slope = _commit_straight_slope(graph=empty_graph, dem=mock_dem_blue_slope, n_segments=1)
         # A single-segment path's endpoint is LAST_SEGMENT — delete_nodes_rejection refuses it.
         with pytest.raises(ValueError, match="delete the path instead"):
-            empty_graph.delete_nodes(node_ids=[slope.start_node_id], dem=mock_dem_blue_slope)
+            empty_graph.delete_nodes(node_ids=[slope.start_node_id])
 
     def test_delete_both_nodes_of_two_segment_slope_refused(self, empty_graph, mock_dem_blue_slope) -> None:
         """Deleting BOTH the start and the lone interior node of a 2-segment slope would leave <2 nodes
@@ -2097,7 +2097,7 @@ class TestDeleteNodes:
         interior = empty_graph.segments[slope.segment_ids[0]].end_node_id
         assert empty_graph.delete_nodes_rejection([start, interior]) is not None
         with pytest.raises(ValueError, match="delete the path instead"):
-            empty_graph.delete_nodes(node_ids=[start, interior], dem=mock_dem_blue_slope)
+            empty_graph.delete_nodes(node_ids=[start, interior])
 
     def test_delete_emptying_a_fused_multi_path_group_refused(self, empty_graph) -> None:
         """Two 2-segment slopes A(a0→ai→J) and B(J→bi→b0) fuse at degree-2 node J. Selecting
@@ -2160,7 +2160,7 @@ class TestDeleteNodes:
             if graph.node_deletability(nid) in (NodeDeletability.DELETABLE_INTERIOR, NodeDeletability.DELETABLE_END)
         )
         nodes_before = len(graph.nodes)
-        graph.delete_nodes(node_ids=[deletable], dem=dem)
+        graph.delete_nodes(node_ids=[deletable])
         assert graph.undo_stack[-1].action_type.name == "DELETE_NODES", "a delete actually ran"
         assert deletable not in graph.nodes and len(graph.nodes) < nodes_before, "the node was removed"
         # And no surviving segment references a removed node (the crash this guards).
@@ -2192,7 +2192,7 @@ class TestDeleteNodeFusesTwoPaths:
         long_id, long_name = long_slope.id, long_slope.name
         seg_total = len(long_slope.segment_ids) + len(short_slope.segment_ids)
 
-        graph.delete_nodes(node_ids=[shared], dem=dem)
+        graph.delete_nodes(node_ids=[shared])
 
         assert short_slope.id not in graph.slopes, "the shorter slope was absorbed and removed"
         survivor = graph.slopes[long_id]
@@ -2209,7 +2209,7 @@ class TestDeleteNodeFusesTwoPaths:
         long_slope, short_slope, shared = self._two_slopes_sharing_node(graph=graph, dem=dem)
         long_segs, short_segs = list(long_slope.segment_ids), list(short_slope.segment_ids)
 
-        graph.delete_nodes(node_ids=[shared], dem=dem)
+        graph.delete_nodes(node_ids=[shared])
         graph.undo_last()
 
         assert long_slope.id in graph.slopes and short_slope.id in graph.slopes, "both slopes restored"
@@ -2245,7 +2245,7 @@ class TestDeleteNodeFusesTwoPaths:
         long_slope = graph.finish_slope(segment_ids=long_seg_ids)
         long_id, long_name, long_end = long_slope.id, long_slope.name, long_slope.end_node_id
 
-        graph.delete_nodes(node_ids=[shared], dem=dem)
+        graph.delete_nodes(node_ids=[shared])
 
         assert short_slope.id not in graph.slopes, "the shorter (upstream) slope was absorbed"
         survivor = graph.slopes[long_id]
@@ -2726,7 +2726,7 @@ class TestNodeEditHelpers:
     def test_rebuild_fuses_a_single_interior_node(self, empty_graph, mock_dem_blue_slope) -> None:
         slope = _commit_straight_slope(graph=empty_graph, dem=mock_dem_blue_slope, n_segments=3)
         interior = empty_graph.segments[slope.segment_ids[0]].end_node_id
-        empty_graph._rebuild_chain_without_nodes(path=slope, drop_nodes={interior}, dem=mock_dem_blue_slope)
+        empty_graph._rebuild_chain_without_nodes(path=slope, drop_nodes={interior})
         assert len(slope.segment_ids) == 2, "the two segments around the node fused into one"
         assert all(
             interior not in (empty_graph.segments[s].start_node_id, empty_graph.segments[s].end_node_id)
@@ -2737,7 +2737,7 @@ class TestNodeEditHelpers:
         slope = _commit_straight_slope(graph=empty_graph, dem=mock_dem_blue_slope, n_segments=3)
         old_start = slope.start_node_id
         new_start_expected = empty_graph.segments[slope.segment_ids[1]].start_node_id
-        empty_graph._rebuild_chain_without_nodes(path=slope, drop_nodes={old_start}, dem=mock_dem_blue_slope)
+        empty_graph._rebuild_chain_without_nodes(path=slope, drop_nodes={old_start})
         assert len(slope.segment_ids) == 2, "the lone boundary segment is trimmed"
         assert slope.start_node_id == new_start_expected, "boundary re-derived from the surviving chain"
 
@@ -2746,12 +2746,90 @@ class TestNodeEditHelpers:
         slope = _commit_straight_slope(graph=empty_graph, dem=mock_dem_blue_slope, n_segments=4)
         end = slope.start_node_id
         adjacent = empty_graph.segments[slope.segment_ids[0]].end_node_id
-        empty_graph._rebuild_chain_without_nodes(path=slope, drop_nodes={end, adjacent}, dem=mock_dem_blue_slope)
+        empty_graph._rebuild_chain_without_nodes(path=slope, drop_nodes={end, adjacent})
         for sid in slope.segment_ids:
             seg = empty_graph.segments[sid]
             assert seg.start_node_id in empty_graph.nodes and seg.end_node_id in empty_graph.nodes
         assert end not in _chain_node_sequence([empty_graph.segments[s] for s in slope.segment_ids])
         assert adjacent not in _chain_node_sequence([empty_graph.segments[s] for s in slope.segment_ids])
+
+
+class TestReanchorPreservesGeometry:
+    """Structural edits (node delete-fusion, merge) must NOT re-query the DEM for interior waypoints —
+    that would flatten intentional off-terrain geometry (tunnels below / bridges above the surface).
+    reanchor only moves the two endpoints onto their nodes; every interior point is kept verbatim.
+    """
+
+    _TUNNEL_ELEV = -999.0  # a distinctive far-below-terrain elevation; DEM re-draping would erase it
+
+    def test_reanchor_moves_only_endpoints(self) -> None:
+        # Unit test: interior points identical (incl. elevation); only points[0]/points[-1] become nodes.
+        seg = PathSegment(
+            points=[
+                PathPoint(lon=0.0, lat=0.0, elevation=100.0),
+                PathPoint(lon=0.001, lat=0.0, elevation=self._TUNNEL_ELEV),  # deliberate below-terrain dip
+                PathPoint(lon=0.002, lat=0.0, elevation=100.0),
+            ],
+            kind=SegmentKind.ROAD,
+        )
+        start = Node(id="S", location=PathPoint(lon=0.0, lat=0.0, elevation=200.0))
+        end = Node(id="E", location=PathPoint(lon=0.002, lat=0.0, elevation=210.0))
+
+        seg.reanchor(start_node=start, end_node=end)
+
+        assert seg.points[0].elevation == 200.0 and (seg.points[0].lon, seg.points[0].lat) == (0.0, 0.0)
+        assert seg.points[-1].elevation == 210.0 and (seg.points[-1].lon, seg.points[-1].lat) == (0.002, 0.0)
+        assert seg.points[1].elevation == self._TUNNEL_ELEV, "interior waypoint must NOT be re-draped"
+
+    def _road_with_tunnel_dip(self, graph, dem):
+        """Build a 5-segment straight road, then FUSE its middle nodes so a segment gains a genuine
+        interior waypoint, and force a below-terrain dip on that interior point (a "tunnel"). Straight
+        segments finish as 2-point polylines, so only a fused segment has an interior point to dip.
+        Returns (road, tunnel_seg_id, dip_lonlat).
+        """
+        road = _commit_straight_road(graph=graph, dem=dem, n_segments=5)
+        # Fuse one interior node so its two segments merge into a 3-point segment (start, mid, end).
+        mid_node = graph.segments[road.segment_ids[1]].end_node_id
+        graph.delete_nodes(node_ids=[mid_node])
+        road = graph.roads[road.id]
+        tunnel_seg_id = next(s for s in road.segment_ids if len(graph.segments[s].points) >= 3)
+        seg = graph.segments[tunnel_seg_id]
+        interior = len(seg.points) // 2
+        pts = list(seg.points)
+        p = pts[interior]
+        pts[interior] = PathPoint(lon=p.lon, lat=p.lat, elevation=self._TUNNEL_ELEV)
+        seg.points = pts
+        return road, tunnel_seg_id, (p.lon, p.lat)
+
+    def test_delete_distant_node_preserves_tunnel_interior(self, empty_graph, mock_dem_blue_slope) -> None:
+        road, tunnel_seg_id, _ = self._road_with_tunnel_dip(empty_graph, mock_dem_blue_slope)
+        # Delete a node on a DIFFERENT part of the road, far from the tunnel segment's interior dip.
+        other = next(
+            graph_seg.end_node_id
+            for sid in road.segment_ids
+            if sid != tunnel_seg_id
+            for graph_seg in [empty_graph.segments[sid]]
+            if graph_seg.end_node_id != road.end_node_id
+        )
+
+        empty_graph.delete_nodes(node_ids=[other])
+
+        surviving = [empty_graph.segments[s] for s in empty_graph.roads[road.id].segment_ids]
+        dips = [p.elevation for seg in surviving for p in seg.points if p.elevation == self._TUNNEL_ELEV]
+        assert dips, "the below-terrain tunnel waypoint must survive deletion of a distant node (not re-draped)"
+
+    def test_merge_nodes_preserves_tunnel_interior(self, empty_graph, mock_dem_blue_slope) -> None:
+        road, tunnel_seg_id, _ = self._road_with_tunnel_dip(empty_graph, mock_dem_blue_slope)
+        # Merge two boundary nodes on a segment OTHER than the tunnel one — away from the dip.
+        other_seg = next(s for s in road.segment_ids if s != tunnel_seg_id)
+        n_a = empty_graph.segments[other_seg].start_node_id
+        n_b = empty_graph.segments[other_seg].end_node_id
+
+        empty_graph.merge_nodes(node_ids=[n_a, n_b], dem=mock_dem_blue_slope)
+
+        surviving = [empty_graph.segments[s] for s in empty_graph.roads[road.id].segment_ids]
+        dips = [p.elevation for seg in surviving for p in seg.points if p.elevation == self._TUNNEL_ELEV]
+        assert dips, "the below-terrain tunnel waypoint must survive a merge away from it (interior not re-draped)"
 
 
 # =============================================================================

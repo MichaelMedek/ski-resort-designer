@@ -26,7 +26,6 @@ from skiresort_planner.model.warning import (
 )
 
 if TYPE_CHECKING:
-    from skiresort_planner.core.dem_service import DEMService
     from skiresort_planner.model.node import Node
 
 
@@ -163,34 +162,21 @@ class PathSegment(Path):
         # Clamp to allowed range for this difficulty
         return max(min_width, min(max_width, adaptive_width))
 
-    def restitch(self, start_node: "Node", end_node: "Node", dem: "DEMService") -> None:
-        """Re-anchor this segment's drawn polyline after an endpoint node moved.
+    def reanchor(self, start_node: "Node", end_node: "Node") -> None:
+        """Re-anchor this segment's polyline endpoints to its (possibly moved) nodes, in place.
 
-        Snaps endpoints to start_node/end_node and re-drapes elevation from the DEM. Keeps
-        identity/styling (id, name, kind, side slope); metrics recompute from points. Does not
-        re-plan the route — re-drapes existing geometry in place (mirrors OSM import).
+        Sets the first/last point to the nodes' own location (lon/lat AND elevation) and keeps every
+        interior point EXACTLY as-is — no DEM re-draping. Keeps identity/styling.
 
         Args:
             start_node: The (possibly moved) node this segment starts at.
             end_node: The (possibly moved) node this segment ends at.
-            dem: DEM service for elevation re-draping.
-
-        Raises:
-            ValueError: If any point falls on DEM nodata.
         """
-        redraped: list[PathPoint] = []
-        for i, p in enumerate(self.points):
-            if i == 0:
-                lon, lat = start_node.lon, start_node.lat
-            elif i == len(self.points) - 1:
-                lon, lat = end_node.lon, end_node.lat
-            else:
-                lon, lat = p.lon, p.lat
-            elevation = dem.get_elevation(lon=lon, lat=lat)
-            if elevation is None:
-                raise ValueError(f"restitch of segment {self.id}: point ({lat:.5f}, {lon:.5f}) has no DEM elevation")
-            redraped.append(PathPoint(lon=lon, lat=lat, elevation=elevation))
-        self.points = redraped
+        reanchored: list[PathPoint] = list(self.points)
+        # Fresh PathPoints (don't alias the nodes' location objects, which may move later).
+        reanchored[0] = PathPoint(lon=start_node.lon, lat=start_node.lat, elevation=start_node.elevation)
+        reanchored[-1] = PathPoint(lon=end_node.lon, lat=end_node.lat, elevation=end_node.elevation)
+        self.points = reanchored
 
     def get_belt_polygon(self, *, width_override_m: float | None = None) -> list[tuple[float, float]]:
         """Get belt polygon coordinates (buffered ribbon in meters).

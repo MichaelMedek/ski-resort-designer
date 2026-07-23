@@ -2209,3 +2209,125 @@ class TestNodeEditingClick:
         )
         assert ctx.node_edit.node_ids == []
         assert sm.is_node_edit_selecting, "a rejected terrain click keeps us in node editing"
+
+
+# =============================================================================
+# Viewing an entity syncs build_mode to its kind (regression: view = arm that builder)
+# =============================================================================
+
+
+class TestViewingSyncsBuildMode:
+    """Clicking an entity to view it must set build_mode to that entity's kind, so the NEXT click
+    builds the same kind you are viewing (and never leaves a stale utility/other-builder mode armed —
+    which previously built the wrong kind or crashed with TransitionNotAllowed).
+    """
+
+    def _view_click(self, fake_st, graph, factory, dem, click_info, *, armed):
+        """Arm a DIFFERENT build mode, then click an entity to view it. Returns (sm, ctx) so a test
+        can assert build_mode was re-synced to the viewed kind.
+        """
+        from skiresort_planner.ui.click_handlers import handle_idle_click
+
+        sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
+        ctx.build_mode.mode = armed  # a DIFFERENT mode is armed before viewing
+        handle_idle_click(click_info=click_info, elevation=None)
+        return sm, ctx
+
+    def test_view_slope_sets_build_mode_slope(
+        self, fake_st, path_factory, mock_dem_blue_slope, path_points_blue
+    ) -> None:
+        """Commit + finish a slope, then click it (with a lift armed): build_mode must become SLOPE."""
+        graph = ResortGraph()
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        slope = graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        _, ctx = self._view_click(
+            fake_st,
+            graph,
+            path_factory,
+            mock_dem_blue_slope,
+            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.SLOPE, slope_id=slope.id),
+            armed=BuildMode.CHAIRLIFT,
+        )
+        assert ctx.build_mode.mode == BuildMode.SLOPE
+
+    def test_view_road_sets_build_mode_road(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
+        """Build a road, then click it (with a lift armed): build_mode must become ROAD (the reported gap)."""
+        graph = ResortGraph()
+        road = _commit_road(graph)
+        _, ctx = self._view_click(
+            fake_st,
+            graph,
+            path_factory,
+            mock_dem_red_slope_diagonal,
+            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.ROAD, road_id=road.id),
+            armed=BuildMode.CHAIRLIFT,
+        )
+        assert ctx.build_mode.mode == BuildMode.ROAD
+
+    def test_view_lift_sets_build_mode_to_lift_type(self, fake_st, path_factory, mock_dem_blue_slope) -> None:
+        """Add a gondola, then click it (with slope armed): build_mode must become the lift's own type."""
+        graph = ResortGraph()
+        bottom, _ = graph.get_or_create_node(lon=0.0, lat=0.0, elevation=1900.0)
+        top, _ = graph.get_or_create_node(lon=0.0, lat=200 / MapConfig.METERS_PER_DEGREE_EQUATOR, elevation=2000.0)
+        lift = graph.add_lift(start_node_id=bottom.id, end_node_id=top.id, lift_type="gondola", dem=mock_dem_blue_slope)
+        _, ctx = self._view_click(
+            fake_st,
+            graph,
+            path_factory,
+            mock_dem_blue_slope,
+            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.LIFT, lift_id=lift.id),
+            armed=BuildMode.SLOPE,
+        )
+        assert ctx.build_mode.mode == lift.lift_type == "gondola"
+
+    def test_click_after_viewing_road_starts_a_road_not_lift(
+        self, fake_st, path_factory, mock_dem_red_slope_diagonal
+    ) -> None:
+        """The reported bug: arm LIFT, view a road, then click a node → must start a ROAD (matching the
+        viewed kind), not a lift.
+        """
+        from skiresort_planner.ui.click_handlers import handle_idle_click
+
+        graph = ResortGraph()
+        road = _commit_road(graph)
+        node, _ = graph.get_or_create_node(lon=0.02, lat=0.02, elevation=2000.0)
+        sm, ctx = self._view_click(
+            fake_st,
+            graph,
+            path_factory,
+            mock_dem_red_slope_diagonal,
+            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.ROAD, road_id=road.id),
+            armed=BuildMode.CHAIRLIFT,
+        )
+        handle_idle_click(
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id),
+            elevation=None,
+        )
+        assert sm.is_road_starting, "click after viewing a road must start a ROAD build"
+        assert not sm.is_lift_placing
+
+    def test_view_road_after_utility_mode_does_not_crash(
+        self, fake_st, path_factory, mock_dem_red_slope_diagonal
+    ) -> None:
+        """The crash: arm NODE_EDIT, view a road, click a node. Must NOT raise TransitionNotAllowed —
+        viewing the road re-arms ROAD, so the node click cleanly starts a road build.
+        """
+        from skiresort_planner.ui.click_handlers import handle_idle_click
+
+        graph = ResortGraph()
+        road = _commit_road(graph)
+        node, _ = graph.get_or_create_node(lon=0.02, lat=0.02, elevation=2000.0)
+        sm, ctx = self._view_click(
+            fake_st,
+            graph,
+            path_factory,
+            mock_dem_red_slope_diagonal,
+            ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.ROAD, road_id=road.id),
+            armed=BuildMode.NODE_EDIT,
+        )
+        assert ctx.build_mode.mode == BuildMode.ROAD
+        handle_idle_click(  # previously raised TransitionNotAllowed
+            click_info=ClickInfo(click_type=MapClickType.MARKER, marker_type=MarkerType.NODE, node_id=node.id),
+            elevation=None,
+        )
+        assert sm.is_road_starting

@@ -1115,7 +1115,7 @@ class ResortGraph:
         survivor_before = Node(id=survivor.id, location=survivor.location)
         merged = set(merged_ids)
         # The survivor moves to the median too, so a builder touching ANY of the selected nodes
-        # (survivor included) needs re-stitching — not just those on the merged-away nodes.
+        # (survivor included) needs re-anchoring — not just those on the merged-away nodes.
         touched = set(node_ids)
 
         affected_segments, affected_lifts, affected_paths = self._collect_affected_builders(touched=touched)
@@ -1139,7 +1139,7 @@ class ResortGraph:
         assert survivor_id in self.nodes, f"merge survivor {survivor_id} must remain after dropping merged nodes"
         self.cleanup_isolated_nodes()
 
-        self._remove_collapsed_and_restitch(
+        self._remove_collapsed_and_reanchor(
             affected_segments=affected_segments, affected_lifts=affected_lifts, affected_paths=affected_paths, dem=dem
         )
 
@@ -1199,14 +1199,14 @@ class ResortGraph:
             if path.end_node_id in merged:
                 path.end_node_id = survivor_id
 
-    def _remove_collapsed_and_restitch(
+    def _remove_collapsed_and_reanchor(
         self,
         affected_segments: list[PathSegment],
         affected_lifts: list[Lift],
         affected_paths: list[SegmentPath],
         dem: "DEMService",
     ) -> None:
-        """Delete zero-length entities collapsed by the merge, then re-stitch the survivors.
+        """Delete zero-length entities collapsed by the merge, then re-anchor the survivors' endpoints.
 
         Collapsed paths/lifts (both boundaries → survivor) are deleted inside the same
         MergeNodesAction; middle "curl" segments are spliced out; every survivor is recomputed.
@@ -1225,13 +1225,14 @@ class ResortGraph:
             if path.id not in collapsed_ids:
                 removed_segment_ids.update(self._drop_collapsed_segments_in_chain(path=path))
 
-        # Re-stitch every surviving affected builder fresh from the moved endpoints (each model owns
+        # Re-anchor every surviving affected builder's endpoints to the moved nodes (each model owns
         # its recompute; a road is just segments with kind=ROAD, so no per-kind branch is needed).
+        # Endpoint-only, no DEM re-drape — interior geometry (tunnels/bridges) is preserved.
         # A segment we just dropped with its collapsed parent or as a middle curl is skipped.
         for seg in affected_segments:
             if seg.id in removed_segment_ids:
                 continue
-            seg.restitch(start_node=self.nodes[seg.start_node_id], end_node=self.nodes[seg.end_node_id], dem=dem)
+            seg.reanchor(start_node=self.nodes[seg.start_node_id], end_node=self.nodes[seg.end_node_id])
         for lift in affected_lifts:
             if lift.start_node_id == lift.end_node_id:
                 self._remove_collapsed_lift(lift=lift)
@@ -1284,7 +1285,7 @@ class ResortGraph:
     # Node delete / insert (merge-mode editing tools)
     # =========================================================================
 
-    def delete_nodes(self, node_ids: list[str], dem: "DEMService") -> None:
+    def delete_nodes(self, node_ids: list[str]) -> None:
         """Delete path nodes, keeping the rest of each path (interior fusion / clean-endpoint trim).
 
         A degree-2 node fuses its two segments — joining two same-kind paths into one first (shorter
@@ -1314,7 +1315,7 @@ class ResortGraph:
 
         # Re-resolve after joins (an absorbed path is gone; its nodes now belong to the survivor).
         for path in self._paths_owning_nodes(node_ids=node_ids):
-            self._rebuild_chain_without_nodes(path=path, drop_nodes=to_delete, dem=dem)
+            self._rebuild_chain_without_nodes(path=path, drop_nodes=to_delete)
 
         # Only remove a selected node once nothing references it.
         self.cleanup_isolated_nodes()
@@ -1360,7 +1361,7 @@ class ResortGraph:
         del self.entity_dict_for_kind(kind=shorter.kind)[shorter.id]
         logger.info(f"Joined {shorter.name} into {longer.name} at {node_id} (delete)")
 
-    def _rebuild_chain_without_nodes(self, path: "SegmentPath", drop_nodes: set[str], dem: "DEMService") -> None:
+    def _rebuild_chain_without_nodes(self, path: "SegmentPath", drop_nodes: set[str]) -> None:
         """Rewrite path.segment_ids with drop_nodes removed, via a single node-sequence walk.
 
         The chain is the node sequence [n0, n1, …, nN] (segment i spans node i→i+1). Keep the
@@ -1392,12 +1393,12 @@ class ResortGraph:
             if sid not in new_ids:
                 del self.segments[sid]
 
-        # Recompute side slope + re-drape each fused head (endpoints unchanged, so restitch keeps it
-        # on-terrain — mirrors merge/commit).
+        # Recompute side slope (pure geometry) + re-anchor endpoints to the surviving nodes. No DEM
+        # re-drape: interior waypoints are kept verbatim so tunnel/bridge geometry survives fusion.
         for sid in new_ids:
             seg = self.segments[sid]
             seg.side_slope_pct, seg.side_slope_dir = self.side_slope_for_points(points=seg.points)
-            seg.restitch(start_node=self.nodes[seg.start_node_id], end_node=self.nodes[seg.end_node_id], dem=dem)
+            seg.reanchor(start_node=self.nodes[seg.start_node_id], end_node=self.nodes[seg.end_node_id])
 
         path.segment_ids = new_ids
         path.start_node_id = self.segments[new_ids[0]].start_node_id
