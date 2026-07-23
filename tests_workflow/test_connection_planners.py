@@ -193,6 +193,34 @@ class TestGridNode:
         assert n2 < n3, "Row takes precedence over col"
 
 
+class TestSelfIntersects:
+    """The quality gate that refuses a smoothed route which crosses itself."""
+
+    def _pts(self, xy: list[tuple[float, float]]) -> list[PathPoint]:
+        # Build PathPoints from local metre offsets near the origin (elevation irrelevant here).
+        deg = 1.0 / MapConfig.METERS_PER_DEGREE_EQUATOR
+        return [PathPoint(lon=x * deg, lat=y * deg, elevation=1000.0) for x, y in xy]
+
+    def test_straight_line_is_simple(self) -> None:
+        pts = self._pts([(0, 0), (100, 0), (200, 0), (300, 0)])
+        assert LeastCostPathPlanner._self_intersects(pts) is False
+
+    def test_open_switchback_is_simple(self) -> None:
+        # A clean serpentine (no crossing) must pass — this is a valid steep-ground path.
+        pts = self._pts([(0, 0), (100, 50), (0, 100), (100, 150), (0, 200)])
+        assert LeastCostPathPlanner._self_intersects(pts) is False
+
+    def test_crossing_polyline_is_flagged(self) -> None:
+        # A bowtie/figure-eight crosses itself → degenerate route.
+        pts = self._pts([(0, 0), (100, 100), (100, 0), (0, 100)])
+        assert LeastCostPathPlanner._self_intersects(pts) is True
+
+    def test_too_few_points_is_simple(self) -> None:
+        # Fewer than 4 points cannot self-cross; guard returns False without building geometry.
+        pts = self._pts([(0, 0), (100, 0)])
+        assert LeastCostPathPlanner._self_intersects(pts) is False
+
+
 class TestFindNearestNode:
     """Unit tests for _find_nearest_node method."""
 

@@ -260,7 +260,7 @@ class GeometricTuningConfig:
     # grade on steep ground gets room to serpentine: `along` spans the chord, `across` twice its bow.
     MAX_GRID_SIZE = 320  # hard cap; resolution coarsens under it
     GRID_RES_DIVISOR = 200.0  # target cells along length L
-    GRID_RES_MIN_M = 6.0  # finest cell (short switchbacks)
+    GRID_RES_MIN_M = 4.0  # finest cell (short switchbacks)
     GRID_ALONG_MARGIN = 1.2  # along extent = this × chord
     GRID_PADDING_M = 120.0  # slack so endpoints leave the edge
     GRID_ACROSS_MIN_M = 600.0  # lateral floor (turning room)
@@ -270,10 +270,9 @@ class GeometricTuningConfig:
     # Lateral momentum: a switchback REVERSAL costs this × cell size. Without it Dijkstra can't tell a
     # clean switchback from a micro-sawtooth, and smoothing rounds the sawtooth back to the fall line.
     SWITCHBACK_REVERSAL_PENALTY = 500.0  # per-reversal cost, × cell
-    # Douglas–Peucker tolerance (grid cells) before finish-smoothing: drops the per-leg staircase jitter
-    # (which inflates the spline point count → over-round/overshoot) while keeping true switchback apexes.
-    PLANNER_SIMPLIFY_CELLS = 2.0  # DP tolerance in cells
-    PLANNER_MIN_SIMPLIFIED_POINTS = 3  # else keep raw (dedup needs ≥3)
+    # Cap on the planner's own finish-smoothing. A heavy factor over switchback apexes over-rounds
+    # (shortens) and overshoots vertically across the gaps (dips below ground), so keep it light.
+    PLANNER_SMOOTHING_FACTOR = 5.0
     PATH_SIMILARITY_TOLERANCE = 0.0001  # overlap-dedup (~10m mid-latitude)
 
     # --- Fan tracer (path_tracer.py) + fan breadth (path_factory.py) ---

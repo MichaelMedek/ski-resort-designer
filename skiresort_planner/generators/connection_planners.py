@@ -13,13 +13,14 @@ import numpy as np
 import numpy.typing as npt
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import shortest_path
+from shapely.geometry import LineString
 
 from skiresort_planner.constants import GeometricTuningConfig, PlannerConfig
 from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.core.geo_calculator import GeoCalculator
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.model.path_point import PathPoint
-from skiresort_planner.model.path_smoothing import simplify_path_points, smooth_proposal_points
+from skiresort_planner.model.path_smoothing import smooth_proposal_points
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 
 logger = logging.getLogger(__name__)
@@ -52,8 +53,7 @@ class LeastCostPathPlanner:
     2. Sparse graph over (node × lateral heading), radius-R coprime neighborhood, edges weighted by
        slope-deviation cost + a switchback-reversal penalty (lateral momentum)
     3. SciPy Dijkstra for the minimum-cost path
-    4. Simplify the grid staircase (Douglas–Peucker), then cubic-spline smooth
-    5. Resample at regular intervals with DEM elevation lookups
+    4. Cubic-spline smooth (light factor) and resample at regular DEM-sampled intervals
 
     Cost = distance × exp(|actual−target|/σ) × against_penalty (+ reversal). σ=COST_SIGMA (lower =
     stricter); against_penalty penalizes running the wrong way (no loops); reversal favours few large
@@ -159,29 +159,39 @@ class LeastCostPathPlanner:
             lats=lats,
         )
 
-        # Collapse the per-leg diagonal staircase (jitter that would inflate the spline's point budget
-        # → over-round/overshoot) while keeping the true switchback apexes. Fall back to the raw dense
-        # path if DP drops below the ≥3-point minimum the rest of the pipeline needs.
-        simplified = simplify_path_points(
-            points=raw_points,
-            tolerance_m=GeometricTuningConfig.PLANNER_SIMPLIFY_CELLS * grid_res_m,
-        )
-        if len(simplified) < GeometricTuningConfig.PLANNER_MIN_SIMPLIFIED_POINTS:
-            simplified = raw_points
-
-        # Smooth + DEM-requery at the kind's finish factor, so the proposal previews the finished shape.
+        # Smooth + DEM-requery. Capped at PLANNER_SMOOTHING_FACTOR: a heavy finish factor over the switchback
+        # apexes over-rounds (shortens the path) and overshoots vertically across the gaps (dips below ground).
         points = smooth_proposal_points(
-            points=simplified,
-            smoothing_factor=smoothing_factor,
+            points=raw_points,
+            smoothing_factor=min(smoothing_factor, GeometricTuningConfig.PLANNER_SMOOTHING_FACTOR),
             step_m=GeometricTuningConfig.RESAMPLE_STEP_M,
             elevation_fn=self.dem.get_elevation,
         )
+
+        # Quality gate: a self-crossing polyline is a degenerate route (over-tight switchback), so refuse
+        # it rather than propose a tangled path — the caller falls back to a straighter alternative.
+        if self._self_intersects(points):
+            logger.debug(
+                f"plan: no path — smoothed route self-intersects (target_grade={target_grade_pct:.1f}%, "
+                f"{gradient_mode}) from ({start_lon:.5f}, {start_lat:.5f}) to ({target_lon:.5f}, {target_lat:.5f})"
+            )
+            return None
 
         return ProposedPathSegment(
             points=points,
             target_slope_pct=target_grade_pct,
             is_connector=True,
         )
+
+    @staticmethod
+    def _self_intersects(points: list[PathPoint]) -> bool:
+        """True if the horizontal polyline crosses itself (projected to a local metre frame)."""
+        if len(points) < 4:
+            return False
+        lon0, lat0 = points[0].lon, points[0].lat
+        m_per_deg_lon, m_per_deg_lat = GeoCalculator.meters_per_degree(lat=lat0)
+        xy = [((p.lon - lon0) * m_per_deg_lon, (p.lat - lat0) * m_per_deg_lat) for p in points]
+        return not LineString(xy).is_simple
 
     def _build_grid(
         self,
