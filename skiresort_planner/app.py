@@ -54,6 +54,7 @@ from skiresort_planner.ui import (
     reload_map,
     render_control_panel,
     trigger_rerun,
+    undo_last_action,
     viewport_map_height,
 )
 from skiresort_planner.ui.mode_registry import BUILD_STATES
@@ -188,6 +189,11 @@ def _handle_error_with_recovery(e: Exception, context_tag: str) -> None:
     logger.error(f"[{context_tag}] error caught: {error_msg}\n{traceback.format_exc()}")
     st.error(f"⚠️ [{context_tag}] Something went wrong: {error_msg}")
     reset_ui_state()
+    # A graph-corrupting action makes every rerun re-crash;
+    # undo backs it out and autosaves the corrected graph, so offer it directly on the recovery screen.
+    graph: ResortGraph = st.session_state.graph
+    if graph.undo_stack and st.button("↩️ Undo Last Action"):
+        undo_last_action()  # pops the stack, autosaves, and triggers a rerun
     if st.button("🔄 Reset and Continue", type="primary"):
         trigger_rerun()
 

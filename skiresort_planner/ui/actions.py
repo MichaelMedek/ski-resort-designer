@@ -31,6 +31,7 @@ from skiresort_planner.model.actions import (
 from skiresort_planner.model.lift import Lift
 from skiresort_planner.model.message import (
     InvalidClickMessage,
+    MergeCreatesCycleMessage,
     MergeTooFarMessage,
     NotAdjacentNodesMessage,
     UnableToDeleteMessage,
@@ -229,8 +230,9 @@ def confirm_import_action(mode: OSMImportMode) -> None:
 def confirm_merge_action() -> None:
     """Confirm the node-merge selection: collapse the selected nodes to their median, return to idle.
 
-    Validates the span first for a friendly toast — if any pair exceeds MergeConfig.MAX_SPAN_M the
-    merge is refused and nothing changes (the state stays in node_edit_selecting so the user can adjust the
+    Validates span and acyclicity first for a friendly toast — if any pair exceeds
+    MergeConfig.MAX_SPAN_M, or the merge would fold a slope into a cycle, it is refused and
+    nothing changes (the state stays in node_edit_selecting so the user can adjust the
     selection). On success the merge is one undoable action and we return to idle.
     """
     ctx: PlannerContext = st.session_state.context
@@ -248,6 +250,11 @@ def confirm_merge_action() -> None:
         logger.info(f"Merge refused: span {span:.0f}m > {MergeConfig.MAX_SPAN_M:.0f}m")
         MergeTooFarMessage(span_m=span, max_span_m=MergeConfig.MAX_SPAN_M).display()
         return  # no state change — the user can deselect the far node and retry
+
+    if graph.merge_would_create_cycle(node_ids=node_ids):
+        logger.info("Merge refused: would create a cycle in the slope graph")
+        MergeCreatesCycleMessage().display()
+        return  # no state change — the user can deselect a node in between and retry
 
     graph.merge_nodes(node_ids=node_ids, dem=dem)
     logger.info(f"Merged {len(node_ids)} nodes into {node_ids[0]}")

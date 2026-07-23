@@ -1725,6 +1725,56 @@ class TestMergeNodes:
         graph.undo_last()
         assert graph.slopes[slope.id].segment_ids == original_chain, "undo restores the original chain"
 
+    def test_merge_bracketing_a_subchain_is_refused_as_a_cycle(self, empty_graph, mock_dem_blue_slope) -> None:
+        """Merging two nodes two segments apart on one chain folds it into a directed loop (S3 N3->N4
+        becomes N3->survivor while S2 N2->N3 stays) — refused, no mutation. This is the reported bug:
+        a zigzag brings the bracketing nodes back within MAX_SPAN_M, so the cycle check (not span) fires.
+        """
+        dem = mock_dem_blue_slope
+        graph = empty_graph
+        # Compact zigzag N1..N5 (all within MAX_SPAN_M of each other) built directly, so merging the
+        # bracketing pair N2/N4 is a span-legal merge whose only defect is the cycle it would create.
+        from skiresort_planner.constants import MergeConfig
+
+        m = MapConfig.METERS_PER_DEGREE_EQUATOR
+        coords = {"N1": (0.0, 0.0), "N2": (0.0, -100), "N3": (100, -100), "N4": (100, -200), "N5": (0.0, -300)}
+        for nid, (lon_m, lat_m) in coords.items():
+            self._node(graph=graph, dem=dem, node_id=nid, lon=lon_m / m, lat=lat_m / m)
+        for sid, top, bot in (("S1", "N1", "N2"), ("S2", "N2", "N3"), ("S3", "N3", "N4"), ("S4", "N4", "N5")):
+            graph.segments[sid] = PathSegment(
+                id=sid,
+                name=sid,
+                start_node_id=top,
+                end_node_id=bot,
+                kind=SegmentKind.SLOPE,
+                points=[graph.nodes[top].location, graph.nodes[bot].location],
+            )
+        graph.slopes["SL1"] = Slope(
+            id="SL1", name="1", segment_ids=["S1", "S2", "S3", "S4"], start_node_id="N1", end_node_id="N5"
+        )
+
+        assert graph.max_node_span_m(node_ids=["N2", "N4"]) <= MergeConfig.MAX_SPAN_M, "bracketing pair is span-legal"
+        assert graph.merge_would_create_cycle(node_ids=["N2", "N4"]) is True
+        nodes_before, undo_before = set(graph.nodes), len(graph.undo_stack)
+        with pytest.raises(ValueError, match="cycle"):
+            graph.merge_nodes(node_ids=["N2", "N4"], dem=dem)
+        assert set(graph.nodes) == nodes_before, "no mutation on refusal"
+        assert len(graph.undo_stack) == undo_before, "no undo entry recorded on refusal"
+
+    def test_merge_adjacent_chain_nodes_is_not_a_cycle(self, empty_graph, mock_dem_blue_slope) -> None:
+        """Merging two ADJACENT chain nodes only collapses their shared segment (a curl spliced out),
+        never a loop — so it is allowed. Guards against the cycle check over-rejecting.
+        """
+        dem = mock_dem_blue_slope
+        graph = empty_graph
+        slope = _commit_straight_slope(graph=graph, dem=dem, n_segments=4)
+        chain = _chain_node_sequence([graph.segments[sid] for sid in slope.segment_ids])
+        n1, n2 = chain[1], chain[2]  # adjacent interior nodes (share exactly one segment)
+
+        assert graph.merge_would_create_cycle(node_ids=[n1, n2]) is False
+        graph.merge_nodes(node_ids=[n1, n2], dem=dem)  # succeeds
+        assert n2 not in graph.nodes and n1 in graph.nodes
+
     def test_merge_median_off_dem_raises(self, empty_graph) -> None:
         """If the median point lands on a nodata/out-of-coverage DEM cell (get_elevation → None), merge
         raises a distinct ValueError — a user-valid outcome, not an internal-invariant crash.

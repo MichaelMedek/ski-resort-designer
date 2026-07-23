@@ -267,6 +267,15 @@ class MergeTooFarMessage(WarningToast):
 
 
 @dataclass(frozen=True)
+class MergeCreatesCycleMessage(WarningToast):
+    """Merging the selected nodes would fold a slope back on itself (a directed cycle)."""
+
+    @property
+    def message(self) -> str:
+        return "Can't merge — this would loop a slope back on itself. Deselect a node in between."
+
+
+@dataclass(frozen=True)
 class UnableToDeleteMessage(WarningToast):
     """A selected node can't be deleted (lift station, shared/branch junction, or sole segment)."""
 

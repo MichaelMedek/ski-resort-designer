@@ -1102,13 +1102,16 @@ class ResortGraph:
         nodes is repointed onto it, then the others are deleted. ONE undoable MergeNodesAction.
 
         Raises:
-            ValueError: fewer than two nodes, or any pair farther apart than MergeConfig.MAX_SPAN_M
-                (the caller should pre-check via max_node_span_m to show a friendly message).
+            ValueError: fewer than two nodes, any pair farther apart than MergeConfig.MAX_SPAN_M,
+                or the merge would fold the slope graph into a cycle (the caller should pre-check
+                via max_node_span_m / merge_would_create_cycle to show a friendly message).
         """
         if len(node_ids) < 2:
             raise ValueError(f"merge_nodes needs at least two nodes, got {len(node_ids)}")
-        if self.max_node_span_m(node_ids) > MergeConfig.MAX_SPAN_M:
+        if self.max_node_span_m(node_ids=node_ids) > MergeConfig.MAX_SPAN_M:
             raise ValueError(f"nodes span more than {MergeConfig.MAX_SPAN_M:.0f}m apart — refusing to merge")
+        if self.merge_would_create_cycle(node_ids=node_ids):
+            raise ValueError("merge would create a cycle in the slope graph — refusing to merge")
 
         survivor_id, merged_ids = node_ids[0], node_ids[1:]
         survivor = self.nodes[survivor_id]
@@ -1742,6 +1745,36 @@ class ResortGraph:
                 )
         return defects
 
+    def _slope_segment_edges(self) -> dict[tuple[str, str], float]:
+        """(start_node_id, end_node_id) -> longest length_m over all slope segments.
+
+        Single source for the directed slope graph, shared by greatest_descent and the merge
+        cycle check so the two can't drift. Parallel segments dedup to the longest.
+        """
+        edges: dict[tuple[str, str], float] = {}
+        for slope in self.slopes.values():
+            for sid in slope.segment_ids:
+                seg = self.segments[sid]
+                key = (seg.start_node_id, seg.end_node_id)
+                edges[key] = max(edges.get(key, 0.0), seg.length_m)
+        return edges
+
+    def merge_would_create_cycle(self, node_ids: list[str]) -> bool:
+        """True if collapsing node_ids onto the survivor would fold the slope graph into a cycle.
+
+        Merging two nodes that bracket a ≥2-segment sub-chain glues its ends together (e.g. S2
+        N2→N3 plus S3 N3→N4 becomes N2→N3 + N3→N2), which no DAG reader can survive. Self-loops
+        (start==end) are dropped: they are the zero-length curls the merge itself splices out.
+        """
+        survivor, merged = node_ids[0], set(node_ids[1:])
+        dag = nx.DiGraph()
+        for u, v in self._slope_segment_edges():
+            ru = survivor if u in merged else u
+            rv = survivor if v in merged else v
+            if ru != rv:
+                dag.add_edge(ru, rv)
+        return not nx.is_directed_acyclic_graph(dag)
+
     def greatest_descent(self) -> GreatestDescent:
         """Greatest continuous ski descent skiable top-to-bottom without riding a lift (max vertical drop).
 
@@ -1754,12 +1787,7 @@ class ResortGraph:
         reported length reflects the actual piste travelled.
         """
         # Dedup parallel segments (same drop) to the longest, so the reported length is the real piste.
-        edges: dict[tuple[str, str], float] = {}
-        for slope in self.slopes.values():
-            for sid in slope.segment_ids:
-                seg = self.segments[sid]
-                key = (seg.start_node_id, seg.end_node_id)
-                edges[key] = max(edges.get(key, 0.0), seg.length_m)
+        edges = self._slope_segment_edges()
         if not edges:
             return GreatestDescent(drop_m=0.0, length_m=0.0, top_elev_m=0.0, bottom_elev_m=0.0)
 
