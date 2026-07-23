@@ -545,12 +545,12 @@ A finished slope/road is a **chain**: a node sequence $[n_0, \dots, n_N]$ where 
 
 ### 10.1 Merge
 
-The **survivor** $s$ (first selected) moves to the selection's component-wise **median** position (elevation re-sampled from the DEM); the others are deleted and every reference repointed to $s$. Refused if the selection's span (largest pairwise distance) exceeds **500 m** — the median is only sensible for a tight cluster. Repointing can leave a segment running $s \to s$ (zero-length "curl"): if the whole entity collapses ($n_0 = n_N$) it is deleted; if only one interior segment does, that link is dropped from the sequence ($\dots\!\to\!s\!\to\!s\!\to\!\dots$ becomes $\dots\!\to\!s\!\to\!\dots$) so the chain stays continuous.
+The **survivor** $s$ (first selected) moves to the selection's component-wise **median** position (elevation re-sampled from the DEM); the others are deleted and every reference repointed to $s$. Refused if the selection's span (largest pairwise distance) exceeds **500 m** — the median is only sensible for a tight cluster. Repointing can leave a segment running $s \to s$ (zero-length "curl"): if the whole entity collapses ($n_0 = n_N$) it is deleted; if only one interior segment does, that link is dropped from the sequence ($\dots \to s \to s \to \dots$ becomes $\dots \to s \to \dots$) so the chain stays continuous.
 
 ### 10.2 Delete
 
 A node is deletable only where removal leaves a valid chain:
-- **Interior** (two segments of one path, bounds no path) → the two segments **fuse** (concatenate points, drop the shared junction): $n_{i-1}\!\to\!n_i\!\to\!n_{i+1}$ becomes $n_{i-1}\!\to\!n_{i+1}$.
+- **Interior** (two segments of one path, bounds no path) → the two segments **fuse** (concatenate points, drop the shared junction): $n_{i-1} \to n_i \to n_{i+1}$ becomes $n_{i-1} \to n_{i+1}$.
 - **Clean endpoint** (one segment, boundary of one *multi-segment* path) → that boundary segment is **trimmed** and the terminus re-derived.
 
 Refused otherwise: a **lift station**, a **shared/branch junction** (would split the other path), or a **sole segment** (would empty the path). Over a multi-node selection the deletions must still leave **≥ 2 nodes per path**, so an end node *plus* the only interior node of a 2-segment slope is refused though each is individually deletable. Adjacent interior nodes fuse in one left-to-right pass, so a trimmed end next to a fused interior never leaves a segment pointing at a deleted node.
