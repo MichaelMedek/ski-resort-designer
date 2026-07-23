@@ -258,8 +258,8 @@ class GeometricTuningConfig:
     # --- Grid-Dijkstra planner (connection_planners.py) ---
     # Grid is sized from the REQUIRED path length L = 100·drop/g (not the straight chord), so a gentle
     # grade on steep ground gets room to serpentine: `along` spans the chord, `across` twice its bow.
-    MAX_GRID_SIZE = 320  # hard cap; resolution coarsens under it
-    GRID_RES_DIVISOR = 200.0  # target cells along length L
+    MAX_GRID_SIZE = 220  # hard cap; resolution coarsens under it
+    GRID_RES_DIVISOR = 175.0  # target cells along length L
     GRID_RES_MIN_M = 4.0  # finest cell (short switchbacks)
     GRID_ALONG_MARGIN = 1.2  # along extent = this × chord
     GRID_PADDING_M = 120.0  # slack so endpoints leave the edge
