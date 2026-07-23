@@ -272,7 +272,7 @@ class MergeCreatesCycleMessage(WarningToast):
 
     @property
     def message(self) -> str:
-        return "Can't merge — this would loop a slope back on itself. Deselect a node in between."
+        return "Can't merge — this would loop a slope back on itself."
 
 
 @dataclass(frozen=True)

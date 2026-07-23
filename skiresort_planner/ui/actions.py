@@ -254,7 +254,7 @@ def confirm_merge_action() -> None:
     if graph.merge_would_create_cycle(node_ids=node_ids):
         logger.info("Merge refused: would create a cycle in the slope graph")
         MergeCreatesCycleMessage().display()
-        return  # no state change — the user can deselect a node in between and retry
+        return  # no state change — the user can deselect a node and retry
 
     graph.merge_nodes(node_ids=node_ids, dem=dem)
     logger.info(f"Merged {len(node_ids)} nodes into {node_ids[0]}")
