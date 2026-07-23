@@ -28,14 +28,6 @@ or any device that can't run the desktop app; just expect it to be a bit slower 
 
 ---
 
-## Terrain Data
-
-The app uses pre-cropped Alps DEM (Digital Elevation Model) data covering the European Alps at 60m resolution. The data is automatically downloaded from Hugging Face on first run.
-
-For other regions, download the full 2.3GB EuroDEM from https://www.mapsforeurope.org/datasets/euro-dem and use `scripts/crop_dem_to_alps.py` as a template.
-
----
-
 ## Documentation
 
 Detailed documentation  about how to use the app UI and the underlying algorithms is available in the `docs/` folder:
@@ -47,7 +39,7 @@ Detailed documentation  about how to use the app UI and the underlying algorithm
 
 ---
 
-## Run from source (developers)
+## Run from source
 
 ```bash
 python3.11 -m venv .venv-skiresort && source .venv-skiresort/bin/activate
@@ -62,3 +54,11 @@ SKIRESORT_LOG_LEVEL=DEBUG streamlit run skiresort_planner/app.py 2>&1 | tee outp
 ```
 
 Packaging the desktop app (installers are built automatically by CI on release) — see [deploy/README.md](deploy/README.md).
+
+## Terrain Data
+
+The app uses pre-cropped Alps DEM (Digital Elevation Model) data covering the European Alps at 60m resolution. The data is automatically downloaded from Hugging Face on first run.
+
+For other regions, download the full 2.3GB EuroDEM from https://www.mapsforeurope.org/datasets/euro-dem and use `scripts/crop_dem_to_alps.py` as a template.
+
+---
