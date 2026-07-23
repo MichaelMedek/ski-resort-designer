@@ -141,7 +141,7 @@ class MergeNodesAction:
     """Undo action for merging several nodes into one survivor.
 
     Restoring is exact: put the deleted nodes back, move the survivor to its old location, and restore
-    the pre-merge snapshot of every builder the merge touched — segments (repointed + re-stitched
+    the pre-merge snapshot of every builder the merge touched — segments (repointed + re-anchored
     geometry), lifts (repointed + rebuilt cable), and slopes/roads (repointed boundary ids). Each
     snapshot carries the original endpoint ids, so replacing it in place also undoes the repoint.
     """

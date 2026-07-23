@@ -265,7 +265,6 @@ def delete_nodes_action() -> None:
     ctx: PlannerContext = st.session_state.context
     sm: PlannerStateMachine = st.session_state.state_machine
     graph: ResortGraph = st.session_state.graph
-    dem = st.session_state.dem_service
 
     node_ids = list(ctx.node_edit.node_ids)
     if not node_ids:
@@ -278,7 +277,7 @@ def delete_nodes_action() -> None:
         UnableToDeleteMessage(reason=rejection).display()
         return  # no state change — the user can deselect the offending node and retry
 
-    graph.delete_nodes(node_ids=node_ids, dem=dem)
+    graph.delete_nodes(node_ids=node_ids)
     bump_dedup_epoch()
     sm.finish_node_edit()  # → idle_ready; the before-hook clears the selection
 

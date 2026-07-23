@@ -1784,7 +1784,7 @@ class TestUndoDispatchMatrix:
         sm, ctx = _session(fake_st=fake_st, graph=graph, factory=factory, dem=dem)
         slope = _commit_straight_slope_len(graph=graph, dem=dem, n_segments=2)
         junction_id = graph.segments[slope.segment_ids[0]].end_node_id  # interior node: deletable
-        graph.delete_nodes(node_ids=[junction_id], dem=dem)
+        graph.delete_nodes(node_ids=[junction_id])
 
         def check() -> None:
             assert sm.is_idle_ready, "node-edit undo is redraw-only (no state change)"
