@@ -515,6 +515,7 @@ class PathActionMessage(WarningMessage):
     end_elevation_m: float = 0.0
     is_connector: bool = False
     target_node_id: str | None = None
+    structure_note: str = ""  # condensed bridge/tunnel OR earthwork tag, "" when none
 
     # Too-steep detail for the empty-paths branch. `too_steep_gentlest_pct`:
     # None means NOT too steep (plain guidance); a value means too steep and IS the gentlest grade to report.
@@ -545,11 +546,13 @@ class PathActionMessage(WarningMessage):
         difficulty_line = (
             f"- {self.path_difficulty_emoji} {self.path_difficulty.capitalize()} • " if self.path_difficulty else "- "
         )
-        # Show drop and gradient as MAGNITUDES: the backend has "downhill is positive".
+        # Show drop and gradient as MAGNITUDES: the backend has "downhill is positive". Append the
+        # condensed note (bridge/tunnel or earthwork) — what the segment will be.
+        note = f" ({self.structure_note})" if self.structure_note else ""
         return (
             f"{header}\n\n"
             f"{difficulty_line}↕{abs(self.path_drop_m):.0f}m • {self.path_length_m:.0f}m\n"
-            f"- 📐 {abs(self.actual_gradient_pct):.0f}% overall ({abs(self.target_gradient_pct):.0f}% target)\n"
+            f"- 📐 {abs(self.actual_gradient_pct):.0f}% overall{note}\n"
             f"- 📍 {self.start_elevation_m:.0f}m → {self.end_elevation_m:.0f}m\n"
             f"{action}"
         )
@@ -655,13 +658,20 @@ class NodeEditActionMessage(WarningMessage):
 
 @dataclass(frozen=True)
 class SegmentWarningMessage(WarningMessage):
-    """Warning in slope stats panel about segment issues."""
+    """Warning in slope stats panel about segment issues. Carries both the full text and a condensed
+    `short_message` so it renders as a full warning line or an inline tag interchangeably.
+    """
 
     warning_text: str
+    short_text: str
 
     @property
     def message(self) -> str:
         return f"⚠️ {self.warning_text}"
+
+    @property
+    def short_message(self) -> str:
+        return self.short_text
 
 
 @dataclass(frozen=True)
@@ -682,6 +692,16 @@ class SegmentStructureMessage(InfoMessage):
             return f"🌉 Bridge — max {self.max_above_m:.0f}m above ground"
         elif self.profile == SegmentProfile.TUNNEL:
             return f"🚇 Tunnel — max {self.max_below_m:.0f}m below ground"
+        else:
+            raise ValueError(f"SegmentStructureMessage built for non-structure profile: {self.profile!r}")
+
+    @property
+    def short_message(self) -> str:
+        """Condensed (≤15 char) emoji tag for inline stats (e.g. '🌉 +12m')."""
+        if self.profile == SegmentProfile.BRIDGE:
+            return f"🌉 Bridge +{self.max_above_m:.0f}m"
+        elif self.profile == SegmentProfile.TUNNEL:
+            return f"🚇 Tunnel -{self.max_below_m:.0f}m"
         else:
             raise ValueError(f"SegmentStructureMessage built for non-structure profile: {self.profile!r}")
 

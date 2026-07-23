@@ -44,6 +44,12 @@ class Warning(ABC):
         """Human-readable warning message with emoji prefix."""
         raise NotImplementedError
 
+    @property
+    @abstractmethod
+    def short_message(self) -> str:
+        """Condensed (≤15 char) emoji tag for inline stats."""
+        raise NotImplementedError
+
     def __str__(self) -> str:
         return self.message
 
@@ -79,6 +85,10 @@ class ExcavatorWarning(Warning):
             f"(terrain leans {self.side_slope_dir.value})"
         )
 
+    @property
+    def short_message(self) -> str:
+        return f"🚜 {self.vertical_cut_m:.1f}m cut"
+
 
 @dataclass(frozen=True)
 class TooSteepWarning(Warning):
@@ -103,6 +113,10 @@ class TooSteepWarning(Warning):
             f"safe slope of {self.max_threshold_pct:.0f}% — may require terrain modification"
         )
 
+    @property
+    def short_message(self) -> str:
+        return f"⚠️ {self.slope_pct:.0f}% steep"
+
 
 @dataclass(frozen=True)
 class TooFlatWarning(Warning):
@@ -126,3 +140,7 @@ class TooFlatWarning(Warning):
             f"📐 Too Flat Warning: Gradient {self.slope_pct:.0f}% is below minimum "
             f"skiable slope of {self.min_threshold_pct:.0f}% — skiers may need to push"
         )
+
+    @property
+    def short_message(self) -> str:
+        return f"📐 {self.slope_pct:.0f}% flat"

@@ -15,7 +15,7 @@ from skiresort_planner.constants import StyleConfig
 
 if TYPE_CHECKING:
     from skiresort_planner.core.dem_service import DEMService
-    from skiresort_planner.model.path_segment import PathSegment
+    from skiresort_planner.model.path_geometry import Path
 
 
 class SegmentProfile(StrEnum):
@@ -41,14 +41,14 @@ class SegmentProfileResult:
     max_below_m: float
 
 
-def classify_segment_profile(*, segment: "PathSegment", dem: "DEMService", threshold_m: float) -> SegmentProfileResult:
+def classify_segment_profile(*, segment: "Path", dem: "DEMService", threshold_m: float) -> SegmentProfileResult:
     """Classify a segment as bridge/tunnel/ground by its worst deviation from the terrain surface.
 
     Deviation = point.elevation - terrain. The whole segment takes one class (its worst point). Ties
-    (equal above/below magnitude) resolve to BRIDGE.
+    (equal above/below magnitude) resolve to BRIDGE. Takes any `Path` (committed segment or proposal).
 
     Args:
-        segment: Committed segment whose points carry smoothed (non-re-draped) elevations.
+        segment: Any Path (committed segment or proposal) whose points carry smoothed elevations.
         dem: Elevation source, queried once (vectorized) at every point.
         threshold_m: Deviation magnitude below which the segment is GROUND.
     """
