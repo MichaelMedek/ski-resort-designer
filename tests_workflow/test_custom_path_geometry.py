@@ -23,6 +23,7 @@ Every case can also be rendered as a 3D plot (hill + ideal + real path).
 
 import itertools
 import math
+import os
 
 import numpy as np
 import pytest
@@ -36,7 +37,8 @@ from skiresort_planner.model.path_point import PathPoint
 # Arbitrary start well inside every mock-DEM bound (±1–2°) and off the cone's singular summit at (0,0).
 _START_LON = 0.02
 _START_LAT = 0.02
-_PLOT_DIR = PACKAGE_DIR.parent / "output" / "path_geometry_plots"
+# Set SKIRESORT_PLOT_PATHS=1 to render the 3D debug plots locally; unset in CI (no matplotlib, no plot).
+_PLOT_DIR = (PACKAGE_DIR.parent / "output" / "path_geometry_plots") if os.environ.get("SKIRESORT_PLOT_PATHS") else None
 
 # Three FLAT conftest fixtures only. (fixture name, fall-line steepness %).
 _PLANAR_TERRAINS = [
