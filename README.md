@@ -17,6 +17,11 @@ Get the app as a normal desktop program.
 3. First open shows a one-time safety prompt (the app isn't code-signed):
    - **Mac** → *"Apple could not verify … is free of malware"*: go to **System Settings → Privacy & Security**, scroll down, click **Open Anyway** (then open once more). To skip the prompt entirely, run once in Terminal: `xattr -dr com.apple.quarantine /Applications/AlpinArchitect.app`
    - **Windows** → **"Windows protected your PC"** → **More info** → **Run anyway**.
+4. App data (auto-saved backups, terrain, logs) lives in one per-user folder you can open and manage. Open it with:
+   - **Mac** → `open ~/Library/Application\ Support/AlpinArchitect` (or in Finder: **Go → Go to Folder…**, paste `~/Library/Application Support/AlpinArchitect`)
+   - **Windows** → `explorer %LOCALAPPDATA%\AlpinArchitect` (or paste `%LOCALAPPDATA%\AlpinArchitect` into the Explorer address bar)
+
+   (Files you **Save to File** / **Export** download to your Downloads folder, not here.)
 
 On first launch it downloads ~285 MB of terrain data automatically (once); after that it starts fast.
 

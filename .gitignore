@@ -7,6 +7,9 @@ output/*
 # Auto-saved resort backups (per-session, user-generated)
 backups/
 
+# Per-run timestamped log files (dev runs with SKIRESORT_DATA_ROOT=$PWD land here)
+logs/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

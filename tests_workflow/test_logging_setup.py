@@ -7,6 +7,7 @@ that a sibling library logger is left untouched.
 """
 
 import logging
+from pathlib import Path
 
 import pytest
 
@@ -75,3 +76,17 @@ def test_idempotent_no_duplicate_handlers(monkeypatch: pytest.MonkeyPatch) -> No
     logging_setup.configure_logging()
     logging_setup.configure_logging()
     assert len(logging.getLogger(logging_setup.PACKAGE_LOGGER).handlers) == count_after_first
+
+
+def test_writes_timestamped_log_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Packaged-app users have no visible terminal, so INFO logs must also land in a timestamped file
+    # under LOG_DIR (next to data/backups). Redirect LOG_DIR to a temp dir and assert a file is written.
+    log_dir = tmp_path / "logs"
+    monkeypatch.setattr(logging_setup, "LOG_DIR", log_dir)
+    monkeypatch.setenv(logging_setup.ENV_LEVEL, "INFO")
+
+    logging_setup.configure_logging().getChild("app").info("regression marker")
+
+    files = list(log_dir.glob("skiresort_*.log"))
+    assert len(files) == 1, f"exactly one timestamped log file expected, got {files}"
+    assert "regression marker" in files[0].read_text(encoding="utf-8")

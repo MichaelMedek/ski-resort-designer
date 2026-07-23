@@ -62,6 +62,9 @@ OUTPUT_DIR = _DATA_ROOT / "output"
 # Auto-saved resort backups (per-session crash/outage safety net)
 BACKUP_DIR = _DATA_ROOT / "backups"
 
+# Timestamped INFO log files (one per run) alongside data/backups
+LOG_DIR = _DATA_ROOT / "logs"
+
 
 class AppConfig:
     """UI application settings."""
