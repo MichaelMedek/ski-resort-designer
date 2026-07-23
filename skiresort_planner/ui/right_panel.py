@@ -1069,11 +1069,15 @@ class PathStatsPanel(StatsPanel):
         with st.expander("📋 Segment Details", expanded=False):
             for i, seg_id in enumerate(owner.segment_ids, 1):
                 seg = self.graph.segments[seg_id]
+                # Difficulty slopes lead with a colored difficulty label; roads just their icon.
                 if spec.shows_difficulty:
-                    emoji = StyleConfig.DIFFICULTY_EMOJIS[seg.difficulty]
-                    line = f"{i}. {emoji} **{seg.difficulty.capitalize()}** — {seg.length_m:.0f}m, {seg.max_slope_pct:.0f}% steepest, {seg.width_m:.0f}m wide"
+                    prefix = f"{StyleConfig.DIFFICULTY_EMOJIS[seg.difficulty]} **{seg.difficulty.capitalize()}** — "
                 else:
-                    line = f"{i}. {spec.icon} {seg.length_m:.0f}m, {seg.max_slope_pct:.0f}% steepest, {seg.width_m:.0f}m wide"
+                    prefix = f"{spec.icon} "
+                line = (
+                    f"{i}. {prefix}{seg.length_m:.0f}m, "
+                    f"{seg.avg_slope_pct:.0f}% overall / {seg.max_slope_pct:.0f}% steepest, {seg.width_m:.0f}m wide"
+                )
                 st.markdown(line)
 
                 # A bridge/tunnel shows its structure info INSTEAD of the earthwork (Excavator) warning;
