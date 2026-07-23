@@ -17,7 +17,7 @@ For user workflow, see [DETAILS_UI.md](DETAILS_UI.md).
 7. [Custom Direction / Connect Paths](#7-custom-direction--connect-paths)
 8. [Lift Pylon Placement](#8-lift-pylon-placement)
 9. [OpenStreetMap Import](#9-openstreetmap-import)
-10. [Node Editing: Merge / Delete / Insert](#10-node-editing-merge--delete--insert)
+10. [Node Editing: Merge / Delete / Cut / Insert](#10-node-editing-merge--delete--cut--insert)
 
 ---
 
@@ -539,39 +539,28 @@ An incoming run is skipped if the graph already has a slope/lift with the **same
 
 ---
 
-## 10. Node Editing: Merge / Delete / Insert
+## 10. Node Editing: Merge / Delete / Cut / Insert
 
-A finished slope/road is a **chain**: a node sequence $[n_0, \dots, n_N]$ where segment $i$ spans
-$n_i \to n_{i+1}$ and adjacent segments share the junction node by value. The three merge-mode edits
-rewrite that chain while preserving one invariant — **every segment runs between two distinct existing
-nodes and the chain stays connected**. Segment metrics are pure functions of the point polyline, so
-reshaping the polyline *is* the edit; each is one undoable action.
+A finished slope/road is a **chain**: a node sequence $[n_0, \dots, n_N]$ where segment $i$ spans $n_i \to n_{i+1}$ and adjacent segments share the junction node by value. The four node-editor edits rewrite that chain while preserving one invariant — **every segment runs between two distinct existing nodes and the chain stays connected**. Segment metrics are pure functions of the point polyline, so reshaping the polyline *is* the edit; each is one undoable action.
 
 ### 10.1 Merge
 
-The **survivor** $s$ (first selected) moves to the selection's component-wise **median** position (elevation
-re-sampled from the DEM); the others are deleted and every reference repointed to $s$. Refused if the
-selection's span (largest pairwise distance) exceeds **500 m** — the median is
-only sensible for a tight cluster. Repointing can leave a segment running $s \to s$ (zero-length
-"curl"): if the whole entity collapses ($n_0 = n_N$) it is deleted; if only one interior segment does,
-that link is dropped from the sequence ($\dots\!\to\!s\!\to\!s\!\to\!\dots$ becomes
-$\dots\!\to\!s\!\to\!\dots$) so the chain stays continuous.
+The **survivor** $s$ (first selected) moves to the selection's component-wise **median** position (elevation re-sampled from the DEM); the others are deleted and every reference repointed to $s$. Refused if the selection's span (largest pairwise distance) exceeds **500 m** — the median is only sensible for a tight cluster. Repointing can leave a segment running $s \to s$ (zero-length "curl"): if the whole entity collapses ($n_0 = n_N$) it is deleted; if only one interior segment does, that link is dropped from the sequence ($\dots\!\to\!s\!\to\!s\!\to\!\dots$ becomes $\dots\!\to\!s\!\to\!\dots$) so the chain stays continuous.
 
 ### 10.2 Delete
 
 A node is deletable only where removal leaves a valid chain:
-- **Interior** (two segments of one path, bounds no path) → the two segments **fuse** (concatenate
-  points, drop the shared junction): $n_{i-1}\!\to\!n_i\!\to\!n_{i+1}$ becomes $n_{i-1}\!\to\!n_{i+1}$.
-- **Clean endpoint** (one segment, boundary of one *multi-segment* path) → that boundary segment is
-  **trimmed** and the terminus re-derived.
+- **Interior** (two segments of one path, bounds no path) → the two segments **fuse** (concatenate points, drop the shared junction): $n_{i-1}\!\to\!n_i\!\to\!n_{i+1}$ becomes $n_{i-1}\!\to\!n_{i+1}$.
+- **Clean endpoint** (one segment, boundary of one *multi-segment* path) → that boundary segment is **trimmed** and the terminus re-derived.
 
-Refused otherwise: a **lift station**, a **shared/branch junction** (would split the other path), or a
-**sole segment** (would empty the path). Over a multi-node selection the deletions must still leave
-**≥ 2 nodes per path**, so an end node *plus* the only interior node of a 2-segment slope is refused
-though each is individually deletable. Adjacent interior nodes fuse in one left-to-right pass, so a
-trimmed end next to a fused interior never leaves a segment pointing at a deleted node.
+Refused otherwise: a **lift station**, a **shared/branch junction** (would split the other path), or a **sole segment** (would empty the path). Over a multi-node selection the deletions must still leave **≥ 2 nodes per path**, so an end node *plus* the only interior node of a 2-segment slope is refused though each is individually deletable. Adjacent interior nodes fuse in one left-to-right pass, so a trimmed end next to a fused interior never leaves a segment pointing at a deleted node.
 
-### 10.3 Insert
+### 10.3 Cut
+
+**Delete Direct Connection** removes every segment that directly joins **two selected adjacent nodes** $n_i \to n_{i+1}$, splitting each owning path (requires exactly two nodes with a segment between them).
+For one owner: an **interior** cut leaves the *before* chain on the original entity (keeps id/name) and spawns a fresh entity for the *after* chain ($[n_0\dots n_i]$ and $[n_{i+1}\dots n_N]$); a **boundary** cut (the pair is an end segment) trims that segment and keeps the survivor; a **sole segment** (the pair *was* the whole path) deletes the entity outright. Two paths sharing the same pair are each cut. No geometry is recomputed — surviving polylines are unchanged — and it is a single undo.
+
+### 10.4 Insert
 
 The click is **projected onto the segment centerline** (nearest point on the polyline, density-agnostic — it lands anywhere on the leg, not on a stored vertex), and that projected point becomes the new node with its **elevation DEM-queried** at ground level. The 3D polyline splits at that position (elevation interpolated along the leg) into two segments sharing the new node.
 Refused if the projected point is within a step size (**30 m**) of an endpoint — that would stack the new node on an existing one instead of making a real interior split.
