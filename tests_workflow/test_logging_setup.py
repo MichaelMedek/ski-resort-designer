@@ -85,6 +85,11 @@ def test_writes_timestamped_log_file(tmp_path: Path, monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(logging_setup, "LOG_DIR", log_dir)
     monkeypatch.setenv(logging_setup.ENV_LEVEL, "INFO")
 
+    # configure_logging() is idempotent (`if not logger.handlers`), so a prior test/import that
+    # already configured the shared package logger would skip the file-handler setup. Clear handlers
+    # here so this test deterministically exercises the file-writing path regardless of run order.
+    logging.getLogger(logging_setup.PACKAGE_LOGGER).handlers.clear()
+
     logging_setup.configure_logging().getChild("app").info("regression marker")
 
     files = list(log_dir.glob("skiresort_*.log"))
