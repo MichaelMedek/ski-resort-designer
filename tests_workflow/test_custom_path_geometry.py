@@ -100,10 +100,11 @@ def _setup_target(dem, steep: float, grade: float, drop: float, setup: str) -> t
     - "FALLLINE": straight down the fall line, close (drop D at the terrain grade S).
     """
     if setup in ("TRAVERSE", "MATCHED"):
+        assert 0 < grade <= steep, f"{setup} needs 0 < g({grade}) ≤ S({steep}) for arccos(g/S)"
         bearing = _fall_bearing(dem) + math.degrees(math.acos(grade / steep))
         dist = 100.0 * drop / grade
     else:
-        assert steep == grade
+        assert 0 < grade < steep, f"FALLLINE needs g({grade}) strictly gentler than S({steep}) to force a serpentine"
         bearing = _fall_bearing(dem)
         dist = 100.0 * drop / steep
     return GeoCalculator.destination(lon=_START_LON, lat=_START_LAT, bearing_deg=bearing, distance_m=dist)
@@ -117,6 +118,7 @@ def _build_ideal_path(
     """
     target_elev = dem.get_elevation(lon=target_lon, lat=target_lat)
     drop = start_elev - target_elev
+    assert drop > 0, f"ideal path must descend: start {start_elev:.1f}m ≤ target {target_elev:.1f}m"
     total_len = 100.0 * drop / grade  # length that sheds `drop` at grade g
 
     def _pt(along: float, lon: float, lat: float) -> PathPoint:
@@ -139,6 +141,9 @@ def _build_ideal_path(
         direct = GeoCalculator.haversine_distance_m(lat1=_START_LAT, lon1=_START_LON, lat2=target_lat, lon2=target_lon)
         half_len, half_fall = total_len / 2, direct / 2
         across = math.sqrt(max(half_len**2 - half_fall**2, 0.0))
+        assert across > 0, (
+            f"FALLLINE serpentine must bow sideways: half_len {half_len:.0f}m ≤ half_fall {half_fall:.0f}m"
+        )
         n_leg = 20
         points: list[PathPoint] = []
         for i in range(2 * n_leg + 1):
@@ -228,7 +233,11 @@ class TestPathGeometry:
         dem = request.getfixturevalue(fname)
         start_elev = dem.get_elevation(lon=_START_LON, lat=_START_LAT)
         target_lon, target_lat = _setup_target(dem, steep, grade, drop, setup)
-        expected_len = 100.0 * (start_elev - dem.get_elevation(lon=target_lon, lat=target_lat)) / grade
+        target_elev = dem.get_elevation(lon=target_lon, lat=target_lat)
+        assert start_elev > target_elev, (
+            f"target must sit below start: start {start_elev:.1f}m ≤ target {target_elev:.1f}m"
+        )
+        expected_len = 100.0 * (start_elev - target_elev) / grade
 
         ideal = _build_ideal_path(dem, start_elev, target_lon, target_lat, grade, setup)
         assert ideal is not None
