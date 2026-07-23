@@ -256,11 +256,25 @@ class GeometricTuningConfig:
     """Machine-tunable knobs that shape generated route geometry."""
 
     # --- Grid-Dijkstra planner (connection_planners.py) ---
-    GRID_RESOLUTION_M = 15.0  # Grid cell size in meters
-    GRID_BUFFER_FACTOR = 1.0  # Lateral room around the direct start→target line, as a fraction of that distance
-    MAX_GRID_SIZE = 320  # Max grid cells per dimension — covers a 1500m path at 15m resolution
-    COST_SIGMA = 8.0  # Slope-deviation sensitivity in the edge cost (lower = stricter grade matching)
-    PATH_SIMILARITY_TOLERANCE = 0.0001  # Overlap-dedup tolerance (~0.0001° ≈ 10m at mid-latitudes)
+    # Grid is sized from the REQUIRED path length L = 100·drop/g (not the straight chord), so a gentle
+    # grade on steep ground gets room to serpentine: `along` spans the chord, `across` twice its bow.
+    MAX_GRID_SIZE = 320  # hard cap; resolution coarsens under it
+    GRID_RES_DIVISOR = 200.0  # target cells along length L
+    GRID_RES_MIN_M = 6.0  # finest cell (short switchbacks)
+    GRID_ALONG_MARGIN = 1.2  # along extent = this × chord
+    GRID_PADDING_M = 120.0  # slack so endpoints leave the edge
+    GRID_ACROSS_MIN_M = 600.0  # lateral floor (turning room)
+    GRID_ACROSS_MAX_M = 13500.0  # lateral ceiling (widest serpentine)
+    MIN_GRADE_PCT_FOR_LENGTH = 1.0  # below this, size from chord
+    COST_SIGMA = 2.0  # slope-deviation sensitivity (lower = stricter)
+    # Lateral momentum: a switchback REVERSAL costs this × cell size. Without it Dijkstra can't tell a
+    # clean switchback from a micro-sawtooth, and smoothing rounds the sawtooth back to the fall line.
+    SWITCHBACK_REVERSAL_PENALTY = 500.0  # per-reversal cost, × cell
+    # Douglas–Peucker tolerance (grid cells) before finish-smoothing: drops the per-leg staircase jitter
+    # (which inflates the spline point count → over-round/overshoot) while keeping true switchback apexes.
+    PLANNER_SIMPLIFY_CELLS = 2.0  # DP tolerance in cells
+    PLANNER_MIN_SIMPLIFIED_POINTS = 3  # else keep raw (dedup needs ≥3)
+    PATH_SIMILARITY_TOLERANCE = 0.0001  # overlap-dedup (~10m mid-latitude)
 
     # --- Fan tracer (path_tracer.py) + fan breadth (path_factory.py) ---
     STEP_SIZE_M = 30  # Path trace / terrain-sample / node-snap step (smaller = smoother, slower)
@@ -331,14 +345,31 @@ class ConnectionConfig:
     MIN_DROP_M = 5
 
 
+def _coprime_neighbors(radius: int) -> list[tuple[int, int]]:
+    """All coprime grid offsets within `radius` (gcd==1 drops collinear duplicates like (2,4)≡(1,2)),
+    row-major for determinism. These are the search-grid neighbor directions.
+    """
+    return [
+        (dr, dc)
+        for dr in range(-radius, radius + 1)
+        for dc in range(-radius, radius + 1)
+        if (dr, dc) != (0, 0) and math.gcd(abs(dr), abs(dc)) == 1
+    ]
+
+
 class PlannerConfig:
     """Structural constants for the grid-based Dijkstra planner.
 
     Reference: DETAILS.md Section 7 for algorithm details.
     """
 
-    # 8-connected grid neighbor directions
-    NEIGHBORS_8 = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+    # Neighbor connectivity radius. On planar ground an edge's grade is S·cos(bearing-from-fall-line),
+    # so plain 8-connectivity only offers grades at 45° bearing steps — far too coarse to hold a gentle
+    # target on steep ground. A radius-R knight-style neighborhood exposes many intermediate bearings
+    # (e.g. (1,9) ≈ 6° off-contour) so the search can quantize any target grade below the fall line.
+    NEIGHBOR_RADIUS = 9
+    # Connectivity derived from the radius so the two never drift (single source of truth).
+    NEIGHBORS = _coprime_neighbors(NEIGHBOR_RADIUS)
 
 
 class MarkerConfig:

@@ -79,13 +79,14 @@ class TestEdgeCostFunction:
         Given an edge with exactly 20% downhill slope and target of 20%,
         the slope deviation penalty should be 1.0 (exp(0)).
         """
-        # 20m drop over 100m horizontal = 20% slope
+        # to_lon=10.0009 is ~68m east at 47°N, so a true 20% grade is a 13.65m drop (not 20m). Match it
+        # exactly so the deviation penalty is exp(0)=1 and cost ≈ distance, independent of COST_SIGMA.
         cost = planner._calc_edge_cost(
             from_elev=2100.0,
-            to_elev=2080.0,  # 20m drop
+            to_elev=2086.35,  # 13.65m drop over ~68m ≈ 20% grade
             from_lon=10.0,
             from_lat=47.0,
-            to_lon=10.0009,  # ~100m east at 47°N
+            to_lon=10.0009,  # ~68m east at 47°N
             to_lat=47.0,
             target_grade_pct=20.0,
         )

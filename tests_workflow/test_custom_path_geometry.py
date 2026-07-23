@@ -145,7 +145,7 @@ def _build_ideal_path(
             f"FALLLINE serpentine must bow sideways: half_len {half_len:.0f}m ≤ half_fall {half_fall:.0f}m"
         )
         n_leg = 20
-        points: list[PathPoint] = []
+        points = []
         for i in range(2 * n_leg + 1):
             along = total_len * i / (2 * n_leg)
             if along <= half_len:

@@ -1414,14 +1414,14 @@ class TestRoadBuildingClick:
         assert sm.is_road_building_only
         assert len(ctx.build(kind=SegmentKind.ROAD).segments) == 2, "each committed proposal adds one segment"
 
-    def test_too_steep_target_is_refused(self, fake_st, monkeypatch, mock_dem_black_slope) -> None:
+    def test_steep_target_serpentines_within_cap(self, fake_st, monkeypatch, mock_dem_black_slope) -> None:
         from skiresort_planner.core.path_tracer import PathTracer
         from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
         from skiresort_planner.generators.path_factory import PathFactory
 
-        # 45% south DEM: a target straight downhill can't be reached within ±15%, even
-        # with earthwork. Build the factory on THIS DEM (the shared path_factory fixture
-        # is bound to a gentler diagonal DEM, which wouldn't exercise the refusal).
+        # 45% south DEM: straight down the fall line is far over the ±15% road cap, so the planner
+        # SERPENTINES to hold a green road grade (7%/12%) — real switchback-road behaviour (§7.3).
+        # Build the factory on THIS DEM (the shared path_factory fixture is a gentler diagonal DEM).
         dem = mock_dem_black_slope
         analyzer = TerrainAnalyzer(dem=dem)
         factory = PathFactory(
@@ -1436,18 +1436,16 @@ class TestRoadBuildingClick:
             ),
             elevation=dem.get_elevation_or_raise(lon=0.0, lat=-300 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         )
-        assert ctx.proposals.paths == [], "steep target proposes nothing (even the straight line is over cap)"
-        assert ctx.build(kind=SegmentKind.ROAD).segments == [], "steep target commits nothing"
-        # The target click transitions into ROAD_CUSTOM_PATH; the deferred pass then finds no
-        # in-band route and refuses (the user cancels or retargets from there).
-        assert sm.is_road_custom_path, "stays in the custom-path flow, no segment added"
-        assert len(graph.segments) == 0
-        # No transient toast any more — the "too steep" detail is consolidated into the persistent
-        # right-panel block, flagged on the proposals context.
-        assert toasts == [], "no transient too-steep toast for roads"
-        assert ctx.proposals.too_steep_gentlest_pct is not None, (
-            "the too-steep reason is stashed for the right-panel detail"
+        assert ctx.proposals.paths, "steep target serpentines to a road proposal (no longer refused)"
+        assert all(p.max_slope_pct <= float(PathConfig.ROAD_MAX_GRADIENT_PCT) for p in ctx.proposals.paths), (
+            "every serpentine road proposal holds within the ±15% road cap"
         )
+        assert ctx.proposals.too_steep_gentlest_pct is None, "a routable serpentine is not flagged too-steep"
+        assert sm.is_road_custom_path, "in the custom-path flow with proposals to commit"
+        assert toasts == [], "no transient too-steep toast for roads"
+
+        self._commit_proposal()
+        assert len(ctx.build(kind=SegmentKind.ROAD).segments) == 1, "the serpentine road commits one segment"
 
     def test_stray_marker_click_is_rejected(self, fake_st, path_factory, mock_dem_red_slope_diagonal) -> None:
         from skiresort_planner.ui.click_handlers import handle_path_building_click
@@ -1663,11 +1661,12 @@ class TestRoadBuildingEdgeCases:
         assert not toasts, "an in-band straight line must NOT raise a too-steep toast"
         assert sm.is_road_custom_path
 
-    def test_straight_line_refused_when_direct_also_too_steep(self, fake_st, mock_dem_black_slope) -> None:
-        """A car road is refused when even the straight line exceeds ±15%.
+    def test_refused_when_too_close_to_serpentine_and_straight_over_cap(self, fake_st, mock_dem_black_slope) -> None:
+        """A car road is refused when no in-cap route fits at all.
 
-        Straight down the 45% DEM the direct grade is ~45% — over the cap — so neither a
-        serpentine nor the straight line fits, and the too-steep state is flagged (no toast).
+        Straight down the 45% DEM the direct grade is ~45% (over the ±15% cap), and a target this
+        close (~25m, under the planner's minimum routable distance) leaves no room to serpentine —
+        so nothing is proposed and the too-steep reason is stashed for the right-panel detail.
         """
         from skiresort_planner.core.path_tracer import PathTracer
         from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
@@ -1683,11 +1682,11 @@ class TestRoadBuildingEdgeCases:
 
         self._target(
             click_info=ClickInfo(
-                click_type=MapClickType.TERRAIN, lat=-300 / MapConfig.METERS_PER_DEGREE_EQUATOR, lon=0.0
+                click_type=MapClickType.TERRAIN, lat=-25 / MapConfig.METERS_PER_DEGREE_EQUATOR, lon=0.0
             ),
-            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-300 / MapConfig.METERS_PER_DEGREE_EQUATOR),
+            elevation=dem.get_elevation_or_raise(lon=0.0, lat=-25 / MapConfig.METERS_PER_DEGREE_EQUATOR),
         )
-        assert ctx.proposals.paths == [], "no serpentine and no in-band straight line → nothing proposed"
+        assert ctx.proposals.paths == [], "no serpentine (too close) and no in-band straight line → nothing proposed"
         assert ctx.build(kind=SegmentKind.ROAD).segments == [], "nothing committed"
         assert sm.is_road_custom_path
         assert len(graph.segments) == 0
