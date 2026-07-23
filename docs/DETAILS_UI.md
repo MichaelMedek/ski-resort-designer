@@ -333,7 +333,7 @@ As with slopes and lifts, you can view the road's elevation profile, switch to *
 Below a divider sit the **utility** buttons:
 
 - **🗺️ Import** — load real lifts & pistes from OpenStreetMap for an area.
-- **🔗 Node Merge** — merge junction nodes, delete a node, or add a node on a path.
+- **🔗 Node Editor** — merge junction nodes, cut a direct connection, delete a node, or add a node on a path.
 - **🧭 Route Planner** — pick a start + end node to see the best ways to ski between them.
 
 The currently active mode is highlighted.
@@ -364,15 +364,13 @@ The currently active mode is highlighted.
 | Control | Action |
 |---------|--------|
 | **🔗 Confirm Merge** | Collapse the selected nodes to their median (enabled at ≥2) |
+| **✂️ Delete Direct Connection** | Cut the segment(s) directly joining 2 adjacent nodes, splitting the path (enabled at exactly 2) |
 | **🗑️ Delete Node(s)** | Delete the selected interior / end nodes (enabled at ≥1) |
-| **✖️ Cancel Merge** | Clear the selection, return to idle |
+| **✖️ Cancel Node Edit** | Clear the selection, return to idle |
 
 ### Search for a Place
 
-In the **Always Available** controls (alongside Undo and Reset View) is a 🔍 search field. Type a
-place name — a ski resort, a town, a mountain, anything OpenStreetMap knows — and press **Enter**
-(or click the **🔍** button). The map jumps to the best match. If nothing is found you get a
-**"No place found"** notice and the map stays put.
+In the **Always Available** controls (alongside Undo and Reset View) is a 🔍 search field. Type a place name — a ski resort, a town, a mountain, anything OpenStreetMap knows — and press **Enter** (or click the **🔍** button). The map jumps to the best match. If nothing is found you get a **"No place found"** notice and the map stays put.
 
 ### Always Available
 
@@ -420,8 +418,7 @@ Click **📥 Export GPX** to download GPS tracks of your slopes for use in other
 
 ## Import from OpenStreetMap
 
-Instead of starting from an empty map, load a real resort's existing lifts and pistes as a
-canvas, then keep editing with the normal tools.
+Instead of starting from an empty map, load a real resort's existing lifts and pistes as a canvas, then keep editing with the normal tools.
 
 1. Select **🗺️ Import** in the build-mode selector (like picking Slope/Road/Lift).
 2. Adjust the **Import area half-width (km)** slider (left) to size the box.
@@ -445,7 +442,7 @@ canvas, then keep editing with the normal tools.
 
 ## Editing Nodes
 
-Slopes, roads, and lifts all meet at **nodes** (the junction markers on the map). The **🔗 Node Merge** utility is where you clean those up. Select **🔗 Node Merge** in the build-mode selector to enter it.
+Slopes, roads, and lifts all meet at **nodes** (the junction markers on the map). The **🔗 Node Editor** utility is where you clean those up. Select **🔗 Node Editor** in the build-mode selector to enter it.
 
 ### Merge nodes into one
 
@@ -470,9 +467,18 @@ Deletion is **refused with a message** when a selected node is:
 - a **junction shared with another path** — delete that path first;
 - the **only segment of its path** — delete the whole path instead.
 
+### Cut a direct connection
+
+Use this to **split a path in two** at a junction — e.g. to detach a mistaken branch or break a run into two named slopes.
+
+1. Select **exactly two adjacent** node markers (nodes joined by a single segment).
+2. Click **✂️ Delete Direct Connection**. Every segment directly joining the two nodes is cut.
+
+An **interior** cut splits the owning slope/road into two paths; a **boundary** cut trims one end; a path whose only segment gets cut is deleted outright. If two paths share the same pair, both are cut. It's one Undo.
+
 ### Add a node on a path
 
-While in Node Merge mode, **click anywhere on an existing path** to drop a new node on the centerline at that point, splitting the segment in two. Use this to create a junction to branch a new slope or road off later.
+While in Node Editor mode, **click anywhere on an existing path** to drop a new node on the centerline at that point, splitting the segment in two. Use this to create a junction to branch a new slope or road off later.
 
 ---
 
@@ -482,7 +488,7 @@ Click **🧭 Route Planner** in the sidebar, then pick two nodes to see the best
 
 ### Planning a route
 
-1. Click the **🧭 Route Planner** button (a utility tool, like Node Merge).
+1. Click the **🧭 Route Planner** button (a utility tool, like the Node Editor).
 2. **Click a start node**, then **click an end node** (routes run node-to-node — a bare terrain click is guided, not acted on).
 3. The app computes the best routes for **each difficulty band** and draws the selected one in its own colour on the map.
 
@@ -517,8 +523,7 @@ For each difficulty band the planner finds the best route under two criteria:
 | **Zoom** | Mouse wheel or pinch |
 | **Reset View** | Click 📷 button in sidebar |
 
-> **Tip:** The fastest way to reach a real resort is the **🔍 search** at the top of the sidebar —
-> type e.g. "Zermatt" and press Enter instead of panning there by hand.
+> **Tip:** The fastest way to reach a real resort is the **🔍 search** at the top of the sidebar — type e.g. "Zermatt" and press Enter instead of panning there by hand.
 
 
 ---

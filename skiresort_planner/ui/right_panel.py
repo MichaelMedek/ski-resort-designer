@@ -49,7 +49,7 @@ from skiresort_planner.model.message import (
     SegmentStructureMessage,
     SegmentWarningMessage,
 )
-from skiresort_planner.model.path_segment import SegmentKind
+from skiresort_planner.model.path_segment import PathSegment, SegmentKind
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.model.segment_profile import SegmentProfile, classify_segment_profile
 from skiresort_planner.model.warning import WarningKind
@@ -71,6 +71,7 @@ from skiresort_planner.ui.kind_spec import KIND_SPECS
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 
 if TYPE_CHECKING:
+    from skiresort_planner.core.dem_service import DEMService
     from skiresort_planner.model.lift import Lift
     from skiresort_planner.model.message import Message
     from skiresort_planner.model.proposed_path import ProposedPathSegment
@@ -129,6 +130,32 @@ def _commit_button_label(path: "ProposedPathSegment", *, continue_label: str, co
     if path.is_connector and path.target_node_id:
         return f"🏁 Finish → {path.target_node_id}", f"Connect to {path.target_node_id} and finish"
     return continue_label, continue_help
+
+
+def segment_annotations(
+    *, segment: PathSegment, dem: "DEMService"
+) -> list["SegmentStructureMessage | SegmentWarningMessage"]:
+    """Ordered terrain notes for a segment — the ONE classify+precedence rule shared by the committed
+    Segment Details panel and the proposal stats line. A bridge/tunnel structure REPLACES the earthwork
+    warning (remaining too-steep/too-flat still show); on ground every warning shows. Uniform Message
+    list: each note has `.display()` (full line) and `.short_message` (condensed tag) — no type branching.
+    """
+    # The threshold is inherent to the bridge/tunnel classification this function does, so read it here.
+    res = classify_segment_profile(segment=segment, dem=dem, threshold_m=EarthworkConfig.BRIDGE_TUNNEL_THRESHOLD_M)
+    # A bridge/tunnel replaces the earthwork warning (structure IS the cut/fill); other warnings persist.
+    warnings = (
+        segment.warnings
+        if res.profile == SegmentProfile.GROUND
+        else [w for w in segment.warnings if w.kind != WarningKind.EARTHWORK]
+    )
+    notes: list[SegmentStructureMessage | SegmentWarningMessage] = []
+    # Structure note leads (when off ground), then the warnings — all wrapped uniform (no isinstance).
+    if res.profile != SegmentProfile.GROUND:
+        notes.append(
+            SegmentStructureMessage(profile=res.profile, max_above_m=res.max_above_m, max_below_m=res.max_below_m)
+        )
+    notes.extend(SegmentWarningMessage(warning_text=w.message, short_text=w.short_message) for w in warnings)
+    return notes
 
 
 # =============================================================================
@@ -950,6 +977,7 @@ class PathSelectionPanel:
             end_elevation_m=path.points[-1].elevation if path.points else 0.0,
             is_connector=is_connector,
             target_node_id=path.target_node_id if is_connector else None,
+            structure_note=self._proposal_note(path=path),
         ).display()
 
         # Navigation arrows (keys scoped per kind so slope/road browsers never collide).
@@ -981,6 +1009,18 @@ class PathSelectionPanel:
         if st.button(cancel_label, width="stretch", help="Return to regular fan-out path proposals"):
             logger.debug(f"UI: {cancel_label} clicked")
             self.on_cancel_connection()
+
+    def _proposal_note(self, *, path: "ProposedPathSegment") -> str:
+        """Condensed terrain tag for this proposal — the SAME classify+precedence as committed Segment
+        Details (via `segment_annotations`), joined from each note's `short_message`.
+        """
+        # Side slope via the graph's single computation site (shared with commit) so they can't drift.
+        side_slope_pct, side_slope_dir = self.graph.side_slope_for_points(points=path.points)
+        seg = PathSegment(
+            points=path.points, side_slope_pct=side_slope_pct, side_slope_dir=side_slope_dir, kind=path.kind
+        )
+        notes = segment_annotations(segment=seg, dem=st.session_state.dem_service)
+        return " ".join(n.short_message for n in notes)
 
 
 # =============================================================================
@@ -1069,28 +1109,20 @@ class PathStatsPanel(StatsPanel):
         with st.expander("📋 Segment Details", expanded=False):
             for i, seg_id in enumerate(owner.segment_ids, 1):
                 seg = self.graph.segments[seg_id]
+                # Difficulty slopes lead with a colored difficulty label; roads just their icon.
                 if spec.shows_difficulty:
-                    emoji = StyleConfig.DIFFICULTY_EMOJIS[seg.difficulty]
-                    line = f"{i}. {emoji} **{seg.difficulty.capitalize()}** — {seg.length_m:.0f}m, {seg.max_slope_pct:.0f}% steepest, {seg.width_m:.0f}m wide"
+                    prefix = f"{StyleConfig.DIFFICULTY_EMOJIS[seg.difficulty]} **{seg.difficulty.capitalize()}** — "
                 else:
-                    line = f"{i}. {spec.icon} {seg.length_m:.0f}m, {seg.max_slope_pct:.0f}% steepest, {seg.width_m:.0f}m wide"
+                    prefix = f"{spec.icon} "
+                line = (
+                    f"{i}. {prefix}{seg.length_m:.0f}m, "
+                    f"{seg.avg_slope_pct:.0f}% overall / {seg.max_slope_pct:.0f}% steepest, {seg.width_m:.0f}m wide"
+                )
                 st.markdown(line)
 
-                # A bridge/tunnel shows its structure info INSTEAD of the earthwork (Excavator) warning;
-                # non-earthwork warnings (too steep/flat) still render. GROUND shows all warnings as before.
-                res = classify_segment_profile(
-                    segment=seg, dem=dem, threshold_m=EarthworkConfig.BRIDGE_TUNNEL_THRESHOLD_M
-                )
-                if res.profile == SegmentProfile.GROUND:
-                    for warning in seg.warnings:
-                        SegmentWarningMessage(warning_text=str(warning)).display()
-                else:  # Any not on ground structure, like brige or tunnel
-                    SegmentStructureMessage(
-                        profile=res.profile, max_above_m=res.max_above_m, max_below_m=res.max_below_m
-                    ).display()
-                    for warning in seg.warnings:
-                        if warning.kind != WarningKind.EARTHWORK:  # earthwork is replaced by the structure info line
-                            SegmentWarningMessage(warning_text=str(warning)).display()
+                # Terrain notes via the shared classify+precedence rule; each note renders its own line.
+                for note in segment_annotations(segment=seg, dem=dem):
+                    note.display()
 
 
 class LiftStatsPanel(StatsPanel):

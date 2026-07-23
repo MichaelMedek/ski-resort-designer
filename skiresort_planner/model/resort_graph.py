@@ -296,10 +296,12 @@ class ResortGraph:
         """Every segment with node_id as an endpoint."""
         return [s for s in self.segments.values() if node_id in (s.start_node_id, s.end_node_id)]
 
-    def _side_slope_for_points(self, points: list[PathPoint]) -> tuple[float, SideDirection]:
+    @staticmethod
+    def side_slope_for_points(points: list[PathPoint]) -> tuple[float, SideDirection]:
         """Side slope (pct, direction) for a segment from its first two points — the single call site.
 
-        The one side-slope computation shared by commit, delete and insert so they can't drift.
+        The one side-slope computation shared by commit, delete, insert, and the proposal preview so
+        they can't drift. Stateless (static) so callers outside the graph can reuse it directly.
         """
         info = TerrainAnalyzer.compute_side_slope(
             start_lon=points[0].lon, start_lat=points[0].lat, end_lon=points[1].lon, end_lat=points[1].lat
@@ -312,7 +314,7 @@ class ResortGraph:
         """Create + register a PathSegment between two nodes (id/name from the counter, side slope
         computed from points). The single PathSegment assembly site — shared by commit and insert.
         """
-        side_slope_pct, side_slope_dir = self._side_slope_for_points(points=points)
+        side_slope_pct, side_slope_dir = self.side_slope_for_points(points=points)
         assert start_node_id in self.nodes and end_node_id in self.nodes, (
             f"_build_segment: endpoint node not in graph ({start_node_id}, {end_node_id})"
         )
@@ -1394,7 +1396,7 @@ class ResortGraph:
         # on-terrain — mirrors merge/commit).
         for sid in new_ids:
             seg = self.segments[sid]
-            seg.side_slope_pct, seg.side_slope_dir = self._side_slope_for_points(points=seg.points)
+            seg.side_slope_pct, seg.side_slope_dir = self.side_slope_for_points(points=seg.points)
             seg.restitch(start_node=self.nodes[seg.start_node_id], end_node=self.nodes[seg.end_node_id], dem=dem)
 
         path.segment_ids = new_ids

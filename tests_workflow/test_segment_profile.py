@@ -60,15 +60,31 @@ def test_equal_magnitude_ties_to_bridge() -> None:
     assert res.profile == SegmentProfile.BRIDGE
 
 
-def test_out_of_coverage_point_raises() -> None:
-    # DEM returns NaN for a point → invariant violation (points were draped from the DEM). Fail loud.
+def test_out_of_coverage_point_is_skipped_not_crashed() -> None:
+    # A LOADED backup may sit partly off the current DEM (other region / updated file). Off-DEM points
+    # come back NaN and are SKIPPED; the in-coverage points still classify (here +50m → BRIDGE).
     class _NaNDem(MockDEMService):
         def get_elevations(self, lons, lats):  # noqa: ANN001, ANN201
             out = np.full(len(list(lons)), 1000.0, dtype=float)
-            out[0] = np.nan
+            out[0] = np.nan  # first point off-coverage
             return out
 
     dem = _NaNDem(base_elevation=1000.0, slope_ns_pct=0.0, slope_ew_pct=0.0)
     seg = _segment([1000.0, 1050.0])
-    with pytest.raises(AssertionError):
-        classify_segment_profile(segment=seg, dem=dem, threshold_m=_THRESHOLD_M)
+    res = classify_segment_profile(segment=seg, dem=dem, threshold_m=_THRESHOLD_M)
+    assert res.profile == SegmentProfile.BRIDGE
+    assert res.max_above_m == pytest.approx(50.0)
+
+
+def test_all_points_off_coverage_is_ground() -> None:
+    # Every point off the current DEM (backup from a different region) → no deviation to measure → GROUND.
+    class _AllNaNDem(MockDEMService):
+        def get_elevations(self, lons, lats):  # noqa: ANN001, ANN201
+            return np.full(len(list(lons)), np.nan, dtype=float)
+
+    dem = _AllNaNDem(base_elevation=1000.0, slope_ns_pct=0.0, slope_ew_pct=0.0)
+    seg = _segment([1000.0, 1050.0, 900.0])
+    res = classify_segment_profile(segment=seg, dem=dem, threshold_m=_THRESHOLD_M)
+    assert res.profile == SegmentProfile.GROUND
+    assert res.max_above_m == pytest.approx(0.0)
+    assert res.max_below_m == pytest.approx(0.0)

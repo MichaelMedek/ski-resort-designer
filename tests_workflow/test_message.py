@@ -415,3 +415,34 @@ class TestPathActionNoPathsFallback:
         assert "No Paths Available" in msg
         assert "Cancel Custom Path" in msg, "a too-steep custom target must point at the escape, not Undo"
         assert "Undo" not in msg
+
+
+class TestShortMessages:
+    """The condensed `short_message` tags reused by the proposal stats line (≤15 chars, emoji-led)."""
+
+    def test_excavator_short(self) -> None:
+        from skiresort_planner.core.terrain_analyzer import SideDirection
+        from skiresort_planner.model.warning import ExcavatorWarning
+
+        w = ExcavatorWarning(side_slope_pct=50.0, belt_width_m=20.0, side_slope_dir=SideDirection.LEFT)
+        assert w.short_message == "🚜 5.0m cut"  # (50 * 20) / 200 = 5.0m
+        assert len(w.short_message) <= 15
+
+    def test_too_steep_short(self) -> None:
+        from skiresort_planner.model.warning import TooSteepWarning
+
+        assert TooSteepWarning(slope_pct=72.0, max_threshold_pct=70.0).short_message == "⚠️ 72% steep"
+
+    def test_too_flat_short(self) -> None:
+        from skiresort_planner.model.warning import TooFlatWarning
+
+        assert TooFlatWarning(slope_pct=3.0, min_threshold_pct=5.0).short_message == "📐 3% flat"
+
+    def test_structure_short_bridge_and_tunnel(self) -> None:
+        from skiresort_planner.model.message import SegmentStructureMessage
+        from skiresort_planner.model.segment_profile import SegmentProfile
+
+        bridge = SegmentStructureMessage(profile=SegmentProfile.BRIDGE, max_above_m=12.0, max_below_m=0.0)
+        assert bridge.short_message == "🌉 Bridge +12m"
+        tunnel = SegmentStructureMessage(profile=SegmentProfile.TUNNEL, max_above_m=0.0, max_below_m=60.0)
+        assert tunnel.short_message == "🚇 Tunnel -60m"

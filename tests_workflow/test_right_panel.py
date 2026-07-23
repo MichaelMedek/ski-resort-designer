@@ -13,7 +13,7 @@ import pytest
 
 from skiresort_planner.constants import MapConfig, RoutePlannerConfig, StyleConfig
 from skiresort_planner.model.path_point import PathPoint
-from skiresort_planner.model.path_segment import SegmentKind
+from skiresort_planner.model.path_segment import PathSegment, SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
 from skiresort_planner.model.routing import RouteStep
@@ -930,3 +930,53 @@ class TestRouteLegs:
 
     def test_empty_groups_yield_no_legs(self) -> None:
         assert route_legs(()) == []
+
+
+class TestSegmentAnnotations:
+    """The shared classify+precedence rule (right_panel.segment_annotations) used by both the committed
+    Segment Details panel and the proposal stats line. DEM descends 20% south; points sit ON it (dev 0)
+    unless offset, so a clean skiable grade avoids incidental too-steep/too-flat warnings.
+    """
+
+    from tests_workflow.conftest import MockDEMService
+
+    _DEM = MockDEMService(base_elevation=1000.0, slope_ns_pct=20.0, slope_ew_pct=0.0)
+    _MPD = 111320.0
+
+    def _seg(self, *, elev_offset: float, side_slope_pct: float) -> "PathSegment":
+        from skiresort_planner.core.terrain_analyzer import SideDirection
+        from skiresort_planner.model.path_point import PathPoint
+
+        # Southward points ON the 20% DEM (elevation = ground), plus a uniform vertical offset.
+        pts = [
+            PathPoint(lon=0.0, lat=-0.001 * i, elevation=1000.0 + (-0.001 * i) * self._MPD * 0.20 + elev_offset)
+            for i in range(4)
+        ]
+        return PathSegment(
+            id="S1",
+            points=pts,
+            side_slope_pct=side_slope_pct,
+            side_slope_dir=SideDirection.LEFT,
+            kind=SegmentKind.SLOPE,
+        )
+
+    def _notes(self, seg: "PathSegment") -> list[str]:
+        from skiresort_planner.ui.right_panel import segment_annotations
+
+        return [n.short_message for n in segment_annotations(segment=seg, dem=self._DEM)]
+
+    def test_ground_no_side_slope_has_no_notes(self) -> None:
+        assert self._notes(self._seg(elev_offset=0.0, side_slope_pct=0.0)) == []
+
+    def test_ground_steep_cross_slope_shows_earthwork(self) -> None:
+        notes = self._notes(self._seg(elev_offset=0.0, side_slope_pct=80.0))
+        assert notes == ["🚜 8.0m cut"], "on ground, a big cross-slope surfaces the excavator tag"
+
+    def test_bridge_suppresses_earthwork(self) -> None:
+        # Floating 100m above ground → BRIDGE; the structure REPLACES the earthwork warning.
+        notes = self._notes(self._seg(elev_offset=100.0, side_slope_pct=80.0))
+        assert notes == ["🌉 Bridge +100m"], "structure replaces earthwork; no 🚜 tag alongside"
+
+    def test_tunnel_below_ground(self) -> None:
+        notes = self._notes(self._seg(elev_offset=-100.0, side_slope_pct=0.0))
+        assert notes == ["🚇 Tunnel -100m"]

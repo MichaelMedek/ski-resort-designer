@@ -1,14 +1,7 @@
 """Connection Path Planner - Grid-based Dijkstra for generating paths to specific target points.
 
-This module provides a domain-agnostic algorithm for generating a path that connects
-a start point to a user-specified target point while holding a target grade. Callers
-supply the target grade and whether climbing is allowed; the planner knows nothing
-about pistes or roads.
-
-Uses SciPy's optimized sparse graph Dijkstra for performance, followed by
-cubic spline smoothing to eliminate grid artifacts.
-
-Reference: DETAILS.md Section 7 for algorithm details.
+Domain-agnostic: connects a start to a target while holding a caller-supplied grade (knows nothing
+of pistes/roads). SciPy sparse Dijkstra + cubic-spline smoothing. Reference: DETAILS.md Section 7.
 """
 
 import logging
@@ -20,6 +13,7 @@ import numpy as np
 import numpy.typing as npt
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import shortest_path
+from shapely.geometry import LineString
 
 from skiresort_planner.constants import GeometricTuningConfig, PlannerConfig
 from skiresort_planner.core.dem_service import DEMService
@@ -54,27 +48,16 @@ class GridNode:
 class LeastCostPathPlanner:
     """Connection planner using grid-based Dijkstra search on terrain.
 
-    Algorithm Overview:
-    1. Create a grid covering the area between start and target (+ buffer)
-    2. Build sparse graph with 8-connectivity, edges weighted by slope cost
-    3. Run SciPy's C-optimized Dijkstra to find minimum-cost path
-    4. Smooth the grid path using cubic spline interpolation
-    5. Resample at regular intervals with DEM elevation lookups
+    Steps:
+    1. Grid sized from the REQUIRED grade-holding length L=100·drop/g (so serpentines fit)
+    2. Sparse graph over (node × lateral heading), radius-R coprime neighborhood, edges weighted by
+       slope-deviation cost + a switchback-reversal penalty (lateral momentum)
+    3. SciPy Dijkstra for the minimum-cost path
+    4. Cubic-spline smooth (light factor) and resample at regular DEM-sampled intervals
 
-    Cost Function:
-        cost(edge) = distance × exp(|actual_grade - target_grade| / σ) × against_penalty
-
-    Where:
-    - σ (COST_SIGMA) controls sensitivity (smaller = stricter grade matching)
-    - against_penalty = 1.0 when the edge runs the segment's way, else exp(|grade|/σ):
-      DOWNHILL mode penalizes climbing, UPHILL mode penalizes descending. That one-way
-      monotonicity keeps the path from looping.
-
-    This exponential cost heavily penalizes grade deviations, causing the algorithm to
-    prefer longer traverses over steep shortcuts — so a gentle target grade serpentines
-    on steep ground instead of exceeding it.
-
-    Configuration: See GeometricTuningConfig in constants.py for tunable parameters.
+    Cost = distance × exp(|actual−target|/σ) × against_penalty (+ reversal). σ=COST_SIGMA (lower =
+    stricter); against_penalty penalizes running the wrong way (no loops); reversal favours few large
+    switchbacks. See GeometricTuningConfig for tunables.
     """
 
     def __init__(
@@ -139,26 +122,26 @@ class LeastCostPathPlanner:
             )
             return None
 
-        # Build the search grid
-        grid_data = self._build_grid(
+        # Build the search grid, sized from the required grade-holding path length (not the straight
+        # start→target distance) so gentle-grade serpentines on steep ground physically fit.
+        elevations, lons, lats, start_node, target_node, grid_res_m = self._build_grid(
             start_lon=start_lon,
             start_lat=start_lat,
             target_lon=target_lon,
             target_lat=target_lat,
             direct_distance=direct_distance_m,
+            net_drop=net_drop,
+            target_grade_pct=target_grade_pct,
         )
 
-        elevations, lons, lats, start_node, target_node = grid_data
-
-        # Run fast SciPy Dijkstra on the exact same graph
+        # Search the (node × heading) graph for the least-cost grade-holding route.
         path_nodes, _, _ = self._graph_dijkstra(
             elevations=elevations,
             start=start_node,
             target=target_node,
             target_grade_pct=target_grade_pct,
-            lons=lons,
-            lats=lats,
             gradient_mode=gradient_mode,
+            grid_res_m=grid_res_m,
         )
 
         if path_nodes is None:
@@ -176,20 +159,39 @@ class LeastCostPathPlanner:
             lats=lats,
         )
 
-        # Smooth the grid staircase and DEM-requery elevations — the SAME call the fan uses,
-        # at the kind's finish factor, so the proposal previews the finished shape.
+        # Smooth + DEM-requery. Capped at PLANNER_SMOOTHING_FACTOR: a heavy finish factor over the switchback
+        # apexes over-rounds (shortens the path) and overshoots vertically across the gaps (dips below ground).
         points = smooth_proposal_points(
             points=raw_points,
-            smoothing_factor=smoothing_factor,
+            smoothing_factor=min(smoothing_factor, GeometricTuningConfig.PLANNER_SMOOTHING_FACTOR),
             step_m=GeometricTuningConfig.RESAMPLE_STEP_M,
             elevation_fn=self.dem.get_elevation,
         )
+
+        # Quality gate: a self-crossing polyline is a degenerate route (over-tight switchback), so refuse
+        # it rather than propose a tangled path — the caller falls back to a straighter alternative.
+        if self._self_intersects(points):
+            logger.debug(
+                f"plan: no path — smoothed route self-intersects (target_grade={target_grade_pct:.1f}%, "
+                f"{gradient_mode}) from ({start_lon:.5f}, {start_lat:.5f}) to ({target_lon:.5f}, {target_lat:.5f})"
+            )
+            return None
 
         return ProposedPathSegment(
             points=points,
             target_slope_pct=target_grade_pct,
             is_connector=True,
         )
+
+    @staticmethod
+    def _self_intersects(points: list[PathPoint]) -> bool:
+        """True if the horizontal polyline crosses itself (projected to a local metre frame)."""
+        if len(points) < 4:
+            return False
+        lon0, lat0 = points[0].lon, points[0].lat
+        m_per_deg_lon, m_per_deg_lat = GeoCalculator.meters_per_degree(lat=lat0)
+        xy = [((p.lon - lon0) * m_per_deg_lon, (p.lat - lat0) * m_per_deg_lat) for p in points]
+        return not LineString(xy).is_simple
 
     def _build_grid(
         self,
@@ -198,55 +200,48 @@ class LeastCostPathPlanner:
         target_lon: float,
         target_lat: float,
         direct_distance: float,
-    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64], GridNode, GridNode]:
-        """Build the elevation grid (metres lattice) covering the search area.
+        net_drop: float,
+        target_grade_pct: float,
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64], GridNode, GridNode, float]:
+        """Build the elevation grid (metres lattice) over the search area, sized by `_grid_extents`.
 
-        Vectorized: the cell lon/lats are the same two-step `destination` composition (col-offset along
-        `bearing+90`, then row-offset along `bearing`) as the scalar build, and elevations come from ONE
-        batched `get_elevations` call. Raises if any cell is off-DEM (the no-missing-data invariant).
+        Vectorized: cell lon/lats via a two-step `destination` (col along bearing+90, row along bearing),
+        one batched `get_elevations`. Raises if any cell is off-DEM (no-missing-data invariant).
         """
-        # Calculate grid bounds with buffer
-        # TODO(serpentine): this buffer (0.5×direct) is too tight for switchbacks — a
-        # zig-zag needs much more lateral room than a near-straight line. When a gentle
-        # target grade forces serpentining on steep ground, widen this buffer so those
-        # switchbacks physically fit in the search grid instead of being clipped.
-        buffer_m = direct_distance * GeometricTuningConfig.GRID_BUFFER_FACTOR
-        total_extent = direct_distance + 2 * buffer_m
-
-        # Grid dimensions
-        n_cells = int(total_extent / GeometricTuningConfig.GRID_RESOLUTION_M) + 1
-        n_cells = min(n_cells, int(GeometricTuningConfig.MAX_GRID_SIZE))  # Cap grid size for performance
+        along_m, across_m, res = self._grid_extents(
+            direct_distance=direct_distance, net_drop=net_drop, target_grade_pct=target_grade_pct
+        )
+        n_rows = int(along_m / res) + 1
+        n_cols = int(across_m / res) + 1
 
         # Center point
         center_lon = (start_lon + target_lon) / 2
         center_lat = (start_lat + target_lat) / 2
 
-        # Bearing from center to target for grid orientation
+        # Bearing from center to target for grid orientation (the `along` axis follows the chord)
         bearing = GeoCalculator.initial_bearing_deg(lon1=center_lon, lat1=center_lat, lon2=target_lon, lat2=target_lat)
 
-        # Grid origin (top-left corner)
+        # Origin = back off half the ACTUAL laid extent per axis, so the chord midpoint stays centred.
         origin_lon, origin_lat = GeoCalculator.destination(
             lon=center_lon,
             lat=center_lat,
             bearing_deg=(bearing + 180) % 360,
-            distance_m=total_extent / 2,
+            distance_m=(n_rows - 1) * res / 2,
         )
         origin_lon, origin_lat = GeoCalculator.destination(
             lon=origin_lon,
             lat=origin_lat,
             bearing_deg=(bearing - 90) % 360,
-            distance_m=total_extent / 2,
+            distance_m=(n_cols - 1) * res / 2,
         )
 
-        # Same two-step composition as the scalar build, vectorized: step 1 places one start per COLUMN
-        # (col·RES along bearing+90 from origin); step 2 moves each column start by row·RES along bearing.
-        res = GeometricTuningConfig.GRID_RESOLUTION_M
-        col_dist = np.arange(n_cells, dtype=np.float64) * res
-        row_dist = np.arange(n_cells, dtype=np.float64) * res
+        # Step 1: one start per column (col·res along bearing+90); step 2: row·res along bearing.
+        col_dist = np.arange(n_cols, dtype=np.float64) * res
+        row_dist = np.arange(n_rows, dtype=np.float64) * res
         col_lon, col_lat = GeoCalculator.destination_vec(origin_lon, origin_lat, (bearing + 90) % 360, col_dist)
         lons, lats = GeoCalculator.destination_vec(col_lon[None, :], col_lat[None, :], bearing, row_dist[:, None])
 
-        elevations = self.dem.get_elevations(lons.ravel(), lats.ravel()).reshape(n_cells, n_cells)
+        elevations = self.dem.get_elevations(lons.ravel(), lats.ravel()).reshape(n_rows, n_cols)
         if np.isnan(elevations).any():
             r, c = (int(i) for i in np.argwhere(np.isnan(elevations))[0])
             raise RuntimeError(
@@ -258,7 +253,34 @@ class LeastCostPathPlanner:
         start_node = self._find_nearest_node(target_lon=start_lon, target_lat=start_lat, lons=lons, lats=lats)
         target_node = self._find_nearest_node(target_lon=target_lon, target_lat=target_lat, lons=lons, lats=lats)
 
-        return elevations, lons, lats, start_node, target_node
+        return elevations, lons, lats, start_node, target_node, res
+
+    @staticmethod
+    def _grid_extents(direct_distance: float, net_drop: float, target_grade_pct: float) -> tuple[float, float, float]:
+        """Grid (along_m, across_m, resolution_m) sized to hold a grade-`target_grade_pct` path.
+
+        L=100·|drop|/|g| sheds the drop at grade g; over a shorter chord it bows by sqrt((L/2)²−(chord/2)²),
+        so across=2·bow. Below MIN_GRADE_PCT_FOR_LENGTH the formula diverges → fall back to the chord.
+        Resolution = L/DIVISOR (floored), coarsened so neither axis exceeds MAX_GRID_SIZE cells.
+        """
+        g = abs(target_grade_pct)
+        if g >= GeometricTuningConfig.MIN_GRADE_PCT_FOR_LENGTH:
+            required_len = 100.0 * abs(net_drop) / g
+        else:
+            required_len = direct_distance
+        half_chord = direct_distance / 2.0
+        bow = float(np.sqrt(max((required_len / 2.0) ** 2 - half_chord**2, 0.0)))
+
+        along_m = direct_distance * GeometricTuningConfig.GRID_ALONG_MARGIN + GeometricTuningConfig.GRID_PADDING_M
+        across_m = min(
+            max(2.0 * bow + GeometricTuningConfig.GRID_PADDING_M, GeometricTuningConfig.GRID_ACROSS_MIN_M),
+            GeometricTuningConfig.GRID_ACROSS_MAX_M,
+        )
+
+        res = max(required_len / GeometricTuningConfig.GRID_RES_DIVISOR, GeometricTuningConfig.GRID_RES_MIN_M)
+        res = max(res, max(along_m, across_m) / (GeometricTuningConfig.MAX_GRID_SIZE - 1))  # cap cells
+        assert res > 0, f"grid resolution must be positive, got {res} (along={along_m}, across={across_m})"
+        return along_m, across_m, res
 
     def _find_nearest_node(
         self,
@@ -285,54 +307,54 @@ class LeastCostPathPlanner:
         start: GridNode,
         target: GridNode,
         target_grade_pct: float,
-        lons: npt.NDArray[np.float64] | list[list[float]],
-        lats: npt.NDArray[np.float64] | list[list[float]],
         gradient_mode: GradientMode = GradientMode.DOWNHILL,
+        grid_res_m: float = GeometricTuningConfig.GRID_RES_MIN_M,
     ) -> tuple[list[GridNode] | None, int, int]:
-        """Least-cost path using SciPy's C-optimized Dijkstra.
+        """Least-cost path via SciPy Dijkstra with lateral momentum.
 
-        Builds the sparse graph vectorized (one masked pass per 8-neighbor offset, mirroring
-        `_calc_edge_cost` elementwise) and feeds scipy.sparse.csgraph.shortest_path for the search.
+        State = node × heading {left, straight, right}; a heading REVERSAL (switchback) costs
+        SWITCHBACK_REVERSAL_PENALTY×cell, favouring few large switchbacks over a sawtooth. Uniform
+        lattice → an offset's horizontal distance is the scalar res·√(dr²+dc²), no per-cell geodesy.
         """
         elev = np.asarray(elevations, dtype=np.float64)
-        lon_a = np.asarray(lons, dtype=np.float64)
-        lat_a = np.asarray(lats, dtype=np.float64)
         n_rows, n_cols = elev.shape
         assert n_cols > 0, f"elevations[0] is empty; grid has {n_rows} rows but 0 columns"
         N = n_rows * n_cols
         sigma = GeometricTuningConfig.COST_SIGMA
-        ids = np.arange(N).reshape(n_rows, n_cols)  # from_id = r*n_cols + c
+        reversal_cost = GeometricTuningConfig.SWITCHBACK_REVERSAL_PENALTY * grid_res_m
+        n_states = N * 3  # state = node_id*3 + heading (0=left dc<0, 1=straight dc==0, 2=right dc>0)
+        ids = np.arange(N).reshape(n_rows, n_cols)
+        prev_h = np.array([0, 1, 2])  # the 3 possible incoming headings
 
-        # One vectorized pass per neighbor offset; slicing replaces the in-bounds check. Each masked
-        # block yields directed (from_id → to_id, cost) triplets; concatenated into the CSR below.
         row_parts: list[npt.NDArray[np.int64]] = []
         col_parts: list[npt.NDArray[np.int64]] = []
         data_parts: list[npt.NDArray[np.float64]] = []
-        for dr, dc in PlannerConfig.NEIGHBORS_8:
+        # One masked pass per neighbor offset; the slice windows replace an in-bounds check.
+        for dr, dc in PlannerConfig.NEIGHBORS:
             r0, r1 = max(0, -dr), n_rows - max(0, dr)
             c0, c1 = max(0, -dc), n_cols - max(0, dc)
             if r1 <= r0 or c1 <= c0:
                 continue
             from_elev = elev[r0:r1, c0:c1]
             to_elev = elev[r0 + dr : r1 + dr, c0 + dc : c1 + dc]
-            horiz = GeoCalculator.haversine_vec(
-                lat_a[r0:r1, c0:c1],
-                lon_a[r0:r1, c0:c1],
-                lat_a[r0 + dr : r1 + dr, c0 + dc : c1 + dc],
-                lon_a[r0 + dr : r1 + dr, c0 + dc : c1 + dc],
-            )
-            mask = ~np.isnan(from_elev) & ~np.isnan(to_elev) & (horiz >= 0.1)
-            with np.errstate(invalid="ignore", divide="ignore"):
+            horiz = grid_res_m * float(np.hypot(dr, dc))  # uniform lattice → scalar hop distance
+            mask = ~np.isnan(from_elev) & ~np.isnan(to_elev)
+            # A wildly off-grade edge's exp() overflows to +inf — a forbidden edge (scipy reads inf
+            # as no edge), not a bug; ignore the overflow.
+            with np.errstate(over="ignore"):
                 actual = (from_elev - to_elev) / horiz * 100  # positive = downhill
                 grade_cost = np.exp(np.abs(actual - target_grade_pct) / sigma)
                 wrong_way = actual < 0 if gradient_mode == GradientMode.DOWNHILL else actual > 0
                 against = np.where(wrong_way, np.exp(np.abs(actual) / sigma), 1.0)
-                cost = horiz * grade_cost * against
-            from_ids = ids[r0:r1, c0:c1]
-            to_ids = ids[r0 + dr : r1 + dr, c0 + dc : c1 + dc]
-            row_parts.append(from_ids[mask])
-            col_parts.append(to_ids[mask])
-            data_parts.append(cost[mask])
+                base_cost = (horiz * grade_cost * against)[mask]
+            from_ids = ids[r0:r1, c0:c1][mask]
+            to_ids = ids[r0 + dr : r1 + dr, c0 + dc : c1 + dc][mask]
+            new_heading = 1 if dc == 0 else (2 if dc > 0 else 0)
+            # Expand the 3 incoming headings at once: reversal is left(0)↔right(2).
+            is_reversal = ((prev_h == 0) & (new_heading == 2)) | ((prev_h == 2) & (new_heading == 0))
+            row_parts.append((from_ids[None, :] * 3 + prev_h[:, None]).ravel())
+            col_parts.append(np.broadcast_to(to_ids * 3 + new_heading, (3, to_ids.size)).ravel())
+            data_parts.append((base_cost[None, :] + np.where(is_reversal, reversal_cost, 0.0)[:, None]).ravel())
 
         row_arr = np.concatenate(row_parts) if row_parts else np.empty(0, dtype=np.int64)
         if row_arr.size == 0:
@@ -340,32 +362,37 @@ class LeastCostPathPlanner:
         col_arr = np.concatenate(col_parts)
         data_arr = np.concatenate(data_parts)
 
+        # Assemble the directed state-graph as a sparse CSR matrix for scipy.
         csgraph = csr_matrix(
             (data_arr, (row_arr, col_arr)),
-            shape=(N, N),
+            shape=(n_states, n_states),
             dtype=np.float64,
         )
 
-        start_id = start.row * n_cols + start.col
-        target_id = target.row * n_cols + target.col
+        # Start straight (heading 1); the target is reachable in any heading, so search from the one
+        # start state and pick the cheapest of the target's three sub-states.
+        start_state = (start.row * n_cols + start.col) * 3 + 1
+        target_node_id = target.row * n_cols + target.col
+        target_states = [target_node_id * 3 + h for h in (0, 1, 2)]
 
         dist, pred = shortest_path(
             csgraph=csgraph,
-            method="auto",  # chooses fastest (Dijkstra for positive weights)
+            method="D",  # Dijkstra (positive weights)
             directed=True,
-            indices=start_id,
+            indices=start_state,
             return_predecessors=True,
         )
 
-        if np.isinf(dist[target_id]):
+        best_target = min(target_states, key=lambda s: dist[s])
+        if np.isinf(dist[best_target]):
             return None, 0, 0
 
-        # Reconstruct path
+        # Reconstruct path (state → node_id via // 3)
         path_ids: list[int] = []
-        current = target_id
+        current = best_target
         while True:
-            path_ids.append(current)
-            if current == start_id:
+            path_ids.append(current // 3)
+            if current == start_state:
                 break
             current = pred[current]
             if current == -9999:
@@ -392,13 +419,10 @@ class LeastCostPathPlanner:
         target_grade_pct: float,
         gradient_mode: GradientMode = GradientMode.DOWNHILL,
     ) -> float:
-        """Edge cost = distance × exp(|actual_grade − target_grade| / σ) × against-mode.
+        """Scalar edge cost mirrored by the vectorized `_graph_dijkstra` (kept for unit tests).
 
-        The exponential attractor pulls the path toward target_grade_pct; on steep
-        ground a gentle target can't be held straight, so the path serpentines. An edge
-        that runs AGAINST the gradient_mode (climbing in DOWNHILL mode, or descending in
-        UPHILL mode) is exponentially penalized — that one-way monotonicity is what stops
-        the path from looping. It's a soft preference; any hard cap is enforced by the caller.
+        cost = distance × exp(|actual−target|/σ) × against-mode; against-mode penalizes the wrong way
+        (climbing in DOWNHILL / descending in UPHILL), forbidding loops.
         """
         # Horizontal distance
         horiz_dist = GeoCalculator.haversine_distance_m(lat1=from_lat, lon1=from_lon, lat2=to_lat, lon2=to_lon)
@@ -406,16 +430,10 @@ class LeastCostPathPlanner:
         if horiz_dist < 0.1:
             return float("inf")
 
-        # Actual grade (positive = downhill, negative = uphill)
-        drop = from_elev - to_elev
-        actual_grade = (drop / horiz_dist) * 100
-
-        # Attractor: exponential penalty for deviating from the target grade.
+        actual_grade = (from_elev - to_elev) / horiz_dist * 100  # positive = downhill
         grade_cost = exp(abs(actual_grade - target_grade_pct) / GeometricTuningConfig.COST_SIGMA)
 
-        # Penalize running against the segment's direction: DOWNHILL penalizes climbing
-        # (actual_grade < 0), UPHILL penalizes descending (actual_grade > 0). This
-        # one-way monotonicity is what makes loops impossible.
+        # Against-mode penalty: wrong-way edges cost exp(|grade|/σ), forbidding loops.
         against_penalty = 1.0
         wrong_way = actual_grade < 0 if gradient_mode == GradientMode.DOWNHILL else actual_grade > 0
         if wrong_way:

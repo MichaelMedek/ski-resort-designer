@@ -15,7 +15,7 @@ import math
 import numpy as np
 import pytest
 
-from skiresort_planner.constants import GeometricTuningConfig, MapConfig
+from skiresort_planner.constants import GeometricTuningConfig, MapConfig, PlannerConfig
 from skiresort_planner.core.dem_service import DEMService
 from skiresort_planner.core.terrain_analyzer import TerrainAnalyzer
 from skiresort_planner.generators.connection_planners import (
@@ -79,13 +79,14 @@ class TestEdgeCostFunction:
         Given an edge with exactly 20% downhill slope and target of 20%,
         the slope deviation penalty should be 1.0 (exp(0)).
         """
-        # 20m drop over 100m horizontal = 20% slope
+        # to_lon=10.0009 is ~68m east at 47°N, so a true 20% grade is a 13.65m drop (not 20m). Match it
+        # exactly so the deviation penalty is exp(0)=1 and cost ≈ distance, independent of COST_SIGMA.
         cost = planner._calc_edge_cost(
             from_elev=2100.0,
-            to_elev=2080.0,  # 20m drop
+            to_elev=2086.35,  # 13.65m drop over ~68m ≈ 20% grade
             from_lon=10.0,
             from_lat=47.0,
-            to_lon=10.0009,  # ~100m east at 47°N
+            to_lon=10.0009,  # ~68m east at 47°N
             to_lat=47.0,
             target_grade_pct=20.0,
         )
@@ -190,6 +191,34 @@ class TestGridNode:
         assert n1 < n2, "Same row, lower col should be smaller"
         assert n1 < n3, "Lower row should be smaller"
         assert n2 < n3, "Row takes precedence over col"
+
+
+class TestSelfIntersects:
+    """The quality gate that refuses a smoothed route which crosses itself."""
+
+    def _pts(self, xy: list[tuple[float, float]]) -> list[PathPoint]:
+        # Build PathPoints from local metre offsets near the origin (elevation irrelevant here).
+        deg = 1.0 / MapConfig.METERS_PER_DEGREE_EQUATOR
+        return [PathPoint(lon=x * deg, lat=y * deg, elevation=1000.0) for x, y in xy]
+
+    def test_straight_line_is_simple(self) -> None:
+        pts = self._pts([(0, 0), (100, 0), (200, 0), (300, 0)])
+        assert LeastCostPathPlanner._self_intersects(pts) is False
+
+    def test_open_switchback_is_simple(self) -> None:
+        # A clean serpentine (no crossing) must pass — this is a valid steep-ground path.
+        pts = self._pts([(0, 0), (100, 50), (0, 100), (100, 150), (0, 200)])
+        assert LeastCostPathPlanner._self_intersects(pts) is False
+
+    def test_crossing_polyline_is_flagged(self) -> None:
+        # A bowtie/figure-eight crosses itself → degenerate route.
+        pts = self._pts([(0, 0), (100, 100), (100, 0), (0, 100)])
+        assert LeastCostPathPlanner._self_intersects(pts) is True
+
+    def test_too_few_points_is_simple(self) -> None:
+        # Fewer than 4 points cannot self-cross; guard returns False without building geometry.
+        pts = self._pts([(0, 0), (100, 0)])
+        assert LeastCostPathPlanner._self_intersects(pts) is False
 
 
 class TestFindNearestNode:
@@ -435,3 +464,62 @@ class TestEdgeCostGradeAttractor:
         climb = self._cost(planner, 2000.0, 2006.0, target_grade_pct=-20.0, gradient_mode=GradientMode.UPHILL)
         descend = self._cost(planner, 2000.0, 1994.0, target_grade_pct=-20.0, gradient_mode=GradientMode.UPHILL)
         assert descend > climb * 5, "UPHILL mode penalizes descending steeply"
+
+
+class TestGridExtents:
+    """The grid-sizing math (LeastCostPathPlanner._grid_extents): sized from the REQUIRED grade-holding
+    length L=100*drop/g, not the straight chord, so a gentle grade on steep ground gets serpentine room.
+    """
+
+    def test_matched_grade_needs_no_lateral_bow(self) -> None:
+        # g == terrain grade: L == chord, so no bow -> across floors at GRID_ACROSS_MIN_M.
+        along, across, res = LeastCostPathPlanner._grid_extents(
+            direct_distance=1000.0, net_drop=450.0, target_grade_pct=45.0
+        )
+        assert across == pytest.approx(GeometricTuningConfig.GRID_ACROSS_MIN_M)
+        assert along == pytest.approx(
+            1000.0 * GeometricTuningConfig.GRID_ALONG_MARGIN + GeometricTuningConfig.GRID_PADDING_M
+        )
+        assert res > 0
+
+    def test_gentle_grade_on_steep_ground_bows_wide(self) -> None:
+        # Drop 450m at 5% -> L=9000m over a 1000m chord -> a big lateral bow, far above the floor.
+        _, across, _ = LeastCostPathPlanner._grid_extents(direct_distance=1000.0, net_drop=450.0, target_grade_pct=5.0)
+        expected_bow = math.sqrt((9000.0 / 2) ** 2 - (1000.0 / 2) ** 2)
+        assert across == pytest.approx(2 * expected_bow + GeometricTuningConfig.GRID_PADDING_M)
+
+    def test_near_zero_grade_falls_back_to_chord(self) -> None:
+        # Below MIN_GRADE_PCT_FOR_LENGTH the length formula diverges -> required_len = chord (no bow).
+        _, across, _ = LeastCostPathPlanner._grid_extents(direct_distance=800.0, net_drop=1.0, target_grade_pct=0.0)
+        assert across == pytest.approx(GeometricTuningConfig.GRID_ACROSS_MIN_M)
+
+    def test_resolution_capped_by_max_grid_size(self) -> None:
+        # A huge path must coarsen so the larger axis stays within MAX_GRID_SIZE cells.
+        along, across, res = LeastCostPathPlanner._grid_extents(
+            direct_distance=6000.0, net_drop=450.0, target_grade_pct=5.0
+        )
+        assert max(along, across) / res <= GeometricTuningConfig.MAX_GRID_SIZE - 1 + 1e-6
+
+    def test_resolution_floored_at_min(self) -> None:
+        # A short path never goes below the finest cell size.
+        _, _, res = LeastCostPathPlanner._grid_extents(direct_distance=60.0, net_drop=20.0, target_grade_pct=30.0)
+        assert res >= GeometricTuningConfig.GRID_RES_MIN_M
+
+
+class TestNeighbors:
+    """The radius-R coprime neighborhood derived in PlannerConfig (radius -> offsets, single source)."""
+
+    def test_all_offsets_within_radius_and_coprime(self) -> None:
+        r = PlannerConfig.NEIGHBOR_RADIUS
+        for dr, dc in PlannerConfig.NEIGHBORS:
+            assert (dr, dc) != (0, 0)
+            assert -r <= dr <= r and -r <= dc <= r
+            assert math.gcd(abs(dr), abs(dc)) == 1, f"({dr},{dc}) not coprime -> a collinear duplicate"
+
+    def test_includes_cardinals_and_a_shallow_bearing(self) -> None:
+        for off in [(1, 0), (0, 1), (1, 1), (-1, 1)]:
+            assert off in PlannerConfig.NEIGHBORS
+        assert (1, PlannerConfig.NEIGHBOR_RADIUS) in PlannerConfig.NEIGHBORS
+
+    def test_no_duplicate_directions(self) -> None:
+        assert len(PlannerConfig.NEIGHBORS) == len(set(PlannerConfig.NEIGHBORS))

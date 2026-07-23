@@ -15,7 +15,7 @@ from skiresort_planner.constants import StyleConfig
 
 if TYPE_CHECKING:
     from skiresort_planner.core.dem_service import DEMService
-    from skiresort_planner.model.path_segment import PathSegment
+    from skiresort_planner.model.path_geometry import Path
 
 
 class SegmentProfile(StrEnum):
@@ -41,14 +41,14 @@ class SegmentProfileResult:
     max_below_m: float
 
 
-def classify_segment_profile(*, segment: "PathSegment", dem: "DEMService", threshold_m: float) -> SegmentProfileResult:
+def classify_segment_profile(*, segment: "Path", dem: "DEMService", threshold_m: float) -> SegmentProfileResult:
     """Classify a segment as bridge/tunnel/ground by its worst deviation from the terrain surface.
 
     Deviation = point.elevation - terrain. The whole segment takes one class (its worst point). Ties
-    (equal above/below magnitude) resolve to BRIDGE.
+    (equal above/below magnitude) resolve to BRIDGE. Takes any `Path` (committed segment or proposal).
 
     Args:
-        segment: Committed segment whose points carry smoothed (non-re-draped) elevations.
+        segment: Any Path (committed segment or proposal) whose points carry smoothed elevations.
         dem: Elevation source, queried once (vectorized) at every point.
         threshold_m: Deviation magnitude below which the segment is GROUND.
     """
@@ -56,12 +56,18 @@ def classify_segment_profile(*, segment: "PathSegment", dem: "DEMService", thres
     lats = [p.lat for p in segment.points]
     elevs = np.array([p.elevation for p in segment.points], dtype=np.float64)
 
-    # Points were draped FROM the DEM at creation, so every point MUST be in coverage — a NaN here is
-    # an invariant violation, not external-input noise. Fail loud.
+    # A LOADED backup may have been built against a different DEM (other region / updated file), so some
+    # points can sit off the currently-loaded coverage → NaN. That's external file data, not an internal
+    # invariant, so classify over the in-coverage points and skip the NaNs rather than crashing.
     ground = dem.get_elevations(lons=lons, lats=lats)
-    assert not np.isnan(ground).any(), f"segment {segment.id}: DEM returned NaN at a draped point"
+    on_dem = ~np.isnan(ground)
+    if not on_dem.any():
+        return SegmentProfileResult(
+            profile=SegmentProfile.GROUND, max_above_m=0.0, max_below_m=0.0
+        )  # nothing to measure
 
-    deviation = elevs - ground
+    # Mask the off-DEM points (partial coverage) so their NaN doesn't poison max/min.
+    deviation = elevs[on_dem] - ground[on_dem]
     max_above_m = max(0.0, float(deviation.max()))
     max_below_m = max(0.0, float(-deviation.min()))
 
