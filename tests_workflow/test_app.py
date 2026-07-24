@@ -84,6 +84,77 @@ class TestSessionHelpers:
         assert fake_st.session_state["state_machine"] is not None
         assert fake_st.session_state["camera_epoch"] == 1
 
+    @staticmethod
+    def _cyclic_graph() -> ResortGraph:
+        """The reported corrupt shape: a slope chain N1->N2->N3->N2->N5 (S2/S3 form a 2-cycle), as
+        produced by merging two nodes that bracketed a sub-chain. get_stats() raises on this graph.
+        """
+        elev = {"N1": 2100.0, "N2": 2000.0, "N3": 1950.0, "N5": 1800.0}
+        nodes = {nid: {"id": nid, "location": {"lon": 10.0, "lat": 46.0, "elevation": e}} for nid, e in elev.items()}
+        seg = lambda sid, a, b: {  # noqa: E731 - terse local for the four uniform segments
+            "id": sid,
+            "name": sid,
+            "start_node_id": a,
+            "end_node_id": b,
+            "kind": "slope",
+            "points": [nodes[a]["location"], nodes[b]["location"]],
+        }
+        data: dict[str, object] = {
+            "version": "2.0",
+            "nodes": nodes,
+            "segments": {
+                "S1": seg("S1", "N1", "N2"),
+                "S2": seg("S2", "N2", "N3"),
+                "S3": seg("S3", "N3", "N2"),
+                "S4": seg("S4", "N2", "N5"),
+            },
+            "slopes": {
+                "SL1": {
+                    "id": "SL1",
+                    "name": "1",
+                    "segment_ids": ["S1", "S2", "S3", "S4"],
+                    "start_node_id": "N1",
+                    "end_node_id": "N5",
+                }
+            },
+            "lifts": {},
+            "roads": {},
+            "counters": {"node": 5, "segment": 4, "slope": 1, "lift": 0, "road": 0},
+        }
+        return ResortGraph.from_dict(data=data)
+
+    def test_recovery_screen_renders_on_cyclic_graph_without_crashing(self, fake_st) -> None:
+        # The recovery handler itself must not re-raise on the corrupt graph (it builds the download
+        # payload from to_dict, not the cyclic stats), so the escape-hatch buttons always render.
+        graph = self._cyclic_graph()
+        fake_st.session_state["graph"] = graph
+        fake_st.session_state["camera_epoch"] = 0
+
+        app._handle_error_with_recovery(RuntimeError("boom"), "UI")  # must not raise
+
+        assert fake_st.session_state["graph"] is graph, "graph untouched when no button is clicked"
+
+    def test_recovery_reset_to_empty_wipes_corrupt_graph(self, fake_st, monkeypatch) -> None:
+        # Clicking "Reset to Empty" on the recovery screen opens the shared confirm dialog; confirming
+        # soft-deletes the backup and drops the corrupt graph so init_session_state rebuilds fresh.
+        # This is the escape hatch for a LOADED corrupt backup (nothing to undo — the stack isn't saved).
+        graph = self._cyclic_graph()
+        fake_st.session_state["graph"] = graph
+        fake_st.session_state["resort_id"] = "corrupt99"
+        fake_st.session_state["camera_epoch"] = 0
+        deleted: list[str] = []
+        monkeypatch.setattr(
+            "skiresort_planner.ui.left_panel.backup_store.delete", lambda resort_id: deleted.append(resort_id)
+        )
+        monkeypatch.setattr("skiresort_planner.ui.left_panel.backup_store.new_resort_id", lambda: "fresh42")
+        # The reset button opens _ResetResortDialog; its confirm button fires perform_reset_resort.
+        fake_st.clicked_keys.update({"reset_resort_button", "dialog_confirm"})
+
+        app._handle_error_with_recovery(RuntimeError("boom"), "UI")
+
+        assert deleted == ["corrupt99"], "the corrupt backup is soft-deleted"
+        assert "graph" not in fake_st.session_state, "graph dropped so init rebuilds empty"
+
     def test_load_dem_data_returns_early_when_loaded(self, fake_st, mock_dem_blue_slope, monkeypatch) -> None:
         fake_st.session_state["dem_service"] = mock_dem_blue_slope  # already loaded
         reframed: list[object] = []

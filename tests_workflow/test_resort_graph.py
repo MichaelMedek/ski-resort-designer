@@ -92,6 +92,28 @@ class TestCommitAndFinishWorkflow:
         assert len(graph.undo_stack) == 1, "Should push undo action"
         assert isinstance(graph.undo_stack[0], AddSegmentsAction), "Undo action should be AddSegmentsAction"
 
+    def test_commit_paths_skips_empty_points_path(self, empty_graph, path_points_blue) -> None:
+        """A proposal with no points is silently skipped (nothing to build), while a valid one in the
+        same batch still commits — so a stray empty proposal can't abort the whole commit.
+        """
+        graph = empty_graph
+        empty = ProposedPathSegment(points=[], target_difficulty="blue")
+        valid = ProposedPathSegment(points=path_points_blue, target_difficulty="blue")
+
+        endpoint_ids = graph.commit_paths(paths=[empty, valid])
+
+        assert len(graph.segments) == 1, "only the valid proposal became a segment"
+        assert len(endpoint_ids) == 1, "one endpoint id, for the valid proposal"
+
+    def test_commit_paths_raises_on_single_point_path(self, empty_graph) -> None:
+        """A one-point proposal can't yield a segment (side slope needs ≥2 points) → raise-fast."""
+        graph = empty_graph
+        one_point = ProposedPathSegment(
+            points=[PathPoint(lon=0.0, lat=0.0, elevation=2000.0)], target_difficulty="blue"
+        )
+        with pytest.raises(ValueError, match="at least 2 points"):
+            graph.commit_paths(paths=[one_point])
+
     def test_finish_slope_groups_segments(self, empty_graph, path_points_blue) -> None:
         """finish_slope groups committed segments into a named slope, pushing undo."""
         graph = empty_graph
@@ -1461,6 +1483,32 @@ class TestMergeNodes:
         start_pt, end_pt = slope.endpoints(nodes=graph.nodes)
         assert start_pt is not None and end_pt is not None
         assert slope.start_node_id in graph.nodes and slope.end_node_id in graph.nodes
+
+    def test_merge_repoints_path_start_boundary_when_it_is_merged_away(self, empty_graph, mock_dem_blue_slope) -> None:
+        """When the slope's START boundary node is the one merged AWAY (survivor is the other node),
+        the slope's start_node_id is repointed onto the survivor — the path-entity branch of the
+        endpoint repoint, distinct from repointing when the boundary is itself the survivor.
+        """
+        dem = mock_dem_blue_slope
+        graph = empty_graph
+        seg_ids = _commit_L_slope(graph=graph, dem=dem)
+        graph.finish_slope(segment_ids=seg_ids)
+        slope = graph.slopes[next(iter(graph.slopes))]
+        start_node_id = slope.start_node_id
+
+        # X is the survivor (first id); the slope's start node is merged away (second id).
+        self._node(
+            graph=graph,
+            dem=dem,
+            node_id="X",
+            lon=6 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+            lat=6 / MapConfig.METERS_PER_DEGREE_EQUATOR,
+        )
+        graph.merge_nodes(node_ids=["X", start_node_id], dem=dem)
+
+        assert start_node_id not in graph.nodes, "the start boundary node was merged away"
+        assert slope.start_node_id == "X", "the slope's start boundary repointed onto the survivor"
+        assert slope.start_node_id in graph.nodes
 
     def test_merge_reanchors_segment_polyline_endpoint_to_survivor(self, empty_graph, mock_dem_blue_slope) -> None:
         """After merge, an affected segment's drawn polyline endpoint sits exactly on the survivor

@@ -6,6 +6,8 @@ Tests that resort graphs can be saved and loaded without data loss.
 import json
 import xml.etree.ElementTree as ET
 
+import pytest
+
 from skiresort_planner.constants import MapConfig
 
 
@@ -475,6 +477,24 @@ class TestGPXExport:
         pts = road_tracks[0].findall(f"{ns}trkseg/{ns}trkpt")
         assert pts and pts[0].find(f"{ns}ele") is not None
 
+    def test_gpx_raises_when_lift_station_node_missing(self, mock_dem_blue_slope) -> None:
+        """A lift whose station node vanished (corrupt/stale graph) fails GPX export loudly rather
+        than emitting a track with no coordinates.
+        """
+        graph = self._graph_with_slope_and_lift(mock_dem_blue_slope)
+        lift = next(iter(graph.lifts.values()))
+        del graph.nodes[lift.start_node_id]  # simulate a dangling station reference
+        with pytest.raises(ValueError, match="invalid start or end node"):
+            graph.to_gpx()
+
+    def test_gpx_raises_when_lift_has_no_cable_points(self, mock_dem_blue_slope) -> None:
+        """A lift with no cable geometry can't be drawn as a 3D track — export fails loudly."""
+        graph = self._graph_with_slope_and_lift(mock_dem_blue_slope)
+        lift = next(iter(graph.lifts.values()))
+        lift.cable_points = []  # geometry stripped → nothing to export
+        with pytest.raises(ValueError, match="cable_points"):
+            graph.to_gpx()
+
 
 class TestRoadSerialization:
     """Roads round-trip through to_dict/from_dict with their counter preserved."""
@@ -500,8 +520,6 @@ class TestRoadSerialization:
 
     def test_road_owned_slope_kind_segment_raises(self, empty_graph, path_points_blue) -> None:
         """A road owning a kind=SLOPE segment (corrupt/stale save) fails loudly on load."""
-        import pytest
-
         from skiresort_planner.model.path_segment import SegmentKind
         from skiresort_planner.model.proposed_path import ProposedPathSegment
         from skiresort_planner.model.resort_graph import ResortGraph

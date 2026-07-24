@@ -404,7 +404,7 @@ class TestDialogHelpers:
             fake_st.session_state[key] = object()
         fake_st.session_state["resort_id"] = "old123"
 
-        left_panel._perform_reset_resort()
+        left_panel.perform_reset_resort()
 
         assert deleted == ["old123"], "current backup must be deleted"
         assert fake_st.query_params["resort"] == "fresh999", "a fresh resort id is routed"

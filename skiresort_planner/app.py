@@ -54,8 +54,12 @@ from skiresort_planner.ui import (
     reload_map,
     render_control_panel,
     trigger_rerun,
-    undo_last_action,
     viewport_map_height,
+)
+from skiresort_planner.ui.left_panel import (
+    render_download_buttons,
+    render_reset_to_empty_button,
+    render_undo_button,
 )
 from skiresort_planner.ui.mode_registry import BUILD_STATES
 from skiresort_planner.ui.pydeck_click_handler import render_pydeck_map
@@ -189,12 +193,16 @@ def _handle_error_with_recovery(e: Exception, context_tag: str) -> None:
     logger.error(f"[{context_tag}] error caught: {error_msg}\n{traceback.format_exc()}")
     st.error(f"⚠️ [{context_tag}] Something went wrong: {error_msg}")
     reset_ui_state()
-    # A graph-corrupting action makes every rerun re-crash;
-    # undo backs it out and autosaves the corrected graph, so offer it directly on the recovery screen.
+    # Recovery affordances share ONE source with the sidebar (labels/disabled/help can't drift). A
+    # graph-corrupting action makes every rerun re-crash: same-session undo backs it out; for a
+    # corrupt LOADED backup (nothing to undo) the escape hatch is save-then-reset-to-empty.
     graph: ResortGraph = st.session_state.graph
-    if graph.undo_stack and st.button("↩️ Undo Last Action"):
-        undo_last_action()  # pops the stack, autosaves, and triggers a rerun
-    if st.button("🔄 Reset and Continue", type="primary"):
+    sm: PlannerStateMachine = st.session_state.state_machine
+    ctx: PlannerContext = st.session_state.context
+    render_undo_button(sm=sm, ctx=ctx, graph=graph)
+    render_download_buttons(graph=graph)
+    render_reset_to_empty_button(graph=graph)
+    if st.button("🔄 Reset and Continue", type="primary", key="recovery_reset_continue"):
         trigger_rerun()
 
 

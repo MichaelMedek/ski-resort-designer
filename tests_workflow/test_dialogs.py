@@ -104,17 +104,17 @@ class TestConcreteDialogs:
         from skiresort_planner.ui import left_panel
 
         called: list[bool] = []
-        monkeypatch.setattr(left_panel, "_perform_reset_resort", lambda: called.append(True))
+        monkeypatch.setattr(left_panel, "perform_reset_resort", lambda: called.append(True))
 
         fake_st.clicked_keys = {"dialog_confirm"}
         left_panel._ResetResortDialog().show()
-        assert called == [True], "confirm invokes _perform_reset_resort"
+        assert called == [True], "confirm invokes perform_reset_resort"
 
     def test_reset_dialog_cancel_leaves_resort(self, fake_st, monkeypatch) -> None:
         from skiresort_planner.ui import left_panel
 
         called: list[bool] = []
-        monkeypatch.setattr(left_panel, "_perform_reset_resort", lambda: called.append(True))
+        monkeypatch.setattr(left_panel, "perform_reset_resort", lambda: called.append(True))
 
         fake_st.clicked_keys = {"dialog_cancel"}
         left_panel._ResetResortDialog().show()
