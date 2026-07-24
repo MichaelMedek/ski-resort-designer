@@ -33,6 +33,12 @@ or any device that can't run the desktop app; just expect it to be a bit slower 
 
 ---
 
+## Example Maps
+
+Ready-made resorts live in [`demo_maps/`](demo_maps/) — load one to explore a full build without starting from scratch. In the app, open the sidebar's **💾 Resort Data → 📂 Load from File** (into an empty resort) and pick the `.json`.
+
+---
+
 ## Documentation
 
 Detailed documentation  about how to use the app UI and the underlying algorithms is available in the `docs/` folder:
