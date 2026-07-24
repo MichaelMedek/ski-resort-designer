@@ -123,16 +123,33 @@ class TestSessionHelpers:
         }
         return ResortGraph.from_dict(data=data)
 
-    def test_recovery_screen_renders_on_cyclic_graph_without_crashing(self, fake_st) -> None:
-        # The recovery handler itself must not re-raise on the corrupt graph (it builds the download
-        # payload from to_dict, not the cyclic stats), so the escape-hatch buttons always render.
+    @pytest.mark.parametrize(("context_tag", "suffix"), [("RENDER", "recovery_render"), ("UI", "recovery_ui")])
+    def test_recovery_screen_renders_all_buttons_on_cyclic_graph(self, fake_st, context_tag, suffix) -> None:
+        # Both recovery paths (map-fragment RENDER + top-level UI) go through one handler and must
+        # render the full escape hatch on the corrupt/cyclic graph without re-raising: undo, save,
+        # export GPX, reset-to-empty, and reset-and-continue — each keyed for this region.
         graph = self._cyclic_graph()
         fake_st.session_state["graph"] = graph
         fake_st.session_state["camera_epoch"] = 0
+        seen: list[object] = []
+        original_register = fake_st._register_key
 
-        app._handle_error_with_recovery(RuntimeError("boom"), "UI")  # must not raise
+        def _capture(key: object) -> None:
+            if key is not None:
+                seen.append(key)
+            original_register(key)
 
-        assert fake_st.session_state["graph"] is graph, "graph untouched when no button is clicked"
+        fake_st._register_key = _capture
+
+        app._handle_error_with_recovery(RuntimeError("boom"), context_tag)  # must not raise
+
+        assert set(seen) == {
+            f"undo_last_action_button_{suffix}",
+            f"download_json_{suffix}",  # resort has content → active download buttons
+            f"download_gpx_{suffix}",
+            f"reset_resort_button_{suffix}",
+            f"reset_and_continue_{suffix}",
+        }, f"all recovery buttons must render for {context_tag}, got {sorted(map(str, set(seen)))}"
 
     def test_recovery_and_sidebar_widget_keys_do_not_collide(self, fake_st) -> None:
         # Regression: the recovery screen and the sidebar render the SAME shared undo/save/reset
@@ -171,6 +188,36 @@ class TestSessionHelpers:
 
         assert deleted == ["corrupt99"], "the corrupt backup is soft-deleted"
         assert "graph" not in fake_st.session_state, "graph dropped so init rebuilds empty"
+
+    def test_recovery_reset_and_continue_reruns(self, fake_st, monkeypatch) -> None:
+        # The "Reset and Continue" button just reruns (UI state was already rebuilt by reset_ui_state).
+        graph = self._cyclic_graph()
+        fake_st.session_state["graph"] = graph
+        fake_st.session_state["camera_epoch"] = 0
+        reran: list[int] = []
+        monkeypatch.setattr(app, "trigger_rerun", lambda *a, **k: reran.append(1))
+        fake_st.clicked_keys.add("reset_and_continue_recovery_ui")
+
+        app._handle_error_with_recovery(RuntimeError("boom"), "UI")
+
+        assert reran == [1], "Reset and Continue triggers a rerun"
+
+    def test_recovery_undo_fires_when_stack_has_an_action(self, fake_st, monkeypatch, path_points_blue) -> None:
+        # With a real undo action on the stack (same-session recovery), clicking recovery Undo opens
+        # the undo confirmation dialog (finishing a slope is a confirm-first action, not a routine step).
+        graph = ResortGraph()
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        fake_st.session_state["graph"] = graph
+        fake_st.session_state["camera_epoch"] = 0
+        shown: list[int] = []
+        monkeypatch.setattr("skiresort_planner.ui.left_panel._UndoDialog.show", lambda self: shown.append(1))
+        monkeypatch.setattr(app, "trigger_rerun", lambda *a, **k: None)
+        fake_st.clicked_keys.add("undo_last_action_button_recovery_ui")
+
+        app._handle_error_with_recovery(RuntimeError("boom"), "UI")
+
+        assert shown == [1], "clicking recovery Undo opens the undo confirmation dialog"
 
     def test_load_dem_data_returns_early_when_loaded(self, fake_st, mock_dem_blue_slope, monkeypatch) -> None:
         fake_st.session_state["dem_service"] = mock_dem_blue_slope  # already loaded
