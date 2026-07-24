@@ -134,6 +134,23 @@ class TestSessionHelpers:
 
         assert fake_st.session_state["graph"] is graph, "graph untouched when no button is clicked"
 
+    def test_recovery_and_sidebar_widget_keys_do_not_collide(self, fake_st) -> None:
+        # Regression: the recovery screen and the sidebar render the SAME shared undo/save/reset
+        # helpers in one script run. fake_st now raises on a duplicate widget key (like real
+        # Streamlit), so rendering both locations back-to-back must NOT raise (per-location suffix).
+        from skiresort_planner.ui.left_panel import (
+            render_download_buttons,
+            render_reset_to_empty_button,
+            render_undo_button,
+        )
+
+        graph = self._cyclic_graph()
+        sm, ctx = PlannerStateMachine.create(graph=graph, add_ui_listener=False)
+        for suffix in ("sidebar", "recovery_ui"):
+            render_undo_button(sm=sm, ctx=ctx, graph=graph, key_suffix=suffix)
+            render_download_buttons(graph=graph, key_suffix=suffix)
+            render_reset_to_empty_button(graph=graph, key_suffix=suffix)  # no StreamlitDuplicateElementKey
+
     def test_recovery_reset_to_empty_wipes_corrupt_graph(self, fake_st, monkeypatch) -> None:
         # Clicking "Reset to Empty" on the recovery screen opens the shared confirm dialog; confirming
         # soft-deletes the backup and drops the corrupt graph so init_session_state rebuilds fresh.
@@ -148,7 +165,7 @@ class TestSessionHelpers:
         )
         monkeypatch.setattr("skiresort_planner.ui.left_panel.backup_store.new_resort_id", lambda: "fresh42")
         # The reset button opens _ResetResortDialog; its confirm button fires perform_reset_resort.
-        fake_st.clicked_keys.update({"reset_resort_button", "dialog_confirm"})
+        fake_st.clicked_keys.update({"reset_resort_button_recovery_ui", "dialog_confirm"})
 
         app._handle_error_with_recovery(RuntimeError("boom"), "UI")
 

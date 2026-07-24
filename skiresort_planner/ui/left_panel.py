@@ -131,9 +131,10 @@ def _has_content(graph: ResortGraph) -> bool:
     return bool(graph.segment_path_entities or graph.lifts)
 
 
-def render_undo_button(*, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph) -> None:
+def render_undo_button(*, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph, key_suffix: str) -> None:
     """Undo button — single source for label/disabled/help, shared by the sidebar and the error
     recovery screen. Routine builder steps undo immediately; everything else confirms via a dialog.
+    key_suffix keeps the widget key unique per location (both can render in one script run).
     """
     can_undo = bool(graph.undo_stack)
     if st.button(
@@ -141,7 +142,7 @@ def render_undo_button(*, sm: PlannerStateMachine, ctx: PlannerContext, graph: R
         width="stretch",
         disabled=not can_undo,
         help="Nothing to undo" if not can_undo else "Undo the last action",
-        key="undo_last_action_button",
+        key=f"undo_last_action_button_{key_suffix}",
     ):
         if _next_undo_skips_confirm(sm=sm, ctx=ctx, graph=graph):
             _request_pending_undo()
@@ -150,9 +151,10 @@ def render_undo_button(*, sm: PlannerStateMachine, ctx: PlannerContext, graph: R
             _UndoDialog(graph=graph).show()
 
 
-def render_download_buttons(*, graph: ResortGraph) -> None:
+def render_download_buttons(*, graph: ResortGraph, key_suffix: str) -> None:
     """Save-to-JSON + Export-GPX buttons — single source for labels/disabled/help, shared by the
     sidebar and the recovery screen. Disabled (greyed) while the resort is empty.
+    key_suffix keeps widget keys unique per location (both can render in one script run).
     """
     downloads = (
         ("💾 Save to File", "json", "application/json", "Download resort design as JSON file"),
@@ -168,21 +170,29 @@ def render_download_buttons(*, graph: ResortGraph) -> None:
                 mime=mime,
                 width="stretch",
                 help=help_text,
+                key=f"download_{ext}_{key_suffix}",
             )
         else:
-            st.button(label, width="stretch", disabled=True, help="Build some slopes, lifts or roads first")
+            st.button(
+                label,
+                width="stretch",
+                disabled=True,
+                help="Build some slopes, lifts or roads first",
+                key=f"download_{ext}_disabled_{key_suffix}",
+            )
 
 
-def render_reset_to_empty_button(*, graph: ResortGraph) -> None:
+def render_reset_to_empty_button(*, graph: ResortGraph, key_suffix: str) -> None:
     """Reset-to-Empty button — single source for label/disabled/help, shared by the sidebar and the
     recovery screen. Opens the confirm dialog. Disabled (greyed) while the resort is already empty.
+    key_suffix keeps the widget key unique per location (both can render in one script run).
     """
     if st.button(
         "🗑️ Reset to Empty",
         width="stretch",
         help="Clear the current resort and start a new empty one",
         disabled=not _has_content(graph),
-        key="reset_resort_button",
+        key=f"reset_resort_button_{key_suffix}",
     ):
         _ResetResortDialog().show()
 
@@ -310,7 +320,7 @@ class SidebarRenderer:
 
     def _render_undo_button(self) -> None:
         """Render the undo button (delegates to the shared render_undo_button)."""
-        render_undo_button(sm=self.sm, ctx=self.ctx, graph=self.graph)
+        render_undo_button(sm=self.sm, ctx=self.ctx, graph=self.graph, key_suffix="sidebar")
 
     def _render_reset_view_button(self) -> None:
         """Reset the camera to the last SET view — the stored 2D frame in 2D, or the entity's 3D entry
@@ -549,5 +559,5 @@ class SidebarRenderer:
                         logger.error(f"Failed to load resort file: {e}")
 
             # Save/GPX download + reset-to-empty: shared with the error-recovery screen (one source).
-            render_download_buttons(graph=self.graph)
-            render_reset_to_empty_button(graph=self.graph)
+            render_download_buttons(graph=self.graph, key_suffix="sidebar")
+            render_reset_to_empty_button(graph=self.graph, key_suffix="sidebar")

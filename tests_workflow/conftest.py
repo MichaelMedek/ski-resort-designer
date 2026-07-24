@@ -125,6 +125,23 @@ class FakeStreamlit:
         # Keys of buttons that should register as "clicked" this render, so the
         # branch body under `if st.button(..., key=k):` actually executes.
         self.clicked_keys: set[str] = set()
+        # Every explicit widget key seen this run — real Streamlit raises on a duplicate, so we do
+        # too (catches copy-paste key collisions across shared render helpers). Reset via new_run().
+        self._seen_keys: set[object] = set()
+
+    def new_run(self) -> None:
+        """Reset per-run widget-key tracking (Streamlit clears element ids at each script run). Call
+        between successive render passes in one test that legitimately re-renders the same widgets.
+        """
+        self._seen_keys.clear()
+
+    def _register_key(self, key: object) -> None:
+        """Record an explicit widget key, raising on a duplicate like StreamlitDuplicateElementKey."""
+        if key is None:
+            return
+        if key in self._seen_keys:
+            raise RuntimeError(f"StreamlitDuplicateElementKey: duplicate widget key {key!r} in one run")
+        self._seen_keys.add(key)
 
     # --- containers (context managers) ---
     def columns(self, spec: "int | list[float]", **kwargs: object) -> list[_Ctx]:
@@ -155,6 +172,7 @@ class FakeStreamlit:
         # Like button(): fires only if its key was pre-registered. Forms often omit an explicit
         # key, so also honour the label as a fallback key.
         key = kwargs.get("key") or (args[0] if args else None)
+        self._register_key(kwargs.get("key"))
         return key in self.clicked_keys
 
     # --- dialog: decorator factory -> identity decorator ---
@@ -168,9 +186,11 @@ class FakeStreamlit:
     def button(self, *args: object, **kwargs: object) -> bool:
         # A button "fires" only if its key was pre-registered in clicked_keys,
         # so a test can drive a specific button-click branch deterministically.
+        self._register_key(kwargs.get("key"))
         return kwargs.get("key") in self.clicked_keys
 
     def download_button(self, *args: object, **kwargs: object) -> bool:
+        self._register_key(kwargs.get("key"))
         return False
 
     def checkbox(self, *args: object, **kwargs: object) -> bool:

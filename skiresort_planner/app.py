@@ -195,14 +195,16 @@ def _handle_error_with_recovery(e: Exception, context_tag: str) -> None:
     reset_ui_state()
     # Recovery affordances share ONE source with the sidebar (labels/disabled/help can't drift). A
     # graph-corrupting action makes every rerun re-crash: same-session undo backs it out; for a
-    # corrupt LOADED backup (nothing to undo) the escape hatch is save-then-reset-to-empty.
+    # corrupt LOADED backup (nothing to undo) the escape hatch is save-then-reset-to-empty. The
+    # key_suffix (per failing region) keeps widget keys unique from the sidebar's copies.
     graph: ResortGraph = st.session_state.graph
     sm: PlannerStateMachine = st.session_state.state_machine
     ctx: PlannerContext = st.session_state.context
-    render_undo_button(sm=sm, ctx=ctx, graph=graph)
-    render_download_buttons(graph=graph)
-    render_reset_to_empty_button(graph=graph)
-    if st.button("🔄 Reset and Continue", type="primary", key="recovery_reset_continue"):
+    suffix = f"recovery_{context_tag.lower()}"
+    render_undo_button(sm=sm, ctx=ctx, graph=graph, key_suffix=suffix)
+    render_download_buttons(graph=graph, key_suffix=suffix)
+    render_reset_to_empty_button(graph=graph, key_suffix=suffix)
+    if st.button("🔄 Reset and Continue", type="primary", key=f"reset_and_continue_{suffix}"):
         trigger_rerun()
 
 
