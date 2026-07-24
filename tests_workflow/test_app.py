@@ -84,6 +84,141 @@ class TestSessionHelpers:
         assert fake_st.session_state["state_machine"] is not None
         assert fake_st.session_state["camera_epoch"] == 1
 
+    @staticmethod
+    def _cyclic_graph() -> ResortGraph:
+        """The reported corrupt shape: a slope chain N1->N2->N3->N2->N5 (S2/S3 form a 2-cycle), as
+        produced by merging two nodes that bracketed a sub-chain. get_stats() raises on this graph.
+        """
+        elev = {"N1": 2100.0, "N2": 2000.0, "N3": 1950.0, "N5": 1800.0}
+        nodes = {nid: {"id": nid, "location": {"lon": 10.0, "lat": 46.0, "elevation": e}} for nid, e in elev.items()}
+        seg = lambda sid, a, b: {  # noqa: E731 - terse local for the four uniform segments
+            "id": sid,
+            "name": sid,
+            "start_node_id": a,
+            "end_node_id": b,
+            "kind": "slope",
+            "points": [nodes[a]["location"], nodes[b]["location"]],
+        }
+        data: dict[str, object] = {
+            "version": "2.0",
+            "nodes": nodes,
+            "segments": {
+                "S1": seg("S1", "N1", "N2"),
+                "S2": seg("S2", "N2", "N3"),
+                "S3": seg("S3", "N3", "N2"),
+                "S4": seg("S4", "N2", "N5"),
+            },
+            "slopes": {
+                "SL1": {
+                    "id": "SL1",
+                    "name": "1",
+                    "segment_ids": ["S1", "S2", "S3", "S4"],
+                    "start_node_id": "N1",
+                    "end_node_id": "N5",
+                }
+            },
+            "lifts": {},
+            "roads": {},
+            "counters": {"node": 5, "segment": 4, "slope": 1, "lift": 0, "road": 0},
+        }
+        return ResortGraph.from_dict(data=data)
+
+    @pytest.mark.parametrize(("context_tag", "suffix"), [("RENDER", "recovery_render"), ("UI", "recovery_ui")])
+    def test_recovery_screen_renders_all_buttons_on_cyclic_graph(self, fake_st, context_tag, suffix) -> None:
+        # Both recovery paths (map-fragment RENDER + top-level UI) go through one handler and must
+        # render the full escape hatch on the corrupt/cyclic graph without re-raising: undo, save,
+        # export GPX, reset-to-empty, and reset-and-continue — each keyed for this region.
+        graph = self._cyclic_graph()
+        fake_st.session_state["graph"] = graph
+        fake_st.session_state["camera_epoch"] = 0
+        seen: list[object] = []
+        original_register = fake_st._register_key
+
+        def _capture(key: object) -> None:
+            if key is not None:
+                seen.append(key)
+            original_register(key)
+
+        fake_st._register_key = _capture
+
+        app._handle_error_with_recovery(RuntimeError("boom"), context_tag)  # must not raise
+
+        assert set(seen) == {
+            f"undo_last_action_button_{suffix}",
+            f"download_json_{suffix}",  # resort has content → active download buttons
+            f"download_gpx_{suffix}",
+            f"reset_resort_button_{suffix}",
+            f"reset_and_continue_{suffix}",
+        }, f"all recovery buttons must render for {context_tag}, got {sorted(map(str, set(seen)))}"
+
+    def test_recovery_and_sidebar_widget_keys_do_not_collide(self, fake_st) -> None:
+        # Regression: the recovery screen and the sidebar render the SAME shared undo/save/reset
+        # helpers in one script run. fake_st now raises on a duplicate widget key (like real
+        # Streamlit), so rendering both locations back-to-back must NOT raise (per-location suffix).
+        from skiresort_planner.ui.left_panel import (
+            render_download_buttons,
+            render_reset_to_empty_button,
+            render_undo_button,
+        )
+
+        graph = self._cyclic_graph()
+        sm, ctx = PlannerStateMachine.create(graph=graph, add_ui_listener=False)
+        for suffix in ("sidebar", "recovery_ui"):
+            render_undo_button(sm=sm, ctx=ctx, graph=graph, key_suffix=suffix)
+            render_download_buttons(graph=graph, key_suffix=suffix)
+            render_reset_to_empty_button(graph=graph, key_suffix=suffix)  # no StreamlitDuplicateElementKey
+
+    def test_recovery_reset_to_empty_wipes_corrupt_graph(self, fake_st, monkeypatch) -> None:
+        # Clicking "Reset to Empty" on the recovery screen opens the shared confirm dialog; confirming
+        # soft-deletes the backup and drops the corrupt graph so init_session_state rebuilds fresh.
+        # This is the escape hatch for a LOADED corrupt backup (nothing to undo — the stack isn't saved).
+        graph = self._cyclic_graph()
+        fake_st.session_state["graph"] = graph
+        fake_st.session_state["resort_id"] = "corrupt99"
+        fake_st.session_state["camera_epoch"] = 0
+        deleted: list[str] = []
+        monkeypatch.setattr(
+            "skiresort_planner.ui.left_panel.backup_store.delete", lambda resort_id: deleted.append(resort_id)
+        )
+        monkeypatch.setattr("skiresort_planner.ui.left_panel.backup_store.new_resort_id", lambda: "fresh42")
+        # The reset button opens _ResetResortDialog; its confirm button fires perform_reset_resort.
+        fake_st.clicked_keys.update({"reset_resort_button_recovery_ui", "dialog_confirm"})
+
+        app._handle_error_with_recovery(RuntimeError("boom"), "UI")
+
+        assert deleted == ["corrupt99"], "the corrupt backup is soft-deleted"
+        assert "graph" not in fake_st.session_state, "graph dropped so init rebuilds empty"
+
+    def test_recovery_reset_and_continue_reruns(self, fake_st, monkeypatch) -> None:
+        # The "Reset and Continue" button just reruns (UI state was already rebuilt by reset_ui_state).
+        graph = self._cyclic_graph()
+        fake_st.session_state["graph"] = graph
+        fake_st.session_state["camera_epoch"] = 0
+        reran: list[int] = []
+        monkeypatch.setattr(app, "trigger_rerun", lambda *a, **k: reran.append(1))
+        fake_st.clicked_keys.add("reset_and_continue_recovery_ui")
+
+        app._handle_error_with_recovery(RuntimeError("boom"), "UI")
+
+        assert reran == [1], "Reset and Continue triggers a rerun"
+
+    def test_recovery_undo_fires_when_stack_has_an_action(self, fake_st, monkeypatch, path_points_blue) -> None:
+        # With a real undo action on the stack (same-session recovery), clicking recovery Undo opens
+        # the undo confirmation dialog (finishing a slope is a confirm-first action, not a routine step).
+        graph = ResortGraph()
+        graph.commit_paths(paths=[ProposedPathSegment(points=path_points_blue, target_difficulty="blue")])
+        graph.finish_slope(segment_ids=list(graph.segments.keys()))
+        fake_st.session_state["graph"] = graph
+        fake_st.session_state["camera_epoch"] = 0
+        shown: list[int] = []
+        monkeypatch.setattr("skiresort_planner.ui.left_panel._UndoDialog.show", lambda self: shown.append(1))
+        monkeypatch.setattr(app, "trigger_rerun", lambda *a, **k: None)
+        fake_st.clicked_keys.add("undo_last_action_button_recovery_ui")
+
+        app._handle_error_with_recovery(RuntimeError("boom"), "UI")
+
+        assert shown == [1], "clicking recovery Undo opens the undo confirmation dialog"
+
     def test_load_dem_data_returns_early_when_loaded(self, fake_st, mock_dem_blue_slope, monkeypatch) -> None:
         fake_st.session_state["dem_service"] = mock_dem_blue_slope  # already loaded
         reframed: list[object] = []

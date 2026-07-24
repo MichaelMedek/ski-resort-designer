@@ -13,7 +13,7 @@ Get the app as a normal desktop program.
    - **Windows** → `AlpinArchitect-win.zip`
 2. Open it:
    - **Mac** → double-click the `.dmg`, drag **Alpin Architect** into **Applications**, then open it.
-   - **Windows** → unzip the file, open the folder, double-click **`AlpinArchitect.exe`**.
+   - **Windows** → **before extracting**, right-click `AlpinArchitect-win.zip` → **Properties** → tick **Unblock** → **OK**. Then unzip, open the folder, double-click **`AlpinArchitect.exe`**.
 3. First open shows a one-time safety prompt (the app isn't code-signed):
    - **Mac** → *"Apple could not verify … is free of malware"*: go to **System Settings → Privacy & Security**, scroll down, click **Open Anyway** (then open once more). To skip the prompt entirely, run once in Terminal: `xattr -dr com.apple.quarantine /Applications/AlpinArchitect.app`
    - **Windows** → **"Windows protected your PC"** → **More info** → **Run anyway**.
@@ -30,6 +30,12 @@ On first launch it downloads ~285 MB of terrain data automatically (once); after
 No install needed: open **https://ski-resort-designer.streamlit.app/**. If it's been idle it may be
 asleep — click the **wake-up button** and wait a minute or two, then use it normally. Handy on a tablet
 or any device that can't run the desktop app; just expect it to be a bit slower than the native version.
+
+---
+
+## Example Maps
+
+Ready-made resorts live in [`demo_maps/`](demo_maps/) — load one to explore a full build without starting from scratch. In the app, open the sidebar's **💾 Resort Data → 📂 Load from File** (into an empty resort) and pick the `.json`.
 
 ---
 

@@ -663,7 +663,7 @@ class NodeEditingControlPanel(ControlPanel):
     """
 
     def _span_m(self) -> float:
-        return self.graph.max_node_span_m(self.ctx.node_edit.node_ids)
+        return self.graph.max_node_span_m(node_ids=self.ctx.node_edit.node_ids)
 
     def context_message(self) -> "Message | None":
         return NodeEditContextMessage(

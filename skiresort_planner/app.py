@@ -56,6 +56,11 @@ from skiresort_planner.ui import (
     trigger_rerun,
     viewport_map_height,
 )
+from skiresort_planner.ui.left_panel import (
+    render_download_buttons,
+    render_reset_to_empty_button,
+    render_undo_button,
+)
 from skiresort_planner.ui.mode_registry import BUILD_STATES
 from skiresort_planner.ui.pydeck_click_handler import render_pydeck_map
 from skiresort_planner.ui.terrain_layer import create_aws_terrain_layer
@@ -188,7 +193,18 @@ def _handle_error_with_recovery(e: Exception, context_tag: str) -> None:
     logger.error(f"[{context_tag}] error caught: {error_msg}\n{traceback.format_exc()}")
     st.error(f"⚠️ [{context_tag}] Something went wrong: {error_msg}")
     reset_ui_state()
-    if st.button("🔄 Reset and Continue", type="primary"):
+    # Recovery affordances share ONE source with the sidebar (labels/disabled/help can't drift). A
+    # graph-corrupting action makes every rerun re-crash: same-session undo backs it out; for a
+    # corrupt LOADED backup (nothing to undo) the escape hatch is save-then-reset-to-empty. The
+    # key_suffix (per failing region) keeps widget keys unique from the sidebar's copies.
+    graph: ResortGraph = st.session_state.graph
+    sm: PlannerStateMachine = st.session_state.state_machine
+    ctx: PlannerContext = st.session_state.context
+    suffix = f"recovery_{context_tag.lower()}"
+    render_undo_button(sm=sm, ctx=ctx, graph=graph, key_suffix=suffix)
+    render_download_buttons(graph=graph, key_suffix=suffix)
+    render_reset_to_empty_button(graph=graph, key_suffix=suffix)
+    if st.button("🔄 Reset and Continue", type="primary", key=f"reset_and_continue_{suffix}"):
         trigger_rerun()
 
 

@@ -89,7 +89,7 @@ class _UndoDialog(ConfirmDialog):
         _request_pending_undo()
 
 
-def _perform_reset_resort() -> None:
+def perform_reset_resort() -> None:
     """Soft-delete the current resort's backup (renamed _DELETED, kept for recovery) and prime a fresh one.
 
     Drops all session data so init_session_state rebuilds from scratch.
@@ -120,7 +120,81 @@ class _ResetResortDialog(ConfirmDialog):
         st.write("This clears the current resort and starts empty. The current backup is deleted. Cannot be undone.")
 
     def _on_confirm(self) -> None:
-        _perform_reset_resort()
+        perform_reset_resort()
+
+
+def _has_content(graph: ResortGraph) -> bool:
+    """Whether the resort holds anything worth saving/resetting. Counts entities directly (NOT via
+    get_stats) so it stays valid even on a corrupt/cyclic graph the recovery screen must render.
+    Uses segment_path_entities so a new SegmentPath kind is picked up automatically (+ lifts).
+    """
+    return bool(graph.segment_path_entities or graph.lifts)
+
+
+def render_undo_button(*, sm: PlannerStateMachine, ctx: PlannerContext, graph: ResortGraph, key_suffix: str) -> None:
+    """Undo button — single source for label/disabled/help, shared by the sidebar and the error
+    recovery screen. Routine builder steps undo immediately; everything else confirms via a dialog.
+    key_suffix keeps the widget key unique per location (both can render in one script run).
+    """
+    can_undo = bool(graph.undo_stack)
+    if st.button(
+        "↩️ Undo Last Action",
+        width="stretch",
+        disabled=not can_undo,
+        help="Nothing to undo" if not can_undo else "Undo the last action",
+        key=f"undo_last_action_button_{key_suffix}",
+    ):
+        if _next_undo_skips_confirm(sm=sm, ctx=ctx, graph=graph):
+            _request_pending_undo()
+            trigger_rerun()
+        else:
+            _UndoDialog(graph=graph).show()
+
+
+def render_download_buttons(*, graph: ResortGraph, key_suffix: str) -> None:
+    """Save-to-JSON + Export-GPX buttons — single source for labels/disabled/help, shared by the
+    sidebar and the recovery screen. Disabled (greyed) while the resort is empty.
+    key_suffix keeps widget keys unique per location (both can render in one script run).
+    """
+    downloads = (
+        ("💾 Save to File", "json", "application/json", "Download resort design as JSON file"),
+        ("📥 Export GPX", "gpx", "application/gpx+xml", "Export for GPS devices and mapping apps"),
+    )
+    for label, ext, mime, help_text in downloads:
+        if _has_content(graph):
+            payload = json.dumps(graph.to_dict(), indent=2) if ext == "json" else graph.to_gpx()
+            st.download_button(
+                label,
+                data=payload,
+                file_name=f"alpin_resort_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{ext}",
+                mime=mime,
+                width="stretch",
+                help=help_text,
+                key=f"download_{ext}_{key_suffix}",
+            )
+        else:
+            st.button(
+                label,
+                width="stretch",
+                disabled=True,
+                help="Build some slopes, lifts or roads first",
+                key=f"download_{ext}_disabled_{key_suffix}",
+            )
+
+
+def render_reset_to_empty_button(*, graph: ResortGraph, key_suffix: str) -> None:
+    """Reset-to-Empty button — single source for label/disabled/help, shared by the sidebar and the
+    recovery screen. Opens the confirm dialog. Disabled (greyed) while the resort is already empty.
+    key_suffix keeps the widget key unique per location (both can render in one script run).
+    """
+    if st.button(
+        "🗑️ Reset to Empty",
+        width="stretch",
+        help="Clear the current resort and start a new empty one",
+        disabled=not _has_content(graph),
+        key=f"reset_resort_button_{key_suffix}",
+    ):
+        _ResetResortDialog().show()
 
 
 class SidebarRenderer:
@@ -245,21 +319,8 @@ class SidebarRenderer:
         self._render_reset_view_button()
 
     def _render_undo_button(self) -> None:
-        """Render the undo button. Routine builder steps (peeling a segment / cancelling a
-        just-started build) undo immediately; everything else confirms via a dialog first.
-        """
-        can_undo = bool(self.graph.undo_stack)
-        if st.button(
-            "↩️ Undo Last Action",
-            width="stretch",
-            disabled=not can_undo,
-            help="Nothing to undo" if not can_undo else "Undo the last action",
-        ):
-            if _next_undo_skips_confirm(sm=self.sm, ctx=self.ctx, graph=self.graph):
-                _request_pending_undo()
-                trigger_rerun()
-            else:
-                _UndoDialog(graph=self.graph).show()
+        """Render the undo button (delegates to the shared render_undo_button)."""
+        render_undo_button(sm=self.sm, ctx=self.ctx, graph=self.graph, key_suffix="sidebar")
 
     def _render_reset_view_button(self) -> None:
         """Reset the camera to the last SET view — the stored 2D frame in 2D, or the entity's 3D entry
@@ -456,8 +517,7 @@ class SidebarRenderer:
     def _render_save_load(self) -> None:
         """Render save/load resort functionality."""
         with st.expander("💾 Resort Data", expanded=False):
-            stats = self.graph.get_stats()
-            has_content = stats["total_slopes"] > 0 or stats["total_lifts"] > 0 or stats["total_roads"] > 0
+            has_content = _has_content(self.graph)
 
             # Load from File
             uploaded_file = st.file_uploader(
@@ -498,32 +558,6 @@ class SidebarRenderer:
                         FileLoadErrorMessage(error=str(e)).display()
                         logger.error(f"Failed to load resort file: {e}")
 
-            # Save to File + Export GPX: same button, disabled while the resort is empty.
-            downloads = (
-                ("💾 Save to File", "json", "application/json", "Download resort design as JSON file"),
-                ("📥 Export GPX", "gpx", "application/gpx+xml", "Export for GPS devices and mapping apps"),
-            )
-            for label, ext, mime, help_text in downloads:
-                if has_content:
-                    payload = json.dumps(self.graph.to_dict(), indent=2) if ext == "json" else self.graph.to_gpx()
-                    st.download_button(
-                        label,
-                        data=payload,
-                        file_name=f"alpin_resort_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{ext}",
-                        mime=mime,
-                        width="stretch",
-                        help=help_text,
-                    )
-                else:
-                    st.button(label, width="stretch", disabled=True, help="Build some slopes, lifts or roads first")
-
-            # Reset to a fresh empty resort. Needed because the bare link always
-            # reloads the biggest existing backup, so empty must be requested.
-            if st.button(
-                "🗑️ Reset to Empty",
-                width="stretch",
-                help="Clear the current resort and start a new empty one",
-                disabled=not has_content,
-                key="reset_resort_button",
-            ):
-                _ResetResortDialog().show()
+            # Save/GPX download + reset-to-empty: shared with the error-recovery screen (one source).
+            render_download_buttons(graph=self.graph, key_suffix="sidebar")
+            render_reset_to_empty_button(graph=self.graph, key_suffix="sidebar")

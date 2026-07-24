@@ -12,9 +12,10 @@ from skiresort_planner.constants import MapConfig
 from skiresort_planner.model.actions import ActionType
 from skiresort_planner.model.node import Node
 from skiresort_planner.model.path_point import PathPoint
-from skiresort_planner.model.path_segment import SegmentKind
+from skiresort_planner.model.path_segment import PathSegment, SegmentKind
 from skiresort_planner.model.proposed_path import ProposedPathSegment
 from skiresort_planner.model.resort_graph import ResortGraph
+from skiresort_planner.model.slope import Slope
 from skiresort_planner.ui.state_machine import PlannerStateMachine
 from tests_workflow.conftest import MockDEMService
 
@@ -312,6 +313,54 @@ class TestConfirmMergeAction:
         assert sm.is_node_edit_selecting, "stays in node edit so the user can adjust the selection"
         assert ctx.node_edit.node_ids == [top.id, bottom.id], "selection preserved for retry"
         assert any("too far" in t.lower() for t in toasts), "the user is told why the merge was refused"
+
+    def test_cycle_forming_nodes_refused_no_change(
+        self, fake_st, empty_graph, mock_dem_blue_slope, monkeypatch
+    ) -> None:
+        from skiresort_planner.ui.actions import confirm_merge_action
+
+        dem = mock_dem_blue_slope
+        # Compact zigzag N1..N5 (all within MAX_SPAN_M) so merging the bracketing pair N2/N4 is
+        # span-legal and its only defect is the cycle it would fold the chain into (the reported bug).
+        m = MapConfig.METERS_PER_DEGREE_EQUATOR
+        coords = {"N1": (0.0, 0.0), "N2": (0.0, -100), "N3": (100, -100), "N4": (100, -200), "N5": (0.0, -300)}
+        for nid, (lon_m, lat_m) in coords.items():
+            loc = PathPoint(
+                lon=lon_m / m, lat=lat_m / m, elevation=dem.get_elevation_or_raise(lon=lon_m / m, lat=lat_m / m)
+            )
+            empty_graph.nodes[nid] = Node(id=nid, location=loc)
+        for sid, top, bot in (("S1", "N1", "N2"), ("S2", "N2", "N3"), ("S3", "N3", "N4"), ("S4", "N4", "N5")):
+            empty_graph.segments[sid] = PathSegment(
+                id=sid,
+                name=sid,
+                start_node_id=top,
+                end_node_id=bot,
+                kind=SegmentKind.SLOPE,
+                points=[empty_graph.nodes[top].location, empty_graph.nodes[bot].location],
+            )
+        empty_graph.slopes["SL1"] = Slope(
+            id="SL1", name="1", segment_ids=["S1", "S2", "S3", "S4"], start_node_id="N1", end_node_id="N5"
+        )
+        sm, ctx = _session(fake_st=fake_st, graph=empty_graph, dem=dem)
+        count_before = len(empty_graph.nodes)
+        stack_before = len(empty_graph.undo_stack)
+        sm.start_node_edit()
+        sm.toggle_node_edit_node(node_id="N2")
+        sm.toggle_node_edit_node(node_id="N4")
+
+        # MergeCreatesCycleMessage.display() imports streamlit locally and calls st.toast — capture it.
+        import streamlit
+
+        toasts: list[str] = []
+        monkeypatch.setattr(streamlit, "toast", lambda text, *a, **k: toasts.append(text))
+
+        confirm_merge_action()
+
+        assert len(empty_graph.nodes) == count_before, "nothing merged when the merge would loop a slope"
+        assert len(empty_graph.undo_stack) == stack_before, "no undo action recorded on refusal"
+        assert sm.is_node_edit_selecting, "stays in node edit so the user can adjust the selection"
+        assert ctx.node_edit.node_ids == ["N2", "N4"], "selection preserved for retry"
+        assert any("loop" in t.lower() for t in toasts), "the user is told the merge would loop a slope"
 
     def test_fewer_than_two_nodes_raises(self, fake_st, empty_graph, mock_dem_blue_slope) -> None:
         from skiresort_planner.ui.actions import confirm_merge_action
